@@ -69,6 +69,21 @@ export const gmailSearchSchema = z.object({
   maxResults: z.coerce.number().int().min(1).max(25).default(10)
 });
 
+export const gmailTriageSchema = z.object({
+  queries: z.array(z.string().min(2)).max(5).optional(),
+  maxResultsPerQuery: z.coerce.number().int().min(1).max(20).default(10),
+  saveFlagged: z.boolean().optional().default(false)
+});
+
+export const automatedJobDiscoverySchema = z.object({
+  queries: z.array(z.string().min(2)).max(8).optional(),
+  location: z.string().optional(),
+  remoteOnly: z.boolean().optional().default(false),
+  limitPerQuery: z.coerce.number().int().min(1).max(25).default(8),
+  scoreImported: z.boolean().optional().default(false),
+  maxJobsToScore: z.coerce.number().int().min(1).max(12).default(6)
+});
+
 export const emailDraftSchema = z.object({
   emailMessageId: z.string().optional(),
   emailText: z.string().min(10),

@@ -12,7 +12,8 @@ JobMatch CRM helps discover compliant job postings, compare them against a maste
 - User profile and master resume model
 - Resume upload/paste parsing route
 - Manual job import with deduplication
-- Greenhouse, Lever, Ashby, and generic company-careers provider layer
+- Automated job discovery from compliant APIs, licensed aggregators, ATS feeds, RSS feeds, and permitted company career pages
+- Greenhouse, Lever, Ashby, Remotive, Adzuna, TheirStack, USAJOBS, RSS, Workable, and generic company-careers provider layer
 - AI job matching, resume tailoring, cover letter drafting, email reply drafting, interview prep, and interview feedback prompt contracts
 - Dashboard, jobs, job detail, applications, resumes, profile settings, integrations, interviews, and tasks pages
 - Gmail OAuth connect/search/disconnect route scaffolding using readonly access
@@ -52,6 +53,13 @@ Open `http://localhost:3000/dashboard`.
 - `OPENAI_MODEL`: default model for structured JSON generations.
 - `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
+- `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.
+- `USAJOBS_USER_AGENT`: required USAJOBS API user-agent, usually your registered email.
+- `WORKABLE_API_TOKEN`: optional Workable API token for approved Workable account access.
+- `ADZUNA_APP_ID` / `ADZUNA_APP_KEY`: optional Adzuna API credentials for broad job discovery.
+- `ADZUNA_COUNTRY`: Adzuna country code, default `us`.
+- `THEIRSTACK_API_KEY`: optional TheirStack API key for licensed multi-site job discovery.
+- `THEIRSTACK_POSTED_MAX_AGE_DAYS`: date freshness window for TheirStack results.
 - `UPLOAD_DIR`: local file storage path for uploaded resumes/interview audio.
 - `MAX_UPLOAD_MB`: upload limit.
 - `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session.
@@ -128,6 +136,12 @@ Then set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GMAIL_REDIRECT_URI` in
 
 The Gmail integration requests readonly access only. It can search for job-related messages and show snippets. It does not send or delete emails. Full bodies should only be stored when the user explicitly saves them to an application record.
 
+### Recruiter Inbox Triage
+
+After Google sign-in and Gmail OAuth are connected, go to `/settings/integrations` and use **Scan Gmail** in the recruiter email scanner. The scanner searches recent Gmail metadata/snippets for recruiter outreach, hiring-manager messages, interview requests, assessments, offers, rejections, and application updates. It intentionally ignores low-confidence LinkedIn/social notifications, newsletters, job-alert digests, vendor quotes, invoices, and unrelated appointment messages. Use **Save flagged snippets** to explicitly store flagged snippets in the CRM.
+
+The scanner uses `gmail.readonly`, does not send email, does not delete email, and does not store full email bodies.
+
 ## Job Source Providers
 
 Provider interface: `lib/job-sources/types.ts`.
@@ -138,14 +152,23 @@ Implemented:
 - `GreenhouseProvider`
 - `LeverProvider`
 - `AshbyProvider`
+- `RemotiveProvider`
+- `AdzunaProvider`
+- `TheirStackProvider`
+- `UsaJobsProvider`
+- `RssProvider`
+- `WorkableProvider`
 - `GenericCompanyCareersProvider`
 
-The generic provider rejects prohibited job-board hosts and checks `robots.txt` before fetching. Do not add scraping for LinkedIn, Indeed, ZipRecruiter, Glassdoor, or other sources that prohibit automated access. Use manual paste/bookmarklet import for those workflows.
+Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, save them to PostgreSQL, and optionally score the first imported matches. Remotive works without credentials. Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
+
+The generic provider rejects prohibited job-board hosts and checks `robots.txt` before fetching. The app does not directly scrape LinkedIn, Indeed, ZipRecruiter, CareerBuilder, Glassdoor, or similar restricted job boards. Those sources require approved APIs, licensed aggregator APIs, partner feeds, exports, or user-reviewed manual import.
 
 ## What Is Not Automated
 
 - No automatic application submission.
 - No automated LinkedIn, Indeed, ZipRecruiter, or similar job-board activity.
+- No CareerBuilder or other restricted job-board data mining.
 - No email sending without explicit user review and approval.
 - No hidden meeting bot.
 - No interview recording/transcription without consent confirmation.

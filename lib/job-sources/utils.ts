@@ -7,6 +7,8 @@ export const prohibitedJobBoardHosts = [
   "www.indeed.com",
   "ziprecruiter.com",
   "www.ziprecruiter.com",
+  "careerbuilder.com",
+  "www.careerbuilder.com",
   "glassdoor.com",
   "www.glassdoor.com"
 ];
@@ -64,4 +66,37 @@ export function splitRequirementText(text: string) {
       .map((item) => item.trim())
       .filter((item) => item.length > 12 && item.length < 220)
   ).slice(0, 24);
+}
+
+export function parseSalaryRange(text?: string | null) {
+  if (!text) {
+    return {};
+  }
+
+  const normalized = text.replace(/,/g, "").toLowerCase();
+  const matches = [...normalized.matchAll(/\$?\s*(\d{2,3})(k|000)?/g)]
+    .map((match) => {
+      const value = Number(match[1]);
+      return match[2] === "k" || value < 1000 ? value * 1000 : value;
+    })
+    .filter((value) => value >= 20000 && value <= 500000);
+
+  if (!matches.length) {
+    return {};
+  }
+
+  return {
+    salaryMin: Math.min(...matches),
+    salaryMax: Math.max(...matches)
+  };
+}
+
+export function pickFirstText(...values: Array<unknown>) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
 }

@@ -1,12 +1,15 @@
 import { ShieldCheck } from "lucide-react";
 
+import { GmailTriageScanner } from "@/components/gmail-triage-scanner";
 import { ButtonLink, PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { getGmailIntegrationStatus } from "@/lib/gmail/status";
+import { requireUserId } from "@/lib/user-context";
 
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
-  const gmailStatus = await getGmailIntegrationStatus();
+  const userId = await requireUserId();
+  const gmailStatus = await getGmailIntegrationStatus(userId);
   const ready = gmailStatus.issues.length === 0;
 
   return (
@@ -74,6 +77,15 @@ export default async function IntegrationsPage() {
           </div>
         </Panel>
       </div>
+
+      <Panel className="mt-6">
+        <PanelHeader
+          title="Recruiter email scanner"
+          description="Flag likely recruiter, hiring manager, employer, interview, and application-update emails."
+          action={<StatusBadge status={gmailStatus.connected ? "Ready to scan" : "Connect Gmail first"} />}
+        />
+        <GmailTriageScanner connected={gmailStatus.connected} />
+      </Panel>
     </>
   );
 }

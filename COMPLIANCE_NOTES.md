@@ -18,16 +18,27 @@ Allowed sources:
 - Public Greenhouse board APIs
 - Public Lever posting APIs
 - Public Ashby posting APIs
+- Remotive public jobs API
+- Adzuna jobs API with user-provided app credentials
+- TheirStack licensed jobs API with user-provided API key
+- USAJOBS official API when configured with valid credentials
+- Workable API only when the user has an approved token/account
 - Company career pages where access is permitted
 - RSS feeds or public APIs where allowed
 - USAJobs, Remotive, or similar APIs when terms permit
 
 Disallowed:
 
-- Unauthorized scraping of LinkedIn, Indeed, ZipRecruiter, Glassdoor, or similar sites
+- Unauthorized scraping of LinkedIn, Indeed, ZipRecruiter, CareerBuilder, Glassdoor, or similar sites
 - Circumventing robots.txt or terms of service
 - Automating logged-in job-board activity
 - Auto-applying or submitting forms without the user
+
+Restricted board handling:
+
+- LinkedIn, Indeed, ZipRecruiter, and CareerBuilder are treated as approved-API-required sources.
+- The app may store links, manually pasted postings, Gmail alerts, user-reviewed imports, or results returned by a licensed API provider whose terms allow that use.
+- The app must not crawl their search pages, use logged-in browser automation, bypass rate limits, solve bot challenges, rotate proxies, or disguise itself as a human job seeker.
 
 ## Resume and ATS Claims
 
