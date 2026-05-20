@@ -18,6 +18,8 @@ jobs:
       AUTH_URL: "http://localhost:3000"
       NEXTAUTH_URL: "http://localhost:3000"
       APP_BASE_URL: "http://localhost:3000"
+      APP_VERSION: "ci"
+      LOG_LEVEL: "warn"
       AUTH_ALLOWED_EMAILS: ""
       ALLOW_DEMO_USER: "false"
       DEFAULT_DEMO_USER_ID: "demo-user"

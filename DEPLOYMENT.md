@@ -12,6 +12,8 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `AUTH_URL`
 - `NEXTAUTH_URL`
 - `APP_BASE_URL`
+- `APP_VERSION`
+- `LOG_LEVEL=info`
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `AUTH_ALLOWED_EMAILS`
@@ -70,6 +72,19 @@ Local `UPLOAD_DIR` is acceptable for development only. Before relying on resume 
 For a single-user MVP, manual discovery from `/jobs` is enough. For scheduled discovery, configure a provider cron job that calls the discovery route with a user-reviewed scope and rate limits.
 
 Replace the in-memory rate limiter with Redis or Upstash before running multiple server instances.
+
+## Logging and monitoring
+
+The app writes structured JSON logs to stdout/stderr with sensitive values redacted. Configure the host to retain and search application logs. Use `LOG_LEVEL=info` in production and `LOG_LEVEL=debug` only during temporary troubleshooting.
+
+Health endpoints:
+
+```text
+GET /api/health
+GET /api/health/readiness
+```
+
+Use `/api/health/readiness` for uptime checks because it verifies database connectivity and returns `503` when the app cannot reach PostgreSQL.
 
 ## Pre-deploy validation
 

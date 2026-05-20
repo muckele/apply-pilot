@@ -7,6 +7,8 @@
 - Demo-user fallback is gated by `ALLOW_DEMO_USER`; disable it outside local development.
 - Gmail tokens are encrypted with AES-256-GCM.
 - Sensitive actions write audit-log records.
+- Structured production logs redact tokens, API keys, passwords, database credentials, and email addresses.
+- Health and readiness endpoints are available for uptime monitoring.
 - AI/import/search routes use a basic in-memory rate limiter.
 - Resume uploads validate file type and size.
 - Interview audio upload requires explicit consent confirmation.
@@ -22,7 +24,7 @@
 - Add malware scanning for uploaded files.
 - Add stricter MIME sniffing for PDF/DOCX/audio.
 - Add centralized authorization helpers for every model.
-- Add structured logging and alerting for auth, token, upload, and export events.
+- Wire production logs to the hosting provider or an external alerting system.
 - Rotate `TOKEN_ENCRYPTION_KEY` with a planned re-encryption process.
 
 ## Gmail Data Handling

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
+import { captureException, logger } from "@/lib/monitoring/logger";
 import { prisma } from "@/lib/prisma";
 
 export class UnauthorizedError extends Error {
@@ -68,12 +69,30 @@ export async function requireUserId() {
 
 export function apiErrorResponse(error: unknown) {
   if (error instanceof UnauthorizedError) {
+    logger.warn("api.unauthorized", {
+      error: error.message
+    });
+
     return NextResponse.json({ error: error.message }, { status: 401 });
   }
 
   if (error instanceof Error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
+    const status = error.name === "ZodError" ? 422 : 400;
+
+    logger.warn("api.handled_error", {
+      status,
+      error: {
+        name: error.name,
+        message: error.message
+      }
+    });
+
+    return NextResponse.json({ error: error.message }, { status });
   }
+
+  captureException(error, {
+    source: "apiErrorResponse"
+  });
 
   return NextResponse.json({ error: "Unexpected error" }, { status: 500 });
 }

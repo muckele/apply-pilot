@@ -64,6 +64,8 @@ Open `http://localhost:3000/dashboard`.
 - `SERPAPI_MAX_QUERIES_PER_RUN`: caps paid SerpApi searches per discovery run, default `3`.
 - `UPLOAD_DIR`: local file storage path for uploaded resumes/interview audio.
 - `MAX_UPLOAD_MB`: upload limit.
+- `APP_VERSION`: optional deployment version/commit label shown in health output.
+- `LOG_LEVEL`: structured logging threshold: `debug`, `info`, `warn`, or `error`.
 - `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session.
 
 ## Neon PostgreSQL Setup
@@ -199,6 +201,8 @@ npm run prisma:seed
 
 - API routes use `requireUserId()` and user-owned Prisma queries for row-level ownership checks.
 - Gmail tokens are encrypted with AES-256-GCM.
+- Structured JSON logs are written to stdout/stderr with sensitive values redacted.
+- `/api/health` and `/api/health/readiness` support production uptime checks.
 - AI endpoints are rate-limited with an in-memory limiter for MVP.
 - Audit logs are written for sensitive actions.
 - File upload validation is enforced for resume parsing and consented interview audio.
