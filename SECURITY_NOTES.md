@@ -9,6 +9,7 @@
 - Sensitive actions write audit-log records.
 - Structured production logs redact tokens, API keys, passwords, database credentials, and email addresses.
 - Health and readiness endpoints are available for uptime monitoring.
+- Scheduled job discovery is protected by `CRON_SECRET` and only syncs enabled, configured sources.
 - AI/import/search routes use a basic in-memory rate limiter.
 - Resume uploads validate file type and size.
 - Interview audio upload requires explicit consent confirmation.

@@ -1,32 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 
 import { runJobSourceSync } from "@/lib/job-sources/source-management";
+import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
-import { prisma } from "@/lib/prisma";
+import { jobSourceSyncSchema } from "@/lib/validators";
 
-const syncSchema = z.object({
-  jobSourceId: z.string(),
-  limit: z.coerce.number().int().min(1).max(100).default(25)
-});
+type Params = {
+  params: Promise<{ id: string }>;
+};
 
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-sync:${userId}`, 6, 60_000);
-    const input = syncSchema.parse(await request.json());
-    const source = await prisma.jobSource.findFirstOrThrow({
-      where: { id: input.jobSourceId, userId }
-    });
-    const result = await runJobSourceSync({
-      userId,
-      source,
-      options: {
-        limit: input.limit
-      }
-    });
+    const { id } = await params;
+    checkRateLimit(`job-sources:sync:${userId}`, 10, 60_000);
+    const input = jobSourceSyncSchema.parse(await request.json().catch(() => ({})));
+    const source = await prisma.jobSource.findFirstOrThrow({ where: { id, userId } });
+    const result = await runJobSourceSync({ userId, source, options: input });
 
     await writeAuditLog({
       userId,

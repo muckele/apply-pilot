@@ -1,4 +1,4 @@
-import type { JobPosting, JobSource, JobSourceType } from "@prisma/client";
+import type { JobPosting, JobSource, JobSourceType, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
 import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
@@ -151,9 +151,122 @@ function matchesRemoteOnly(job: NormalizedJob, remoteOnly?: boolean) {
   return isRemoteLikeText(job.remoteStatus) || isRemoteLikeText(job.location) || isRemoteLikeText(job.description);
 }
 
+function maxPostedAgeDays() {
+  return readPositiveIntegerEnv("JOB_SOURCE_MAX_POSTED_AGE_DAYS", 30);
+}
+
 function readPositiveIntegerEnv(name: string, fallback: number) {
   const value = Number(process.env[name]);
   return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function jobPostedAgeDays(job: NormalizedJob) {
+  if (!job.datePosted || Number.isNaN(job.datePosted.getTime())) {
+    return null;
+  }
+
+  return (Date.now() - job.datePosted.getTime()) / 86_400_000;
+}
+
+function isRemoteOrHybrid(job: NormalizedJob) {
+  const workStyleText = normalizeText([job.remoteStatus, job.location, job.description].join(" "));
+
+  return (
+    isRemoteLikeText(job.remoteStatus) ||
+    isRemoteLikeText(job.location) ||
+    workStyleText.includes("hybrid") ||
+    workStyleText.includes("remote")
+  );
+}
+
+function locationMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {
+  const location = normalizeText(job.location);
+
+  if (!location || isRemoteOrHybrid(job)) {
+    return true;
+  }
+
+  const preferredLocations = profile?.preferredLocations?.map(normalizeText).filter(Boolean) ?? [];
+
+  if (!preferredLocations.length) {
+    return true;
+  }
+
+  if (location.includes("united states") || location === "us" || location === "usa") {
+    return true;
+  }
+
+  const locationAliases = ["los angeles", "fontana", "pasadena", "orange county", "southern california", "california", " ca"];
+  if (
+    preferredLocations.some((preferred) => location.includes(preferred) || preferred.includes(location)) ||
+    locationAliases.some((alias) => location.includes(alias))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function salaryMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {
+  if (!profile?.salaryTargetMin || (!job.salaryMin && !job.salaryMax)) {
+    return true;
+  }
+
+  const jobMax = job.salaryMax ?? job.salaryMin ?? 0;
+
+  return jobMax >= profile.salaryTargetMin * 0.85;
+}
+
+export function getPreImportRejectionReason({
+  job,
+  profile,
+  relevance,
+  remoteOnly
+}: {
+  job: NormalizedJob;
+  profile: UserProfile | null;
+  relevance: JobRelevanceResult;
+  remoteOnly?: boolean;
+}) {
+  const ageDays = jobPostedAgeDays(job);
+
+  if (ageDays !== null && ageDays > maxPostedAgeDays()) {
+    return `Posting is older than ${maxPostedAgeDays()} days.`;
+  }
+
+  if (remoteOnly && !matchesRemoteOnly(job, true)) {
+    return "Posting does not match remote-only filter.";
+  }
+
+  if (profile?.remotePreference === "REMOTE" && !isRemoteOrHybrid(job)) {
+    return "Work style does not match remote preference.";
+  }
+
+  if (!locationMatchesProfile(job, profile)) {
+    return "Location does not match preferred locations or remote/hybrid preferences.";
+  }
+
+  if (!salaryMatchesProfile(job, profile)) {
+    return "Salary range is below the target range.";
+  }
+
+  if (relevance.hardExcluded) {
+    return "Role contains a hard-excluded title, role type, or deal-breaker.";
+  }
+
+  if (relevance.breakdown.seniorityScore === 0) {
+    return "Role appears too senior for the current search target.";
+  }
+
+  if (relevance.breakdown.roleTitleScore < 45 && relevance.breakdown.bodyEvidenceScore < 70) {
+    return "Role title and body evidence are too weak for the target profile.";
+  }
+
+  if (relevance.decision === "skip") {
+    return "Overall relevance score is below the save threshold.";
+  }
+
+  return null;
 }
 
 function trackImportedJobs(target: Map<string, JobPosting>, result: ProviderSearchResult) {
@@ -241,8 +354,9 @@ async function importRawJobs({
 
     const relevance = scoreJobRelevance({ job, profile, query });
     bestRelevanceScore = Math.max(bestRelevanceScore, relevance.score);
+    const rejectionReason = getPreImportRejectionReason({ job, profile, relevance, remoteOnly });
 
-    if (relevance.decision === "skip") {
+    if (rejectionReason) {
       skipped += 1;
       continue;
     }
@@ -613,7 +727,11 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
 
       await prisma.jobSource.update({
         where: { id: source.id },
-        data: { lastSyncedAt: new Date() }
+        data: {
+          lastSyncedAt: new Date(),
+          lastSyncStatus: "SUCCESS",
+          lastSyncError: null
+        }
       });
 
       trackImportedJobs(importedJobs, jobs);
@@ -627,6 +745,14 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
         details: reportDetails("Synced from a configured allowed source.", jobs)
       });
     } catch (error) {
+      await prisma.jobSource.update({
+        where: { id: source.id },
+        data: {
+          lastSyncStatus: "ERROR",
+          lastSyncError: error instanceof Error ? error.message : "Configured source sync failed."
+        }
+      });
+
       reports.push({
         name: source.name,
         type: source.type,

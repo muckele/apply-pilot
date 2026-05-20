@@ -234,6 +234,8 @@ model JobSource {
   allowlisted    Boolean       @default(false)
   robotsChecked  Boolean       @default(false)
   lastSyncedAt   DateTime?
+  lastSyncStatus String?
+  lastSyncError  String?
   syncEnabled    Boolean       @default(true)
   notes          String?
   createdAt      DateTime      @default(now())
@@ -243,6 +245,7 @@ model JobSource {
   jobPostings JobPosting[]
 
   @@index([userId, type])
+  @@index([userId, syncEnabled])
 }
 
 model JobPosting {

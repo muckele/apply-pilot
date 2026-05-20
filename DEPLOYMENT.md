@@ -24,6 +24,8 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `GMAIL_REDIRECT_URI`
 - `GMAIL_SCOPES`
 - `TOKEN_ENCRYPTION_KEY`
+- `CRON_SECRET`
+- `JOB_SOURCE_MAX_POSTED_AGE_DAYS`
 
 Optional provider keys:
 
@@ -69,7 +71,14 @@ Local `UPLOAD_DIR` is acceptable for development only. Before relying on resume 
 
 ## Runtime
 
-For a single-user MVP, manual discovery from `/jobs` is enough. For scheduled discovery, configure a provider cron job that calls the discovery route with a user-reviewed scope and rate limits.
+For a single-user MVP, manual discovery from `/jobs` is enough. For scheduled discovery, configure a provider cron job that calls the protected discovery route:
+
+```text
+GET https://your-production-domain.com/api/cron/job-discovery
+Authorization: Bearer <CRON_SECRET>
+```
+
+The route syncs enabled job sources only. It imports and filters postings; it does not apply to jobs, send email, or automate job-board activity.
 
 Replace the in-memory rate limiter with Redis or Upstash before running multiple server instances.
 

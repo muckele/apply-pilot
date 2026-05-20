@@ -15,6 +15,7 @@ type JobCardProps = {
     datePosted: string;
     fitScore: number;
     status: string;
+    sourceType?: string;
     keyReason: string;
   };
 };
@@ -30,6 +31,7 @@ export function JobCard({ job }: JobCardProps) {
             </Link>
             <ScoreBadge score={job.fitScore} />
             <StatusBadge status={job.status} />
+            {job.sourceType ? <StatusBadge status={job.sourceType} /> : null}
           </div>
           <p className="mt-1 text-sm text-slate-600">
             {job.company} · {job.location} · {job.remoteStatus} · {job.salary}

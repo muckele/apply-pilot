@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { getPreImportRejectionReason } from "@/lib/job-sources/discovery";
 import { scoreJobRelevance } from "@/lib/job-sources/relevance";
 import { isRemoteLikeText } from "@/lib/job-sources/remote";
 import type { NormalizedJob } from "@/lib/job-sources/types";
@@ -107,4 +108,43 @@ test("healthcare practitioner titles are still hard-excluded", () => {
 
   assert.equal(result.hardExcluded, true);
   assert.equal(result.decision, "skip");
+});
+
+test("pre-import filtering rejects stale postings before they hit the CRM", () => {
+  const staleJob = job({
+    datePosted: new Date(Date.now() - 45 * 86_400_000),
+    description: "Support customer implementation, API integrations, workflow troubleshooting, and SaaS onboarding."
+  });
+  const relevance = scoreJobRelevance({ job: staleJob, profile: null });
+
+  assert.match(
+    getPreImportRejectionReason({ job: staleJob, profile: null, relevance }) ?? "",
+    /older than 30 days/
+  );
+});
+
+test("pre-import filtering rejects salary ranges below target when salary is available", () => {
+  const lowSalaryJob = job({
+    salaryMin: 45_000,
+    salaryMax: 55_000,
+    description: "Lead customer implementation, API integrations, workflow troubleshooting, and SaaS onboarding."
+  });
+  const relevance = scoreJobRelevance({ job: lowSalaryJob, profile: null });
+
+  assert.match(
+    getPreImportRejectionReason({
+      job: lowSalaryJob,
+      profile: {
+        salaryTargetMin: 85_000,
+        salaryTargetMax: 120_000,
+        preferredLocations: ["Los Angeles, CA"],
+        remotePreference: "FLEXIBLE",
+        preferredRoles: [],
+        skillsToEmphasize: [],
+        dealBreakers: []
+      } as never,
+      relevance
+    }) ?? "",
+    /below the target range/
+  );
 });

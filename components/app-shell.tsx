@@ -2,6 +2,7 @@ import Link from "next/link";
 import {
   BriefcaseBusiness,
   ClipboardList,
+  DatabaseZap,
   FileText,
   Gauge,
   Inbox,
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/interviews", label: "Interviews", icon: Mic },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
   { href: "/settings/profile", label: "Profile", icon: Settings },
+  { href: "/settings/job-sources", label: "Job Sources", icon: DatabaseZap },
   { href: "/settings/integrations", label: "Integrations", icon: Inbox }
 ];
 

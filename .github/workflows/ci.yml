@@ -33,6 +33,8 @@ jobs:
       ADZUNA_COUNTRY: "us"
       THEIRSTACK_POSTED_MAX_AGE_DAYS: "30"
       SERPAPI_MAX_QUERIES_PER_RUN: "3"
+      JOB_SOURCE_MAX_POSTED_AGE_DAYS: "30"
+      CRON_SECRET: "ci-cron-secret"
 
     steps:
       - name: Check out repository

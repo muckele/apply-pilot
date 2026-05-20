@@ -1,5 +1,22 @@
 import { z } from "zod";
 
+const emptyStringToNull = (value: unknown) => (value === "" ? null : value);
+
+export const jobSourceTypes = [
+  "MANUAL",
+  "GREENHOUSE",
+  "LEVER",
+  "ASHBY",
+  "WORKABLE",
+  "USAJOBS",
+  "REMOTIVE",
+  "ADZUNA",
+  "THEIRSTACK",
+  "SERPAPI",
+  "RSS",
+  "COMPANY_CAREERS"
+] as const;
+
 export const manualJobImportSchema = z.object({
   title: z.string().min(2),
   company: z.string().min(2),
@@ -82,6 +99,39 @@ export const automatedJobDiscoverySchema = z.object({
   limitPerQuery: z.coerce.number().int().min(1).max(25).default(8),
   scoreImported: z.boolean().optional().default(false),
   maxJobsToScore: z.coerce.number().int().min(1).max(12).default(6)
+});
+
+const jobSourceBaseSchema = z.object({
+  name: z.string().min(2).max(120),
+  type: z.enum(jobSourceTypes),
+  baseUrl: z.preprocess(emptyStringToNull, z.string().url().nullable().optional()),
+  boardToken: z.preprocess(emptyStringToNull, z.string().trim().min(1).max(120).nullable().optional()),
+  notes: z.preprocess(emptyStringToNull, z.string().trim().max(1000).nullable().optional())
+});
+
+export const jobSourceWriteSchema = jobSourceBaseSchema.extend({
+  syncEnabled: z.boolean().optional().default(true),
+  allowlisted: z.boolean().optional().default(false)
+});
+
+export const jobSourcePatchSchema = jobSourceBaseSchema
+  .extend({
+    syncEnabled: z.boolean().optional(),
+    allowlisted: z.boolean().optional()
+  })
+  .partial();
+
+export const jobSourceSyncSchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(25),
+  location: z.preprocess(emptyStringToNull, z.string().trim().max(120).nullable().optional()),
+  remoteOnly: z.boolean().optional().default(false),
+  query: z.preprocess(emptyStringToNull, z.string().trim().max(120).nullable().optional())
+});
+
+export const cronJobDiscoverySchema = z.object({
+  limitPerSource: z.coerce.number().int().min(1).max(50).default(15),
+  location: z.preprocess(emptyStringToNull, z.string().trim().max(120).nullable().optional()),
+  remoteOnly: z.boolean().optional().default(false)
 });
 
 export const emailDraftSchema = z.object({
