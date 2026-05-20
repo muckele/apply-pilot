@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      CI: "true"
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/jobmatch_crm?schema=public"
+      DIRECT_URL: "postgresql://postgres:postgres@localhost:5432/jobmatch_crm?schema=public"
+      AUTH_SECRET: "ci-auth-secret-for-build-validation-only"
+      AUTH_URL: "http://localhost:3000"
+      NEXTAUTH_URL: "http://localhost:3000"
+      APP_BASE_URL: "http://localhost:3000"
+      AUTH_ALLOWED_EMAILS: ""
+      ALLOW_DEMO_USER: "false"
+      DEFAULT_DEMO_USER_ID: "demo-user"
+      OPENAI_API_KEY: ""
+      OPENAI_MODEL: "gpt-4o-mini"
+      OPENAI_MOCK_MODE: "true"
+      GMAIL_REDIRECT_URI: "http://localhost:3000/api/gmail/callback"
+      GMAIL_SCOPES: "https://www.googleapis.com/auth/gmail.readonly"
+      TOKEN_ENCRYPTION_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+      MAX_UPLOAD_MB: "8"
+      ADZUNA_COUNTRY: "us"
+      THEIRSTACK_POSTED_MAX_AGE_DAYS: "30"
+      SERPAPI_MAX_QUERIES_PER_RUN: "3"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
