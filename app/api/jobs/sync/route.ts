@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getJobSourceProvider } from "@/lib/job-sources";
-import { upsertNormalizedJob } from "@/lib/jobs";
+import { importJobsFromSource } from "@/lib/job-sources/discovery";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -21,27 +20,18 @@ export async function POST(request: NextRequest) {
     const source = await prisma.jobSource.findFirstOrThrow({
       where: { id: input.jobSourceId, userId }
     });
-    const provider = getJobSourceProvider(source.type);
-    const rawJobs = await provider.searchJobs({
-      company: source.boardToken ?? source.name,
-      boardToken: source.boardToken ?? undefined,
-      url: source.baseUrl ?? undefined,
-      limit: input.limit
+    const profile = await prisma.userProfile.findUnique({ where: { userId } });
+    const result = await importJobsFromSource({
+      userId,
+      source,
+      criteria: {
+        company: source.boardToken ?? source.name,
+        boardToken: source.boardToken ?? undefined,
+        url: source.baseUrl ?? undefined,
+        limit: input.limit
+      },
+      profile
     });
-
-    const jobs = [];
-    for (const rawJob of rawJobs) {
-      const normalized = provider.normalizeJob(rawJob);
-      const job = await upsertNormalizedJob({
-        userId,
-        jobSourceId: source.id,
-        job: {
-          ...normalized,
-          company: normalized.company || source.name
-        }
-      });
-      jobs.push(job);
-    }
 
     await prisma.jobSource.update({
       where: { id: source.id },
@@ -53,10 +43,15 @@ export async function POST(request: NextRequest) {
       action: "job.source.sync",
       resource: "JobSource",
       resourceId: source.id,
-      metadata: { imported: jobs.length }
+      metadata: { imported: result.imported.length, skipped: result.skipped }
     });
 
-    return NextResponse.json({ imported: jobs.length, jobs });
+    return NextResponse.json({
+      imported: result.imported.length,
+      skipped: result.skipped,
+      bestRelevanceScore: result.bestRelevanceScore,
+      jobs: result.imported
+    });
   } catch (error) {
     return apiErrorResponse(error);
   }

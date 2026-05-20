@@ -1,18 +1,80 @@
 import { notFound } from "next/navigation";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
+import type { JobPosting } from "@prisma/client";
 
 import { JobActions } from "@/components/job-actions";
 import { JobCrmActions } from "@/components/job-crm-actions";
-import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { auth } from "@/lib/auth";
 import { demoJobs } from "@/lib/demo-data";
+import { prisma } from "@/lib/prisma";
 
 type Props = {
   params: Promise<{ id: string }>;
 };
 
+function formatSalary(job: JobPosting) {
+  if (job.salaryMin && job.salaryMax) {
+    return `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`;
+  }
+
+  return "Salary not listed";
+}
+
+function mapJobPosting(job: JobPosting) {
+  return {
+    id: job.id,
+    title: job.title,
+    company: job.company,
+    location: job.location || "Location not listed",
+    remoteStatus: job.remoteStatus || "Work style not listed",
+    salary: formatSalary(job),
+    datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
+    fitScore: job.overallFitScore ?? 50,
+    status: job.status,
+    recommendation: job.matchRecommendation ?? "Review",
+    sourceType: job.sourceType,
+    keyReason:
+      job.keyMatchReason ??
+      "Imported from an allowed source. Run fit scoring to generate a targeted match summary.",
+    missingKeywords: job.missingKeywords,
+    supportedKeywords: job.supportedKeywords,
+    description: job.description,
+    concerns: job.concerns,
+    suggestedResumeAngle:
+      job.suggestedResumeAngle ??
+      "Lead with the most relevant customer-facing, operations, and technical experience that is honestly supported by your resume.",
+    suggestedCoverLetterAngle:
+      job.suggestedCoverLetterAngle ??
+      "Connect Mathew's software training, customer-facing sales background, and operations leadership to this role.",
+    applyUrl: job.applyUrl || job.sourceUrl,
+    importedAt: job.firstDiscoveredAt.toISOString().slice(0, 10)
+  };
+}
+
+async function getJobDetail(id: string) {
+  const session = await auth();
+  const userId =
+    session?.user?.id ??
+    (process.env.ALLOW_DEMO_USER === "true" ? (process.env.DEFAULT_DEMO_USER_ID ?? "demo-user") : null);
+
+  if (userId) {
+    const job = await prisma.jobPosting.findFirst({
+      where: { id, userId }
+    });
+
+    if (job) {
+      return mapJobPosting(job);
+    }
+  }
+
+  const demoJob = demoJobs.find((item) => item.id === id);
+  return demoJob ? { ...demoJob, applyUrl: "/applications", importedAt: demoJob.datePosted } : null;
+}
+
 export default async function JobDetailPage({ params }: Props) {
   const { id } = await params;
-  const job = demoJobs.find((item) => item.id === id) ?? demoJobs[0];
+  const job = await getJobDetail(id);
 
   if (!job) {
     notFound();
@@ -24,10 +86,15 @@ export default async function JobDetailPage({ params }: Props) {
         title={job.title}
         description={`${job.company} · ${job.location} · ${job.remoteStatus} · ${job.salary}`}
         action={
-          <ButtonLink href={job.id === id ? "/applications" : "/jobs"} variant="secondary">
+          <a
+            href={job.applyUrl}
+            target={job.applyUrl.startsWith("http") ? "_blank" : undefined}
+            rel={job.applyUrl.startsWith("http") ? "noreferrer" : undefined}
+            className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
             <ExternalLink className="mr-2" size={16} aria-hidden="true" />
             Open apply link
-          </ButtonLink>
+          </a>
         }
       />
 
@@ -49,11 +116,15 @@ export default async function JobDetailPage({ params }: Props) {
                     Supported keywords
                   </h3>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {job.supportedKeywords.map((keyword) => (
-                      <span key={keyword} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
-                        {keyword}
-                      </span>
-                    ))}
+                    {job.supportedKeywords.length ? (
+                      job.supportedKeywords.map((keyword) => (
+                        <span key={keyword} className="rounded-md bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                          {keyword}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-xs leading-5 text-slate-500">Run AI fit scoring for deeper keyword support.</p>
+                    )}
                   </div>
                 </div>
                 <div>
@@ -62,14 +133,28 @@ export default async function JobDetailPage({ params }: Props) {
                     Missing or risky keywords
                   </h3>
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {job.missingKeywords.map((keyword) => (
-                      <span key={keyword} className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
-                        {keyword}
-                      </span>
-                    ))}
+                    {job.missingKeywords.length ? (
+                      job.missingKeywords.map((keyword) => (
+                        <span key={keyword} className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">
+                          {keyword}
+                        </span>
+                      ))
+                    ) : (
+                      <p className="text-xs leading-5 text-slate-500">No major weak spots flagged yet.</p>
+                    )}
                   </div>
                 </div>
               </div>
+              {job.concerns.length ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-semibold uppercase text-amber-900">Honesty checks</p>
+                  <ul className="mt-2 space-y-1 text-sm leading-6 text-amber-900">
+                    {job.concerns.map((concern) => (
+                      <li key={concern}>{concern}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
           </Panel>
 
@@ -91,7 +176,7 @@ export default async function JobDetailPage({ params }: Props) {
           <Panel>
             <PanelHeader title="Timeline" />
             <div className="divide-y divide-slate-100">
-              {["Job imported", "AI match scored", "Application record created"].map((event) => (
+              {[`Job imported ${job.importedAt}`, "Relevance filter scored", "Ready for CRM review"].map((event) => (
                 <div key={event} className="px-5 py-4 text-sm text-slate-700">
                   {event}
                 </div>

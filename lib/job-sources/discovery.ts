@@ -1,6 +1,8 @@
 import type { JobPosting, JobSource, JobSourceType } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
+import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
+import { isRemoteLikeText } from "@/lib/job-sources/remote";
 import type { JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { upsertNormalizedJob, runJobMatch } from "@/lib/jobs";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
@@ -21,6 +23,8 @@ export type DiscoverySourceReport = {
   type: string;
   status: "imported" | "skipped" | "blocked" | "error";
   imported: number;
+  skipped?: number;
+  bestRelevanceScore?: number;
   details: string;
 };
 
@@ -30,6 +34,12 @@ export type RestrictedBoardPolicy = {
   reason: string;
   allowedPath: string;
   policyUrl: string;
+};
+
+type ProviderSearchResult = {
+  imported: JobPosting[];
+  skipped: number;
+  bestRelevanceScore: number;
 };
 
 const targetRoleFallbacks = [
@@ -133,6 +143,31 @@ function queryMatchesJob(job: NormalizedJob, query?: string) {
   return matchedTokens.length >= Math.max(1, Math.ceil(tokens.length * 0.6));
 }
 
+function matchesRemoteOnly(job: NormalizedJob, remoteOnly?: boolean) {
+  if (!remoteOnly) {
+    return true;
+  }
+
+  return isRemoteLikeText(job.remoteStatus) || isRemoteLikeText(job.location) || isRemoteLikeText(job.description);
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function trackImportedJobs(target: Map<string, JobPosting>, result: ProviderSearchResult) {
+  result.imported.forEach((job) => target.set(job.id, job));
+}
+
+function reportDetails(base: string, result: ProviderSearchResult) {
+  if (!result.imported.length && result.skipped) {
+    return `${base} No jobs passed the current relevance filter.`;
+  }
+
+  return base;
+}
+
 async function getOrCreateJobSource({
   userId,
   name,
@@ -168,16 +203,22 @@ async function importRawJobs({
   userId,
   source,
   rawJobs,
-  query
+  query,
+  remoteOnly,
+  profile
 }: {
   userId: string;
   source: JobSource;
   rawJobs: RawJob[];
   query?: string;
+  remoteOnly?: boolean;
+  profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
 }) {
   const provider = getJobSourceProvider(source.type);
   const seen = new Set<string>();
   const imported: JobPosting[] = [];
+  let skipped = 0;
+  let bestRelevanceScore = 0;
 
   for (const rawJob of rawJobs) {
     const normalized = provider.normalizeJob(rawJob);
@@ -187,30 +228,95 @@ async function importRawJobs({
     };
     const key = normalizedJobKey(job);
 
-    if (!job.title || !job.sourceUrl || seen.has(key) || !queryMatchesJob(job, query)) {
+    if (
+      !job.title ||
+      !job.sourceUrl ||
+      seen.has(key) ||
+      !queryMatchesJob(job, query) ||
+      !matchesRemoteOnly(job, remoteOnly)
+    ) {
+      skipped += 1;
+      continue;
+    }
+
+    const relevance = scoreJobRelevance({ job, profile, query });
+    bestRelevanceScore = Math.max(bestRelevanceScore, relevance.score);
+
+    if (relevance.decision === "skip") {
+      skipped += 1;
       continue;
     }
 
     seen.add(key);
-    imported.push(await upsertNormalizedJob({ userId, jobSourceId: source.id, job }));
+    imported.push(await upsertJobWithRelevance({ userId, jobSourceId: source.id, job, relevance }));
   }
 
-  return imported;
+  return { imported, skipped, bestRelevanceScore };
+}
+
+async function upsertJobWithRelevance({
+  userId,
+  jobSourceId,
+  job,
+  relevance
+}: {
+  userId: string;
+  jobSourceId?: string;
+  job: NormalizedJob;
+  relevance: JobRelevanceResult;
+}) {
+  const upserted = await upsertNormalizedJob({ userId, jobSourceId, job });
+  const hasAiScore = upserted.confidenceScore !== null;
+
+  return prisma.jobPosting.update({
+    where: { id: upserted.id },
+    data: {
+      overallFitScore: hasAiScore ? upserted.overallFitScore : relevance.score,
+      keyMatchReason: hasAiScore ? (upserted.keyMatchReason ?? relevance.reasons[0]) : relevance.reasons[0],
+      matchRecommendation: hasAiScore
+        ? (upserted.matchRecommendation ?? relevance.recommendation)
+        : relevance.recommendation,
+      supportedKeywords: hasAiScore && upserted.supportedKeywords.length ? upserted.supportedKeywords : relevance.supportedKeywords,
+      missingKeywords:
+        hasAiScore && upserted.missingKeywords.length ? upserted.missingKeywords : relevance.keywordsToStrengthen,
+      suggestedResumeAngle: hasAiScore ? (upserted.suggestedResumeAngle ?? relevance.resumeAngle) : relevance.resumeAngle,
+      suggestedCoverLetterAngle: hasAiScore
+        ? upserted.suggestedCoverLetterAngle
+        : "Connect Mathew's software training, customer-facing sales background, and operations leadership to the company's role-specific needs.",
+      concerns: hasAiScore && upserted.concerns.length ? upserted.concerns : relevance.concerns
+    }
+  });
 }
 
 async function runProviderSearch({
   userId,
   source,
-  criteria
+  criteria,
+  profile
 }: {
   userId: string;
   source: JobSource;
   criteria: JobSearchCriteria;
+  profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
 }) {
   const provider = getJobSourceProvider(source.type);
   const rawJobs = await provider.searchJobs(criteria);
 
-  return importRawJobs({ userId, source, rawJobs, query: criteria.query });
+  return importRawJobs({ userId, source, rawJobs, query: criteria.query, remoteOnly: criteria.remote, profile });
+}
+
+export async function importJobsFromSource({
+  userId,
+  source,
+  criteria,
+  profile
+}: {
+  userId: string;
+  source: JobSource;
+  criteria: JobSearchCriteria;
+  profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
+}) {
+  return runProviderSearch({ userId, source, criteria, profile });
 }
 
 export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOptions) {
@@ -234,16 +340,19 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
       const jobs = await runProviderSearch({
         userId: options.userId,
         source: remotiveSource,
-        criteria: { query, remote: true, limit: limitPerQuery }
+        criteria: { query, remote: true, limit: limitPerQuery },
+        profile
       });
 
-      jobs.forEach((job) => importedJobs.set(job.id, job));
+      trackImportedJobs(importedJobs, jobs);
       reports.push({
         name: `Remotive: ${query}`,
         type: "REMOTIVE",
         status: "imported",
-        imported: jobs.length,
-        details: "Pulled through Remotive's public remote jobs API."
+        imported: jobs.imported.length,
+        skipped: jobs.skipped,
+        bestRelevanceScore: jobs.bestRelevanceScore,
+        details: reportDetails("Pulled through Remotive's public remote jobs API.", jobs)
       });
     } catch (error) {
       reports.push({
@@ -274,16 +383,19 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             location,
             remote: options.remoteOnly,
             limit: limitPerQuery
-          }
+          },
+          profile
         });
 
-        jobs.forEach((job) => importedJobs.set(job.id, job));
+        trackImportedJobs(importedJobs, jobs);
         reports.push({
           name: `USAJOBS: ${query}`,
           type: "USAJOBS",
           status: "imported",
-          imported: jobs.length,
-          details: "Pulled through the official USAJOBS API."
+          imported: jobs.imported.length,
+          skipped: jobs.skipped,
+          bestRelevanceScore: jobs.bestRelevanceScore,
+          details: reportDetails("Pulled through the official USAJOBS API.", jobs)
         });
       } catch (error) {
         reports.push({
@@ -323,16 +435,19 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             location,
             remote: options.remoteOnly,
             limit: limitPerQuery
-          }
+          },
+          profile
         });
 
-        jobs.forEach((job) => importedJobs.set(job.id, job));
+        trackImportedJobs(importedJobs, jobs);
         reports.push({
           name: `Adzuna: ${query}`,
           type: "ADZUNA",
           status: "imported",
-          imported: jobs.length,
-          details: "Pulled through the Adzuna jobs API."
+          imported: jobs.imported.length,
+          skipped: jobs.skipped,
+          bestRelevanceScore: jobs.bestRelevanceScore,
+          details: reportDetails("Pulled through the Adzuna jobs API.", jobs)
         });
       } catch (error) {
         reports.push({
@@ -372,16 +487,19 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             location,
             remote: options.remoteOnly,
             limit: limitPerQuery
-          }
+          },
+          profile
         });
 
-        jobs.forEach((job) => importedJobs.set(job.id, job));
+        trackImportedJobs(importedJobs, jobs);
         reports.push({
           name: `TheirStack: ${query}`,
           type: "THEIRSTACK",
           status: "imported",
-          imported: jobs.length,
-          details: "Pulled through TheirStack's licensed jobs API. This may consume provider credits."
+          imported: jobs.imported.length,
+          skipped: jobs.skipped,
+          bestRelevanceScore: jobs.bestRelevanceScore,
+          details: reportDetails("Pulled through TheirStack's licensed jobs API. This may consume provider credits.", jobs)
         });
       } catch (error) {
         reports.push({
@@ -400,6 +518,73 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
       status: "skipped",
       imported: 0,
       details: "Set THEIRSTACK_API_KEY to enable broader multi-site job discovery through a licensed API."
+    });
+  }
+
+  if (process.env.SERPAPI_API_KEY) {
+    const serpApiMaxQueries = Math.min(
+      queries.length,
+      readPositiveIntegerEnv("SERPAPI_MAX_QUERIES_PER_RUN", 3)
+    );
+    const serpApiQueries = queries.slice(0, serpApiMaxQueries);
+    const serpApiSource = await getOrCreateJobSource({
+      userId: options.userId,
+      name: "SerpApi Google Jobs",
+      type: "SERPAPI",
+      notes: "Automated broad job discovery from SerpApi's Google Jobs API."
+    });
+
+    for (const query of serpApiQueries) {
+      try {
+        const jobs = await runProviderSearch({
+          userId: options.userId,
+          source: serpApiSource,
+          criteria: {
+            query,
+            location,
+            remote: options.remoteOnly,
+            limit: Math.min(limitPerQuery, 10)
+          },
+          profile
+        });
+
+        trackImportedJobs(importedJobs, jobs);
+        reports.push({
+          name: `SerpApi Google Jobs: ${query}`,
+          type: "SERPAPI",
+          status: "imported",
+          imported: jobs.imported.length,
+          skipped: jobs.skipped,
+          bestRelevanceScore: jobs.bestRelevanceScore,
+          details: reportDetails("Pulled through SerpApi's Google Jobs API. This may consume provider credits.", jobs)
+        });
+      } catch (error) {
+        reports.push({
+          name: `SerpApi Google Jobs: ${query}`,
+          type: "SERPAPI",
+          status: "error",
+          imported: 0,
+          details: error instanceof Error ? error.message : "SerpApi sync failed."
+        });
+      }
+    }
+
+    if (queries.length > serpApiQueries.length) {
+      reports.push({
+        name: "SerpApi Google Jobs",
+        type: "SERPAPI",
+        status: "skipped",
+        imported: 0,
+        details: `Skipped ${queries.length - serpApiQueries.length} SerpApi searches because SERPAPI_MAX_QUERIES_PER_RUN is ${serpApiMaxQueries}.`
+      });
+    }
+  } else {
+    reports.push({
+      name: "SerpApi Google Jobs",
+      type: "SERPAPI",
+      status: "skipped",
+      imported: 0,
+      details: "Set SERPAPI_API_KEY to enable Google Jobs discovery through SerpApi."
     });
   }
 
@@ -422,7 +607,8 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
           url: source.baseUrl ?? undefined,
           location,
           limit: limitPerQuery
-        }
+        },
+        profile
       });
 
       await prisma.jobSource.update({
@@ -430,13 +616,15 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
         data: { lastSyncedAt: new Date() }
       });
 
-      jobs.forEach((job) => importedJobs.set(job.id, job));
+      trackImportedJobs(importedJobs, jobs);
       reports.push({
         name: source.name,
         type: source.type,
         status: "imported",
-        imported: jobs.length,
-        details: "Synced from a configured allowed source."
+        imported: jobs.imported.length,
+        skipped: jobs.skipped,
+        bestRelevanceScore: jobs.bestRelevanceScore,
+        details: reportDetails("Synced from a configured allowed source.", jobs)
       });
     } catch (error) {
       reports.push({

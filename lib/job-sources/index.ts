@@ -8,6 +8,7 @@ import { LeverProvider } from "@/lib/job-sources/lever";
 import { ManualJobImportProvider } from "@/lib/job-sources/manual";
 import { RemotiveProvider } from "@/lib/job-sources/remotive";
 import { RssProvider } from "@/lib/job-sources/rss";
+import { SerpApiProvider } from "@/lib/job-sources/serpapi";
 import { TheirStackProvider } from "@/lib/job-sources/theirstack";
 import type { JobSourceProvider } from "@/lib/job-sources/types";
 import { UsaJobsProvider } from "@/lib/job-sources/usajobs";
@@ -24,6 +25,7 @@ const providers: Record<JobSourceType, JobSourceProvider | null> = {
   REMOTIVE: new RemotiveProvider(),
   ADZUNA: new AdzunaProvider(),
   THEIRSTACK: new TheirStackProvider(),
+  SERPAPI: new SerpApiProvider(),
   RSS: new RssProvider()
 };
 

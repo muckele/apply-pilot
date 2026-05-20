@@ -25,6 +25,7 @@ enum JobSourceType {
   REMOTIVE
   ADZUNA
   THEIRSTACK
+  SERPAPI
   RSS
   COMPANY_CAREERS
 }

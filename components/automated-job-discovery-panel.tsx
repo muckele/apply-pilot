@@ -25,6 +25,8 @@ type DiscoveryResult = {
     type: string;
     status: "imported" | "skipped" | "blocked" | "error";
     imported: number;
+    skipped?: number;
+    bestRelevanceScore?: number;
     details: string;
   }>;
   restrictedBoards: Array<{
@@ -185,7 +187,9 @@ export function AutomatedJobDiscoveryPanel() {
                     <StatusBadge status={report.status} />
                   </div>
                   <p className="mt-1 text-xs leading-5 text-slate-600">
-                    {report.imported} imported. {report.details}
+                    {report.imported} imported
+                    {typeof report.skipped === "number" ? ` · ${report.skipped} filtered` : ""}
+                    {report.bestRelevanceScore ? ` · best relevance ${report.bestRelevanceScore}%` : ""}. {report.details}
                   </p>
                 </div>
               ))}

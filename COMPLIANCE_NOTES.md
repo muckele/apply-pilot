@@ -21,6 +21,7 @@ Allowed sources:
 - Remotive public jobs API
 - Adzuna jobs API with user-provided app credentials
 - TheirStack licensed jobs API with user-provided API key
+- SerpApi Google Jobs API with user-provided API key
 - USAJOBS official API when configured with valid credentials
 - Workable API only when the user has an approved token/account
 - Company career pages where access is permitted

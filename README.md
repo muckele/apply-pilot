@@ -13,7 +13,7 @@ JobMatch CRM helps discover compliant job postings, compare them against a maste
 - Resume upload/paste parsing route
 - Manual job import with deduplication
 - Automated job discovery from compliant APIs, licensed aggregators, ATS feeds, RSS feeds, and permitted company career pages
-- Greenhouse, Lever, Ashby, Remotive, Adzuna, TheirStack, USAJOBS, RSS, Workable, and generic company-careers provider layer
+- Greenhouse, Lever, Ashby, Remotive, Adzuna, TheirStack, SerpApi Google Jobs, USAJOBS, RSS, Workable, and generic company-careers provider layer
 - AI job matching, resume tailoring, cover letter drafting, email reply drafting, interview prep, and interview feedback prompt contracts
 - Dashboard, jobs, job detail, applications, resumes, profile settings, integrations, interviews, and tasks pages
 - Gmail OAuth connect/search/disconnect route scaffolding using readonly access
@@ -60,6 +60,8 @@ Open `http://localhost:3000/dashboard`.
 - `ADZUNA_COUNTRY`: Adzuna country code, default `us`.
 - `THEIRSTACK_API_KEY`: optional TheirStack API key for licensed multi-site job discovery.
 - `THEIRSTACK_POSTED_MAX_AGE_DAYS`: date freshness window for TheirStack results.
+- `SERPAPI_API_KEY`: optional SerpApi key for Google Jobs API discovery.
+- `SERPAPI_MAX_QUERIES_PER_RUN`: caps paid SerpApi searches per discovery run, default `3`.
 - `UPLOAD_DIR`: local file storage path for uploaded resumes/interview audio.
 - `MAX_UPLOAD_MB`: upload limit.
 - `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session.
@@ -155,12 +157,13 @@ Implemented:
 - `RemotiveProvider`
 - `AdzunaProvider`
 - `TheirStackProvider`
+- `SerpApiProvider`
 - `UsaJobsProvider`
 - `RssProvider`
 - `WorkableProvider`
 - `GenericCompanyCareersProvider`
 
-Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, save them to PostgreSQL, and optionally score the first imported matches. Remotive works without credentials. Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
+Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, save them to PostgreSQL, and optionally score the first imported matches. Discovery now applies a deterministic relevance filter before import, so weak matches are skipped and imported jobs get an initial fit score, supported keywords, weak areas to strengthen, and a resume angle before any paid OpenAI scoring runs. Remotive works without credentials. Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. SerpApi requires `SERPAPI_API_KEY` and may consume paid search credits; `SERPAPI_MAX_QUERIES_PER_RUN` caps how many SerpApi searches one discovery run can use. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
 
 The generic provider rejects prohibited job-board hosts and checks `robots.txt` before fetching. The app does not directly scrape LinkedIn, Indeed, ZipRecruiter, CareerBuilder, Glassdoor, or similar restricted job boards. Those sources require approved APIs, licensed aggregator APIs, partner feeds, exports, or user-reviewed manual import.
 
