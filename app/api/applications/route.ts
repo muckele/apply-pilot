@@ -23,6 +23,8 @@ const createApplicationSchema = z.object({
     ])
     .default("SAVED"),
   dateApplied: z.coerce.date().optional(),
+  resumeVersionId: z.string().optional(),
+  coverLetterVersionId: z.string().optional(),
   nextAction: z.string().optional(),
   notes: z.string().optional()
 });
@@ -32,6 +34,23 @@ export async function POST(request: NextRequest) {
     const userId = await requireUserId();
     const input = createApplicationSchema.parse(await request.json());
     await prisma.jobPosting.findFirstOrThrow({ where: { id: input.jobPostingId, userId } });
+    const [resumeVersion, coverLetterVersion] = await Promise.all([
+      input.resumeVersionId
+        ? prisma.resumeVersion.findFirstOrThrow({
+            where: { id: input.resumeVersionId, userId, jobPostingId: input.jobPostingId }
+          })
+        : null,
+      input.coverLetterVersionId
+        ? prisma.generatedDocument.findFirstOrThrow({
+            where: {
+              id: input.coverLetterVersionId,
+              userId,
+              jobPostingId: input.jobPostingId,
+              type: "COVER_LETTER"
+            }
+          })
+        : null
+    ]);
     const existing = await prisma.application.findUnique({
       where: { userId_jobPostingId: { userId, jobPostingId: input.jobPostingId } }
     });
@@ -52,12 +71,16 @@ export async function POST(request: NextRequest) {
         jobPostingId: input.jobPostingId,
         status: nextStatus,
         dateApplied,
+        resumeVersionId: resumeVersion?.id,
+        coverLetterVersionId: coverLetterVersion?.id,
         nextAction,
         notes: input.notes
       },
       update: {
         status: nextStatus,
         dateApplied,
+        resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId,
+        coverLetterVersionId: coverLetterVersion?.id ?? existing?.coverLetterVersionId,
         nextAction,
         notes: input.notes
       }
@@ -85,7 +108,11 @@ export async function POST(request: NextRequest) {
         applicationId: application.id,
         type: eventType,
         title: eventTitle,
-        body: input.notes
+        body: input.notes,
+        metadata: {
+          resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId ?? null,
+          coverLetterVersionId: coverLetterVersion?.id ?? existing?.coverLetterVersionId ?? null
+        }
       }
     });
 

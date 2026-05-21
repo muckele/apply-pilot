@@ -5,6 +5,7 @@ import {
   htmlToText,
   splitRequirementText
 } from "@/lib/job-sources/utils";
+import { assertSafePublicHttpUrl, fetchTextFromSafeUrl } from "@/lib/security/safe-url";
 
 export class GenericCompanyCareersProvider implements JobSourceProvider {
   sourceType = "COMPANY_CAREERS" as const;
@@ -28,12 +29,12 @@ export class GenericCompanyCareersProvider implements JobSourceProvider {
       throw new Error("robots.txt does not allow this careers page path.");
     }
 
-    const response = await fetch(url, { next: { revalidate: 900 } });
+    const { response, text } = await fetchTextFromSafeUrl(url, { next: { revalidate: 900 } });
     if (!response.ok) {
       throw new Error(`Unable to fetch careers page: ${response.status}.`);
     }
 
-    return { sourceUrl: url, html: await response.text() };
+    return { sourceUrl: url, html: text };
   }
 
   normalizeJob(rawJob: RawJob): NormalizedJob {
@@ -62,16 +63,16 @@ export class GenericCompanyCareersProvider implements JobSourceProvider {
     }
 
     assertNotProhibitedHost(url);
-    const parsed = new URL(url);
+    const parsed = await assertSafePublicHttpUrl(url);
     const robotsUrl = `${parsed.origin}/robots.txt`;
 
     try {
-      const response = await fetch(robotsUrl, { next: { revalidate: 3600 } });
+      const { response, text } = await fetchTextFromSafeUrl(robotsUrl, { next: { revalidate: 3600 } });
       if (!response.ok) {
         return true;
       }
 
-      const robots = await response.text();
+      const robots = text;
       const path = parsed.pathname || "/";
       const userAgentBlocks = robots.split(/user-agent:/i).slice(1);
       const wildcardBlock = userAgentBlocks.find((block) => block.trim().startsWith("*"));

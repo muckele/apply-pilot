@@ -36,6 +36,23 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const input = applicationUpdateSchema.parse(await request.json());
     const existing = await prisma.application.findFirstOrThrow({ where: { id, userId } });
+    await Promise.all([
+      input.resumeVersionId
+        ? prisma.resumeVersion.findFirstOrThrow({
+            where: { id: input.resumeVersionId, userId, jobPostingId: existing.jobPostingId }
+          })
+        : null,
+      input.coverLetterVersionId
+        ? prisma.generatedDocument.findFirstOrThrow({
+            where: {
+              id: input.coverLetterVersionId,
+              userId,
+              jobPostingId: existing.jobPostingId,
+              type: "COVER_LETTER"
+            }
+          })
+        : null
+    ]);
     const application = await prisma.application.update({
       where: { id: existing.id },
       data: input

@@ -17,13 +17,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     checkRateLimit(`job-sources:update:${userId}`, 40, 60_000);
     const input = jobSourcePatchSchema.parse(await request.json());
     const existing = await prisma.jobSource.findFirstOrThrow({ where: { id, userId } });
+    const resetsSyncHealth = "type" in input || "baseUrl" in input || "boardToken" in input;
 
     const source = await prisma.jobSource.update({
       where: { id: existing.id },
       data: {
         ...input,
-        lastSyncStatus: input.type || input.baseUrl || input.boardToken ? "NEEDS_TEST" : existing.lastSyncStatus,
-        lastSyncError: input.type || input.baseUrl || input.boardToken ? null : existing.lastSyncError
+        lastSyncStatus: resetsSyncHealth ? "NEEDS_TEST" : existing.lastSyncStatus,
+        lastSyncError: resetsSyncHealth ? null : existing.lastSyncError
       }
     });
 
@@ -45,7 +46,27 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const userId = await requireUserId();
     const { id } = await params;
     checkRateLimit(`job-sources:delete:${userId}`, 20, 60_000);
-    const existing = await prisma.jobSource.findFirstOrThrow({ where: { id, userId } });
+    const existing = await prisma.jobSource.findFirstOrThrow({
+      where: { id, userId },
+      include: {
+        _count: {
+          select: { jobPostings: true }
+        }
+      }
+    });
+
+    const confirmation = _request.nextUrl.searchParams.get("confirm");
+    if (confirmation !== existing.id) {
+      return NextResponse.json(
+        {
+          error: "Deletion requires explicit confirmation.",
+          confirmationRequired: true,
+          sourceId: existing.id,
+          jobPostings: existing._count.jobPostings
+        },
+        { status: 400 }
+      );
+    }
 
     await prisma.jobSource.delete({ where: { id: existing.id } });
 

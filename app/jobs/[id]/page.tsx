@@ -4,6 +4,7 @@ import type { JobPosting } from "@prisma/client";
 
 import { JobActions } from "@/components/job-actions";
 import { JobCrmActions } from "@/components/job-crm-actions";
+import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { auth } from "@/lib/auth";
 import { demoJobs } from "@/lib/demo-data";
@@ -59,26 +60,72 @@ async function getJobDetail(id: string) {
     (process.env.ALLOW_DEMO_USER === "true" ? (process.env.DEFAULT_DEMO_USER_ID ?? "demo-user") : null);
 
   if (userId) {
-    const job = await prisma.jobPosting.findFirst({
-      where: { id, userId }
-    });
+    const [job, resumeVersions, coverLetters, application] = await Promise.all([
+      prisma.jobPosting.findFirst({ where: { id, userId } }),
+      prisma.resumeVersion.findMany({
+        where: { userId, jobPostingId: id },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          title: true,
+          summary: true,
+          fullText: true,
+          atsCompatibility: true,
+          jobFitScore: true,
+          createdAt: true
+        }
+      }),
+      prisma.generatedDocument.findMany({
+        where: { userId, jobPostingId: id, type: "COVER_LETTER" },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, title: true, content: true, createdAt: true }
+      }),
+      prisma.application.findUnique({
+        where: { userId_jobPostingId: { userId, jobPostingId: id } },
+        select: { resumeVersionId: true, coverLetterVersionId: true }
+      })
+    ]);
 
     if (job) {
-      return mapJobPosting(job);
+      return {
+        job: mapJobPosting(job),
+        resumeVersions: resumeVersions.map(
+          (version): JobResumeVersionOption => ({
+            ...version,
+            createdAt: version.createdAt.toISOString()
+          })
+        ),
+        coverLetters: coverLetters.map(
+          (document): JobCoverLetterOption => ({
+            ...document,
+            createdAt: document.createdAt.toISOString()
+          })
+        ),
+        application
+      };
     }
   }
 
   const demoJob = demoJobs.find((item) => item.id === id);
-  return demoJob ? { ...demoJob, applyUrl: "/applications", importedAt: demoJob.datePosted } : null;
+  return demoJob
+    ? {
+        job: { ...demoJob, applyUrl: "/applications", importedAt: demoJob.datePosted },
+        resumeVersions: [],
+        coverLetters: [],
+        application: null
+      }
+    : null;
 }
 
 export default async function JobDetailPage({ params }: Props) {
   const { id } = await params;
-  const job = await getJobDetail(id);
+  const data = await getJobDetail(id);
 
-  if (!job) {
+  if (!data) {
     notFound();
   }
+
+  const { job, resumeVersions, coverLetters, application } = data;
 
   return (
     <>
@@ -169,6 +216,18 @@ export default async function JobDetailPage({ params }: Props) {
           </Panel>
 
           <Panel>
+            <PanelHeader
+              title="Generated documents"
+              description="Preview, edit, and export saved resume and cover letter versions for this job."
+            />
+            <JobDocumentWorkspace
+              key={`${resumeVersions[0]?.id ?? "no-resume"}-${coverLetters[0]?.id ?? "no-cover"}`}
+              resumeVersions={resumeVersions}
+              coverLetters={coverLetters}
+            />
+          </Panel>
+
+          <Panel>
             <PanelHeader title="Full posting" />
             <div className="p-5 text-sm leading-7 text-slate-700">{job.description}</div>
           </Panel>
@@ -189,10 +248,19 @@ export default async function JobDetailPage({ params }: Props) {
           <Panel>
             <PanelHeader
               title="CRM actions"
-              description="Save means not applied yet. Mark applied records the application in your CRM."
+              description="Save means not applied yet. Mark applied records the selected documents in your CRM."
             />
             <div className="p-5">
-              <JobCrmActions jobId={job.id} />
+              <JobCrmActions
+                key={`${application?.resumeVersionId ?? resumeVersions[0]?.id ?? "no-resume"}-${
+                  application?.coverLetterVersionId ?? coverLetters[0]?.id ?? "no-cover"
+                }`}
+                jobId={job.id}
+                resumeVersions={resumeVersions.map(({ id, title }) => ({ id, title }))}
+                coverLetters={coverLetters.map(({ id, title }) => ({ id, title }))}
+                defaultResumeVersionId={application?.resumeVersionId}
+                defaultCoverLetterVersionId={application?.coverLetterVersionId}
+              />
             </div>
           </Panel>
 

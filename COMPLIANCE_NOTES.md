@@ -40,7 +40,7 @@ Restricted board handling:
 - LinkedIn, Indeed, ZipRecruiter, and CareerBuilder are treated as approved-API-required sources.
 - The app may store links, manually pasted postings, Gmail alerts, user-reviewed imports, or results returned by a licensed API provider whose terms allow that use.
 - The app must not crawl their search pages, use logged-in browser automation, bypass rate limits, solve bot challenges, rotate proxies, or disguise itself as a human job seeker.
-- Scheduled job-source sync must use the same approved-source provider layer as manual sync and must remain protected by `CRON_SECRET`.
+- Scheduled job-source sync must use the same approved-source provider layer as manual sync, must remain protected by `CRON_SECRET`, and must only run URL-based RSS/company-careers sources after the user explicitly marks the source as reviewed and permitted.
 
 ## Resume and ATS Claims
 

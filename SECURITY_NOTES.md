@@ -9,7 +9,8 @@
 - Sensitive actions write audit-log records.
 - Structured production logs redact tokens, API keys, passwords, database credentials, and email addresses.
 - Health and readiness endpoints are available for uptime monitoring.
-- Scheduled job discovery is protected by `CRON_SECRET` and only syncs enabled, configured sources.
+- Scheduled job discovery is protected by `CRON_SECRET`, only syncs enabled/configured sources, caps sources per run, skips recently synced sources, and uses a source-level lock to reduce overlapping runs.
+- URL-based job-source fetching blocks prohibited job-board hosts, local/private/internal hosts, private DNS resolutions, oversized responses, long-running requests, and unsafe redirects.
 - AI/import/search routes use a basic in-memory rate limiter.
 - Resume uploads validate file type and size.
 - Interview audio upload requires explicit consent confirmation.
@@ -27,6 +28,7 @@
 - Add centralized authorization helpers for every model.
 - Wire production logs to the hosting provider or an external alerting system.
 - Rotate `TOKEN_ENCRYPTION_KEY` with a planned re-encryption process.
+- Use a staging deployment first, then validate Google OAuth callbacks, Gmail readonly connect, job discovery, document export, and mark-applied CRM linking before exposing production traffic.
 
 ## Gmail Data Handling
 

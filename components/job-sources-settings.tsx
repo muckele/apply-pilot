@@ -148,6 +148,17 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
   }
 
   async function runSourceAction(source: JobSourceItem, action: "test" | "sync" | "delete" | "toggle") {
+    if (action === "delete") {
+      const savedJobs = source._count?.jobPostings ?? 0;
+      const confirmed = window.confirm(
+        `Delete ${source.name}? ${savedJobs} saved job${savedJobs === 1 ? "" : "s"} will keep their job records but lose this source link.`
+      );
+
+      if (!confirmed) {
+        return;
+      }
+    }
+
     const key = `${action}:${source.id}`;
     setPendingKey(key);
     setError(null);
@@ -158,7 +169,9 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
         ? `/api/job-sources/${source.id}/test`
         : action === "sync"
           ? `/api/job-sources/${source.id}/sync`
-          : `/api/job-sources/${source.id}`;
+          : action === "delete"
+            ? `/api/job-sources/${source.id}?confirm=${encodeURIComponent(source.id)}`
+            : `/api/job-sources/${source.id}`;
     const method = action === "delete" ? "DELETE" : action === "toggle" ? "PATCH" : "POST";
     const body =
       action === "toggle"
@@ -255,7 +268,7 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
                       <SecondaryButton
                         type="button"
                         className="gap-2"
-                        disabled={pendingKey === `test:${source.id}`}
+                        disabled={Boolean(pendingKey)}
                         onClick={() => runSourceAction(source, "test")}
                       >
                         {pendingKey === `test:${source.id}` ? (
@@ -268,7 +281,7 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
                       <PrimaryButton
                         type="button"
                         className="gap-2"
-                        disabled={pendingKey === `sync:${source.id}`}
+                        disabled={Boolean(pendingKey)}
                         onClick={() => runSourceAction(source, "sync")}
                       >
                         {pendingKey === `sync:${source.id}` ? (
@@ -278,13 +291,19 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
                         )}
                         Sync
                       </PrimaryButton>
-                      <SecondaryButton type="button" className="gap-2" onClick={() => runSourceAction(source, "toggle")}>
+                      <SecondaryButton
+                        type="button"
+                        className="gap-2"
+                        disabled={Boolean(pendingKey)}
+                        onClick={() => runSourceAction(source, "toggle")}
+                      >
                         <Power size={15} aria-hidden="true" />
                         {source.syncEnabled ? "Disable" : "Enable"}
                       </SecondaryButton>
                       <SecondaryButton
                         type="button"
                         className="gap-2"
+                        disabled={Boolean(pendingKey)}
                         onClick={() => {
                           setEditingId(source.id);
                           setForm(toForm(source));
@@ -295,8 +314,17 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
                         <Pencil size={15} aria-hidden="true" />
                         Edit
                       </SecondaryButton>
-                      <SecondaryButton type="button" className="gap-2" onClick={() => runSourceAction(source, "delete")}>
-                        <Trash2 size={15} aria-hidden="true" />
+                      <SecondaryButton
+                        type="button"
+                        className="gap-2"
+                        disabled={Boolean(pendingKey)}
+                        onClick={() => runSourceAction(source, "delete")}
+                      >
+                        {pendingKey === `delete:${source.id}` ? (
+                          <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+                        ) : (
+                          <Trash2 size={15} aria-hidden="true" />
+                        )}
                         Delete
                       </SecondaryButton>
                     </div>

@@ -1,5 +1,6 @@
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { assertNotProhibitedHost, detectTechStack, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
+import { assertSafePublicHttpUrl, fetchTextFromSafeUrl } from "@/lib/security/safe-url";
 
 type RssJob = {
   title: string;
@@ -34,12 +35,12 @@ export class RssProvider implements JobSourceProvider {
       throw new Error("This RSS feed host is not allowed.");
     }
 
-    const response = await fetch(criteria.url, { next: { revalidate: 900 } });
+    const { response, text } = await fetchTextFromSafeUrl(criteria.url, { next: { revalidate: 900 } });
     if (!response.ok) {
       throw new Error(`RSS feed returned ${response.status}.`);
     }
 
-    const xml = await response.text();
+    const xml = text;
     const sourceTitle = htmlToText(extractTag(xml, "title"));
     const items = [...xml.matchAll(/<item\b[\s\S]*?<\/item>/gi)]
       .map((match) => match[0])
@@ -56,12 +57,12 @@ export class RssProvider implements JobSourceProvider {
   }
 
   async getJobDetails(url: string) {
-    const response = await fetch(url, { next: { revalidate: 900 } });
+    const { response, text } = await fetchTextFromSafeUrl(url, { next: { revalidate: 900 } });
     if (!response.ok) {
       throw new Error(`Unable to fetch RSS posting: ${response.status}.`);
     }
 
-    return { sourceUrl: url, html: await response.text() };
+    return { sourceUrl: url, html: text };
   }
 
   normalizeJob(rawJob: RawJob): NormalizedJob {
@@ -90,6 +91,7 @@ export class RssProvider implements JobSourceProvider {
     }
 
     assertNotProhibitedHost(url);
-    return ["http:", "https:"].includes(new URL(url).protocol);
+    await assertSafePublicHttpUrl(url);
+    return true;
   }
 }

@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { FileText, Loader2, Mail, Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
 
 export function JobActions({ jobId }: { jobId: string }) {
+  const router = useRouter();
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
 
@@ -34,6 +36,8 @@ export function JobActions({ jobId }: { jobId: string }) {
     } else {
       setMessage(`Saved cover letter: ${json.document?.title}`);
     }
+
+    router.refresh();
   }
 
   return (

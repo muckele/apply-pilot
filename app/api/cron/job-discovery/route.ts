@@ -37,18 +37,44 @@ async function readCronOptions(request: NextRequest) {
 
   return cronJobDiscoverySchema.parse({
     limitPerSource: request.nextUrl.searchParams.get("limitPerSource") ?? undefined,
+    maxSources: request.nextUrl.searchParams.get("maxSources") ?? undefined,
     location: request.nextUrl.searchParams.get("location") ?? undefined,
     remoteOnly: request.nextUrl.searchParams.get("remoteOnly") === "true"
   });
 }
 
+function readPositiveIntEnv(name: string, fallback: number, min: number, max: number) {
+  const parsed = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}
+
 async function runCron(request: NextRequest) {
   assertCronAuthorized(request);
   const options = await readCronOptions(request);
+  const maxSources = options.maxSources ?? readPositiveIntEnv("CRON_MAX_SOURCES_PER_RUN", 10, 1, 100);
+  const minSourceIntervalMinutes = readPositiveIntEnv("CRON_MIN_SOURCE_INTERVAL_MINUTES", 360, 5, 10_080);
+  const runningLockMinutes = readPositiveIntEnv("CRON_RUNNING_LOCK_MINUTES", 30, 5, 240);
+  const syncedBefore = new Date(Date.now() - minSourceIntervalMinutes * 60_000);
+  const staleRunningBefore = new Date(Date.now() - runningLockMinutes * 60_000);
   const sources = await prisma.jobSource.findMany({
     where: {
       syncEnabled: true,
-      type: { not: "MANUAL" }
+      type: { not: "MANUAL" },
+      AND: [
+        {
+          OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: syncedBefore } }]
+        },
+        {
+          OR: [{ lastSyncStatus: null }, { lastSyncStatus: { not: "RUNNING" } }, { updatedAt: { lt: staleRunningBefore } }]
+        },
+        {
+          OR: [{ type: { notIn: ["RSS", "COMPANY_CAREERS"] } }, { allowlisted: true }]
+        }
+      ]
     },
     include: {
       user: {
@@ -57,7 +83,8 @@ async function runCron(request: NextRequest) {
         }
       }
     },
-    orderBy: [{ userId: "asc" }, { type: "asc" }, { name: "asc" }]
+    orderBy: [{ lastSyncedAt: "asc" }, { userId: "asc" }, { type: "asc" }, { name: "asc" }],
+    take: maxSources
   });
   const results: Array<{
     sourceId: string;
@@ -122,7 +149,9 @@ async function runCron(request: NextRequest) {
   logger.info("cron.job_discovery.completed", {
     sources: sources.length,
     imported,
-    failed
+    failed,
+    maxSources,
+    minSourceIntervalMinutes
   });
 
   return NextResponse.json({

@@ -60,6 +60,8 @@ export const applicationUpdateSchema = z.object({
     ])
     .optional(),
   dateApplied: z.coerce.date().optional(),
+  resumeVersionId: z.string().optional(),
+  coverLetterVersionId: z.string().optional(),
   followUpDueAt: z.coerce.date().optional(),
   nextAction: z.string().optional(),
   notes: z.string().optional(),
@@ -130,6 +132,7 @@ export const jobSourceSyncSchema = z.object({
 
 export const cronJobDiscoverySchema = z.object({
   limitPerSource: z.coerce.number().int().min(1).max(50).default(15),
+  maxSources: z.coerce.number().int().min(1).max(100).optional(),
   location: z.preprocess(emptyStringToNull, z.string().trim().max(120).nullable().optional()),
   remoteOnly: z.boolean().optional().default(false)
 });
