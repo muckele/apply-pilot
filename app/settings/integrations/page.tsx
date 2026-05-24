@@ -1,14 +1,15 @@
 import { ShieldCheck } from "lucide-react";
 
+import { GmailDisconnectControl } from "@/components/gmail-disconnect-control";
 import { GmailTriageScanner } from "@/components/gmail-triage-scanner";
 import { ButtonLink, PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { getGmailIntegrationStatus } from "@/lib/gmail/status";
-import { requireUserId } from "@/lib/user-context";
+import { requirePageUserId } from "@/lib/page-context";
 
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
-  const userId = await requireUserId();
+  const userId = await requirePageUserId();
   const gmailStatus = await getGmailIntegrationStatus(userId);
   const ready = gmailStatus.issues.length === 0;
 
@@ -62,8 +63,8 @@ export default async function IntegrationsPage() {
                   Connect Gmail
                 </button>
               )}
-              <button className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700">Disconnect</button>
             </div>
+            <GmailDisconnectControl connected={gmailStatus.connected} />
           </div>
         </Panel>
 

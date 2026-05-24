@@ -10,7 +10,7 @@ export type GmailIntegrationStatus = {
   issues: string[];
 };
 
-export async function getGmailIntegrationStatus(userId = process.env.DEFAULT_DEMO_USER_ID ?? "demo-user") {
+export async function getGmailIntegrationStatus(userId?: string) {
   const redirectUri =
     process.env.GMAIL_REDIRECT_URI ?? "http://127.0.0.1:3000/api/gmail/callback";
   const scope = process.env.GMAIL_SCOPES ?? "https://www.googleapis.com/auth/gmail.readonly";
@@ -28,13 +28,15 @@ export async function getGmailIntegrationStatus(userId = process.env.DEFAULT_DEM
   try {
     await prisma.$queryRaw`SELECT 1`;
     databaseReachable = true;
-    const integration = await prisma.gmailIntegration.findUnique({ where: { userId } });
-    connected = Boolean(
-      integration &&
-        !integration.disconnectedAt &&
-        (integration.encryptedAccessToken || integration.encryptedRefreshToken)
-    );
-    googleAccountEmail = integration?.googleAccountEmail;
+    if (userId) {
+      const integration = await prisma.gmailIntegration.findUnique({ where: { userId } });
+      connected = Boolean(
+        integration &&
+          !integration.disconnectedAt &&
+          (integration.encryptedAccessToken || integration.encryptedRefreshToken)
+      );
+      googleAccountEmail = integration?.googleAccountEmail;
+    }
   } catch {
     issues.push("PostgreSQL is not reachable from DATABASE_URL.");
   }

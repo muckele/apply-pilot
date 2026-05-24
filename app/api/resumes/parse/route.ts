@@ -1,13 +1,10 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import type { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
 import { parseResumeText } from "@/lib/ai/resume";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 import { resumeParseSchema } from "@/lib/validators";
 import { prisma } from "@/lib/prisma";
@@ -75,10 +72,13 @@ export async function POST(request: NextRequest) {
         rawText = extracted.text;
         originalName = file.name;
         mimeType = file.type;
-        const uploadDir = path.resolve(process.env.UPLOAD_DIR ?? "uploads", userId, "resumes");
-        await mkdir(uploadDir, { recursive: true });
-        filePath = path.join(uploadDir, `${randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
-        await writeFile(filePath, extracted.buffer);
+        filePath = await savePrivateFile({
+          userId,
+          category: "resumes",
+          filename: file.name,
+          contentType: file.type,
+          buffer: extracted.buffer
+        });
       }
     } else {
       const input = resumeParseSchema.parse(await request.json());

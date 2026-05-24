@@ -64,12 +64,14 @@ Open `http://localhost:3000/dashboard`.
 - `SERPAPI_API_KEY`: optional SerpApi key for Google Jobs API discovery.
 - `SERPAPI_MAX_QUERIES_PER_RUN`: caps paid SerpApi searches per discovery run, default `3`.
 - `JOB_SOURCE_MAX_POSTED_AGE_DAYS`: pre-import freshness window for dated postings, default `30`.
-- `CRON_SECRET`: bearer/query token required by the scheduled job-discovery route.
+- `CRON_SECRET`: bearer token required by the scheduled job-discovery route.
 - `CRON_MAX_SOURCES_PER_RUN`: caps scheduled source syncs per cron invocation, default `10`.
 - `CRON_MIN_SOURCE_INTERVAL_MINUTES`: skips sources synced more recently than this window, default `360`.
 - `CRON_RUNNING_LOCK_MINUTES`: treats a stuck `RUNNING` sync as stale after this window, default `30`.
-- `UPLOAD_DIR`: local file storage path for uploaded resumes/interview audio.
+- `FILE_STORAGE_DRIVER`: `database` for durable MVP production storage, `local` for local development.
+- `UPLOAD_DIR`: local file storage path used only when `FILE_STORAGE_DRIVER=local`.
 - `MAX_UPLOAD_MB`: upload limit.
+- `MAX_AUDIO_UPLOAD_MB`: interview audio/video upload limit.
 - `APP_VERSION`: optional deployment version/commit label shown in health output.
 - `LOG_LEVEL`: structured logging threshold: `debug`, `info`, `warn`, or `error`.
 - `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session.

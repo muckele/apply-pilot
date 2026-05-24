@@ -145,6 +145,7 @@ model User {
   aiAnalyses        AIAnalysis[]
   tasks             Task[]
   reminders         FollowUpReminder[]
+  storedFiles       StoredFile[]
   gmailIntegration  GmailIntegration?
   auditLogs         AuditLog[]
 }
@@ -222,6 +223,22 @@ model ResumeVersion {
   jobPosting  JobPosting?  @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
   application Application? @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
   usedByApplications Application[] @relation("ApplicationResumeUsed")
+}
+
+model StoredFile {
+  id          String   @id @default(cuid())
+  userId      String
+  category    String
+  filename    String
+  contentType String?
+  size        Int
+  data        Bytes
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, category])
+  @@index([createdAt])
 }
 
 model JobSource {

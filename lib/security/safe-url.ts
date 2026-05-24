@@ -1,11 +1,13 @@
 import dns from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 
 const defaultTimeoutMs = 10_000;
 const defaultMaxBytes = 1_500_000;
 const defaultMaxRedirects = 3;
 
-type SafeFetchTextOptions = Omit<RequestInit, "redirect" | "signal"> & {
+type SafeFetchTextOptions = {
   timeoutMs?: number;
   maxBytes?: number;
   maxRedirects?: number;
@@ -13,6 +15,12 @@ type SafeFetchTextOptions = Omit<RequestInit, "redirect" | "signal"> & {
     revalidate?: number | false;
     tags?: string[];
   };
+};
+
+type ResolvedSafeUrl = {
+  url: URL;
+  address: string;
+  family: number;
 };
 
 function normalizeHostname(hostname: string) {
@@ -75,7 +83,7 @@ function isPrivateOrReservedIp(ip: string) {
   return true;
 }
 
-export async function assertSafePublicHttpUrl(value: string) {
+async function resolveSafePublicHttpUrl(value: string): Promise<ResolvedSafeUrl> {
   let parsed: URL;
 
   try {
@@ -109,7 +117,7 @@ export async function assertSafePublicHttpUrl(value: string) {
       throw new Error("Private, local, or reserved source IP addresses are not allowed.");
     }
 
-    return parsed;
+    return { url: parsed, address: hostname, family: net.isIP(hostname) };
   }
 
   let records: Array<{ address: string; family: number }>;
@@ -123,90 +131,99 @@ export async function assertSafePublicHttpUrl(value: string) {
     throw new Error("Source host resolves to a private, local, or reserved address.");
   }
 
-  return parsed;
+  return { url: parsed, address: records[0].address, family: records[0].family };
 }
 
-async function readLimitedText(response: Response, maxBytes: number) {
-  if (!response.body) {
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > maxBytes) {
-      throw new Error("Source response is too large.");
-    }
+export async function assertSafePublicHttpUrl(value: string) {
+  return (await resolveSafePublicHttpUrl(value)).url;
+}
 
-    return Buffer.from(buffer).toString("utf8");
-  }
+async function requestPinnedText(resolved: ResolvedSafeUrl, timeoutMs: number, maxBytes: number) {
+  const client = resolved.url.protocol === "https:" ? https : http;
 
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
+  return new Promise<{
+    status: number;
+    ok: boolean;
+    headers: http.IncomingHttpHeaders;
+    text: string;
+  }>((resolve, reject) => {
+    const request = client.request(
+      resolved.url,
+      {
+        method: "GET",
+        lookup: (_hostname, _options, callback) => {
+          callback(null, resolved.address, resolved.family);
+        },
+        timeout: timeoutMs,
+        headers: {
+          "user-agent": "JobMatchCRM/1.0 (+https://jobmatch.local)",
+          accept: "text/html,application/rss+xml,application/xml,text/xml,text/plain;q=0.8"
+        }
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
+        response.on("data", (chunk: Buffer) => {
+          size += chunk.byteLength;
+          if (size > maxBytes) {
+            response.destroy(new Error("Source response is too large."));
+            return;
+          }
 
-    size += value.byteLength;
-    if (size > maxBytes) {
-      await reader.cancel();
-      throw new Error("Source response is too large.");
-    }
+          chunks.push(chunk);
+        });
 
-    chunks.push(value);
-  }
+        response.on("end", () => {
+          const status = response.statusCode ?? 0;
+          resolve({
+            status,
+            ok: status >= 200 && status < 300,
+            headers: response.headers,
+            text: Buffer.concat(chunks).toString("utf8")
+          });
+        });
+      }
+    );
 
-  return Buffer.concat(chunks).toString("utf8");
+    request.on("timeout", () => {
+      request.destroy(new Error("Source request timed out."));
+    });
+    request.on("error", reject);
+    request.end();
+  });
 }
 
 export async function fetchTextFromSafeUrl(url: string, options: SafeFetchTextOptions = {}) {
   const {
     timeoutMs = defaultTimeoutMs,
     maxBytes = defaultMaxBytes,
-    maxRedirects = defaultMaxRedirects,
-    ...fetchOptions
+    maxRedirects = defaultMaxRedirects
   } = options;
-  let currentUrl = await assertSafePublicHttpUrl(url);
+  let current = await resolveSafePublicHttpUrl(url);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await requestPinnedText(current, timeoutMs, maxBytes);
 
-    try {
-      const response = await fetch(currentUrl, {
-        ...fetchOptions,
-        redirect: "manual",
-        signal: controller.signal
-      });
-
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) {
-          throw new Error(`Source redirected without a location header.`);
-        }
-
-        if (redirectCount === maxRedirects) {
-          throw new Error("Source redirected too many times.");
-        }
-
-        currentUrl = await assertSafePublicHttpUrl(new URL(location, currentUrl).toString());
-        continue;
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.location;
+      if (!location) {
+        throw new Error(`Source redirected without a location header.`);
       }
 
-      const text = await readLimitedText(response, maxBytes);
-      return {
-        response,
-        text,
-        finalUrl: currentUrl.toString()
-      };
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error("Source request timed out.");
+      if (redirectCount === maxRedirects) {
+        throw new Error("Source redirected too many times.");
       }
 
-      throw error;
-    } finally {
-      clearTimeout(timeout);
+      current = await resolveSafePublicHttpUrl(new URL(location, current.url).toString());
+      continue;
     }
+
+    return {
+      response,
+      text: response.text,
+      finalUrl: current.url.toString()
+    };
   }
 
   throw new Error("Source request failed.");

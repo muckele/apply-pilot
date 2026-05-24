@@ -6,8 +6,7 @@ import { JobActions } from "@/components/job-actions";
 import { JobCrmActions } from "@/components/job-crm-actions";
 import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
-import { auth } from "@/lib/auth";
-import { demoJobs } from "@/lib/demo-data";
+import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
 type Props = {
@@ -54,67 +53,54 @@ function mapJobPosting(job: JobPosting) {
 }
 
 async function getJobDetail(id: string) {
-  const session = await auth();
-  const userId =
-    session?.user?.id ??
-    (process.env.ALLOW_DEMO_USER === "true" ? (process.env.DEFAULT_DEMO_USER_ID ?? "demo-user") : null);
+  const userId = await requirePageUserId();
 
-  if (userId) {
-    const [job, resumeVersions, coverLetters, application] = await Promise.all([
-      prisma.jobPosting.findFirst({ where: { id, userId } }),
-      prisma.resumeVersion.findMany({
-        where: { userId, jobPostingId: id },
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          title: true,
-          summary: true,
-          fullText: true,
-          atsCompatibility: true,
-          jobFitScore: true,
-          createdAt: true
-        }
-      }),
-      prisma.generatedDocument.findMany({
-        where: { userId, jobPostingId: id, type: "COVER_LETTER" },
-        orderBy: { createdAt: "desc" },
-        select: { id: true, title: true, content: true, createdAt: true }
-      }),
-      prisma.application.findUnique({
-        where: { userId_jobPostingId: { userId, jobPostingId: id } },
-        select: { resumeVersionId: true, coverLetterVersionId: true }
-      })
-    ]);
+  const [job, resumeVersions, coverLetters, application] = await Promise.all([
+    prisma.jobPosting.findFirst({ where: { id, userId } }),
+    prisma.resumeVersion.findMany({
+      where: { userId, jobPostingId: id },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        title: true,
+        summary: true,
+        fullText: true,
+        atsCompatibility: true,
+        jobFitScore: true,
+        createdAt: true
+      }
+    }),
+    prisma.generatedDocument.findMany({
+      where: { userId, jobPostingId: id, type: "COVER_LETTER" },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, title: true, content: true, createdAt: true }
+    }),
+    prisma.application.findUnique({
+      where: { userId_jobPostingId: { userId, jobPostingId: id } },
+      select: { resumeVersionId: true, coverLetterVersionId: true }
+    })
+  ]);
 
-    if (job) {
-      return {
-        job: mapJobPosting(job),
-        resumeVersions: resumeVersions.map(
-          (version): JobResumeVersionOption => ({
-            ...version,
-            createdAt: version.createdAt.toISOString()
-          })
-        ),
-        coverLetters: coverLetters.map(
-          (document): JobCoverLetterOption => ({
-            ...document,
-            createdAt: document.createdAt.toISOString()
-          })
-        ),
-        application
-      };
-    }
+  if (job) {
+    return {
+      job: mapJobPosting(job),
+      resumeVersions: resumeVersions.map(
+        (version): JobResumeVersionOption => ({
+          ...version,
+          createdAt: version.createdAt.toISOString()
+        })
+      ),
+      coverLetters: coverLetters.map(
+        (document): JobCoverLetterOption => ({
+          ...document,
+          createdAt: document.createdAt.toISOString()
+        })
+      ),
+      application
+    };
   }
 
-  const demoJob = demoJobs.find((item) => item.id === id);
-  return demoJob
-    ? {
-        job: { ...demoJob, applyUrl: "/applications", importedAt: demoJob.datePosted },
-        resumeVersions: [],
-        coverLetters: [],
-        application: null
-      }
-    : null;
+  return null;
 }
 
 export default async function JobDetailPage({ params }: Props) {

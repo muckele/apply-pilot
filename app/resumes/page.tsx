@@ -1,9 +1,21 @@
 import { Upload } from "lucide-react";
 
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
-import { demoJobs } from "@/lib/demo-data";
+import { requirePageUserId } from "@/lib/page-context";
+import { prisma } from "@/lib/prisma";
 
-export default function ResumesPage() {
+export default async function ResumesPage() {
+  const userId = await requirePageUserId();
+  const [masterResume, versions] = await Promise.all([
+    prisma.resume.findFirst({ where: { userId, isMaster: true }, orderBy: { updatedAt: "desc" } }),
+    prisma.resumeVersion.findMany({
+      where: { userId },
+      include: { jobPosting: true },
+      orderBy: { createdAt: "desc" },
+      take: 25
+    })
+  ]);
+
   return (
     <>
       <PageHeader
@@ -37,33 +49,49 @@ export default function ResumesPage() {
         <section className="space-y-6">
           <Panel>
             <PanelHeader title="Master resume profile" />
-            <div className="grid gap-4 p-5 md:grid-cols-3">
-              {["Software", "Customer-facing", "Operations"].map((label) => (
-                <div key={label} className="rounded-lg border border-slate-200 p-4">
-                  <p className="text-sm font-semibold text-slate-950">{label}</p>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">
-                    Skills and achievements are parsed into structured fields for matching and honest tailoring.
+            {masterResume ? (
+              <div className="space-y-4 p-5">
+                <div>
+                  <p className="text-sm font-semibold text-slate-950">{masterResume.title}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Parsed {masterResume.parsedAt ? masterResume.parsedAt.toISOString().slice(0, 10) : "date unavailable"}
                   </p>
                 </div>
-              ))}
-            </div>
+                {masterResume.summary ? <p className="text-sm leading-6 text-slate-700">{masterResume.summary}</p> : null}
+                <div className="flex flex-wrap gap-2">
+                  {masterResume.skills.slice(0, 16).map((skill) => (
+                    <StatusBadge key={skill} status={skill} />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="p-5 text-sm text-slate-600">No master resume uploaded yet.</div>
+            )}
           </Panel>
 
           <Panel>
             <PanelHeader title="Resume versions by job" />
             <div className="divide-y divide-slate-100">
-              {demoJobs.map((job) => (
-                <div key={job.id} className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-950">{job.company}</p>
-                    <p className="text-xs text-slate-500">{job.title}</p>
+              {versions.length ? (
+                versions.map((version) => (
+                  <div key={version.id} className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-950">{version.title}</p>
+                      <p className="text-xs text-slate-500">
+                        {version.jobPosting ? `${version.jobPosting.company} · ${version.jobPosting.title}` : "No job linked"}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {version.atsCompatibility ? <StatusBadge status={`${version.atsCompatibility}% ATS compatible`} /> : null}
+                      {version.jobFitScore ? <StatusBadge status={`${version.jobFitScore}% fit`} /> : null}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <StatusBadge status="ATS compatible" />
-                    <StatusBadge status={`${job.fitScore}% fit`} />
-                  </div>
+                ))
+              ) : (
+                <div className="px-5 py-8 text-center text-sm text-slate-600">
+                  No tailored resume versions yet. Generate one from a job detail page.
                 </div>
-              ))}
+              )}
             </div>
           </Panel>
         </section>

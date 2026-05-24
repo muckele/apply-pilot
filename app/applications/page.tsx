@@ -2,20 +2,29 @@ import { CalendarDays, Filter } from "lucide-react";
 import Link from "next/link";
 
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
-import { demoApplications } from "@/lib/demo-data";
+import { requirePageUserId } from "@/lib/page-context";
+import { prisma } from "@/lib/prisma";
 
 const pipeline = [
-  "Saved",
-  "Interested",
-  "Applied",
-  "Recruiter screen",
-  "Hiring manager",
-  "Technical",
-  "Final",
-  "Offer"
+  { key: "SAVED", label: "Saved" },
+  { key: "INTERESTED", label: "Interested" },
+  { key: "APPLIED", label: "Applied" },
+  { key: "RECRUITER_SCREEN", label: "Recruiter screen" }
 ];
 
-export default function ApplicationsPage() {
+function formatDate(value: Date | null | undefined) {
+  return value ? value.toISOString().slice(0, 10) : "Not set";
+}
+
+export default async function ApplicationsPage() {
+  const userId = await requirePageUserId();
+  const applications = await prisma.application.findMany({
+    where: { userId },
+    include: { jobPosting: true },
+    orderBy: [{ updatedAt: "desc" }],
+    take: 100
+  });
+
   return (
     <>
       <PageHeader
@@ -38,12 +47,12 @@ export default function ApplicationsPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-4">
-        {pipeline.slice(0, 4).map((stage) => (
-          <Panel key={stage} className="min-h-64">
-            <PanelHeader title={stage} />
+        {pipeline.map((stage) => (
+          <Panel key={stage.key} className="min-h-64">
+            <PanelHeader title={stage.label} />
             <div className="space-y-3 p-3">
-              {demoApplications
-                .filter((application) => application.status === stage || (stage === "Saved" && application.status === "Interested"))
+              {applications
+                .filter((application) => application.status === stage.key)
                 .map((application) => (
                   <Link
                     key={application.id}
@@ -52,14 +61,14 @@ export default function ApplicationsPage() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <p className="text-sm font-semibold text-slate-950">{application.company}</p>
-                        <p className="text-xs leading-5 text-slate-500">{application.title}</p>
+                        <p className="text-sm font-semibold text-slate-950">{application.jobPosting.company}</p>
+                        <p className="text-xs leading-5 text-slate-500">{application.jobPosting.title}</p>
                       </div>
-                      <ScoreBadge score={application.score} />
+                      <ScoreBadge score={application.jobPosting.overallFitScore ?? 50} />
                     </div>
                     <p className="mt-3 flex items-center gap-2 text-xs text-slate-500">
                       <CalendarDays size={14} aria-hidden="true" />
-                      {application.followUpDue}
+                      {formatDate(application.followUpDueAt)}
                     </p>
                   </Link>
                 ))}
@@ -83,16 +92,28 @@ export default function ApplicationsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {demoApplications.map((application) => (
-                <tr key={application.id}>
-                  <td className="px-5 py-4 font-medium text-slate-950">{application.company}</td>
-                  <td className="px-5 py-4 text-slate-700">{application.title}</td>
-                  <td className="px-5 py-4"><StatusBadge status={application.status} /></td>
-                  <td className="px-5 py-4 text-slate-600">{application.dateApplied || "Not applied"}</td>
-                  <td className="px-5 py-4 text-slate-600">{application.followUpDue}</td>
-                  <td className="px-5 py-4"><ScoreBadge score={application.score} /></td>
+              {applications.length ? (
+                applications.map((application) => (
+                  <tr key={application.id}>
+                    <td className="px-5 py-4 font-medium text-slate-950">{application.jobPosting.company}</td>
+                    <td className="px-5 py-4 text-slate-700">
+                      <Link href={`/applications/${application.id}`} className="hover:text-brand-700">
+                        {application.jobPosting.title}
+                      </Link>
+                    </td>
+                    <td className="px-5 py-4"><StatusBadge status={application.status} /></td>
+                    <td className="px-5 py-4 text-slate-600">{formatDate(application.dateApplied)}</td>
+                    <td className="px-5 py-4 text-slate-600">{formatDate(application.followUpDueAt)}</td>
+                    <td className="px-5 py-4"><ScoreBadge score={application.jobPosting.overallFitScore ?? 50} /></td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="px-5 py-8 text-center text-slate-600">
+                    No applications yet. Save or mark a job as applied from a job detail page.
+                  </td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>

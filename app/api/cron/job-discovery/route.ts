@@ -19,13 +19,12 @@ function assertCronAuthorized(request: NextRequest) {
   const configuredSecret = process.env.CRON_SECRET;
   const authorization = request.headers.get("authorization") ?? "";
   const bearerToken = authorization.replace(/^Bearer\s+/i, "").trim();
-  const queryToken = request.nextUrl.searchParams.get("secret") ?? "";
 
   if (!configuredSecret) {
     throw new CronAuthError("CRON_SECRET is not configured.");
   }
 
-  if (bearerToken !== configuredSecret && queryToken !== configuredSecret) {
+  if (bearerToken !== configuredSecret) {
     throw new CronAuthError("Invalid cron token.");
   }
 }

@@ -1,11 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
-
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
+import { savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 import { interviewAudioSchema } from "@/lib/validators";
 
@@ -14,6 +11,35 @@ export const runtime = "nodejs";
 type Params = {
   params: Promise<{ id: string }>;
 };
+
+const allowedAudioMimeTypes = new Set([
+  "audio/aac",
+  "audio/m4a",
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "audio/webm",
+  "video/mp4",
+  "video/webm"
+]);
+
+const allowedAudioExtensions = [".aac", ".m4a", ".mp3", ".mp4", ".ogg", ".wav", ".webm"];
+
+function validateInterviewUpload(file: File) {
+  const configuredMaxMb = Number(process.env.MAX_AUDIO_UPLOAD_MB ?? 25);
+  const maxBytes = (Number.isFinite(configuredMaxMb) && configuredMaxMb > 0 ? configuredMaxMb : 25) * 1024 * 1024;
+  const lowerName = file.name.toLowerCase();
+  const hasAllowedExtension = allowedAudioExtensions.some((extension) => lowerName.endsWith(extension));
+
+  if (file.size > maxBytes) {
+    throw new Error("Interview audio file is too large.");
+  }
+
+  if (!allowedAudioMimeTypes.has(file.type) && !hasAllowedExtension) {
+    throw new Error("Unsupported interview audio format. Upload MP3, M4A, WAV, OGG, WebM, or MP4.");
+  }
+}
 
 export async function POST(request: NextRequest, { params }: Params) {
   try {
@@ -31,14 +57,22 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const file = formData.get("file");
-    const pastedTranscript = String(formData.get("transcript") ?? "");
+    const pastedTranscript = String(formData.get("transcript") ?? "").trim();
     let filePath: string | undefined;
 
     if (file instanceof File && file.size > 0) {
-      const uploadDir = path.resolve(process.env.UPLOAD_DIR ?? "uploads", userId, "interviews");
-      await mkdir(uploadDir, { recursive: true });
-      filePath = path.join(uploadDir, `${randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
-      await writeFile(filePath, Buffer.from(await file.arrayBuffer()));
+      validateInterviewUpload(file);
+      filePath = await savePrivateFile({
+        userId,
+        category: "interviews",
+        filename: file.name,
+        contentType: file.type,
+        buffer: Buffer.from(await file.arrayBuffer())
+      });
+    }
+
+    if (!filePath && !pastedTranscript) {
+      throw new Error("Upload an audio file or paste a transcript before saving an interview recording.");
     }
 
     const recording = await prisma.interviewRecording.create({

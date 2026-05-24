@@ -1,7 +1,14 @@
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
-import { demoProfile } from "@/lib/demo-data";
+import { requirePageUserId } from "@/lib/page-context";
+import { prisma } from "@/lib/prisma";
 
-export default function ProfileSettingsPage() {
+export default async function ProfileSettingsPage() {
+  const userId = await requirePageUserId();
+  const [user, profile] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId } }),
+    prisma.userProfile.findUnique({ where: { userId } })
+  ]);
+
   return (
     <>
       <PageHeader
@@ -15,15 +22,15 @@ export default function ProfileSettingsPage() {
           <div className="space-y-4 p-5">
             <label className="block text-sm font-medium text-slate-700">
               Name
-              <input defaultValue={demoProfile.name} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
+              <input readOnly value={user?.name ?? ""} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" />
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Location
-              <input defaultValue={demoProfile.location} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
+              <input readOnly value={profile?.location ?? ""} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" />
             </label>
             <label className="block text-sm font-medium text-slate-700">
               Career goals
-              <textarea rows={5} defaultValue="Find high-fit customer-facing technical roles that combine software, SaaS operations, implementation, and sales engineering." className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
+              <textarea readOnly rows={5} value={profile?.careerGoals ?? ""} className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" />
             </label>
           </div>
         </Panel>
@@ -34,18 +41,23 @@ export default function ProfileSettingsPage() {
             <div>
               <p className="text-sm font-semibold text-slate-950">Preferred roles</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {demoProfile.targetRoles.map((role) => <StatusBadge key={role} status={role} />)}
+                {(profile?.preferredRoles ?? []).map((role) => <StatusBadge key={role} status={role} />)}
               </div>
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-950">Skills to emphasize</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {demoProfile.skills.map((skill) => <StatusBadge key={skill} status={skill} />)}
+                {(profile?.skillsToEmphasize ?? []).map((skill) => <StatusBadge key={skill} status={skill} />)}
               </div>
             </div>
             <label className="block text-sm font-medium text-slate-700">
               Skills not to exaggerate
-              <textarea rows={4} defaultValue="Enterprise-scale production ownership, deep DevOps ownership, tools only mentioned in job descriptions but not supported by experience." className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
+              <textarea
+                readOnly
+                rows={4}
+                value={(profile?.skillsNotToExaggerate ?? []).join(", ")}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+              />
             </label>
           </div>
         </Panel>

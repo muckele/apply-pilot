@@ -2,25 +2,41 @@ import { notFound } from "next/navigation";
 import { Mic, ShieldCheck } from "lucide-react";
 
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
-import { demoInterviews } from "@/lib/demo-data";
+import { requirePageUserId } from "@/lib/page-context";
+import { prisma } from "@/lib/prisma";
 
 type Props = {
   params: Promise<{ id: string }>;
 };
 
+function formatDate(value: Date | null) {
+  return value ? value.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }) : "Not scheduled";
+}
+
 export default async function InterviewDetailPage({ params }: Props) {
+  const userId = await requirePageUserId();
   const { id } = await params;
-  const interview = demoInterviews.find((item) => item.id === id);
+  const interview = await prisma.interview.findFirst({
+    where: { id, userId },
+    include: {
+      jobPosting: true,
+      application: { include: { jobPosting: true } },
+      recordings: { orderBy: { createdAt: "desc" } },
+      notesList: { orderBy: { createdAt: "desc" } }
+    }
+  });
 
   if (!interview) {
     notFound();
   }
 
+  const job = interview.jobPosting ?? interview.application?.jobPosting;
+
   return (
     <>
       <PageHeader
-        title={`${interview.company} interview`}
-        description={`${interview.title} · ${interview.scheduledAt}`}
+        title={`${job?.company ?? "Interview"} interview`}
+        description={`${job?.title ?? interview.type} · ${formatDate(interview.scheduledAt)}`}
       />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_420px]">
@@ -28,12 +44,9 @@ export default async function InterviewDetailPage({ params }: Props) {
           <Panel>
             <PanelHeader title="Prep brief" />
             <div className="space-y-4 p-5 text-sm leading-6 text-slate-700">
-              <p>
-                Connect the job requirements to customer-facing technical problem solving, implementation support, full-stack
-                training, and operations ownership.
-              </p>
+              <p>{interview.prepBrief ?? "Generate prep from a linked job or application to populate this brief."}</p>
               <div className="flex flex-wrap gap-2">
-                {["Explain technical concepts", "Operations workflow", "Customer discovery", "API troubleshooting"].map((item) => (
+                {interview.likelyQuestions.slice(0, 6).map((item) => (
                   <StatusBadge key={item} status={item} />
                 ))}
               </div>
@@ -42,15 +55,25 @@ export default async function InterviewDetailPage({ params }: Props) {
 
           <Panel>
             <PanelHeader title="Live notes" />
-            <div className="p-5">
-              <textarea rows={10} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" placeholder="Capture questions, answers, objections, and follow-up items." />
+            <div className="space-y-3 p-5 text-sm leading-6 text-slate-700">
+              {interview.notes ? <p>{interview.notes}</p> : <p>No interview notes saved yet.</p>}
+              {interview.notesList.length ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="font-semibold text-slate-950">Saved note records</p>
+                  <p className="mt-1">{interview.notesList.length} note record(s)</p>
+                </div>
+              ) : null}
             </div>
           </Panel>
 
           <Panel>
             <PanelHeader title="Feedback" />
             <div className="p-5 text-sm leading-6 text-slate-700">
-              Generate feedback after saving notes or a consented transcript.
+              {interview.followUpEmailDraft ? (
+                <p>{interview.followUpEmailDraft}</p>
+              ) : (
+                "Generate feedback after saving notes or a consented transcript."
+              )}
             </div>
           </Panel>
         </section>
@@ -67,21 +90,26 @@ export default async function InterviewDetailPage({ params }: Props) {
               </label>
               <label className="block font-medium">
                 Audio file
-                <input name="file" type="file" accept="audio/*" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
+                <input name="file" type="file" accept="audio/*,video/mp4,video/webm" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
               </label>
               <button className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white">
                 <Mic size={16} aria-hidden="true" />
                 Upload consented audio
               </button>
             </form>
+            <div className="border-t border-slate-100 p-5 text-sm text-slate-700">
+              Recordings saved: {interview.recordings.length}
+            </div>
           </Panel>
 
           <Panel>
             <PanelHeader title="Likely questions" />
             <div className="space-y-3 p-5 text-sm text-slate-700">
-              <p>Tell me about your transition into technical roles.</p>
-              <p>How do you explain APIs to non-technical customers?</p>
-              <p>Describe a time you improved an operational workflow.</p>
+              {interview.likelyQuestions.length ? (
+                interview.likelyQuestions.map((question) => <p key={question}>{question}</p>)
+              ) : (
+                <p>No questions generated yet.</p>
+              )}
             </div>
           </Panel>
         </aside>

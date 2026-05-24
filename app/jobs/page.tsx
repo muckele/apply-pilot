@@ -5,8 +5,7 @@ import { AutomatedJobDiscoveryPanel } from "@/components/automated-job-discovery
 import { JobCard } from "@/components/job-card";
 import { ManualJobImportForm } from "@/components/manual-job-import-form";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
-import { auth } from "@/lib/auth";
-import { demoJobs } from "@/lib/demo-data";
+import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
 type SearchParams = Record<string, string | string[] | undefined>;
@@ -47,14 +46,7 @@ function parseFilters(params: SearchParams = {}) {
 }
 
 async function getJobsForPage(params: SearchParams) {
-  const session = await auth();
-  const userId =
-    session?.user?.id ??
-    (process.env.ALLOW_DEMO_USER === "true" ? (process.env.DEFAULT_DEMO_USER_ID ?? "demo-user") : null);
-
-  if (!userId) {
-    return demoJobs;
-  }
+  const userId = await requirePageUserId();
 
   const filters = parseFilters(params);
   const where: Prisma.JobPostingWhereInput = { userId };

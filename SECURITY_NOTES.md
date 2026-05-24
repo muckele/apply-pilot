@@ -6,6 +6,7 @@
 - User-owned Prisma queries in API routes.
 - Demo-user fallback is gated by `ALLOW_DEMO_USER`; disable it outside local development.
 - Gmail tokens are encrypted with AES-256-GCM.
+- Production file uploads default to database-backed private storage. Local disk storage is intended only for development.
 - Sensitive actions write audit-log records.
 - Structured production logs redact tokens, API keys, passwords, database credentials, and email addresses.
 - Health and readiness endpoints are available for uptime monitoring.
@@ -20,7 +21,7 @@
 
 - Set `ALLOW_DEMO_USER=false`.
 - Use a managed PostgreSQL database with encrypted storage and backups.
-- Store uploads in private object storage with per-user paths and signed URLs.
+- For larger-scale production, move uploads from database-backed MVP storage to private object storage with per-user paths and signed URLs.
 - Replace the in-memory rate limiter with Redis-backed limits.
 - Add CSRF protection to mutation forms if using cookie-based auth outside API fetches.
 - Add malware scanning for uploaded files.
