@@ -42,7 +42,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             where: { id: input.resumeVersionId, userId, jobPostingId: existing.jobPostingId }
           })
         : null,
-      input.coverLetterVersionId
+      typeof input.coverLetterVersionId === "string"
         ? prisma.generatedDocument.findFirstOrThrow({
             where: {
               id: input.coverLetterVersionId,

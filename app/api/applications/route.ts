@@ -24,7 +24,7 @@ const createApplicationSchema = z.object({
     .default("SAVED"),
   dateApplied: z.coerce.date().optional(),
   resumeVersionId: z.string().optional(),
-  coverLetterVersionId: z.string().optional(),
+  coverLetterVersionId: z.string().nullable().optional(),
   nextAction: z.string().optional(),
   notes: z.string().optional()
 });
@@ -40,7 +40,7 @@ export async function POST(request: NextRequest) {
             where: { id: input.resumeVersionId, userId, jobPostingId: input.jobPostingId }
           })
         : null,
-      input.coverLetterVersionId
+      typeof input.coverLetterVersionId === "string"
         ? prisma.generatedDocument.findFirstOrThrow({
             where: {
               id: input.coverLetterVersionId,
@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
     const existing = await prisma.application.findUnique({
       where: { userId_jobPostingId: { userId, jobPostingId: input.jobPostingId } }
     });
+    const coverLetterWasProvided = Object.hasOwn(input, "coverLetterVersionId");
     const nextStatus =
       input.status === "SAVED" && existing?.status === "APPLIED" ? existing.status : input.status;
     const dateApplied =
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
         status: nextStatus,
         dateApplied,
         resumeVersionId: resumeVersion?.id,
-        coverLetterVersionId: coverLetterVersion?.id,
+        coverLetterVersionId: coverLetterVersion?.id ?? null,
         nextAction,
         notes: input.notes
       },
@@ -80,7 +81,9 @@ export async function POST(request: NextRequest) {
         status: nextStatus,
         dateApplied,
         resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId,
-        coverLetterVersionId: coverLetterVersion?.id ?? existing?.coverLetterVersionId,
+        coverLetterVersionId: coverLetterWasProvided
+          ? (coverLetterVersion?.id ?? null)
+          : existing?.coverLetterVersionId,
         nextAction,
         notes: input.notes
       }
@@ -111,7 +114,9 @@ export async function POST(request: NextRequest) {
         body: input.notes,
         metadata: {
           resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId ?? null,
-          coverLetterVersionId: coverLetterVersion?.id ?? existing?.coverLetterVersionId ?? null
+          coverLetterVersionId: coverLetterWasProvided
+            ? (coverLetterVersion?.id ?? null)
+            : (existing?.coverLetterVersionId ?? null)
         }
       }
     });

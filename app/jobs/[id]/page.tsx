@@ -2,8 +2,7 @@ import { notFound } from "next/navigation";
 import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import type { JobPosting } from "@prisma/client";
 
-import { JobActions } from "@/components/job-actions";
-import { JobCrmActions } from "@/components/job-crm-actions";
+import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
 import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
@@ -31,6 +30,14 @@ function mapJobPosting(job: JobPosting) {
     salary: formatSalary(job),
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
     fitScore: job.overallFitScore ?? 50,
+    hasFitAnalysis: Boolean(
+      job.overallFitScore ||
+        job.resumeKeywordScore ||
+        job.skillsMatchScore ||
+        job.experienceMatchScore ||
+        job.confidenceScore ||
+        job.matchRecommendation
+    ),
     status: job.status,
     recommendation: job.matchRecommendation ?? "Review",
     sourceType: job.sourceType,
@@ -77,7 +84,13 @@ async function getJobDetail(id: string) {
     }),
     prisma.application.findUnique({
       where: { userId_jobPostingId: { userId, jobPostingId: id } },
-      select: { resumeVersionId: true, coverLetterVersionId: true }
+      select: {
+        id: true,
+        status: true,
+        resumeVersionId: true,
+        coverLetterVersionId: true,
+        dateApplied: true
+      }
     })
   ]);
 
@@ -96,7 +109,12 @@ async function getJobDetail(id: string) {
           createdAt: document.createdAt.toISOString()
         })
       ),
-      application
+      application: application
+        ? {
+            ...application,
+            dateApplied: application.dateApplied?.toISOString() ?? null
+          }
+        : null
     };
   }
 
@@ -133,6 +151,28 @@ export default async function JobDetailPage({ params }: Props) {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]">
         <section className="space-y-6">
+          <Panel>
+            <PanelHeader
+              title="Apply packet builder"
+              description="Review the match, generate documents, export files, and update the CRM record."
+            />
+            <ApplyPacketBuilder
+              key={`${application?.id ?? "no-application"}-${resumeVersions[0]?.id ?? "no-resume"}-${
+                coverLetters[0]?.id ?? "no-cover"
+              }`}
+              job={job}
+              resumeVersions={resumeVersions.map(({ id, title, atsCompatibility, jobFitScore, createdAt }) => ({
+                id,
+                title,
+                atsCompatibility,
+                jobFitScore,
+                createdAt
+              }))}
+              coverLetters={coverLetters.map(({ id, title, createdAt }) => ({ id, title, createdAt }))}
+              application={application}
+            />
+          </Panel>
+
           <Panel>
             <PanelHeader title="Fit analysis" />
             <div className="space-y-5 p-5">
@@ -231,32 +271,6 @@ export default async function JobDetailPage({ params }: Props) {
         </section>
 
         <aside className="space-y-6">
-          <Panel>
-            <PanelHeader
-              title="CRM actions"
-              description="Save means not applied yet. Mark applied records the selected documents in your CRM."
-            />
-            <div className="p-5">
-              <JobCrmActions
-                key={`${application?.resumeVersionId ?? resumeVersions[0]?.id ?? "no-resume"}-${
-                  application?.coverLetterVersionId ?? coverLetters[0]?.id ?? "no-cover"
-                }`}
-                jobId={job.id}
-                resumeVersions={resumeVersions.map(({ id, title }) => ({ id, title }))}
-                coverLetters={coverLetters.map(({ id, title }) => ({ id, title }))}
-                defaultResumeVersionId={application?.resumeVersionId}
-                defaultCoverLetterVersionId={application?.coverLetterVersionId}
-              />
-            </div>
-          </Panel>
-
-          <Panel>
-            <PanelHeader title="AI actions" description="Drafts are saved for review. Nothing is sent or submitted automatically." />
-            <div className="p-5">
-              <JobActions jobId={job.id} />
-            </div>
-          </Panel>
-
           <Panel>
             <PanelHeader title="Cover letter angle" />
             <p className="p-5 text-sm leading-6 text-slate-700">{job.suggestedCoverLetterAngle}</p>

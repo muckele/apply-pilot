@@ -61,7 +61,7 @@ export const applicationUpdateSchema = z.object({
     .optional(),
   dateApplied: z.coerce.date().optional(),
   resumeVersionId: z.string().optional(),
-  coverLetterVersionId: z.string().optional(),
+  coverLetterVersionId: z.string().nullable().optional(),
   followUpDueAt: z.coerce.date().optional(),
   nextAction: z.string().optional(),
   notes: z.string().optional(),
