@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { runJobSourceSync } from "@/lib/job-sources/source-management";
+import { getAllowedAuthEmails, isEmailAllowedForAuth, requiresEmailAllowlist } from "@/lib/auth-access";
 import { captureException, logger } from "@/lib/monitoring/logger";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
@@ -59,10 +60,14 @@ async function runCron(request: NextRequest) {
   const runningLockMinutes = readPositiveIntEnv("CRON_RUNNING_LOCK_MINUTES", 30, 5, 240);
   const syncedBefore = new Date(Date.now() - minSourceIntervalMinutes * 60_000);
   const staleRunningBefore = new Date(Date.now() - runningLockMinutes * 60_000);
+  const privateUserFilter = requiresEmailAllowlist()
+    ? { user: { email: { in: getAllowedAuthEmails() } } }
+    : {};
   const sources = await prisma.jobSource.findMany({
     where: {
       syncEnabled: true,
       type: { not: "MANUAL" },
+      ...privateUserFilter,
       AND: [
         {
           OR: [{ lastSyncedAt: null }, { lastSyncedAt: { lt: syncedBefore } }]
@@ -89,13 +94,29 @@ async function runCron(request: NextRequest) {
     sourceId: string;
     sourceName: string;
     userId: string;
-    status: "success" | "error";
+    status: "success" | "error" | "skipped";
     imported: number;
     skipped?: number;
     error?: string;
   }> = [];
 
   for (const source of sources) {
+    if (!isEmailAllowedForAuth(source.user.email)) {
+      results.push({
+        sourceId: source.id,
+        sourceName: source.name,
+        userId: source.userId,
+        status: "skipped",
+        imported: 0,
+        error: "User is not approved for this private deployment."
+      });
+      logger.warn("cron.job_discovery.source_skipped_disallowed_user", {
+        sourceId: source.id,
+        userId: source.userId
+      });
+      continue;
+    }
+
     try {
       const result = await runJobSourceSync({
         userId: source.userId,

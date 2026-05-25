@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { normalizeApplicationPatch } from "@/lib/applications/status";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -53,10 +54,19 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           })
         : null
     ]);
+    const { nextStatus, data: updateData } = normalizeApplicationPatch(input, existing);
+
     const application = await prisma.application.update({
       where: { id: existing.id },
-      data: input
+      data: updateData
     });
+
+    if (nextStatus === "APPLIED") {
+      await prisma.jobPosting.update({
+        where: { id: existing.jobPostingId },
+        data: { status: "APPLIED" }
+      });
+    }
 
     await prisma.applicationEvent.create({
       data: {

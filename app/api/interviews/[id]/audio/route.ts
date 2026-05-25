@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 import { interviewAudioSchema } from "@/lib/validators";
@@ -33,17 +35,19 @@ function validateInterviewUpload(file: File) {
   const hasAllowedExtension = allowedAudioExtensions.some((extension) => lowerName.endsWith(extension));
 
   if (file.size > maxBytes) {
-    throw new Error("Interview audio file is too large.");
+    throw new PublicApiError("Interview audio file is too large.");
   }
 
   if (!allowedAudioMimeTypes.has(file.type) && !hasAllowedExtension) {
-    throw new Error("Unsupported interview audio format. Upload MP3, M4A, WAV, OGG, WebM, or MP4.");
+    throw new PublicApiError("Unsupported interview audio format. Upload MP3, M4A, WAV, OGG, WebM, or MP4.");
   }
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
+    checkRateLimit(`interview-audio:${userId}`, 5, 60_000);
+
     const { id } = await params;
     const interview = await prisma.interview.findFirstOrThrow({ where: { id, userId } });
     const formData = await request.formData();
@@ -53,7 +57,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     });
 
     if (!input.consentConfirmed) {
-      throw new Error("Recording or transcription requires explicit participant consent confirmation.");
+      throw new PublicApiError("Recording or transcription requires explicit participant consent confirmation.");
     }
 
     const file = formData.get("file");
@@ -72,7 +76,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     if (!filePath && !pastedTranscript) {
-      throw new Error("Upload an audio file or paste a transcript before saving an interview recording.");
+      throw new PublicApiError("Upload an audio file or paste a transcript before saving an interview recording.");
     }
 
     const recording = await prisma.interviewRecording.create({

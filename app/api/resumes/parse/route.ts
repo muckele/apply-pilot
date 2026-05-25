@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
 import { parseResumeText } from "@/lib/ai/resume";
+import { PublicApiError } from "@/lib/api-errors";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { savePrivateFile } from "@/lib/storage/private-files";
@@ -16,7 +17,7 @@ async function extractTextFromFile(file: File) {
   const lowerName = file.name.toLowerCase();
 
   if (file.size > Number(process.env.MAX_UPLOAD_MB ?? 8) * 1024 * 1024) {
-    throw new Error("Resume file is too large.");
+    throw new PublicApiError("Resume file is too large.");
   }
 
   if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
@@ -39,7 +40,7 @@ async function extractTextFromFile(file: File) {
     return { text: buffer.toString("utf8"), buffer };
   }
 
-  throw new Error("Unsupported resume format. Upload PDF, DOCX, or paste text.");
+  throw new PublicApiError("Unsupported resume format. Upload PDF, DOCX, or paste text.");
 }
 
 export async function POST(request: NextRequest) {
@@ -85,6 +86,10 @@ export async function POST(request: NextRequest) {
       title = input.title;
       isMaster = input.isMaster;
       rawText = input.pastedText ?? "";
+    }
+
+    if (!rawText.trim()) {
+      throw new PublicApiError("Upload a resume file or paste resume text before parsing.");
     }
 
     const parsed = await parseResumeText(rawText);

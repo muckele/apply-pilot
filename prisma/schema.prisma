@@ -153,7 +153,7 @@ model User {
 model UserProfile {
   id                       String           @id @default(cuid())
   userId                   String           @unique
-  location                 String           @default("Fontana / Los Angeles area, CA")
+  location                 String           @default("")
   careerGoals              String?
   preferredRoles           String[]
   preferredLocations       String[]
@@ -166,7 +166,7 @@ model UserProfile {
   skillsNotToExaggerate    String[]
   workAuthorizationNotes   String?
   availabilityNotes        String?
-  preferredResumeTone      String           @default("clear, honest, concise, customer-facing technical")
+  preferredResumeTone      String           @default("clear, honest, concise, role-specific")
   createdAt                DateTime         @default(now())
   updatedAt                DateTime         @updatedAt
 

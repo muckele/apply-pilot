@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { prisma } from "@/lib/prisma";
@@ -30,6 +30,10 @@ function storageDriver() {
   return process.env.NODE_ENV === "production" ? "database" : "local";
 }
 
+function userUploadDirectory(userId: string) {
+  return path.resolve(process.env.UPLOAD_DIR ?? "uploads", sanitizePathSegment(userId));
+}
+
 export async function savePrivateFile({
   userId,
   category,
@@ -55,10 +59,22 @@ export async function savePrivateFile({
     return `db://${storedFile.id}`;
   }
 
-  const uploadDir = path.resolve(process.env.UPLOAD_DIR ?? "uploads", sanitizePathSegment(userId), category);
+  const uploadDir = path.join(userUploadDirectory(userId), category);
   await mkdir(uploadDir, { recursive: true });
   const filePath = path.join(uploadDir, `${randomUUID()}-${safeName}`);
   await writeFile(filePath, buffer);
 
   return filePath;
+}
+
+export async function deletePrivateLocalFilesForUser(userId: string) {
+  const uploadRoot = path.resolve(process.env.UPLOAD_DIR ?? "uploads");
+  const userDir = userUploadDirectory(userId);
+  const relative = path.relative(uploadRoot, userDir);
+
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Refusing to delete an upload directory outside UPLOAD_DIR.");
+  }
+
+  await rm(userDir, { recursive: true, force: true });
 }

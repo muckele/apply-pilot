@@ -1,3 +1,5 @@
+import { PublicApiError } from "@/lib/api-errors";
+
 type Bucket = {
   count: number;
   resetAt: number;
@@ -17,6 +19,6 @@ export function checkRateLimit(key: string, limit = 30, windowMs = 60_000) {
   existing.count += 1;
 
   if (existing.count > limit) {
-    throw new Error("Rate limit exceeded. Try again shortly.");
+    throw new PublicApiError("Rate limit exceeded. Try again shortly.", 429);
   }
 }

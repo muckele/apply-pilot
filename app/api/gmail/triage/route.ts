@@ -1,6 +1,7 @@
 import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
 
+import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { decryptToken, encryptToken } from "@/lib/security/crypto";
 import { writeAuditLog } from "@/lib/security/audit-log";
@@ -326,7 +327,7 @@ export async function POST(request: NextRequest) {
     const integration = await prisma.gmailIntegration.findUniqueOrThrow({ where: { userId } });
 
     if (integration.disconnectedAt || (!integration.encryptedAccessToken && !integration.encryptedRefreshToken)) {
-      throw new Error("Gmail is not connected.");
+      throw new PublicApiError("Gmail is not connected.");
     }
 
     const oauth2Client = new google.auth.OAuth2(

@@ -1,6 +1,6 @@
 # JobMatch CRM
 
-Personal job-search CRM and AI resume optimization app for Mathew Uckele.
+Private job-search CRM and AI resume optimization app for individual users.
 
 JobMatch CRM helps discover compliant job postings, compare them against a master resume and career goals, create honest tailored documents, track applications, manage recruiter communications, and prepare for interviews. It is intentionally human-in-the-loop: it does not auto-apply, secretly scrape prohibited job boards, send emails without review, or record/transcribe interviews without consent confirmation.
 
@@ -20,7 +20,9 @@ JobMatch CRM helps discover compliant job postings, compare them against a maste
 - Gmail OAuth connect/search/disconnect route scaffolding using readonly access
 - Interview consent gate before audio upload
 - DOCX, PDF, and Markdown export route for generated documents
-- Seed data for the target profile and sample CRM records
+- Seed data for a local demo profile and sample CRM records
+- Private multi-user mode: each signed-in Google account owns isolated profile, job, CRM, document, Gmail, and interview data
+- Account data export and delete-my-data controls
 
 ## Install
 
@@ -47,7 +49,8 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_URL`: canonical Auth.js app URL.
 - `NEXTAUTH_URL`: local or deployed app URL.
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`: Google OAuth credentials.
-- `AUTH_ALLOWED_EMAILS`: optional comma-separated Google account allowlist.
+- `AUTH_ALLOWED_EMAILS`: comma-separated Google account allowlist for private production access.
+- `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
 - `OPENAI_API_KEY`: OpenAI API key.
@@ -74,7 +77,23 @@ Open `http://localhost:3000/dashboard`.
 - `MAX_AUDIO_UPLOAD_MB`: interview audio/video upload limit.
 - `APP_VERSION`: optional deployment version/commit label shown in health output.
 - `LOG_LEVEL`: structured logging threshold: `debug`, `info`, `warn`, or `error`.
-- `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session.
+- `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session. Ignored in production.
+
+## Private Multi-User Mode
+
+The MVP is multi-user but not team-based. There are no organizations, shared workspaces, shared jobs, or manager/admin views. Every CRM record is tied to the signed-in `userId`.
+
+For a private deployment, keep `AUTH_ALLOW_PUBLIC_SIGNUPS=false` and add every approved Google account to `AUTH_ALLOWED_EMAILS`:
+
+```env
+AUTH_ALLOWED_EMAILS="you@gmail.com,second.user@gmail.com"
+AUTH_ALLOW_PUBLIC_SIGNUPS="false"
+ALLOW_DEMO_USER="false"
+```
+
+In production, an empty `AUTH_ALLOWED_EMAILS` blocks sign-in unless `AUTH_ALLOW_PUBLIC_SIGNUPS=true`. The demo user fallback is also disabled in production even if the env var is accidentally set.
+
+Each user can update their own target profile at `/settings/profile`, export their account data, and delete their account records. Exports intentionally omit encrypted OAuth tokens, sessions, and raw stored file bytes.
 
 ## Neon PostgreSQL Setup
 
@@ -219,6 +238,7 @@ npm run prisma:seed
 ## Architecture Notes
 
 - API routes use `requireUserId()` and user-owned Prisma queries for row-level ownership checks.
+- Production sign-in is private by default through `AUTH_ALLOWED_EMAILS`; public signups require an explicit opt-in.
 - Gmail tokens are encrypted with AES-256-GCM.
 - Structured JSON logs are written to stdout/stderr with sensitive values redacted.
 - `/api/health` and `/api/health/readiness` support production uptime checks.

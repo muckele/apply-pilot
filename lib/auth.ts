@@ -2,6 +2,7 @@ import NextAuth, { type NextAuthConfig } from "next-auth";
 import Google from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 
+import { isEmailAllowedForAuth } from "@/lib/auth-access";
 import { prisma } from "@/lib/prisma";
 
 const googleProvider =
@@ -25,18 +26,7 @@ export const authConfig = {
   },
   callbacks: {
     signIn({ profile }) {
-      const allowedEmails = (process.env.AUTH_ALLOWED_EMAILS ?? "")
-        .split(",")
-        .map((email) => email.trim().toLowerCase())
-        .filter(Boolean);
-
-      if (!allowedEmails.length) {
-        return true;
-      }
-
-      const email = profile?.email?.toLowerCase();
-
-      return Boolean(email && allowedEmails.includes(email));
+      return isEmailAllowedForAuth(profile?.email);
     },
     session({ session, user }) {
       if (session.user) {

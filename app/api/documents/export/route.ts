@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { Document, Packer, Paragraph, TextRun } from "docx";
 import { z } from "zod";
 
+import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
@@ -64,7 +65,7 @@ export async function POST(request: NextRequest) {
     const content = document?.content ?? resumeVersion?.fullText;
 
     if (!content) {
-      throw new Error("Document not found.");
+      throw new PublicApiError("Document not found.", 404);
     }
 
     if (input.format === "docx") {

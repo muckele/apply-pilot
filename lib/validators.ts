@@ -1,6 +1,12 @@
 import { z } from "zod";
 
 const emptyStringToNull = (value: unknown) => (value === "" ? null : value);
+const optionalNullableText = (max = 4000) =>
+  z.preprocess(emptyStringToNull, z.string().trim().max(max).nullable().optional());
+const optionalList = z.array(z.string().trim().min(1).max(120)).max(50).optional();
+const optionalNullablePositiveInt = z
+  .union([z.number().int().positive(), z.null()])
+  .optional();
 
 export const jobSourceTypes = [
   "MANUAL",
@@ -41,6 +47,24 @@ export const resumeParseSchema = z.object({
   title: z.string().min(1).default("Master Resume"),
   pastedText: z.string().optional(),
   isMaster: z.boolean().optional().default(true)
+});
+
+export const profileUpdateSchema = z.object({
+  name: optionalNullableText(120),
+  location: z.string().trim().max(160).optional(),
+  careerGoals: optionalNullableText(4000),
+  preferredRoles: optionalList,
+  preferredLocations: optionalList,
+  remotePreference: z.enum(["REMOTE", "HYBRID", "ONSITE", "FLEXIBLE"]).optional(),
+  salaryTargetMin: optionalNullablePositiveInt,
+  salaryTargetMax: optionalNullablePositiveInt,
+  industriesOfInterest: optionalList,
+  dealBreakers: optionalList,
+  skillsToEmphasize: optionalList,
+  skillsNotToExaggerate: optionalList,
+  workAuthorizationNotes: optionalNullableText(2000),
+  availabilityNotes: optionalNullableText(2000),
+  preferredResumeTone: z.string().trim().min(2).max(240).optional()
 });
 
 export const applicationUpdateSchema = z.object({

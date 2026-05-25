@@ -4,7 +4,10 @@
 
 - Auth.js / NextAuth scaffold with Prisma adapter.
 - User-owned Prisma queries in API routes.
-- Demo-user fallback is gated by `ALLOW_DEMO_USER`; disable it outside local development.
+- Production Google sign-in is private by default through `AUTH_ALLOWED_EMAILS`; public signups require `AUTH_ALLOW_PUBLIC_SIGNUPS=true`.
+- Demo-user fallback is gated by `ALLOW_DEMO_USER`, and server-side fallback is disabled automatically in production.
+- Profile, jobs, applications, documents, Gmail snippets, interviews, tasks, and files are scoped to the signed-in `userId`; no team/shared workspace model exists yet.
+- Users can export their account data and delete account records from profile settings.
 - Gmail tokens are encrypted with AES-256-GCM.
 - Production file uploads default to database-backed private storage. Local disk storage is intended only for development.
 - Sensitive actions write audit-log records.
@@ -20,6 +23,7 @@
 ## Production Hardening
 
 - Set `ALLOW_DEMO_USER=false`.
+- Keep `AUTH_ALLOW_PUBLIC_SIGNUPS=false` for private deployments and populate `AUTH_ALLOWED_EMAILS` with approved users.
 - Use a managed PostgreSQL database with encrypted storage and backups.
 - For larger-scale production, move uploads from database-backed MVP storage to private object storage with per-user paths and signed URLs.
 - Replace the in-memory rate limiter with Redis-backed limits.
