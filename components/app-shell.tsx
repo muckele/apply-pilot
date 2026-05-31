@@ -6,6 +6,7 @@ import {
   FileText,
   Gauge,
   Inbox,
+  ListFilter,
   ListChecks,
   Mic,
   Settings,
@@ -17,6 +18,7 @@ import { AuthMenu } from "@/components/auth-menu";
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
   { href: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
+  { href: "/jobs/review", label: "Review Queue", icon: ListFilter },
   { href: "/applications", label: "Applications", icon: ClipboardList },
   { href: "/resumes", label: "Resumes", icon: FileText },
   { href: "/interviews", label: "Interviews", icon: Mic },

@@ -10,6 +10,23 @@ type ExistingApplicationStatus = {
   dateApplied: Date | null;
 };
 
+const passiveApplicationStatuses = new Set<ApplicationStatus>(["SAVED", "INTERESTED"]);
+
+export function resolveApplicationPostStatus(
+  inputStatus: ApplicationStatus,
+  existing?: Pick<ExistingApplicationStatus, "status"> | null
+) {
+  if (!existing) {
+    return inputStatus;
+  }
+
+  if (passiveApplicationStatuses.has(inputStatus) && !passiveApplicationStatuses.has(existing.status)) {
+    return existing.status;
+  }
+
+  return inputStatus;
+}
+
 export function normalizeApplicationPatch<TInput extends ApplicationStatusUpdate>(
   input: TInput,
   existing: ExistingApplicationStatus,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import { resolveApplicationPostStatus } from "@/lib/applications/status";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -55,8 +56,7 @@ export async function POST(request: NextRequest) {
       where: { userId_jobPostingId: { userId, jobPostingId: input.jobPostingId } }
     });
     const coverLetterWasProvided = Object.hasOwn(input, "coverLetterVersionId");
-    const nextStatus =
-      input.status === "SAVED" && existing?.status === "APPLIED" ? existing.status : input.status;
+    const nextStatus = resolveApplicationPostStatus(input.status, existing);
     const dateApplied =
       nextStatus === "APPLIED" ? (existing?.dateApplied ?? input.dateApplied ?? new Date()) : undefined;
     const nextAction =
