@@ -2,6 +2,7 @@ import type { NormalizedJob } from "@/lib/job-sources/types";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
 import { prisma } from "@/lib/prisma";
 import { scoreJobMatch } from "@/lib/ai/job-match";
+import { hashAiInput } from "@/lib/ai/usage";
 
 export async function upsertNormalizedJob({
   userId,
@@ -75,7 +76,11 @@ export async function upsertNormalizedJob({
   });
 }
 
-export async function runJobMatch(userId: string, jobPostingId: string) {
+export async function runJobMatch(
+  userId: string,
+  jobPostingId: string,
+  options: { force?: boolean } = {}
+) {
   const [job, resume, profile] = await Promise.all([
     prisma.jobPosting.findFirstOrThrow({
       where: { id: jobPostingId, userId }
@@ -89,45 +94,98 @@ export async function runJobMatch(userId: string, jobPostingId: string) {
     })
   ]);
 
-  const match = await scoreJobMatch({ job, resume, profile });
+  const matchInput = {
+    job: {
+      title: job.title,
+      company: job.company,
+      location: job.location,
+      remoteStatus: job.remoteStatus,
+      salaryMin: job.salaryMin,
+      salaryMax: job.salaryMax,
+      description: job.description,
+      requirements: job.requirements,
+      preferredQualifications: job.preferredQualifications,
+      detectedTechStack: job.detectedTechStack
+    },
+    resume: resume
+      ? {
+          summary: resume.summary,
+          rawText: resume.rawText,
+          skills: resume.skills,
+          achievements: resume.achievements,
+          workHistory: resume.workHistory
+        }
+      : null,
+    profile: profile
+      ? {
+          careerGoals: profile.careerGoals,
+          preferredRoles: profile.preferredRoles,
+          preferredLocations: profile.preferredLocations,
+          remotePreference: profile.remotePreference,
+          salaryTargetMin: profile.salaryTargetMin,
+          skillsToEmphasize: profile.skillsToEmphasize,
+          skillsNotToExaggerate: profile.skillsNotToExaggerate
+        }
+      : null
+  };
+  const inputHash = hashAiInput("jobMatchPrompt", "2", matchInput);
 
-  const updatedJob = await prisma.jobPosting.update({
-    where: { id: job.id },
-    data: {
-      overallFitScore: match.overallFitScore,
-      resumeKeywordScore: match.resumeKeywordScore,
-      skillsMatchScore: match.skillsMatchScore,
-      experienceMatchScore: match.experienceMatchScore,
-      careerGoalScore: match.careerGoalScore,
-      locationWorkStyleScore: match.locationWorkStyleScore,
-      compensationScore: match.compensationScore,
-      confidenceScore: match.confidenceScore,
-      keyMatchReason: match.whyGoodMatch[0],
-      matchRecommendation: match.recommendation,
-      missingKeywords: match.missingKeywords,
-      supportedKeywords: match.supportedKeywords,
-      suggestedResumeAngle: match.suggestedResumeAngle,
-      suggestedCoverLetterAngle: match.suggestedCoverLetterAngle,
-      concerns: match.concerns
+  if (!options.force && job.overallFitScore !== null) {
+    const existingAnalysis = await prisma.aIAnalysis.findFirst({
+      where: { userId, jobPostingId: job.id, type: "JOB_MATCH", inputHash },
+      orderBy: { createdAt: "desc" }
+    });
+
+    if (existingAnalysis) {
+      return { job, match: existingAnalysis.output, cached: true };
     }
+  }
+
+  const match = await scoreJobMatch(matchInput, userId);
+
+  const updatedJob = await prisma.$transaction(async (tx) => {
+    const updated = await tx.jobPosting.update({
+      where: { id: job.id },
+      data: {
+        overallFitScore: match.overallFitScore,
+        resumeKeywordScore: match.resumeKeywordScore,
+        skillsMatchScore: match.skillsMatchScore,
+        experienceMatchScore: match.experienceMatchScore,
+        careerGoalScore: match.careerGoalScore,
+        locationWorkStyleScore: match.locationWorkStyleScore,
+        compensationScore: match.compensationScore,
+        confidenceScore: match.confidenceScore,
+        keyMatchReason: match.whyGoodMatch[0],
+        matchRecommendation: match.recommendation,
+        missingKeywords: match.missingKeywords,
+        supportedKeywords: match.supportedKeywords,
+        suggestedResumeAngle: match.suggestedResumeAngle,
+        suggestedCoverLetterAngle: match.suggestedCoverLetterAngle,
+        concerns: match.concerns
+      }
+    });
+
+    await tx.aIAnalysis.create({
+      data: {
+        userId,
+        jobPostingId: job.id,
+        type: "JOB_MATCH",
+        model: match.model,
+        promptName: "jobMatchPrompt",
+        promptVersion: match.promptVersion,
+        inputHash: match.inputHash,
+        input: {
+          jobId: job.id,
+          resumeId: resume?.id,
+          profileId: profile?.id
+        },
+        output: match,
+        confidence: match.confidenceScore
+      }
+    });
+
+    return updated;
   });
 
-  await prisma.aIAnalysis.create({
-    data: {
-      userId,
-      jobPostingId: job.id,
-      type: "JOB_MATCH",
-      model: match.model,
-      promptName: "jobMatchPrompt",
-      input: {
-        jobId: job.id,
-        resumeId: resume?.id,
-        profileId: profile?.id
-      },
-      output: match,
-      confidence: match.confidenceScore
-    }
-  });
-
-  return { job: updatedJob, match };
+  return { job: updatedJob, match, cached: false };
 }

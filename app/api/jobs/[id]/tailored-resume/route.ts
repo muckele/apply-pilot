@@ -21,7 +21,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
       prisma.userProfile.findUnique({ where: { userId } })
     ]);
 
-    const tailored = await tailorResume({ job, resume, profile }, resume?.rawText ?? "");
+    const tailored = await tailorResume({ job, resume, profile }, resume?.rawText ?? "", userId);
     const version = await prisma.resumeVersion.create({
       data: {
         userId,
@@ -45,6 +45,8 @@ export async function POST(_request: NextRequest, { params }: Params) {
         type: "RESUME_TAILOR",
         model: tailored.model,
         promptName: "resumeTailorPrompt",
+        promptVersion: tailored.promptVersion,
+        inputHash: tailored.inputHash,
         input: { jobId: job.id, resumeId: resume?.id },
         output: tailored,
         confidence: tailored.jobFitScore

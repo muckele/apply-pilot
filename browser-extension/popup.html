@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JobMatch CRM Capture</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand-mark">JM</div>
+      <div>
+        <h1>JobMatch CRM</h1>
+        <p>Review before saving</p>
+      </div>
+    </header>
+
+    <nav aria-label="Capture views">
+      <button id="job-tab" class="tab active" type="button">Save job</button>
+      <button id="answers-tab" class="tab" type="button">Answers</button>
+      <button id="settings-tab" class="tab" type="button">Setup</button>
+    </nav>
+
+    <main>
+      <section id="job-panel" class="panel active">
+        <button id="extract" class="secondary full" type="button">Read active job page</button>
+        <form id="job-form">
+          <label>Job title<input id="title" maxlength="200" required /></label>
+          <label>Company<input id="company" maxlength="160" required /></label>
+          <div class="grid">
+            <label>Location<input id="location" maxlength="200" /></label>
+            <label>Work style<input id="remote-status" maxlength="80" placeholder="Remote, hybrid, on-site" /></label>
+          </div>
+          <label>Posting URL<input id="source-url" type="url" maxlength="2048" required /></label>
+          <label>Apply URL<input id="apply-url" type="url" maxlength="2048" required /></label>
+          <div class="grid">
+            <label>Date posted<input id="date-posted" type="date" /></label>
+            <label>Salary minimum<input id="salary-min" type="number" min="0" step="1000" /></label>
+          </div>
+          <label>Salary maximum<input id="salary-max" type="number" min="0" step="1000" /></label>
+          <label>Job description<textarea id="description" rows="10" maxlength="50000" required></textarea></label>
+          <label class="check"><input id="run-match" type="checkbox" /> Run AI match after saving</label>
+          <button id="save" class="primary full" type="submit">Save reviewed job</button>
+        </form>
+        <button id="open-job" class="secondary full hidden" type="button">Open saved job in CRM</button>
+      </section>
+
+      <section id="answers-panel" class="panel">
+        <button id="load-answers" class="secondary full" type="button">Load answer vault</button>
+        <div id="answers-list" class="answer-list"></div>
+      </section>
+
+      <section id="settings-panel" class="panel">
+        <label>JobMatch CRM URL<input id="app-url" type="url" placeholder="https://your-app.vercel.app" /></label>
+        <label>Browser token<input id="browser-token" type="password" placeholder="jmc_..." autocomplete="off" /></label>
+        <p class="hint">The URL is saved locally. The token stays in memory only and must be entered again after Chrome restarts.</p>
+        <button id="save-settings" class="primary full" type="button">Connect this browser session</button>
+      </section>
+
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

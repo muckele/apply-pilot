@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
-import { generateJson, getOpenAIModel } from "@/lib/ai/client";
+import { generateJson } from "@/lib/ai/client";
 
 export type ParsedResume = {
   contactInfo: Record<string, string | null>;
@@ -102,21 +102,24 @@ function fallbackParse(text: string): ParsedResume {
   };
 }
 
-export async function parseResumeText(text: string) {
+export async function parseResumeText(text: string, userId?: string) {
   if (!text.trim()) {
     throw new Error("Resume text is empty.");
   }
 
-  return generateJson<ParsedResume>({
+  const generated = await generateJson<ParsedResume>({
     promptName: "resumeParsePrompt",
     systemPrompt: resumeParsePrompt,
     payload: { resumeText: text },
     fallback: fallbackParse(text),
-    schema: parsedResumeSchema
+    schema: parsedResumeSchema,
+    context: userId ? { userId, feature: "RESUME_PARSE", promptVersion: "2" } : undefined
   });
+
+  return generated.data;
 }
 
-export async function tailorResume(payload: unknown, fallbackText: string) {
+export async function tailorResume(payload: unknown, fallbackText: string, userId?: string) {
   const fallback: TailoredResumeOutput = {
     professionalSummary:
       "Customer-facing technical professional with full-stack software engineering training and hands-on operations experience across scheduling, compliance, billing workflows, and stakeholder coordination.",
@@ -154,14 +157,20 @@ export async function tailorResume(payload: unknown, fallbackText: string) {
     resumeText: fallbackText
   };
 
-  return {
-    ...(await generateJson<TailoredResumeOutput>({
-      promptName: "resumeTailorPrompt",
+  const generated = await generateJson<TailoredResumeOutput>({
+    promptName: "resumeTailorPrompt",
     systemPrompt: resumeTailorPrompt,
     payload,
-      fallback,
-      schema: tailoredResumeSchema
-    })),
-    model: getOpenAIModel()
+    fallback,
+    schema: tailoredResumeSchema,
+    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "2" } : undefined
+  });
+
+  return {
+    ...generated.data,
+    model: generated.meta.model,
+    promptVersion: generated.meta.promptVersion,
+    inputHash: generated.meta.requestHash,
+    usage: generated.meta
   };
 }

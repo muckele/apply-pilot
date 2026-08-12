@@ -1,13 +1,14 @@
 import type { JobSource, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
-import { importJobsFromSource } from "@/lib/job-sources/discovery";
+import { importJobsFromSource, scoreTopImportedJobs } from "@/lib/job-sources/discovery";
 import {
   assertSourceCanSync,
   buildCriteriaFromSource,
   type SourceRunOptions
 } from "@/lib/job-sources/source-policy";
 import { prisma } from "@/lib/prisma";
+import { getOrCreateAiSettings } from "@/lib/ai/usage";
 
 function getRunningLockMs() {
   const minutes = Number(process.env.CRON_RUNNING_LOCK_MINUTES ?? 30);
@@ -86,6 +87,14 @@ export async function runJobSourceSync({
       criteria: buildCriteriaFromSource(source, options),
       profile: syncProfile
     });
+    const aiSettings = await getOrCreateAiSettings(userId);
+    const scoredJobs = aiSettings.aiDiscoveryEnabled
+      ? await scoreTopImportedJobs({
+          userId,
+          jobs: result.imported,
+          limit: aiSettings.maxAnalysesPerSync
+        })
+      : [];
 
     await prisma.jobSource.update({
       where: { id: source.id },
@@ -98,7 +107,7 @@ export async function runJobSourceSync({
       }
     });
 
-    return result;
+    return { ...result, scoredJobs };
   } catch (error) {
     const message = formatSyncError(error);
 

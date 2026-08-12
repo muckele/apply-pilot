@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { generateInterviewFeedback } from "@/lib/ai/documents";
+import { normalizeInterviewQuestion } from "@/lib/interviews/library";
 import { prisma } from "@/lib/prisma";
-import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
@@ -23,34 +23,67 @@ export async function POST(_request: NextRequest, { params }: Params) {
         recordings: true
       }
     });
-    const feedback = await generateInterviewFeedback({ interview });
+    const feedback = await generateInterviewFeedback({ interview }, userId);
 
-    await prisma.interview.update({
-      where: { id: interview.id },
-      data: {
-        followUpEmailDraft: feedback.thankYouEmailDraft
+    await prisma.$transaction(async (tx) => {
+      await tx.interview.update({
+        where: { id: interview.id },
+        data: { followUpEmailDraft: feedback.thankYouEmailDraft }
+      });
+
+      await tx.aIAnalysis.create({
+        data: {
+          userId,
+          jobPostingId: interview.jobPostingId,
+          interviewId: interview.id,
+          type: "INTERVIEW_FEEDBACK",
+          model: feedback.model,
+          promptName: "interviewFeedbackPrompt",
+          promptVersion: feedback.promptVersion,
+          inputHash: feedback.inputHash,
+          input: { interviewId: interview.id },
+          output: feedback,
+          confidence: 76
+        }
+      });
+
+      for (const [index, question] of feedback.questionsAsked.entries()) {
+        const normalizedQuestion = normalizeInterviewQuestion(question);
+        if (normalizedQuestion.length < 5) continue;
+        const improvedAnswer = feedback.betterAnswers[index]?.trim() || undefined;
+        await tx.interviewQuestion.upsert({
+          where: { userId_normalizedQuestion: { userId, normalizedQuestion } },
+          update: {
+            jobPostingId: interview.jobPostingId,
+            interviewId: interview.id,
+            improvedAnswer,
+            timesAsked: { increment: 1 },
+            lastAskedAt: new Date()
+          },
+          create: {
+            userId,
+            jobPostingId: interview.jobPostingId,
+            interviewId: interview.id,
+            question,
+            normalizedQuestion,
+            category: "ROLE_SPECIFIC",
+            improvedAnswer,
+            tags: ["INTERVIEW_FEEDBACK"],
+            timesAsked: 1,
+            lastAskedAt: new Date()
+          }
+        });
       }
-    });
 
-    await prisma.aIAnalysis.create({
-      data: {
-        userId,
-        jobPostingId: interview.jobPostingId,
-        interviewId: interview.id,
-        type: "INTERVIEW_FEEDBACK",
-        model: feedback.model,
-        promptName: "interviewFeedbackPrompt",
-        input: { interviewId: interview.id },
-        output: feedback,
-        confidence: 76
-      }
-    });
-
-    await writeAuditLog({
-      userId,
-      action: "interview.feedback.generate",
-      resource: "Interview",
-      resourceId: interview.id
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: "interview.feedback.generate",
+          resource: "Interview",
+          resourceId: interview.id,
+          metadata: { questionsCaptured: feedback.questionsAsked.length }
+        }
+      });
     });
 
     return NextResponse.json({ feedback, requiresApprovalBeforeSending: true });

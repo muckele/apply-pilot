@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
       throw new PublicApiError("Upload a resume file or paste resume text before parsing.");
     }
 
-    const parsed = await parseResumeText(rawText);
+    const parsed = await parseResumeText(rawText, userId);
 
     if (isMaster) {
       await prisma.resume.updateMany({
@@ -128,6 +128,7 @@ export async function POST(request: NextRequest) {
         type: "RESUME_PARSE",
         model: process.env.OPENAI_MOCK_MODE === "true" ? "heuristic-local" : process.env.OPENAI_MODEL ?? "gpt-4o-mini",
         promptName: "resumeParse",
+        promptVersion: "2",
         input: { resumeId: resume.id },
         output: parsed as unknown as Prisma.InputJsonValue,
         confidence: rawText ? 70 : 30

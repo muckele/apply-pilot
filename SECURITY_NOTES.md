@@ -15,7 +15,10 @@
 - Health and readiness endpoints are available for uptime monitoring.
 - Scheduled job discovery is protected by `CRON_SECRET`, only syncs enabled/configured sources, caps sources per run, skips recently synced sources, and uses a source-level lock to reduce overlapping runs.
 - URL-based job-source fetching blocks prohibited job-board hosts, local/private/internal hosts, private DNS resolutions, oversized responses, long-running requests, and unsafe redirects.
-- AI/import/search routes use a basic in-memory rate limiter.
+- API routes use PostgreSQL-backed rate-limit buckets that are shared across serverless instances.
+- Browser capture tokens are random, hashed before storage, scope-limited, revocable, expiring, rate-limited, and never included in account exports.
+- The browser extension requests `activeTab` access only after a click and stores its raw token in Chrome session storage rather than long-lived extension storage.
+- AI usage records capture token counts and estimated cost, while user-set monthly budgets block new calls when current pricing is configured.
 - Resume uploads validate file type and size.
 - Interview audio upload requires explicit consent confirmation.
 - `.env` is ignored and `.env.example` contains no secrets.
@@ -26,7 +29,7 @@
 - Keep `AUTH_ALLOW_PUBLIC_SIGNUPS=false` for private deployments and populate `AUTH_ALLOWED_EMAILS` with approved users.
 - Use a managed PostgreSQL database with encrypted storage and backups.
 - For larger-scale production, move uploads from database-backed MVP storage to private object storage with per-user paths and signed URLs.
-- Replace the in-memory rate limiter with Redis-backed limits.
+- Move rate limits to Redis or another low-latency atomic store if database contention becomes measurable at larger scale.
 - Add CSRF protection to mutation forms if using cookie-based auth outside API fetches.
 - Add malware scanning for uploaded files.
 - Add stricter MIME sniffing for PDF/DOCX/audio.
@@ -49,3 +52,5 @@
 - Matching distinguishes supported keywords from missing or risky keywords.
 - Resume tailoring warns against unsupported keywords.
 - Drafts are saved for user review; they are not sent automatically.
+- Application answers can be revealed and copied, but the app and extension do not fill or submit employer forms.
+- The Answer Vault is for recurring job-application responses, not passwords, government identifiers, identity documents, or financial credentials.

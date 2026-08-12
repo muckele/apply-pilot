@@ -8,6 +8,7 @@ import type { JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources
 import { upsertNormalizedJob, runJobMatch } from "@/lib/jobs";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
 import { prisma } from "@/lib/prisma";
+import { getOrCreateAiSettings } from "@/lib/ai/usage";
 
 export type AutomatedDiscoveryOptions = {
   userId: string;
@@ -41,6 +42,15 @@ type ProviderSearchResult = {
   imported: JobPosting[];
   skipped: number;
   bestRelevanceScore: number;
+};
+
+export type DiscoveryAiScoreResult = {
+  jobId: string;
+  deterministicScore: number;
+  aiScore?: number;
+  score?: number;
+  cached?: boolean;
+  error?: string;
 };
 
 const targetRoleFallbacks = [
@@ -434,9 +444,52 @@ export async function importJobsFromSource({
   return runProviderSearch({ userId, source, criteria, profile });
 }
 
+export async function scoreTopImportedJobs({
+  userId,
+  jobs,
+  limit
+}: {
+  userId: string;
+  jobs: JobPosting[];
+  limit: number;
+}) {
+  const candidates = [...jobs]
+    .filter((job) => (job.overallFitScore ?? 0) >= 60)
+    .sort((left, right) => {
+      const scoreDifference = (right.overallFitScore ?? 0) - (left.overallFitScore ?? 0);
+      if (scoreDifference !== 0) return scoreDifference;
+      return (right.datePosted?.getTime() ?? 0) - (left.datePosted?.getTime() ?? 0);
+    })
+    .slice(0, Math.max(0, limit));
+  const results: DiscoveryAiScoreResult[] = [];
+
+  for (const job of candidates) {
+    try {
+      const deterministicScore = job.overallFitScore ?? 0;
+      const result = await runJobMatch(userId, job.id);
+      results.push({
+        jobId: job.id,
+        deterministicScore,
+        aiScore: result.job.overallFitScore ?? undefined,
+        score: result.job.overallFitScore ?? undefined,
+        cached: result.cached
+      });
+    } catch (error) {
+      results.push({
+        jobId: job.id,
+        deterministicScore: job.overallFitScore ?? 0,
+        error: error instanceof Error ? error.message : "Scoring failed."
+      });
+    }
+  }
+
+  return results;
+}
+
 export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOptions) {
   const limitPerQuery = options.limitPerQuery ?? 10;
-  const maxJobsToScore = options.maxJobsToScore ?? 8;
+  const aiSettings = await getOrCreateAiSettings(options.userId);
+  const maxJobsToScore = Math.min(options.maxJobsToScore ?? 8, aiSettings.maxAnalysesPerSync);
   const reports: DiscoverySourceReport[] = [];
   const importedJobs = new Map<string, JobPosting>();
   const profile = await prisma.userProfile.findUnique({ where: { userId: options.userId } });
@@ -767,20 +820,9 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
     }
   }
 
-  const scoredJobs: Array<{ jobId: string; score?: number; error?: string }> = [];
-  if (options.scoreImported) {
-    for (const job of [...importedJobs.values()].slice(0, maxJobsToScore)) {
-      try {
-        const result = await runJobMatch(options.userId, job.id);
-        scoredJobs.push({ jobId: job.id, score: result.job.overallFitScore ?? undefined });
-      } catch (error) {
-        scoredJobs.push({
-          jobId: job.id,
-          error: error instanceof Error ? error.message : "Scoring failed."
-        });
-      }
-    }
-  }
+  const scoredJobs = options.scoreImported && aiSettings.aiDiscoveryEnabled
+    ? await scoreTopImportedJobs({ userId: options.userId, jobs: [...importedJobs.values()], limit: maxJobsToScore })
+    : [];
 
   return {
     queries,

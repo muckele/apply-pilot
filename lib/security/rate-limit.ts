@@ -5,27 +5,29 @@ const cleanupSampleRate = 0.01;
 
 export async function checkRateLimit(key: string, limit = 30, windowMs = 60_000) {
   const now = Date.now();
+  const nowDate = new Date(now);
   const resetAt = new Date(now + windowMs);
-  const existing = await prisma.rateLimitBucket.findUnique({ where: { key } });
+  const [bucket] = await prisma.$queryRaw<Array<{ count: number }>>`
+    INSERT INTO "RateLimitBucket" ("key", "count", "resetAt", "updatedAt")
+    VALUES (${key}, 1, ${resetAt}, ${nowDate})
+    ON CONFLICT ("key") DO UPDATE SET
+      "count" = CASE
+        WHEN "RateLimitBucket"."resetAt" <= ${nowDate} THEN 1
+        ELSE "RateLimitBucket"."count" + 1
+      END,
+      "resetAt" = CASE
+        WHEN "RateLimitBucket"."resetAt" <= ${nowDate} THEN ${resetAt}
+        ELSE "RateLimitBucket"."resetAt"
+      END,
+      "updatedAt" = ${nowDate}
+    RETURNING "count"
+  `;
 
-  if (!existing || existing.resetAt.getTime() < now) {
-    await prisma.rateLimitBucket.upsert({
-      where: { key },
-      create: { key, count: 1, resetAt },
-      update: { count: 1, resetAt }
-    });
-    await maybeCleanupExpiredBuckets(now);
-    return;
-  }
-
-  const updated = await prisma.rateLimitBucket.update({
-    where: { key },
-    data: { count: { increment: 1 } }
-  });
-
-  if (updated.count > limit) {
+  if (bucket.count > limit) {
     throw new PublicApiError("Rate limit exceeded. Try again shortly.", 429);
   }
+
+  await maybeCleanupExpiredBuckets(now);
 }
 
 async function maybeCleanupExpiredBuckets(now: number) {

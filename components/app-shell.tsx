@@ -1,13 +1,16 @@
 import Link from "next/link";
 import {
   BriefcaseBusiness,
+  BrainCircuit,
   ClipboardList,
   DatabaseZap,
   FileText,
   Gauge,
   Inbox,
+  LibraryBig,
   ListFilter,
   ListChecks,
+  Menu,
   Mic,
   Settings,
   Sparkles
@@ -22,7 +25,10 @@ const navItems = [
   { href: "/applications", label: "Applications", icon: ClipboardList },
   { href: "/resumes", label: "Resumes", icon: FileText },
   { href: "/interviews", label: "Interviews", icon: Mic },
+  { href: "/interviews/library", label: "Interview Library", icon: LibraryBig },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
+  { href: "/settings/application-answers", label: "Answer Vault", icon: ClipboardList },
+  { href: "/settings/ai", label: "AI Controls", icon: BrainCircuit },
   { href: "/settings/profile", label: "Profile", icon: Settings },
   { href: "/settings/job-sources", label: "Job Sources", icon: DatabaseZap },
   { href: "/settings/integrations", label: "Integrations", icon: Inbox }
@@ -41,7 +47,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
             <p className="text-xs text-slate-500">Human-in-the-loop</p>
           </div>
         </div>
-        <nav className="space-y-1 px-3 py-5">
+        <nav className="max-h-[calc(100vh-18rem)] space-y-1 overflow-y-auto px-3 py-5">
           {navItems.map((item) => (
             <Link
               key={item.href}
@@ -70,7 +76,30 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
               <Sparkles size={18} className="text-brand-600" aria-hidden="true" />
               JobMatch CRM
             </div>
-            <AuthMenu />
+            <div className="flex items-center gap-2">
+              <AuthMenu />
+              <details className="group relative">
+                <summary
+                  className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  aria-label="Open navigation"
+                  title="Navigation"
+                >
+                  <Menu size={18} aria-hidden="true" />
+                </summary>
+                <nav className="absolute right-0 top-11 max-h-[calc(100vh-5rem)] w-64 space-y-1 overflow-y-auto rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
+                  {navItems.map((item) => (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-950"
+                    >
+                      <item.icon size={17} aria-hidden="true" />
+                      {item.label}
+                    </Link>
+                  ))}
+                </nav>
+              </details>
+            </div>
           </div>
         </header>
         <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">{children}</main>

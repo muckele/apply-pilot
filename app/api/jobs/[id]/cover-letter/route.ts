@@ -20,7 +20,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
       prisma.resume.findFirst({ where: { userId, isMaster: true }, orderBy: { updatedAt: "desc" } }),
       prisma.userProfile.findUnique({ where: { userId } })
     ]);
-    const drafted = await draftCoverLetter({ job, resume, profile });
+    const drafted = await draftCoverLetter({ job, resume, profile }, userId);
     const document = await prisma.generatedDocument.create({
       data: {
         userId,
@@ -39,6 +39,8 @@ export async function POST(_request: NextRequest, { params }: Params) {
         type: "COVER_LETTER",
         model: drafted.model,
         promptName: "coverLetterPrompt",
+        promptVersion: drafted.promptVersion,
+        inputHash: drafted.inputHash,
         input: { jobId: job.id, resumeId: resume?.id },
         output: drafted,
         confidence: 78

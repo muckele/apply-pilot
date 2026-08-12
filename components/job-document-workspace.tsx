@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Download, Loader2, Save } from "lucide-react";
+import { Download, Loader2, Pencil, Save } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
@@ -260,6 +261,15 @@ export function JobDocumentWorkspace({
                 {format.toUpperCase()}
               </SecondaryButton>
             ))}
+            {selectedResume ? (
+              <Link
+                href={`/resumes/${selectedResume.id}`}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <Pencil className="mr-2" size={15} />
+                Format and preview
+              </Link>
+            ) : null}
           </div>
         </div>
       </section>

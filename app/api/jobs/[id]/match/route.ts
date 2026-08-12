@@ -13,7 +13,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
     const userId = await requireUserId();
     await checkRateLimit(`job-match:${userId}`, 20, 60_000);
     const { id } = await params;
-    const result = await runJobMatch(userId, id);
+    const result = await runJobMatch(userId, id, { force: true });
 
     return NextResponse.json(result);
   } catch (error) {

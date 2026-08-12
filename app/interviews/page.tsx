@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { InterviewCreateForm } from "@/components/interview-create-form";
-import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { ButtonLink, PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -37,6 +37,7 @@ export default async function InterviewsPage() {
       <PageHeader
         title="Interviews"
         description="Prepare, take notes, upload consented audio, generate feedback, and draft thank-you emails for review."
+        action={<ButtonLink href="/interviews/library" variant="secondary">Question and STAR library</ButtonLink>}
       />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">

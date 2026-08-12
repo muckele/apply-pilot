@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import { resumeFontFamilies, resumePageSizes, resumeTemplates } from "@/lib/documents/resume-format";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -8,7 +9,14 @@ import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 const resumeVersionPatchSchema = z.object({
   title: z.string().trim().min(2).max(160).optional(),
   summary: z.string().trim().max(2000).nullable().optional(),
-  fullText: z.string().trim().min(1).max(30000).optional()
+  fullText: z.string().trim().min(1).max(30000).optional(),
+  skills: z.array(z.string().trim().min(1).max(100)).max(100).optional(),
+  template: z.enum(resumeTemplates).optional(),
+  pageSize: z.enum(resumePageSizes).optional(),
+  fontFamily: z.enum(resumeFontFamilies).optional(),
+  accentColor: z.string().regex(/^#[0-9A-F]{6}$/i).optional(),
+  fontSize: z.number().int().min(9).max(12).optional(),
+  lineSpacing: z.number().int().min(100).max(150).optional()
 });
 
 type Params = {

@@ -23,6 +23,12 @@ JobMatch CRM helps discover compliant job postings, compare them against a maste
 - Seed data for a local demo profile and sample CRM records
 - Private multi-user mode: each signed-in Google account owns isolated profile, job, CRM, document, Gmail, and interview data
 - Account data export and delete-my-data controls
+- Review-before-save browser extension for permitted job pages, using short-lived scoped capture tokens
+- Application Answer Vault with explicit copy-only handoff and no automatic form submission
+- Resume version editor with live page preview and formatting-aware ATS-friendly DOCX/PDF export
+- Two-stage discovery: deterministic filtering first, then capped AI analysis for the strongest candidates
+- Reusable interview question and STAR story library populated by prep and feedback workflows
+- Per-user AI model, discovery, usage, and monthly budget controls
 
 ## Install
 
@@ -55,7 +61,9 @@ Open `http://localhost:3000/dashboard`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
 - `OPENAI_API_KEY`: OpenAI API key.
 - `OPENAI_MODEL`: default model for structured JSON generations.
+- `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
 - `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
+- `OPENAI_INPUT_COST_PER_1M_USD`, `OPENAI_OUTPUT_COST_PER_1M_USD`, and `OPENAI_CACHED_INPUT_COST_PER_1M_USD`: optional current pricing used to estimate spend and enforce per-user monthly budgets.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
 - `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.
 - `USAJOBS_USER_AGENT`: required USAJOBS API user-agent, usually your registered email.
@@ -135,7 +143,7 @@ The app uses structured JSON prompts in `/prompts`:
 
 Set `OPENAI_API_KEY` and `OPENAI_MOCK_MODE=false` to call the API. Local mock mode keeps the MVP usable without network/API setup.
 
-## Gmail OAuth Setup
+AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and an estimated cost when pricing variables are configured, including failed responses that report token usage. Users can choose a server-allowlisted model override, cap AI analyses per discovery sync, disable discovery-time AI, and set a monthly budget at `/settings/ai`. The budget blocks later calls after tracked usage reaches the limit, so configure cost estimates conservatively for the most expensive allowed model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
 
 ## Google Sign-In Setup
 
@@ -173,6 +181,12 @@ After Google sign-in and Gmail OAuth are connected, go to `/settings/integration
 
 The scanner uses `gmail.readonly`, does not send email, does not delete email, and does not store full email bodies.
 
+## Browser Capture and Answer Vault
+
+The unpacked Manifest V3 extension is in `browser-extension/`. Load that directory from `chrome://extensions` in Developer mode, create a scoped token on `/settings/integrations`, and paste the token into the extension. The raw token is shown once and stored in Chrome session storage, so restarting the browser requires re-entering it.
+
+The extension reads only the active tab after the user clicks it. It prefers public `JobPosting` JSON-LD, falls back to visible page text, and always presents an editable review form before saving. It cannot apply, submit a form, or run background searches. Answer Vault entries at `/settings/application-answers` are available to the extension only when the token has the answer-read scope, and each answer must be copied explicitly.
+
 ## Job Source Providers
 
 Provider interface: `lib/job-sources/types.ts`.
@@ -192,7 +206,7 @@ Implemented:
 - `WorkableProvider`
 - `GenericCompanyCareersProvider`
 
-Go to `/settings/job-sources` to add, edit, enable/disable, test, manually sync, and monitor configured sources. URL-based RSS and company-careers sources require the explicit “reviewed as permitted or API-approved” checkbox before test, manual sync, or scheduled sync. Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, save them to PostgreSQL, and optionally score the first imported matches. Discovery now applies deterministic filters before import, so weak matches, stale dated postings, salary mismatches, location/work-style mismatches, very senior roles, and unrelated roles are skipped before they hit the CRM.
+Go to `/settings/job-sources` to add, edit, enable/disable, test, manually sync, and monitor configured sources. URL-based RSS and company-careers sources require the explicit "reviewed as permitted or API-approved" checkbox before test, manual sync, or scheduled sync. Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, and save them to PostgreSQL. Discovery applies deterministic filters before import, ranks the remaining candidates, and sends only the highest-ranked capped set to AI when discovery-time AI is enabled.
 
 Remotive works without credentials. Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. SerpApi requires `SERPAPI_API_KEY` and may consume paid search credits; `SERPAPI_MAX_QUERIES_PER_RUN` caps how many SerpApi searches one discovery run can use. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
 
@@ -204,6 +218,7 @@ Authorization: Bearer your-CRON_SECRET
 ```
 
 The cron route syncs only enabled job sources, skips recently synced sources, caps sources per run, blocks overlapping source syncs, and never submits applications.
+The included Vercel schedule runs once daily at 14:00 UTC; the route still enforces the configured per-source interval and provider caps.
 
 The generic provider rejects prohibited job-board hosts, blocks local/private/internal URLs, checks DNS resolution to reduce SSRF risk, limits fetch size/time, follows only validated redirects, and checks `robots.txt` before fetching. The app does not directly scrape LinkedIn, Indeed, ZipRecruiter, CareerBuilder, Glassdoor, or similar restricted job boards. Those sources require approved APIs, licensed aggregator APIs, partner feeds, exports, or user-reviewed manual import.
 
@@ -242,8 +257,8 @@ npm run prisma:seed
 - Gmail tokens are encrypted with AES-256-GCM.
 - Structured JSON logs are written to stdout/stderr with sensitive values redacted.
 - `/api/health` and `/api/health/readiness` support production uptime checks.
-- AI endpoints are rate-limited with an in-memory limiter for MVP.
+- API routes use PostgreSQL-backed rate-limit buckets so limits work across serverless instances.
 - Audit logs are written for sensitive actions.
 - File upload validation is enforced for resume parsing and consented interview audio.
 
-See `SECURITY_NOTES.md`, `COMPLIANCE_NOTES.md`, and `PRODUCT_ROADMAP.md`.
+See `SECURITY_NOTES.md`, `COMPLIANCE_NOTES.md`, `PRODUCT_ROADMAP.md`, and `DELIVERY_LOOP_PROMPT.md`.

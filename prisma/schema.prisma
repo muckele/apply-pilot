@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -129,55 +129,61 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  profile           UserProfile?
-  accounts          Account[]
-  sessions          Session[]
-  resumes           Resume[]
-  resumeVersions    ResumeVersion[]
-  jobSources        JobSource[]
-  jobPostings       JobPosting[]
-  applications      Application[]
-  applicationEvents ApplicationEvent[]
-  contacts          Contact[]
-  emailMessages     EmailMessage[]
-  interviews        Interview[]
-  generatedDocs     GeneratedDocument[]
-  aiAnalyses        AIAnalysis[]
-  tasks             Task[]
-  reminders         FollowUpReminder[]
-  storedFiles       StoredFile[]
-  gmailIntegration  GmailIntegration?
-  auditLogs         AuditLog[]
+  profile              UserProfile?
+  accounts             Account[]
+  sessions             Session[]
+  resumes              Resume[]
+  resumeVersions       ResumeVersion[]
+  jobSources           JobSource[]
+  jobPostings          JobPosting[]
+  applications         Application[]
+  applicationEvents    ApplicationEvent[]
+  contacts             Contact[]
+  emailMessages        EmailMessage[]
+  interviews           Interview[]
+  generatedDocs        GeneratedDocument[]
+  aiAnalyses           AIAnalysis[]
+  tasks                Task[]
+  reminders            FollowUpReminder[]
+  storedFiles          StoredFile[]
+  gmailIntegration     GmailIntegration?
+  auditLogs            AuditLog[]
+  browserCaptureTokens BrowserCaptureToken[]
+  applicationAnswers   ApplicationAnswer[]
+  interviewQuestions   InterviewQuestion[]
+  starStories          StarStory[]
+  aiSettings           AISettings?
+  aiUsageEvents        AIUsageEvent[]
 }
 
 model UserProfile {
-  id                       String           @id @default(cuid())
-  userId                   String           @unique
-  location                 String           @default("")
-  careerGoals              String?
-  preferredRoles           String[]
-  preferredLocations       String[]
-  remotePreference         RemotePreference @default(FLEXIBLE)
-  salaryTargetMin          Int?
-  salaryTargetMax          Int?
-  industriesOfInterest     String[]
-  dealBreakers             String[]
-  skillsToEmphasize        String[]
-  skillsNotToExaggerate    String[]
-  workAuthorizationNotes   String?
-  availabilityNotes        String?
-  preferredResumeTone      String           @default("clear, honest, concise, role-specific")
-  createdAt                DateTime         @default(now())
-  updatedAt                DateTime         @updatedAt
+  id                     String           @id @default(cuid())
+  userId                 String           @unique
+  location               String           @default("")
+  careerGoals            String?
+  preferredRoles         String[]
+  preferredLocations     String[]
+  remotePreference       RemotePreference @default(FLEXIBLE)
+  salaryTargetMin        Int?
+  salaryTargetMax        Int?
+  industriesOfInterest   String[]
+  dealBreakers           String[]
+  skillsToEmphasize      String[]
+  skillsNotToExaggerate  String[]
+  workAuthorizationNotes String?
+  availabilityNotes      String?
+  preferredResumeTone    String           @default("clear, honest, concise, role-specific")
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Resume {
-  id             String          @id @default(cuid())
+  id             String    @id @default(cuid())
   userId         String
   title          String
-  isMaster       Boolean         @default(false)
+  isMaster       Boolean   @default(false)
   originalName   String?
   filePath       String?
   mimeType       String?
@@ -191,8 +197,8 @@ model Resume {
   certifications Json?
   achievements   String[]
   parsedAt       DateTime?
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   versions ResumeVersion[]
@@ -201,7 +207,7 @@ model Resume {
 }
 
 model ResumeVersion {
-  id               String    @id @default(cuid())
+  id               String   @id @default(cuid())
   userId           String
   resumeId         String?
   jobPostingId     String?
@@ -216,12 +222,18 @@ model ResumeVersion {
   jobFitScore      Int?
   filePathDocx     String?
   filePathPdf      String?
-  createdAt        DateTime  @default(now())
+  template         String   @default("CLASSIC")
+  pageSize         String   @default("LETTER")
+  fontFamily       String   @default("ARIAL")
+  accentColor      String   @default("#0F766E")
+  fontSize         Int      @default(10)
+  lineSpacing      Int      @default(115)
+  createdAt        DateTime @default(now())
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  resume      Resume?      @relation(fields: [resumeId], references: [id], onDelete: SetNull)
-  jobPosting  JobPosting?  @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application Application? @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resume             Resume?       @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  jobPosting         JobPosting?   @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application        Application?  @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
   usedByApplications Application[] @relation("ApplicationResumeUsed")
 }
 
@@ -266,63 +278,64 @@ model JobSource {
 }
 
 model JobPosting {
-  id                      String        @id @default(cuid())
-  userId                  String
-  jobSourceId             String?
-  title                   String
-  normalizedTitle         String
-  company                 String
-  normalizedCompany       String
-  location                String?
-  normalizedLocation      String
-  remoteStatus            String?
-  salaryMin               Int?
-  salaryMax               Int?
-  salaryCurrency          String        @default("USD")
-  datePosted              DateTime?
-  sourceUrl               String
-  applyUrl                String?
-  normalizedApplyUrl      String
-  description             String
-  requirements            String[]
-  preferredQualifications String[]
-  benefits                String[]
-  detectedTechStack       String[]
-  seniorityLevel          String?
-  companySize             String?
-  sourceType              JobSourceType
-  firstDiscoveredAt       DateTime      @default(now())
-  lastCheckedAt           DateTime?
-  status                  PostingStatus @default(ACTIVE)
-  overallFitScore         Int?
-  resumeKeywordScore      Int?
-  skillsMatchScore        Int?
-  experienceMatchScore    Int?
-  careerGoalScore         Int?
-  locationWorkStyleScore  Int?
-  compensationScore       Int?
-  confidenceScore         Int?
-  keyMatchReason          String?
-  matchRecommendation     String?
-  missingKeywords         String[]
-  supportedKeywords       String[]
-  suggestedResumeAngle    String?
+  id                        String        @id @default(cuid())
+  userId                    String
+  jobSourceId               String?
+  title                     String
+  normalizedTitle           String
+  company                   String
+  normalizedCompany         String
+  location                  String?
+  normalizedLocation        String
+  remoteStatus              String?
+  salaryMin                 Int?
+  salaryMax                 Int?
+  salaryCurrency            String        @default("USD")
+  datePosted                DateTime?
+  sourceUrl                 String
+  applyUrl                  String?
+  normalizedApplyUrl        String
+  description               String
+  requirements              String[]
+  preferredQualifications   String[]
+  benefits                  String[]
+  detectedTechStack         String[]
+  seniorityLevel            String?
+  companySize               String?
+  sourceType                JobSourceType
+  firstDiscoveredAt         DateTime      @default(now())
+  lastCheckedAt             DateTime?
+  status                    PostingStatus @default(ACTIVE)
+  overallFitScore           Int?
+  resumeKeywordScore        Int?
+  skillsMatchScore          Int?
+  experienceMatchScore      Int?
+  careerGoalScore           Int?
+  locationWorkStyleScore    Int?
+  compensationScore         Int?
+  confidenceScore           Int?
+  keyMatchReason            String?
+  matchRecommendation       String?
+  missingKeywords           String[]
+  supportedKeywords         String[]
+  suggestedResumeAngle      String?
   suggestedCoverLetterAngle String?
-  concerns                String[]
-  createdAt               DateTime      @default(now())
-  updatedAt               DateTime      @updatedAt
+  concerns                  String[]
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
 
-  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobSource      JobSource?       @relation(fields: [jobSourceId], references: [id], onDelete: SetNull)
-  applications   Application[]
-  contacts       Contact[]
-  emails         EmailMessage[]
-  interviews     Interview[]
-  resumeVersions ResumeVersion[]
-  generatedDocs  GeneratedDocument[]
-  aiAnalyses     AIAnalysis[]
-  tasks          Task[]
-  reminders      FollowUpReminder[]
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobSource          JobSource?          @relation(fields: [jobSourceId], references: [id], onDelete: SetNull)
+  applications       Application[]
+  contacts           Contact[]
+  emails             EmailMessage[]
+  interviews         Interview[]
+  resumeVersions     ResumeVersion[]
+  generatedDocs      GeneratedDocument[]
+  aiAnalyses         AIAnalysis[]
+  interviewQuestions InterviewQuestion[]
+  tasks              Task[]
+  reminders          FollowUpReminder[]
 
   @@unique([userId, normalizedCompany, normalizedTitle, normalizedLocation, normalizedApplyUrl], map: "job_dedupe_unique")
   @@index([userId, status])
@@ -349,12 +362,12 @@ model Application {
   createdAt            DateTime          @default(now())
   updatedAt            DateTime          @updatedAt
 
-  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting         JobPosting           @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
-  resumeVersion      ResumeVersion?       @relation("ApplicationResumeUsed", fields: [resumeVersionId], references: [id], onDelete: SetNull)
-  coverLetterVersion GeneratedDocument?    @relation("ApplicationCoverLetter", fields: [coverLetterVersionId], references: [id], onDelete: SetNull)
-  resumeVersions     ResumeVersion[]      @relation("ResumeVersionsForApplication")
-  generatedDocs      GeneratedDocument[]   @relation("GeneratedDocumentsForApplication")
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting         JobPosting          @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  resumeVersion      ResumeVersion?      @relation("ApplicationResumeUsed", fields: [resumeVersionId], references: [id], onDelete: SetNull)
+  coverLetterVersion GeneratedDocument?  @relation("ApplicationCoverLetter", fields: [coverLetterVersionId], references: [id], onDelete: SetNull)
+  resumeVersions     ResumeVersion[]     @relation("ResumeVersionsForApplication")
+  generatedDocs      GeneratedDocument[] @relation("GeneratedDocumentsForApplication")
   events             ApplicationEvent[]
   contacts           Contact[]
   emails             EmailMessage[]
@@ -384,50 +397,50 @@ model ApplicationEvent {
 }
 
 model Contact {
-  id             String    @id @default(cuid())
-  userId         String
-  jobPostingId   String?
-  applicationId  String?
-  name           String
-  email          String?
-  company        String?
-  role           String?
-  profileUrl     String?
-  notes          String?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id            String   @id @default(cuid())
+  userId        String
+  jobPostingId  String?
+  applicationId String?
+  name          String
+  email         String?
+  company       String?
+  role          String?
+  profileUrl    String?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting  JobPosting?  @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application Application? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting  JobPosting?    @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application Application?   @relation(fields: [applicationId], references: [id], onDelete: SetNull)
   emails      EmailMessage[]
 
   @@index([userId, email])
 }
 
 model EmailMessage {
-  id             String         @id @default(cuid())
-  userId         String
-  jobPostingId   String?
-  applicationId  String?
-  contactId      String?
-  gmailMessageId String?
-  threadId       String?
-  direction      EmailDirection @default(INBOUND)
-  fromEmail      String?
-  toEmail        String?
-  subject        String
-  snippet        String?
-  body           String?
-  bodySaved      Boolean        @default(false)
-  receivedAt     DateTime?
-  sentAt         DateTime?
-  labels         String[]
-  aiSummary      String?
+  id              String         @id @default(cuid())
+  userId          String
+  jobPostingId    String?
+  applicationId   String?
+  contactId       String?
+  gmailMessageId  String?
+  threadId        String?
+  direction       EmailDirection @default(INBOUND)
+  fromEmail       String?
+  toEmail         String?
+  subject         String
+  snippet         String?
+  body            String?
+  bodySaved       Boolean        @default(false)
+  receivedAt      DateTime?
+  sentAt          DateTime?
+  labels          String[]
+  aiSummary       String?
   requestedAction String?
-  draftResponse  String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  draftResponse   String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobPosting  JobPosting?  @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
@@ -439,39 +452,40 @@ model EmailMessage {
 }
 
 model Interview {
-  id                String        @id @default(cuid())
-  userId            String
-  jobPostingId      String?
-  applicationId     String?
-  type              InterviewType
-  scheduledAt       DateTime?
-  durationMinutes   Int?
-  locationOrLink    String?
-  interviewerNames  String[]
-  interviewerUrls   String[]
-  prepBrief         String?
-  likelyQuestions   String[]
-  starStories       Json?
-  consentStatus     ConsentStatus @default(NOT_APPLICABLE)
-  notes             String?
+  id                 String        @id @default(cuid())
+  userId             String
+  jobPostingId       String?
+  applicationId      String?
+  type               InterviewType
+  scheduledAt        DateTime?
+  durationMinutes    Int?
+  locationOrLink     String?
+  interviewerNames   String[]
+  interviewerUrls    String[]
+  prepBrief          String?
+  likelyQuestions    String[]
+  starStories        Json?
+  consentStatus      ConsentStatus @default(NOT_APPLICABLE)
+  notes              String?
   followUpEmailDraft String?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
 
-  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting   JobPosting?          @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application  Application?         @relation(fields: [applicationId], references: [id], onDelete: SetNull)
-  notesList    InterviewNote[]
-  recordings   InterviewRecording[]
-  aiAnalyses   AIAnalysis[]
+  user            User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting      JobPosting?          @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application     Application?         @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  notesList       InterviewNote[]
+  recordings      InterviewRecording[]
+  aiAnalyses      AIAnalysis[]
+  questionLibrary InterviewQuestion[]
 }
 
 model InterviewNote {
-  id          String    @id @default(cuid())
+  id          String   @id @default(cuid())
   interviewId String
   body        String
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
 }
@@ -490,46 +504,163 @@ model InterviewRecording {
 }
 
 model GeneratedDocument {
-  id             String       @id @default(cuid())
-  userId         String
-  jobPostingId   String?
-  applicationId  String?
-  type           DocumentType
-  title          String
-  content        String
-  format         String       @default("markdown")
-  filePath       String?
-  versionLabel   String?
-  metadata       Json?
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  id            String       @id @default(cuid())
+  userId        String
+  jobPostingId  String?
+  applicationId String?
+  type          DocumentType
+  title         String
+  content       String
+  format        String       @default("markdown")
+  filePath      String?
+  versionLabel  String?
+  metadata      Json?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting  JobPosting?  @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application Application? @relation("GeneratedDocumentsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting           JobPosting?   @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application          Application?  @relation("GeneratedDocumentsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
   usedAsCoverLetterFor Application[] @relation("ApplicationCoverLetter")
 
   @@index([userId, type])
 }
 
 model AIAnalysis {
-  id           String         @id @default(cuid())
-  userId       String
-  jobPostingId String?
-  interviewId  String?
-  type         AIAnalysisType
-  model        String
-  promptName   String
-  input        Json
-  output       Json
-  confidence   Int?
-  createdAt    DateTime       @default(now())
+  id            String         @id @default(cuid())
+  userId        String
+  jobPostingId  String?
+  interviewId   String?
+  type          AIAnalysisType
+  model         String
+  promptName    String
+  promptVersion String         @default("1")
+  inputHash     String?
+  input         Json
+  output        Json
+  confidence    Int?
+  createdAt     DateTime       @default(now())
 
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobPosting JobPosting? @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
   interview  Interview?  @relation(fields: [interviewId], references: [id], onDelete: SetNull)
 
   @@index([userId, type])
+  @@index([userId, type, inputHash])
+}
+
+model BrowserCaptureToken {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  tokenHash   String    @unique
+  tokenPrefix String
+  scopes      String[]
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+}
+
+model ApplicationAnswer {
+  id                 String   @id @default(cuid())
+  userId             String
+  category           String
+  question           String
+  normalizedQuestion String
+  answer             String
+  sensitive          Boolean  @default(false)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, normalizedQuestion])
+  @@index([userId, category, isActive])
+}
+
+model InterviewQuestion {
+  id             String    @id @default(cuid())
+  userId         String
+  jobPostingId   String?
+  interviewId    String?
+  question       String
+  normalizedQuestion String
+  category       String    @default("GENERAL")
+  answer         String?
+  improvedAnswer String?
+  tags           String[]
+  timesAsked     Int       @default(0)
+  lastAskedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting JobPosting? @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  interview  Interview?  @relation(fields: [interviewId], references: [id], onDelete: SetNull)
+
+  @@index([userId, category])
+  @@index([userId, lastAskedAt])
+  @@unique([userId, normalizedQuestion])
+}
+
+model StarStory {
+  id          String   @id @default(cuid())
+  userId      String
+  title       String
+  situation   String
+  task        String
+  action      String
+  result      String
+  skills      String[]
+  roleContext String?
+  isFavorite  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isFavorite])
+}
+
+model AISettings {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  monthlyBudgetCents Int      @default(1000)
+  maxAnalysesPerSync Int      @default(5)
+  aiDiscoveryEnabled Boolean  @default(false)
+  modelOverride      String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AIUsageEvent {
+  id                  String   @id @default(cuid())
+  userId              String
+  feature             String
+  model               String
+  promptName          String
+  promptVersion       String   @default("1")
+  inputTokens         Int      @default(0)
+  outputTokens        Int      @default(0)
+  cachedInputTokens   Int      @default(0)
+  estimatedCostMicros Int?
+  requestHash         String?
+  status              String
+  errorCode           String?
+  createdAt           DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, feature, requestHash])
 }
 
 model Task {
@@ -587,13 +718,13 @@ model GmailIntegration {
 }
 
 model AuditLog {
-  id        String   @id @default(cuid())
-  userId    String?
-  action    String
-  resource  String
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  resource   String
   resourceId String?
-  metadata  Json?
-  createdAt DateTime @default(now())
+  metadata   Json?
+  createdAt  DateTime @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { generateInterviewPrep } from "@/lib/ai/documents";
+import { normalizeInterviewQuestion } from "@/lib/interviews/library";
 import { resolveInterviewJobPostingId } from "@/lib/interviews/linking";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -44,7 +45,9 @@ export async function POST(request: NextRequest) {
       (linkedJobPostingId
         ? await prisma.jobPosting.findFirstOrThrow({ where: { id: linkedJobPostingId, userId } })
         : null);
-    const prep = input.generatePrep ? await generateInterviewPrep({ job, application, profile, resume }) : null;
+    const prep = input.generatePrep
+      ? await generateInterviewPrep({ job, application, profile, resume }, userId)
+      : null;
     const interview = await prisma.$transaction(async (tx) => {
       const savedInterview = await tx.interview.create({
         data: {
@@ -64,6 +67,47 @@ export async function POST(request: NextRequest) {
       });
 
       if (prep) {
+        for (const question of prep.likelyQuestions) {
+          const normalizedQuestion = normalizeInterviewQuestion(question);
+          if (normalizedQuestion.length < 5) continue;
+          await tx.interviewQuestion.upsert({
+            where: { userId_normalizedQuestion: { userId, normalizedQuestion } },
+            update: {
+              jobPostingId: linkedJobPostingId,
+              interviewId: savedInterview.id
+            },
+            create: {
+              userId,
+              jobPostingId: linkedJobPostingId,
+              interviewId: savedInterview.id,
+              question,
+              normalizedQuestion,
+              category: "ROLE_SPECIFIC",
+              tags: ["AI_PREP"]
+            }
+          });
+        }
+
+        for (const story of prep.starStories) {
+          const existingStory = await tx.starStory.findFirst({
+            where: { userId, title: { equals: story.theme, mode: "insensitive" } }
+          });
+          if (!existingStory) {
+            await tx.starStory.create({
+              data: {
+                userId,
+                title: story.theme,
+                situation: story.situation,
+                task: story.task,
+                action: story.action,
+                result: story.result,
+                skills: [],
+                roleContext: job ? `${job.company} - ${job.title}` : null
+              }
+            });
+          }
+        }
+
         await tx.aIAnalysis.create({
           data: {
             userId,
@@ -72,6 +116,8 @@ export async function POST(request: NextRequest) {
             type: "INTERVIEW_PREP",
             model: prep.model,
             promptName: "interviewPrepPrompt",
+            promptVersion: prep.promptVersion,
+            inputHash: prep.inputHash,
             input: { jobPostingId: linkedJobPostingId, applicationId: input.applicationId },
             output: prep,
             confidence: 76

@@ -2,16 +2,35 @@ import { ShieldCheck } from "lucide-react";
 
 import { GmailDisconnectControl } from "@/components/gmail-disconnect-control";
 import { GmailTriageScanner } from "@/components/gmail-triage-scanner";
+import { BrowserCaptureSettings } from "@/components/browser-capture-settings";
 import { ButtonLink, PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { getGmailIntegrationStatus } from "@/lib/gmail/status";
 import { requirePageUserId } from "@/lib/page-context";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
 export default async function IntegrationsPage() {
   const userId = await requirePageUserId();
-  const gmailStatus = await getGmailIntegrationStatus(userId);
+  const [gmailStatus, browserTokens] = await Promise.all([
+    getGmailIntegrationStatus(userId),
+    prisma.browserCaptureToken.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        name: true,
+        tokenPrefix: true,
+        scopes: true,
+        lastUsedAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        createdAt: true
+      },
+      orderBy: { createdAt: "desc" }
+    })
+  ]);
   const ready = gmailStatus.issues.length === 0;
+  const appUrl = process.env.APP_BASE_URL ?? process.env.AUTH_URL ?? "http://localhost:3000";
 
   return (
     <>
@@ -86,6 +105,24 @@ export default async function IntegrationsPage() {
           action={<StatusBadge status={gmailStatus.connected ? "Ready to scan" : "Connect Gmail first"} />}
         />
         <GmailTriageScanner connected={gmailStatus.connected} />
+      </Panel>
+
+      <Panel className="mt-6">
+        <PanelHeader
+          title="Browser capture"
+          description="Save the job in the active browser tab after reviewing the extracted fields. The extension cannot submit applications."
+          action={<StatusBadge status="Explicit click only" />}
+        />
+        <BrowserCaptureSettings
+          initialTokens={browserTokens.map((token) => ({
+            ...token,
+            lastUsedAt: token.lastUsedAt?.toISOString() ?? null,
+            expiresAt: token.expiresAt?.toISOString() ?? null,
+            revokedAt: token.revokedAt?.toISOString() ?? null,
+            createdAt: token.createdAt.toISOString()
+          }))}
+          appUrl={appUrl}
+        />
       </Panel>
     </>
   );

@@ -29,6 +29,12 @@ export async function GET() {
       followUpReminders,
       storedFiles,
       gmailIntegration,
+      browserCaptureTokens,
+      applicationAnswers,
+      interviewQuestions,
+      starStories,
+      aiSettings,
+      aiUsageEvents,
       auditLogs
     ] = await Promise.all([
       prisma.user.findUniqueOrThrow({
@@ -88,6 +94,25 @@ export async function GET() {
           updatedAt: true
         }
       }),
+      prisma.browserCaptureToken.findMany({
+        where: { userId },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          name: true,
+          tokenPrefix: true,
+          scopes: true,
+          lastUsedAt: true,
+          expiresAt: true,
+          revokedAt: true,
+          createdAt: true
+        }
+      }),
+      prisma.applicationAnswer.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
+      prisma.interviewQuestion.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
+      prisma.starStory.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
+      prisma.aISettings.findUnique({ where: { userId } }),
+      prisma.aIUsageEvent.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.auditLog.findMany({
         where: { userId },
         orderBy: { createdAt: "asc" },
@@ -124,6 +149,12 @@ export async function GET() {
       followUpReminders,
       storedFiles,
       gmailIntegration,
+      browserCaptureTokens,
+      applicationAnswers,
+      interviewQuestions,
+      starStories,
+      aiSettings,
+      aiUsageEvents,
       auditLogs
     };
 

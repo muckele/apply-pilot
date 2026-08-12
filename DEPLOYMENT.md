@@ -21,6 +21,7 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `OPENAI_API_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_MOCK_MODE=false`
+- Current OpenAI per-million-token pricing variables if AI budget enforcement is enabled
 - `GMAIL_REDIRECT_URI`
 - `GMAIL_SCOPES`
 - `TOKEN_ENCRYPTION_KEY`
@@ -67,7 +68,7 @@ Keep Gmail access readonly. The app should remain human-in-the-loop: no automati
 
 ## Storage
 
-Local `UPLOAD_DIR` is acceptable for development only. Before relying on resume or interview audio uploads in production, use durable storage such as S3, Cloudflare R2, Vercel Blob, or an equivalent provider.
+Use `FILE_STORAGE_DRIVER=database` for the private MVP so resumes and consented interview audio survive serverless restarts. Move large or high-volume files to private object storage such as S3, Cloudflare R2, Vercel Blob, or an equivalent provider as usage grows.
 
 ## Runtime
 
@@ -80,7 +81,9 @@ Authorization: Bearer <CRON_SECRET>
 
 The route syncs enabled job sources only. It imports and filters postings; it does not apply to jobs, send email, or automate job-board activity.
 
-Replace the in-memory rate limiter with Redis or Upstash before running multiple server instances.
+The included `vercel.json` schedules this route daily at 14:00 UTC. Vercel automatically sends the configured `CRON_SECRET` as a bearer token. Change the schedule deliberately if provider credit limits or search cadence require it.
+
+The MVP uses PostgreSQL-backed rate-limit buckets across instances. Move them to Redis or Upstash when traffic justifies reducing database writes.
 
 ## Logging and monitoring
 

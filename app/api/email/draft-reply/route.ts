@@ -18,11 +18,14 @@ export async function POST(request: NextRequest) {
         : null,
       input.jobPostingId ? prisma.jobPosting.findFirst({ where: { id: input.jobPostingId, userId } }) : null
     ]);
-    const drafted = await draftEmailReply({
-      emailText: emailMessage?.body ?? emailMessage?.snippet ?? input.emailText,
-      tone: input.tone,
-      job
-    });
+    const drafted = await draftEmailReply(
+      {
+        emailText: emailMessage?.body ?? emailMessage?.snippet ?? input.emailText,
+        tone: input.tone,
+        job
+      },
+      userId
+    );
 
     if (emailMessage) {
       await prisma.emailMessage.update({

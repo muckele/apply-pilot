@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { jobMatchPrompt } from "@/prompts/jobMatchPrompt";
 import { scoreFromRatio, uniqueStrings } from "@/lib/normalize";
-import { generateJson, getOpenAIModel } from "@/lib/ai/client";
+import { generateJson } from "@/lib/ai/client";
 
 export type JobMatchOutput = {
   overallFitScore: number;
@@ -170,19 +170,23 @@ function heuristicMatch(input: MatchInput): JobMatchOutput {
   };
 }
 
-export async function scoreJobMatch(input: MatchInput) {
+export async function scoreJobMatch(input: MatchInput, userId?: string) {
   const fallback = heuristicMatch(input);
 
-  const output = await generateJson<JobMatchOutput>({
+  const generated = await generateJson<JobMatchOutput>({
     promptName: "jobMatchPrompt",
     systemPrompt: jobMatchPrompt,
     payload: input,
     fallback,
-    schema: jobMatchOutputSchema
+    schema: jobMatchOutputSchema,
+    context: userId ? { userId, feature: "JOB_MATCH", promptVersion: "2" } : undefined
   });
 
   return {
-    ...output,
-    model: getOpenAIModel()
+    ...generated.data,
+    model: generated.meta.model,
+    promptVersion: generated.meta.promptVersion,
+    inputHash: generated.meta.requestHash,
+    usage: generated.meta
   };
 }

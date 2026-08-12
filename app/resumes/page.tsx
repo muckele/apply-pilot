@@ -1,4 +1,5 @@
 import { Upload } from "lucide-react";
+import Link from "next/link";
 
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
@@ -84,6 +85,12 @@ export default async function ResumesPage() {
                     <div className="flex items-center gap-2">
                       {version.atsCompatibility ? <StatusBadge status={`${version.atsCompatibility}% ATS compatible`} /> : null}
                       {version.jobFitScore ? <StatusBadge status={`${version.jobFitScore}% fit`} /> : null}
+                      <Link
+                        href={`/resumes/${version.id}`}
+                        className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        Edit and preview
+                      </Link>
                     </div>
                   </div>
                 ))

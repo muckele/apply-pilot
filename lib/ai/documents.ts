@@ -4,7 +4,7 @@ import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
 import { emailReplyPrompt } from "@/prompts/emailReplyPrompt";
 import { interviewFeedbackPrompt } from "@/prompts/interviewFeedbackPrompt";
 import { interviewPrepPrompt } from "@/prompts/interviewPrepPrompt";
-import { generateJson, getOpenAIModel } from "@/lib/ai/client";
+import { generateJson } from "@/lib/ai/client";
 
 const coverLetterSchema = z.object({
   title: z.string(),
@@ -50,7 +50,7 @@ export async function draftCoverLetter(payload: {
   job: { title: string; company: string };
   resume?: unknown;
   profile?: unknown;
-}) {
+}, userId?: string) {
   const fallback = {
     title: `${payload.job.company} ${payload.job.title} cover letter`,
     coverLetter: `Dear ${payload.job.company} Hiring Team,\n\nI am interested in the ${payload.job.title} role because it sits at the intersection of technical problem solving, customer communication, and operational follow-through. My background combines full-stack software engineering training with business development, recruiting, scheduling, payer coordination, and small-business operations.\n\nI would bring a practical, customer-facing technical perspective to the team: translating requirements, troubleshooting workflows, communicating clearly with stakeholders, and staying honest about what is supported by the data and systems in front of me.\n\nThank you for your time and consideration.\n\nMathew Uckele`,
@@ -63,15 +63,21 @@ export async function draftCoverLetter(payload: {
     ]
   };
 
+  const generated = await generateJson({
+    promptName: "coverLetterPrompt",
+    systemPrompt: coverLetterPrompt,
+    payload,
+    fallback,
+    schema: coverLetterSchema,
+    context: userId ? { userId, feature: "COVER_LETTER", promptVersion: "2" } : undefined
+  });
+
   return {
-    ...(await generateJson({
-      promptName: "coverLetterPrompt",
-      systemPrompt: coverLetterPrompt,
-      payload,
-      fallback,
-      schema: coverLetterSchema
-    })),
-    model: getOpenAIModel()
+    ...generated.data,
+    model: generated.meta.model,
+    promptVersion: generated.meta.promptVersion,
+    inputHash: generated.meta.requestHash,
+    usage: generated.meta
   };
 }
 
@@ -79,7 +85,7 @@ export async function draftEmailReply(payload: {
   emailText: string;
   tone: string;
   job?: unknown;
-}) {
+}, userId?: string) {
   const fallback = {
     summary: "Recruiter or hiring-team email requiring user review.",
     requestedAction: "Review the message and confirm the appropriate next step.",
@@ -89,19 +95,25 @@ export async function draftEmailReply(payload: {
     suggestedFollowUpTask: "Review and personalize the draft before sending."
   };
 
+  const generated = await generateJson({
+    promptName: "emailReplyPrompt",
+    systemPrompt: emailReplyPrompt,
+    payload,
+    fallback,
+    schema: emailReplySchema,
+    context: userId ? { userId, feature: "EMAIL_REPLY", promptVersion: "2" } : undefined
+  });
+
   return {
-    ...(await generateJson({
-      promptName: "emailReplyPrompt",
-      systemPrompt: emailReplyPrompt,
-      payload,
-      fallback,
-      schema: emailReplySchema
-    })),
-    model: getOpenAIModel()
+    ...generated.data,
+    model: generated.meta.model,
+    promptVersion: generated.meta.promptVersion,
+    inputHash: generated.meta.requestHash,
+    usage: generated.meta
   };
 }
 
-export async function generateInterviewPrep(payload: unknown) {
+export async function generateInterviewPrep(payload: unknown, userId?: string) {
   const fallback = {
     prepBrief:
       "Prepare to connect the job requirements to customer-facing technical problem solving, software fundamentals, and operations ownership.",
@@ -126,19 +138,25 @@ export async function generateInterviewPrep(payload: unknown) {
     risksToPrepareFor: ["Be clear about hands-on production engineering depth versus training and project experience."]
   };
 
+  const generated = await generateJson({
+    promptName: "interviewPrepPrompt",
+    systemPrompt: interviewPrepPrompt,
+    payload,
+    fallback,
+    schema: interviewPrepSchema,
+    context: userId ? { userId, feature: "INTERVIEW_PREP", promptVersion: "2" } : undefined
+  });
+
   return {
-    ...(await generateJson({
-      promptName: "interviewPrepPrompt",
-      systemPrompt: interviewPrepPrompt,
-      payload,
-      fallback,
-      schema: interviewPrepSchema
-    })),
-    model: getOpenAIModel()
+    ...generated.data,
+    model: generated.meta.model,
+    promptVersion: generated.meta.promptVersion,
+    inputHash: generated.meta.requestHash,
+    usage: generated.meta
   };
 }
 
-export async function generateInterviewFeedback(payload: unknown) {
+export async function generateInterviewFeedback(payload: unknown, userId?: string) {
   const fallback = {
     summary: "Interview notes saved. Add a transcript or detailed notes for stronger feedback.",
     questionsAsked: [],
@@ -149,14 +167,20 @@ export async function generateInterviewFeedback(payload: unknown) {
       "Hi,\n\nThank you for taking the time to speak with me today. I appreciated learning more about the role and the team. The conversation reinforced my interest in contributing a mix of technical problem solving, customer communication, and operational follow-through.\n\nBest,\nMathew"
   };
 
+  const generated = await generateJson({
+    promptName: "interviewFeedbackPrompt",
+    systemPrompt: interviewFeedbackPrompt,
+    payload,
+    fallback,
+    schema: interviewFeedbackSchema,
+    context: userId ? { userId, feature: "INTERVIEW_FEEDBACK", promptVersion: "2" } : undefined
+  });
+
   return {
-    ...(await generateJson({
-      promptName: "interviewFeedbackPrompt",
-      systemPrompt: interviewFeedbackPrompt,
-      payload,
-      fallback,
-      schema: interviewFeedbackSchema
-    })),
-    model: getOpenAIModel()
+    ...generated.data,
+    model: generated.meta.model,
+    promptVersion: generated.meta.promptVersion,
+    inputHash: generated.meta.requestHash,
+    usage: generated.meta
   };
 }
