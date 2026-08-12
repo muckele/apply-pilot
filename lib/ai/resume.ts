@@ -1,3 +1,6 @@
+import { z } from "zod";
+
+import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 import { generateJson, getOpenAIModel } from "@/lib/ai/client";
 
@@ -23,6 +26,37 @@ export type TailoredResumeOutput = {
   jobFitScore: number;
   resumeText: string;
 };
+
+const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
+
+const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> = z.object({
+  contactInfo: z.record(z.union([z.string(), z.null()])),
+  summary: z.string(),
+  skills: z.array(z.string()),
+  workHistory: z.array(z.record(z.unknown())),
+  projects: z.array(z.record(z.unknown())),
+  education: z.array(z.record(z.unknown())),
+  certifications: z.array(z.record(z.unknown())),
+  achievements: z.array(z.string())
+});
+
+const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
+  professionalSummary: z.string(),
+  skillsSection: z.array(z.string()),
+  bulletRewrites: z.array(
+    z.object({
+      original: z.string(),
+      rewrite: z.string(),
+      reason: z.string()
+    })
+  ),
+  rolesOrProjectsToEmphasize: z.array(z.string()),
+  unsupportedKeywords: z.array(z.string()),
+  formattingWarnings: z.array(z.string()),
+  atsCompatibilityScore: scoreSchema,
+  jobFitScore: scoreSchema,
+  resumeText: z.string()
+});
 
 function fallbackParse(text: string): ParsedResume {
   const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] ?? null;
@@ -73,7 +107,13 @@ export async function parseResumeText(text: string) {
     throw new Error("Resume text is empty.");
   }
 
-  return fallbackParse(text);
+  return generateJson<ParsedResume>({
+    promptName: "resumeParsePrompt",
+    systemPrompt: resumeParsePrompt,
+    payload: { resumeText: text },
+    fallback: fallbackParse(text),
+    schema: parsedResumeSchema
+  });
 }
 
 export async function tailorResume(payload: unknown, fallbackText: string) {
@@ -117,9 +157,10 @@ export async function tailorResume(payload: unknown, fallbackText: string) {
   return {
     ...(await generateJson<TailoredResumeOutput>({
       promptName: "resumeTailorPrompt",
-      systemPrompt: resumeTailorPrompt,
-      payload,
-      fallback
+    systemPrompt: resumeTailorPrompt,
+    payload,
+      fallback,
+      schema: tailoredResumeSchema
     })),
     model: getOpenAIModel()
   };

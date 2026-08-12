@@ -1,6 +1,8 @@
 import { notFound } from "next/navigation";
 
+import { ApplicationStatusActions } from "@/components/application-status-actions";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -33,6 +35,8 @@ export default async function ApplicationDetailPage({ params }: Props) {
     notFound();
   }
 
+  const attention = getApplicationAttention(application);
+
   return (
     <>
       <PageHeader
@@ -48,7 +52,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
             <div className="grid gap-4 p-5 md:grid-cols-4">
               <div>
                 <p className="text-xs text-slate-500">Status</p>
-                <div className="mt-2"><StatusBadge status={application.status} /></div>
+                <div className="mt-2"><StatusBadge status={formatApplicationStatus(application.status)} /></div>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Fit score</p>
@@ -61,6 +65,17 @@ export default async function ApplicationDetailPage({ params }: Props) {
               <div>
                 <p className="text-xs text-slate-500">Follow-up due</p>
                 <p className="mt-2 text-sm font-medium text-slate-800">{formatDate(application.followUpDueAt)}</p>
+              </div>
+            </div>
+            <div className="border-t border-slate-100 p-5">
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
+                <div>
+                  <p className="text-xs font-semibold uppercase text-slate-500">Attention</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">
+                    {attention ? `${attention.label}: ${attention.detail}` : "No urgent action detected."}
+                  </p>
+                </div>
+                <ApplicationStatusActions applicationId={application.id} currentStatus={application.status} />
               </div>
             </div>
           </Panel>

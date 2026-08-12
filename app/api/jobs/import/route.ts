@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-import:${userId}`, 20, 60_000);
+    await checkRateLimit(`job-import:${userId}`, 20, 60_000);
 
     const input = manualJobImportSchema.parse(await request.json());
     const provider = new ManualJobImportProvider();

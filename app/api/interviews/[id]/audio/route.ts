@@ -46,7 +46,7 @@ function validateInterviewUpload(file: File) {
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`interview-audio:${userId}`, 5, 60_000);
+    await checkRateLimit(`interview-audio:${userId}`, 5, 60_000);
 
     const { id } = await params;
     const interview = await prisma.interview.findFirstOrThrow({ where: { id, userId } });

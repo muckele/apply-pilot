@@ -1,8 +1,50 @@
+import { z } from "zod";
+
 import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
 import { emailReplyPrompt } from "@/prompts/emailReplyPrompt";
 import { interviewFeedbackPrompt } from "@/prompts/interviewFeedbackPrompt";
 import { interviewPrepPrompt } from "@/prompts/interviewPrepPrompt";
 import { generateJson, getOpenAIModel } from "@/lib/ai/client";
+
+const coverLetterSchema = z.object({
+  title: z.string(),
+  coverLetter: z.string(),
+  angle: z.string(),
+  claimsUsed: z.array(z.string())
+});
+
+const emailReplySchema = z.object({
+  summary: z.string(),
+  requestedAction: z.string(),
+  deadline: z.union([z.string(), z.null()]),
+  draftResponse: z.string(),
+  suggestedFollowUpTask: z.string()
+});
+
+const interviewPrepSchema = z.object({
+  prepBrief: z.string(),
+  likelyQuestions: z.array(z.string()),
+  starStories: z.array(
+    z.object({
+      theme: z.string(),
+      situation: z.string(),
+      task: z.string(),
+      action: z.string(),
+      result: z.string()
+    })
+  ),
+  questionsToAsk: z.array(z.string()),
+  risksToPrepareFor: z.array(z.string())
+});
+
+const interviewFeedbackSchema = z.object({
+  summary: z.string(),
+  questionsAsked: z.array(z.string()),
+  strongMoments: z.array(z.string()),
+  weakAnswers: z.array(z.string()),
+  betterAnswers: z.array(z.string()),
+  thankYouEmailDraft: z.string()
+});
 
 export async function draftCoverLetter(payload: {
   job: { title: string; company: string };
@@ -26,7 +68,8 @@ export async function draftCoverLetter(payload: {
       promptName: "coverLetterPrompt",
       systemPrompt: coverLetterPrompt,
       payload,
-      fallback
+      fallback,
+      schema: coverLetterSchema
     })),
     model: getOpenAIModel()
   };
@@ -51,7 +94,8 @@ export async function draftEmailReply(payload: {
       promptName: "emailReplyPrompt",
       systemPrompt: emailReplyPrompt,
       payload,
-      fallback
+      fallback,
+      schema: emailReplySchema
     })),
     model: getOpenAIModel()
   };
@@ -87,7 +131,8 @@ export async function generateInterviewPrep(payload: unknown) {
       promptName: "interviewPrepPrompt",
       systemPrompt: interviewPrepPrompt,
       payload,
-      fallback
+      fallback,
+      schema: interviewPrepSchema
     })),
     model: getOpenAIModel()
   };
@@ -109,7 +154,8 @@ export async function generateInterviewFeedback(payload: unknown) {
       promptName: "interviewFeedbackPrompt",
       systemPrompt: interviewFeedbackPrompt,
       payload,
-      fallback
+      fallback,
+      schema: interviewFeedbackSchema
     })),
     model: getOpenAIModel()
   };

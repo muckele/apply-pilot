@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
 const exportSchema = z.object({
@@ -13,24 +14,33 @@ const exportSchema = z.object({
 });
 
 function createPdfBuffer(title: string, text: string) {
-  const lines = [title, "", ...text.split(/\n/)].slice(0, 48);
-  const content = [
-    "BT",
-    "/F1 11 Tf",
-    "72 760 Td",
-    ...lines.map((line, index) => {
-      const escaped = line.replace(/[()\\]/g, "\\$&").slice(0, 92);
-      return `${index === 0 ? "" : "0 -16 Td "}(${escaped}) Tj`;
-    }),
-    "ET"
-  ].join("\n");
+  const lines = [title, "", ...text.split(/\r?\n/)].flatMap((line) => wrapPdfLine(line));
+  const pages = paginateLines(lines.length ? lines : [""], 44);
+  const pageIds = pages.map((_, index) => 4 + index * 2);
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`
+    `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
   ];
+
+  pages.forEach((pageLines, index) => {
+    const pageObjectId = 4 + index * 2;
+    const contentObjectId = pageObjectId + 1;
+    const content = [
+      "BT",
+      "/F1 11 Tf",
+      "72 760 Td",
+      "14 TL",
+      ...pageLines.flatMap((line) => [`(${escapePdfText(line)}) Tj`, "T*"]),
+      "ET"
+    ].join("\n");
+
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
+      `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`
+    );
+  });
+
   let pdf = "%PDF-1.4\n";
   const offsets = [0];
 
@@ -49,9 +59,64 @@ function createPdfBuffer(title: string, text: string) {
   return Buffer.from(pdf, "utf8");
 }
 
+function escapePdfText(value: string) {
+  return value
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "?")
+    .replace(/[()\\]/g, "\\$&");
+}
+
+function wrapPdfLine(line: string, maxCharacters = 90) {
+  const clean = line.replace(/\t/g, "    ").trimEnd();
+  if (!clean) {
+    return [""];
+  }
+
+  const output: string[] = [];
+  let current = "";
+
+  for (const word of clean.split(/\s+/)) {
+    if (word.length > maxCharacters) {
+      if (current) {
+        output.push(current);
+        current = "";
+      }
+      for (let index = 0; index < word.length; index += maxCharacters) {
+        output.push(word.slice(index, index + maxCharacters));
+      }
+      continue;
+    }
+
+    if (!current) {
+      current = word;
+    } else if (current.length + word.length + 1 <= maxCharacters) {
+      current = `${current} ${word}`;
+    } else {
+      output.push(current);
+      current = word;
+    }
+  }
+
+  if (current) {
+    output.push(current);
+  }
+
+  return output;
+}
+
+function paginateLines(lines: string[], perPage: number) {
+  const pages: string[][] = [];
+
+  for (let index = 0; index < lines.length; index += perPage) {
+    pages.push(lines.slice(index, index + perPage));
+  }
+
+  return pages.length ? pages : [[""]];
+}
+
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
+    await checkRateLimit(`documents:export:${userId}`, 30, 60_000);
     const input = exportSchema.parse(await request.json());
 
     const document = input.documentId

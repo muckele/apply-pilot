@@ -3,12 +3,14 @@ import { NextResponse } from "next/server";
 
 import { assertGmailReady } from "@/lib/gmail/status";
 import { createOAuthState } from "@/lib/security/oauth-state";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
 export async function GET() {
   try {
     const status = await assertGmailReady();
     const userId = await requireUserId();
+    await checkRateLimit(`gmail:connect:${userId}`, 10, 60_000);
     const oauth2Client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
-import { writeAuditLog } from "@/lib/security/audit-log";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 import { interviewUpdateSchema } from "@/lib/validators";
 
@@ -32,28 +32,36 @@ export async function GET(_request: NextRequest, { params }: Params) {
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
+    await checkRateLimit(`interviews:update:${userId}`, 60, 60_000);
     const { id } = await params;
     const input = interviewUpdateSchema.parse(await request.json());
     const existing = await prisma.interview.findFirstOrThrow({ where: { id, userId } });
-    const interview = await prisma.interview.update({
-      where: { id: existing.id },
-      data: input
-    });
+    const interview = await prisma.$transaction(async (tx) => {
+      const updated = await tx.interview.update({
+        where: { id: existing.id },
+        data: input
+      });
 
-    if (input.notes) {
-      await prisma.interviewNote.create({
+      if (input.notes) {
+        await tx.interviewNote.create({
+          data: {
+            interviewId: updated.id,
+            body: input.notes
+          }
+        });
+      }
+
+      await tx.auditLog.create({
         data: {
-          interviewId: interview.id,
-          body: input.notes
+          userId,
+          action: "interview.update",
+          resource: "Interview",
+          resourceId: updated.id,
+          metadata: {}
         }
       });
-    }
 
-    await writeAuditLog({
-      userId,
-      action: "interview.update",
-      resource: "Interview",
-      resourceId: interview.id
+      return updated;
     });
 
     return NextResponse.json({ interview });

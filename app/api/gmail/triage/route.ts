@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { NextRequest, NextResponse } from "next/server";
+import type { ApplicationStatus } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
@@ -301,7 +302,12 @@ function classifyMessage(message: Pick<TriageMessage, "from" | "subject" | "snip
 
 function matchApplication(
   message: Pick<TriageMessage, "from" | "subject" | "snippet">,
-  applications: Array<{ id: string; jobPostingId: string; jobPosting: { company: string; title: string } }>
+  applications: Array<{
+    id: string;
+    status: ApplicationStatus;
+    jobPostingId: string;
+    jobPosting: { company: string; title: string };
+  }>
 ) {
   const text = normalize(`${message.from} ${message.subject} ${message.snippet}`);
   const domain = normalize(senderDomain(message.from));
@@ -319,10 +325,19 @@ function matchApplication(
   });
 }
 
+function shouldReopenArchivedApplication(message: TriageMessage) {
+  return (
+    Boolean(message.matchedApplicationId) &&
+    message.flagged &&
+    message.category !== "REJECTION_OR_CLOSED" &&
+    ["HIGH", "MEDIUM"].includes(message.priority)
+  );
+}
+
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`gmail-triage:${userId}`, 5, 60_000);
+    await checkRateLimit(`gmail-triage:${userId}`, 5, 60_000);
     const input = gmailTriageSchema.parse(await request.json().catch(() => ({})));
     const integration = await prisma.gmailIntegration.findUniqueOrThrow({ where: { userId } });
 
@@ -426,9 +441,11 @@ export async function POST(request: NextRequest) {
     if (input.saveFlagged) {
       const flaggedMessages = sortedMessages.filter((message) => message.flagged);
 
-      await Promise.all(
-        flaggedMessages.map(async (message) => {
-          await prisma.emailMessage.upsert({
+      for (const message of flaggedMessages) {
+        const matchedApplication = applications.find((application) => application.id === message.matchedApplicationId);
+
+        await prisma.$transaction(async (tx) => {
+          await tx.emailMessage.upsert({
             where: {
               userId_gmailMessageId: {
                 userId,
@@ -466,9 +483,45 @@ export async function POST(request: NextRequest) {
               requestedAction: message.requestedAction
             }
           });
+
+          if (
+            matchedApplication &&
+            shouldReopenArchivedApplication(message) &&
+            ["GHOSTED", "ARCHIVED"].includes(matchedApplication.status)
+          ) {
+            await tx.application.update({
+              where: { id: matchedApplication.id },
+              data: {
+                status: "APPLIED",
+                nextAction: "Review the inbound recruiter or hiring-team email and decide the next step.",
+                followUpDueAt: new Date()
+              }
+            });
+
+            await tx.jobPosting.update({
+              where: { id: matchedApplication.jobPostingId },
+              data: { status: "APPLIED" }
+            });
+
+            await tx.applicationEvent.create({
+              data: {
+                userId,
+                applicationId: matchedApplication.id,
+                type: "EMAIL_SAVED",
+                title: "Inbound email reopened application",
+                body: message.subject,
+                metadata: {
+                  gmailMessageId: message.gmailMessageId,
+                  category: message.category,
+                  priority: message.priority
+                }
+              }
+            });
+          }
+
           savedCount += 1;
-        })
-      );
+        });
+      }
 
       await writeAuditLog({
         userId,

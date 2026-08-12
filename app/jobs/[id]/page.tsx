@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import type { JobPosting } from "@prisma/client";
 
 import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
+import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
@@ -62,7 +63,7 @@ function mapJobPosting(job: JobPosting) {
 async function getJobDetail(id: string) {
   const userId = await requirePageUserId();
 
-  const [job, resumeVersions, coverLetters, application] = await Promise.all([
+  const [job, resumeVersions, coverLetters, application, contacts] = await Promise.all([
     prisma.jobPosting.findFirst({ where: { id, userId } }),
     prisma.resumeVersion.findMany({
       where: { userId, jobPostingId: id },
@@ -91,6 +92,19 @@ async function getJobDetail(id: string) {
         coverLetterVersionId: true,
         dateApplied: true
       }
+    }),
+    prisma.contact.findMany({
+      where: { userId, jobPostingId: id },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        profileUrl: true,
+        notes: true
+      }
     })
   ]);
 
@@ -114,7 +128,8 @@ async function getJobDetail(id: string) {
             ...application,
             dateApplied: application.dateApplied?.toISOString() ?? null
           }
-        : null
+        : null,
+      contacts
     };
   }
 
@@ -129,7 +144,7 @@ export default async function JobDetailPage({ params }: Props) {
     notFound();
   }
 
-  const { job, resumeVersions, coverLetters, application } = data;
+  const { job, resumeVersions, coverLetters, application, contacts } = data;
 
   return (
     <>
@@ -278,10 +293,7 @@ export default async function JobDetailPage({ params }: Props) {
 
           <Panel>
             <PanelHeader title="Contacts and notes" />
-            <div className="space-y-3 p-5">
-              <input placeholder="Recruiter or hiring manager" className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-              <textarea placeholder="Notes" rows={5} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" />
-            </div>
+            <JobContactNotesForm jobPostingId={job.id} applicationId={application?.id} contacts={contacts} />
           </Panel>
         </aside>
       </div>

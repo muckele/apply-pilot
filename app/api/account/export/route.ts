@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`account:export:${userId}`, 3, 60_000);
+    await checkRateLimit(`account:export:${userId}`, 3, 60_000);
 
     const [
       user,

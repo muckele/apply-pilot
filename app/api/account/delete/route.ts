@@ -13,7 +13,7 @@ const accountDeleteSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`account:delete:${userId}`, 5, 60_000);
+    await checkRateLimit(`account:delete:${userId}`, 5, 60_000);
 
     accountDeleteSchema.parse(await request.json());
     await deletePrivateLocalFilesForUser(userId);

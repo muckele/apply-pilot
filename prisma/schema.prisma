@@ -600,6 +600,15 @@ model AuditLog {
   @@index([userId, createdAt])
 }
 
+model RateLimitBucket {
+  key       String   @id
+  count     Int      @default(1)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
+}
+
 model Account {
   id                String  @id @default(cuid())
   userId            String

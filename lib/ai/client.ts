@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { z } from "zod";
 
 let openai: OpenAI | null = null;
 
@@ -20,18 +21,20 @@ type GenerateJsonInput<T> = {
   systemPrompt: string;
   payload: unknown;
   fallback: T;
+  schema?: z.ZodType<T, z.ZodTypeDef, unknown>;
 };
 
 export async function generateJson<T>({
   promptName,
   systemPrompt,
   payload,
-  fallback
+  fallback,
+  schema
 }: GenerateJsonInput<T>): Promise<T> {
   const client = getOpenAIClient();
 
   if (!client || process.env.OPENAI_MOCK_MODE === "true") {
-    return fallback;
+    return validateGeneratedJson(fallback, schema, promptName);
   }
 
   const response = await client.chat.completions.create({
@@ -50,5 +53,22 @@ export async function generateJson<T>({
     throw new Error(`${promptName} returned an empty response.`);
   }
 
-  return JSON.parse(content) as T;
+  return validateGeneratedJson(JSON.parse(content), schema, promptName);
+}
+
+function validateGeneratedJson<T>(
+  value: unknown,
+  schema: z.ZodType<T, z.ZodTypeDef, unknown> | undefined,
+  promptName: string
+) {
+  if (!schema) {
+    return value as T;
+  }
+
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`${promptName} returned JSON that did not match the expected schema.`);
+  }
+
+  return parsed.data;
 }

@@ -13,7 +13,7 @@ type Params = {
 export async function POST(_request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`tailor-resume:${userId}`, 12, 60_000);
+    await checkRateLimit(`tailor-resume:${userId}`, 12, 60_000);
     const { id } = await params;
     const [job, resume, profile] = await Promise.all([
       prisma.jobPosting.findFirstOrThrow({ where: { id, userId } }),

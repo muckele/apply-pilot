@@ -3,6 +3,7 @@ import type { JobPosting, JobSource, JobSourceType, UserProfile } from "@prisma/
 import { getJobSourceProvider } from "@/lib/job-sources";
 import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
 import { isRemoteLikeText } from "@/lib/job-sources/remote";
+import { assertSourceCanSync, buildCriteriaFromSource } from "@/lib/job-sources/source-policy";
 import type { JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { upsertNormalizedJob, runJobMatch } from "@/lib/jobs";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
@@ -706,22 +707,25 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
     where: {
       userId: options.userId,
       syncEnabled: true,
-      type: { in: sourceTypesForConfiguredSync }
+      type: { in: sourceTypesForConfiguredSync },
+      OR: [
+        { type: { notIn: ["RSS", "COMPANY_CAREERS"] } },
+        { allowlisted: true }
+      ]
     }
   });
 
   for (const source of configuredSources) {
     try {
+      assertSourceCanSync(source);
       const jobs = await runProviderSearch({
         userId: options.userId,
         source,
-        criteria: {
-          company: source.boardToken ?? source.name,
-          boardToken: source.boardToken ?? undefined,
-          url: source.baseUrl ?? undefined,
+        criteria: buildCriteriaFromSource(source, {
           location,
+          remoteOnly: options.remoteOnly,
           limit: limitPerQuery
-        },
+        }),
         profile
       });
 

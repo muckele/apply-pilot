@@ -11,7 +11,7 @@ type Params = {
 export async function POST(_request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-match:${userId}`, 20, 60_000);
+    await checkRateLimit(`job-match:${userId}`, 20, 60_000);
     const { id } = await params;
     const result = await runJobMatch(userId, id);
 

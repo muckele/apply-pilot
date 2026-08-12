@@ -13,7 +13,7 @@ type Params = {
 export async function POST(_request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`interview-feedback:${userId}`, 12, 60_000);
+    await checkRateLimit(`interview-feedback:${userId}`, 12, 60_000);
     const { id } = await params;
     const interview = await prisma.interview.findFirstOrThrow({
       where: { id, userId },

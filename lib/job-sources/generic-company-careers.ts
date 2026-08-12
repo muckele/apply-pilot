@@ -69,7 +69,7 @@ export class GenericCompanyCareersProvider implements JobSourceProvider {
     try {
       const { response, text } = await fetchTextFromSafeUrl(robotsUrl, { next: { revalidate: 3600 } });
       if (!response.ok) {
-        return true;
+        return false;
       }
 
       const robots = text;

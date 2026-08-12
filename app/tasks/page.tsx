@@ -1,5 +1,6 @@
 import { CheckCircle2 } from "lucide-react";
 
+import { TaskActions } from "@/components/task-actions";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -36,9 +37,12 @@ export default async function TasksPage() {
                     <p className="text-xs text-slate-500">Due {formatDate(task.dueAt)}</p>
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <StatusBadge status={task.priority} />
-                  <StatusBadge status={task.status} />
+                <div className="flex flex-col items-start gap-3 sm:items-end">
+                  <div className="flex gap-2">
+                    <StatusBadge status={task.priority} />
+                    <StatusBadge status={task.status} />
+                  </div>
+                  <TaskActions taskId={task.id} status={task.status} />
                 </div>
               </div>
             ))

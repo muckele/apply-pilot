@@ -15,7 +15,7 @@ const syncSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-sync:${userId}`, 6, 60_000);
+    await checkRateLimit(`job-sync:${userId}`, 6, 60_000);
     const input = syncSchema.parse(await request.json());
     const source = await prisma.jobSource.findFirstOrThrow({
       where: { id: input.jobSourceId, userId }

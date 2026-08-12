@@ -14,7 +14,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     const { id } = await params;
-    checkRateLimit(`job-sources:update:${userId}`, 40, 60_000);
+    await checkRateLimit(`job-sources:update:${userId}`, 40, 60_000);
     const input = jobSourcePatchSchema.parse(await request.json());
     const existing = await prisma.jobSource.findFirstOrThrow({ where: { id, userId } });
     const resetsSyncHealth = "type" in input || "baseUrl" in input || "boardToken" in input;
@@ -45,7 +45,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     const { id } = await params;
-    checkRateLimit(`job-sources:delete:${userId}`, 20, 60_000);
+    await checkRateLimit(`job-sources:delete:${userId}`, 20, 60_000);
     const existing = await prisma.jobSource.findFirstOrThrow({
       where: { id, userId },
       include: {

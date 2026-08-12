@@ -4,7 +4,7 @@ import { z } from "zod";
 import { generateInterviewPrep } from "@/lib/ai/documents";
 import { resolveInterviewJobPostingId } from "@/lib/interviews/linking";
 import { prisma } from "@/lib/prisma";
-import { writeAuditLog } from "@/lib/security/audit-log";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
 const createInterviewSchema = z.object({
@@ -22,6 +22,7 @@ const createInterviewSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
+    await checkRateLimit(`interviews:create:${userId}`, 30, 60_000);
     const input = createInterviewSchema.parse(await request.json());
     const [requestedJob, application, profile, resume] = await Promise.all([
       input.jobPostingId
@@ -44,44 +45,51 @@ export async function POST(request: NextRequest) {
         ? await prisma.jobPosting.findFirstOrThrow({ where: { id: linkedJobPostingId, userId } })
         : null);
     const prep = input.generatePrep ? await generateInterviewPrep({ job, application, profile, resume }) : null;
-    const interview = await prisma.interview.create({
-      data: {
-        userId,
-        jobPostingId: linkedJobPostingId,
-        applicationId: input.applicationId,
-        type: input.type,
-        scheduledAt: input.scheduledAt,
-        durationMinutes: input.durationMinutes,
-        locationOrLink: input.locationOrLink,
-        interviewerNames: input.interviewerNames,
-        interviewerUrls: input.interviewerUrls,
-        prepBrief: prep?.prepBrief,
-        likelyQuestions: prep?.likelyQuestions ?? [],
-        starStories: prep?.starStories
-      }
-    });
-
-    if (prep) {
-      await prisma.aIAnalysis.create({
+    const interview = await prisma.$transaction(async (tx) => {
+      const savedInterview = await tx.interview.create({
         data: {
           userId,
           jobPostingId: linkedJobPostingId,
-          interviewId: interview.id,
-          type: "INTERVIEW_PREP",
-          model: prep.model,
-          promptName: "interviewPrepPrompt",
-          input: { jobPostingId: linkedJobPostingId, applicationId: input.applicationId },
-          output: prep,
-          confidence: 76
+          applicationId: input.applicationId,
+          type: input.type,
+          scheduledAt: input.scheduledAt,
+          durationMinutes: input.durationMinutes,
+          locationOrLink: input.locationOrLink,
+          interviewerNames: input.interviewerNames,
+          interviewerUrls: input.interviewerUrls,
+          prepBrief: prep?.prepBrief,
+          likelyQuestions: prep?.likelyQuestions ?? [],
+          starStories: prep?.starStories
         }
       });
-    }
 
-    await writeAuditLog({
-      userId,
-      action: "interview.create",
-      resource: "Interview",
-      resourceId: interview.id
+      if (prep) {
+        await tx.aIAnalysis.create({
+          data: {
+            userId,
+            jobPostingId: linkedJobPostingId,
+            interviewId: savedInterview.id,
+            type: "INTERVIEW_PREP",
+            model: prep.model,
+            promptName: "interviewPrepPrompt",
+            input: { jobPostingId: linkedJobPostingId, applicationId: input.applicationId },
+            output: prep,
+            confidence: 76
+          }
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: "interview.create",
+          resource: "Interview",
+          resourceId: savedInterview.id,
+          metadata: {}
+        }
+      });
+
+      return savedInterview;
     });
 
     return NextResponse.json({ interview, prep });

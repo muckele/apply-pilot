@@ -15,7 +15,7 @@ export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     const { id } = await params;
-    checkRateLimit(`job-sources:sync:${userId}`, 10, 60_000);
+    await checkRateLimit(`job-sources:sync:${userId}`, 10, 60_000);
     const input = jobSourceSyncSchema.parse(await request.json().catch(() => ({})));
     const source = await prisma.jobSource.findFirstOrThrow({ where: { id, userId } });
     const result = await runJobSourceSync({ userId, source, options: input });

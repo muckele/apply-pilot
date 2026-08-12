@@ -1,24 +1,39 @@
 import { PublicApiError } from "@/lib/api-errors";
+import { prisma } from "@/lib/prisma";
 
-type Bucket = {
-  count: number;
-  resetAt: number;
-};
+const cleanupSampleRate = 0.01;
 
-const buckets = new Map<string, Bucket>();
-
-export function checkRateLimit(key: string, limit = 30, windowMs = 60_000) {
+export async function checkRateLimit(key: string, limit = 30, windowMs = 60_000) {
   const now = Date.now();
-  const existing = buckets.get(key);
+  const resetAt = new Date(now + windowMs);
+  const existing = await prisma.rateLimitBucket.findUnique({ where: { key } });
 
-  if (!existing || existing.resetAt < now) {
-    buckets.set(key, { count: 1, resetAt: now + windowMs });
+  if (!existing || existing.resetAt.getTime() < now) {
+    await prisma.rateLimitBucket.upsert({
+      where: { key },
+      create: { key, count: 1, resetAt },
+      update: { count: 1, resetAt }
+    });
+    await maybeCleanupExpiredBuckets(now);
     return;
   }
 
-  existing.count += 1;
+  const updated = await prisma.rateLimitBucket.update({
+    where: { key },
+    data: { count: { increment: 1 } }
+  });
 
-  if (existing.count > limit) {
+  if (updated.count > limit) {
     throw new PublicApiError("Rate limit exceeded. Try again shortly.", 429);
   }
+}
+
+async function maybeCleanupExpiredBuckets(now: number) {
+  if (Math.random() > cleanupSampleRate) {
+    return;
+  }
+
+  await prisma.rateLimitBucket.deleteMany({
+    where: { resetAt: { lt: new Date(now) } }
+  });
 }

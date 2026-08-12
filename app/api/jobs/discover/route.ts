@@ -10,7 +10,7 @@ import { automatedJobDiscoverySchema } from "@/lib/validators";
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-discovery:${userId}`, 4, 60_000);
+    await checkRateLimit(`job-discovery:${userId}`, 4, 60_000);
 
     const input = automatedJobDiscoverySchema.parse(await request.json());
     const result = await runAutomatedJobDiscovery({ userId, ...input });

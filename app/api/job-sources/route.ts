@@ -28,7 +28,7 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-sources:create:${userId}`, 20, 60_000);
+    await checkRateLimit(`job-sources:create:${userId}`, 20, 60_000);
     const input = jobSourceWriteSchema.parse(await request.json());
 
     const source = await prisma.jobSource.create({

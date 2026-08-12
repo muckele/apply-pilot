@@ -15,7 +15,7 @@ function headerValue(headers: Array<{ name?: string | null; value?: string | nul
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`gmail-search:${userId}`, 10, 60_000);
+    await checkRateLimit(`gmail-search:${userId}`, 10, 60_000);
     const input = gmailSearchSchema.parse(await request.json().catch(() => ({})));
     const integration = await prisma.gmailIntegration.findUniqueOrThrow({ where: { userId } });
 

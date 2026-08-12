@@ -17,7 +17,7 @@ const jobStatusSchema = z.object({
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`job-status:${userId}`, 40, 60_000);
+    await checkRateLimit(`job-status:${userId}`, 40, 60_000);
     const { id } = await params;
     const input = jobStatusSchema.parse(await request.json());
     const existing = await prisma.jobPosting.findFirstOrThrow({ where: { id, userId } });

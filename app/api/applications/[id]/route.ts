@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { resolvePostingStatusForApplicationStatus } from "@/lib/applications/pipeline";
 import { normalizeApplicationPatch } from "@/lib/applications/status";
 import { prisma } from "@/lib/prisma";
-import { writeAuditLog } from "@/lib/security/audit-log";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 import { applicationUpdateSchema } from "@/lib/validators";
 
@@ -13,6 +14,7 @@ type Params = {
 export async function GET(_request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
+    await checkRateLimit(`applications:update:${userId}`, 60, 60_000);
     const { id } = await params;
     const application = await prisma.application.findFirstOrThrow({
       where: { id, userId },
@@ -56,36 +58,42 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     ]);
     const { nextStatus, data: updateData } = normalizeApplicationPatch(input, existing);
 
-    const application = await prisma.application.update({
-      where: { id: existing.id },
-      data: updateData
-    });
-
-    if (nextStatus === "APPLIED") {
-      await prisma.jobPosting.update({
-        where: { id: existing.jobPostingId },
-        data: { status: "APPLIED" }
+    const postingStatus = resolvePostingStatusForApplicationStatus(nextStatus);
+    const statusChanged = nextStatus !== existing.status;
+    const application = await prisma.$transaction(async (tx) => {
+      const savedApplication = await tx.application.update({
+        where: { id: existing.id },
+        data: updateData
       });
-    }
 
-    await prisma.applicationEvent.create({
-      data: {
-        userId,
-        applicationId: application.id,
-        type: input.status && input.status !== existing.status ? "STATUS_CHANGED" : "NOTE_ADDED",
-        title:
-          input.status && input.status !== existing.status
-            ? `Status changed to ${input.status}`
-            : "Application updated",
-        body: input.notes
+      if (postingStatus) {
+        await tx.jobPosting.update({
+          where: { id: existing.jobPostingId },
+          data: { status: postingStatus }
+        });
       }
-    });
 
-    await writeAuditLog({
-      userId,
-      action: "application.update",
-      resource: "Application",
-      resourceId: application.id
+      await tx.applicationEvent.create({
+        data: {
+          userId,
+          applicationId: savedApplication.id,
+          type: statusChanged ? "STATUS_CHANGED" : "NOTE_ADDED",
+          title: statusChanged ? `Status changed to ${nextStatus}` : "Application updated",
+          body: input.notes
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: "application.update",
+          resource: "Application",
+          resourceId: savedApplication.id,
+          metadata: {}
+        }
+      });
+
+      return savedApplication;
     });
 
     return NextResponse.json({ application });

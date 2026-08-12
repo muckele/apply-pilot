@@ -46,7 +46,7 @@ async function extractTextFromFile(file: File) {
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`resume-parse:${userId}`, 10, 60_000);
+    await checkRateLimit(`resume-parse:${userId}`, 10, 60_000);
 
     const contentType = request.headers.get("content-type") ?? "";
     let title = "Master Resume";

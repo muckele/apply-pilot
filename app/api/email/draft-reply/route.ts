@@ -10,7 +10,7 @@ import { emailDraftSchema } from "@/lib/validators";
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`email-draft:${userId}`, 20, 60_000);
+    await checkRateLimit(`email-draft:${userId}`, 20, 60_000);
     const input = emailDraftSchema.parse(await request.json());
     const [emailMessage, job] = await Promise.all([
       input.emailMessageId

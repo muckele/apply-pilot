@@ -1,6 +1,6 @@
-import { CalendarPlus } from "lucide-react";
 import Link from "next/link";
 
+import { InterviewCreateForm } from "@/components/interview-create-form";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -11,12 +11,26 @@ function formatDate(value: Date | null) {
 
 export default async function InterviewsPage() {
   const userId = await requirePageUserId();
-  const interviews = await prisma.interview.findMany({
-    where: { userId },
-    include: { jobPosting: true, application: { include: { jobPosting: true } } },
-    orderBy: [{ scheduledAt: "asc" }, { createdAt: "desc" }],
-    take: 50
-  });
+  const [interviews, applications, jobs] = await Promise.all([
+    prisma.interview.findMany({
+      where: { userId },
+      include: { jobPosting: true, application: { include: { jobPosting: true } } },
+      orderBy: [{ scheduledAt: "asc" }, { createdAt: "desc" }],
+      take: 50
+    }),
+    prisma.application.findMany({
+      where: { userId, status: { notIn: ["ARCHIVED", "REJECTED", "GHOSTED"] } },
+      include: { jobPosting: true },
+      orderBy: { updatedAt: "desc" },
+      take: 50
+    }),
+    prisma.jobPosting.findMany({
+      where: { userId, status: { in: ["ACTIVE", "APPLIED", "INTERVIEW"] } },
+      orderBy: [{ overallFitScore: "desc" }, { firstDiscoveredAt: "desc" }],
+      take: 50,
+      select: { id: true, title: true, company: true }
+    })
+  ]);
 
   return (
     <>
@@ -56,13 +70,17 @@ export default async function InterviewsPage() {
 
         <Panel className="h-fit">
           <PanelHeader title="Add interview" />
-          <div className="space-y-4 p-5 text-sm leading-6 text-slate-700">
-            <p>Add interviews from an application or job record so prep can use the correct context.</p>
-            <button disabled className="inline-flex cursor-not-allowed items-center gap-2 rounded-lg bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-500">
-              <CalendarPlus size={16} aria-hidden="true" />
-              Save interview
-            </button>
-          </div>
+          <InterviewCreateForm
+            applications={applications.map((application) => ({
+              id: application.id,
+              jobPostingId: application.jobPostingId,
+              label: `${application.jobPosting.company} - ${application.jobPosting.title}`
+            }))}
+            jobs={jobs.map((job) => ({
+              id: job.id,
+              label: `${job.company} - ${job.title}`
+            }))}
+          />
         </Panel>
       </div>
     </>

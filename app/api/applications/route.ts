@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
+import {
+  defaultFollowUpDueAt,
+  formatApplicationStatus,
+  resolvePostingStatusForApplicationStatus,
+  suggestApplicationNextAction
+} from "@/lib/applications/pipeline";
 import { resolveApplicationPostStatus } from "@/lib/applications/status";
 import { prisma } from "@/lib/prisma";
-import { writeAuditLog } from "@/lib/security/audit-log";
+import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
 const createApplicationSchema = z.object({
@@ -26,6 +32,7 @@ const createApplicationSchema = z.object({
   dateApplied: z.coerce.date().optional(),
   resumeVersionId: z.string().optional(),
   coverLetterVersionId: z.string().nullable().optional(),
+  followUpDueAt: z.coerce.date().optional(),
   nextAction: z.string().optional(),
   notes: z.string().optional()
 });
@@ -33,6 +40,7 @@ const createApplicationSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const userId = await requireUserId();
+    await checkRateLimit(`applications:create:${userId}`, 40, 60_000);
     const input = createApplicationSchema.parse(await request.json());
     await prisma.jobPosting.findFirstOrThrow({ where: { id: input.jobPostingId, userId } });
     const [resumeVersion, coverLetterVersion] = await Promise.all([
@@ -57,75 +65,91 @@ export async function POST(request: NextRequest) {
     });
     const coverLetterWasProvided = Object.hasOwn(input, "coverLetterVersionId");
     const nextStatus = resolveApplicationPostStatus(input.status, existing);
+    const statusChanged = !existing || existing.status !== nextStatus;
+    const passiveStatusGuarded = Boolean(existing && input.status !== nextStatus);
     const dateApplied =
       nextStatus === "APPLIED" ? (existing?.dateApplied ?? input.dateApplied ?? new Date()) : undefined;
+    const requestedNextAction = passiveStatusGuarded ? undefined : input.nextAction;
+    const requestedFollowUpDueAt = passiveStatusGuarded ? undefined : input.followUpDueAt;
     const nextAction =
-      input.nextAction ??
-      (nextStatus === "APPLIED"
-        ? "Track recruiter response and schedule follow-up."
-        : "Review fit analysis and decide whether to apply.");
+      requestedNextAction ?? (statusChanged ? suggestApplicationNextAction(nextStatus) : existing?.nextAction);
+    const followUpDueAt =
+      requestedFollowUpDueAt ??
+      (statusChanged ? defaultFollowUpDueAt(nextStatus) : existing?.followUpDueAt);
 
-    const application = await prisma.application.upsert({
-      where: { userId_jobPostingId: { userId, jobPostingId: input.jobPostingId } },
-      create: {
-        userId,
-        jobPostingId: input.jobPostingId,
-        status: nextStatus,
-        dateApplied,
-        resumeVersionId: resumeVersion?.id,
-        coverLetterVersionId: coverLetterVersion?.id ?? null,
-        nextAction,
-        notes: input.notes
-      },
-      update: {
-        status: nextStatus,
-        dateApplied,
-        resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId,
-        coverLetterVersionId: coverLetterWasProvided
-          ? (coverLetterVersion?.id ?? null)
-          : existing?.coverLetterVersionId,
-        nextAction,
-        notes: input.notes
-      }
-    });
-
-    if (nextStatus === "APPLIED") {
-      await prisma.jobPosting.update({
-        where: { id: input.jobPostingId },
-        data: { status: "APPLIED" }
-      });
-    }
-
+    const postingStatus = resolvePostingStatusForApplicationStatus(nextStatus);
     const eventType =
       !existing ? "CREATED" : existing.status !== nextStatus ? "STATUS_CHANGED" : "NOTE_ADDED";
     const eventTitle =
-      nextStatus === "APPLIED"
-        ? "Marked as applied"
-        : !existing
+      !existing
+        ? nextStatus === "SAVED"
           ? "Saved to CRM"
+          : `Created as ${formatApplicationStatus(nextStatus)}`
+        : existing.status !== nextStatus
+          ? `Status changed to ${formatApplicationStatus(nextStatus)}`
           : "Application record updated";
 
-    await prisma.applicationEvent.create({
-      data: {
-        userId,
-        applicationId: application.id,
-        type: eventType,
-        title: eventTitle,
-        body: input.notes,
-        metadata: {
-          resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId ?? null,
+    const application = await prisma.$transaction(async (tx) => {
+      const savedApplication = await tx.application.upsert({
+        where: { userId_jobPostingId: { userId, jobPostingId: input.jobPostingId } },
+        create: {
+          userId,
+          jobPostingId: input.jobPostingId,
+          status: nextStatus,
+          dateApplied,
+          resumeVersionId: resumeVersion?.id,
+          coverLetterVersionId: coverLetterVersion?.id ?? null,
+          followUpDueAt,
+          nextAction,
+          notes: input.notes
+        },
+        update: {
+          status: nextStatus,
+          dateApplied,
+          resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId,
           coverLetterVersionId: coverLetterWasProvided
             ? (coverLetterVersion?.id ?? null)
-            : (existing?.coverLetterVersionId ?? null)
+            : existing?.coverLetterVersionId,
+          followUpDueAt,
+          nextAction,
+          notes: input.notes
         }
-      }
-    });
+      });
 
-    await writeAuditLog({
-      userId,
-      action: nextStatus === "APPLIED" ? "application.mark_applied" : "application.save",
-      resource: "Application",
-      resourceId: application.id
+      if (postingStatus) {
+        await tx.jobPosting.update({
+          where: { id: input.jobPostingId },
+          data: { status: postingStatus }
+        });
+      }
+
+      await tx.applicationEvent.create({
+        data: {
+          userId,
+          applicationId: savedApplication.id,
+          type: eventType,
+          title: eventTitle,
+          body: input.notes,
+          metadata: {
+            resumeVersionId: resumeVersion?.id ?? existing?.resumeVersionId ?? null,
+            coverLetterVersionId: coverLetterWasProvided
+              ? (coverLetterVersion?.id ?? null)
+              : (existing?.coverLetterVersionId ?? null)
+          }
+        }
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: nextStatus === "APPLIED" ? "application.mark_applied" : "application.save",
+          resource: "Application",
+          resourceId: savedApplication.id,
+          metadata: {}
+        }
+      });
+
+      return savedApplication;
     });
 
     return NextResponse.json({ application });

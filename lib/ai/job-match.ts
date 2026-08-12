@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { jobMatchPrompt } from "@/prompts/jobMatchPrompt";
 import { scoreFromRatio, uniqueStrings } from "@/lib/normalize";
 import { generateJson, getOpenAIModel } from "@/lib/ai/client";
@@ -69,6 +71,31 @@ const defaultSkills = [
   "operations",
   "implementation"
 ];
+
+const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
+const recommendationSchema = z.preprocess(
+  (value) => (typeof value === "string" ? value.toLowerCase() : value),
+  z.enum(["apply now", "consider", "skip"])
+);
+
+const jobMatchOutputSchema: z.ZodType<JobMatchOutput, z.ZodTypeDef, unknown> = z.object({
+  overallFitScore: scoreSchema,
+  resumeKeywordScore: scoreSchema,
+  skillsMatchScore: scoreSchema,
+  experienceMatchScore: scoreSchema,
+  careerGoalScore: scoreSchema,
+  locationWorkStyleScore: scoreSchema,
+  compensationScore: z.union([scoreSchema, z.null()]),
+  confidenceScore: scoreSchema,
+  whyGoodMatch: z.array(z.string()),
+  concerns: z.array(z.string()),
+  missingKeywords: z.array(z.string()),
+  supportedKeywords: z.array(z.string()),
+  keywordsToEmphasize: z.array(z.string()),
+  suggestedResumeAngle: z.string(),
+  suggestedCoverLetterAngle: z.string(),
+  recommendation: recommendationSchema
+});
 
 function hasTerm(text: string, term: string) {
   const normalizedTerm = term.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, "\\$&");
@@ -150,7 +177,8 @@ export async function scoreJobMatch(input: MatchInput) {
     promptName: "jobMatchPrompt",
     systemPrompt: jobMatchPrompt,
     payload: input,
-    fallback
+    fallback,
+    schema: jobMatchOutputSchema
   });
 
   return {

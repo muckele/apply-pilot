@@ -77,7 +77,7 @@ export async function GET() {
 export async function PATCH(request: NextRequest) {
   try {
     const userId = await requireUserId();
-    checkRateLimit(`profile:update:${userId}`, 20, 60_000);
+    await checkRateLimit(`profile:update:${userId}`, 20, 60_000);
 
     const input = profileUpdateSchema.parse(await request.json());
 
