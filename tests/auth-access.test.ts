@@ -4,6 +4,7 @@ import test from "node:test";
 import { PublicApiError } from "@/lib/api-errors";
 import { getAllowedAuthEmails, isEmailAllowedForAuth, requiresEmailAllowlist } from "@/lib/auth-access";
 import { apiErrorResponse, isDemoUserFallbackEnabled } from "@/lib/user-context";
+import { getOAuthStateSecret } from "@/lib/security/oauth-state";
 
 test("production auth requires an allowlist unless public signups are explicitly enabled", () => {
   const env = { NODE_ENV: "production", AUTH_ALLOWED_EMAILS: "", AUTH_ALLOW_PUBLIC_SIGNUPS: "false" };
@@ -27,6 +28,14 @@ test("private auth allows multiple configured Google accounts", () => {
 test("demo fallback is never enabled in production", () => {
   assert.equal(isDemoUserFallbackEnabled({ NODE_ENV: "production", ALLOW_DEMO_USER: "true" }), false);
   assert.equal(isDemoUserFallbackEnabled({ NODE_ENV: "development", ALLOW_DEMO_USER: "true" }), true);
+});
+
+test("OAuth state signing never uses the development fallback in production", () => {
+  assert.throws(
+    () => getOAuthStateSecret({ NODE_ENV: "production" }),
+    /AUTH_SECRET must be configured/
+  );
+  assert.equal(getOAuthStateSecret({ NODE_ENV: "development" }), "jobmatch-local-dev");
 });
 
 test("production API errors hide raw internal messages", async () => {

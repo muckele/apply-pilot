@@ -59,7 +59,7 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
-- `OPENAI_API_KEY`: OpenAI API key.
+- `OPENAI_API_KEY`: optional OpenAI API key. When omitted, supported workflows use deterministic local fallback output.
 - `OPENAI_MODEL`: default model for structured JSON generations.
 - `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
 - `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
@@ -143,7 +143,7 @@ The app uses structured JSON prompts in `/prompts`:
 - `interviewPrepPrompt`
 - `interviewFeedbackPrompt`
 
-Set `OPENAI_API_KEY` and `OPENAI_MOCK_MODE=false` to call the API. Local mock mode keeps the MVP usable without network/API setup.
+Set `OPENAI_API_KEY` and `OPENAI_MOCK_MODE=false` to call the API. Without a key, the MVP remains usable with deterministic local fallback output in both development and production; it does not make billable OpenAI requests.
 
 AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and an estimated cost when pricing variables are configured, including failed responses that report token usage. Users can choose a server-allowlisted model override, cap AI analyses per discovery sync, disable discovery-time AI, and set a monthly budget at `/settings/ai`. The budget blocks later calls after tracked usage reaches the limit, so configure cost estimates conservatively for the most expensive allowed model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
 

@@ -17,7 +17,7 @@ export default async function LoginPage() {
   }
 
   const googleConfigured = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
-  const allowedEmails = getAllowedAuthEmails();
+  const privateAccessConfigured = getAllowedAuthEmails().length > 0;
   const allowlistRequired = requiresEmailAllowlist();
 
   return (
@@ -73,8 +73,8 @@ export default async function LoginPage() {
                 <div>
                   <p className="font-semibold text-slate-950">Personal access control</p>
                   <p className="mt-1">
-                    {allowedEmails.length
-                      ? `Only these Google accounts are allowed: ${allowedEmails.join(", ")}.`
+                    {privateAccessConfigured
+                      ? "Only approved Google accounts can sign in to this private deployment."
                       : allowlistRequired
                         ? "Production private mode requires AUTH_ALLOWED_EMAILS before anyone can sign in."
                         : "Set AUTH_ALLOWED_EMAILS in .env to restrict sign-in to selected Google accounts."}

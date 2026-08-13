@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-import { captureException } from "@/lib/monitoring/logger";
+import { checkDeploymentReadiness } from "@/lib/deployment-readiness";
+import { captureException, logger } from "@/lib/monitoring/logger";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -25,17 +26,48 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
   });
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const startedAt = Date.now();
+  const configuration = checkDeploymentReadiness(process.env, request.nextUrl.origin);
 
   try {
     await withTimeout(prisma.$queryRaw`SELECT 1`, READINESS_TIMEOUT_MS);
+
+    if (!configuration.ready) {
+      logger.warn("health.readiness.configuration_failed", {
+        issues: configuration.issues
+      });
+
+      return NextResponse.json(
+        {
+          status: "not_ready",
+          service: "jobmatch-crm",
+          checks: {
+            database: "ok",
+            configuration: "failed"
+          },
+          capabilities: {
+            aiMode: configuration.aiMode,
+            directAudioUploads: configuration.directAudioUploads
+          },
+          configurationIssues: configuration.issues,
+          latencyMs: Date.now() - startedAt,
+          timestamp: new Date().toISOString()
+        },
+        { status: 503 }
+      );
+    }
 
     return NextResponse.json({
       status: "ready",
       service: "jobmatch-crm",
       checks: {
-        database: "ok"
+        database: "ok",
+        configuration: "ok"
+      },
+      capabilities: {
+        aiMode: configuration.aiMode,
+        directAudioUploads: configuration.directAudioUploads
       },
       latencyMs: Date.now() - startedAt,
       timestamp: new Date().toISOString()
@@ -51,7 +83,12 @@ export async function GET() {
         status: "not_ready",
         service: "jobmatch-crm",
         checks: {
-          database: "failed"
+          database: "failed",
+          configuration: configuration.ready ? "ok" : "failed"
+        },
+        capabilities: {
+          aiMode: configuration.aiMode,
+          directAudioUploads: configuration.directAudioUploads
         },
         latencyMs: Date.now() - startedAt,
         timestamp: new Date().toISOString()

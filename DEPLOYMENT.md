@@ -18,10 +18,9 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `GOOGLE_CLIENT_SECRET`
 - `AUTH_ALLOWED_EMAILS`
 - `ALLOW_DEMO_USER=false`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
-- `OPENAI_MOCK_MODE=false`
-- Current OpenAI per-million-token pricing variables if AI budget enforcement is enabled
+- `OPENAI_API_KEY` only when live AI generation is enabled. It may be omitted for the deterministic local fallback mode.
+- `OPENAI_MODEL` and `OPENAI_MOCK_MODE=false` when live AI generation is enabled.
+- Current OpenAI per-million-token pricing variables when live AI budget enforcement is enabled.
 - `GMAIL_REDIRECT_URI`
 - `GMAIL_SCOPES`
 - `TOKEN_ENCRYPTION_KEY`
@@ -100,6 +99,7 @@ GET /api/health/readiness
 ```
 
 Use `/api/health/readiness` for uptime checks because it verifies database connectivity and returns `503` when the app cannot reach PostgreSQL.
+It also validates the production Auth.js URLs, Gmail callback, private sign-in configuration, encryption key, cron secret, and Vercel function upload limits. OpenAI and private Blob storage are reported as capabilities rather than required launch dependencies.
 
 ## Pre-deploy validation
 
