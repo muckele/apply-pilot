@@ -1,3 +1,5 @@
+import { getAppVersion } from "@/lib/app-version";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 type LogContext = Record<string, unknown>;
@@ -125,7 +127,7 @@ function writeLog(level: LogLevel, message: string, context: LogContext = {}) {
     level,
     service: "jobmatch-crm",
     environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "development",
-    version: process.env.APP_VERSION ?? process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12),
+    version: getAppVersion() ?? undefined,
     message,
     ...safeContext
   };

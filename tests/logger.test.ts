@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { getAppVersion } from "@/lib/app-version";
 import { sanitizeForLog, serializeError } from "@/lib/monitoring/logger";
+
+test("Vercel commit SHA takes precedence over a manually configured app version", () => {
+  assert.equal(
+    getAppVersion({
+      APP_VERSION: "stale-release-label",
+      VERCEL_GIT_COMMIT_SHA: "36cad3130ee4f9de7972992bd7fc493c4ef62d09"
+    }),
+    "36cad3130ee4"
+  );
+  assert.equal(getAppVersion({ APP_VERSION: "local-release" }), "local-release");
+});
 
 test("sanitizeForLog redacts sensitive keys and common secret strings", () => {
   const output = sanitizeForLog({

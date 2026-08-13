@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { getAppVersion } from "@/lib/app-version";
+
 export const dynamic = "force-dynamic";
 
 export function GET() {
@@ -7,7 +9,7 @@ export function GET() {
     status: "ok",
     service: "jobmatch-crm",
     environment: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "development",
-    version: process.env.APP_VERSION ?? process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) ?? null,
+    version: getAppVersion(),
     timestamp: new Date().toISOString()
   });
 }
