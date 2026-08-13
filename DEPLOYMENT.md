@@ -26,6 +26,7 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `GMAIL_SCOPES`
 - `TOKEN_ENCRYPTION_KEY`
 - `CRON_SECRET`
+- `BLOB_READ_WRITE_TOKEN`
 - `JOB_SOURCE_MAX_POSTED_AGE_DAYS`
 
 Optional provider keys:
@@ -68,7 +69,9 @@ Keep Gmail access readonly. The app should remain human-in-the-loop: no automati
 
 ## Storage
 
-Use `FILE_STORAGE_DRIVER=database` for the private MVP so resumes and consented interview audio survive serverless restarts. Move large or high-volume files to private object storage such as S3, Cloudflare R2, Vercel Blob, or an equivalent provider as usage grows.
+Use `FILE_STORAGE_DRIVER=database` for private resume and document storage in the MVP. Keep `MAX_UPLOAD_MB=4` and `MAX_AUDIO_UPLOAD_MB=4` because files sent through Vercel Functions are subject to the platform request-body limit.
+
+Create a **Private** Vercel Blob store connected to the project and expose its generated `BLOB_READ_WRITE_TOKEN` to Production. With that token present, consented interview audio uploads directly from the browser to the private store, bypassing the function body limit. `MAX_DIRECT_AUDIO_UPLOAD_MB=25` controls that path. Upload-token issuance verifies authentication, interview ownership, consent, file type, size, and the interview-specific pathname; completion re-verifies Blob metadata before adding the recording to the CRM.
 
 ## Runtime
 

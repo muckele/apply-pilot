@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { PublicApiError } from "@/lib/api-errors";
+import { INTERVIEW_CONSENT_STATEMENT } from "@/lib/interviews/audio-policy";
+import { serverAudioMaxBytes, validateInterviewAudioUpload } from "@/lib/interviews/audio-storage";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -14,33 +16,13 @@ type Params = {
   params: Promise<{ id: string }>;
 };
 
-const allowedAudioMimeTypes = new Set([
-  "audio/aac",
-  "audio/m4a",
-  "audio/mp4",
-  "audio/mpeg",
-  "audio/ogg",
-  "audio/wav",
-  "audio/webm",
-  "video/mp4",
-  "video/webm"
-]);
-
-const allowedAudioExtensions = [".aac", ".m4a", ".mp3", ".mp4", ".ogg", ".wav", ".webm"];
-
 function validateInterviewUpload(file: File) {
-  const configuredMaxMb = Number(process.env.MAX_AUDIO_UPLOAD_MB ?? 25);
-  const maxBytes = (Number.isFinite(configuredMaxMb) && configuredMaxMb > 0 ? configuredMaxMb : 25) * 1024 * 1024;
-  const lowerName = file.name.toLowerCase();
-  const hasAllowedExtension = allowedAudioExtensions.some((extension) => lowerName.endsWith(extension));
-
-  if (file.size > maxBytes) {
-    throw new PublicApiError("Interview audio file is too large.");
-  }
-
-  if (!allowedAudioMimeTypes.has(file.type) && !hasAllowedExtension) {
-    throw new PublicApiError("Unsupported interview audio format. Upload MP3, M4A, WAV, OGG, WebM, or MP4.");
-  }
+  validateInterviewAudioUpload({
+    filename: file.name,
+    contentType: file.type,
+    size: file.size,
+    maxBytes: serverAudioMaxBytes()
+  });
 }
 
 export async function POST(request: NextRequest, { params }: Params) {
@@ -85,7 +67,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         filePath,
         transcript: pastedTranscript || null,
         consentConfirmedAt: new Date(),
-        consentStatement: input.consentStatement,
+        consentStatement: INTERVIEW_CONSENT_STATEMENT,
         consentStatus: "CONSENT_CONFIRMED"
       }
     });

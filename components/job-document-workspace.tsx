@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Download, Loader2, Pencil, Save } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -85,32 +85,6 @@ export function JobDocumentWorkspace({
   const [resumeState, setResumeState] = useState<SaveState>("idle");
   const [coverState, setCoverState] = useState<SaveState>("idle");
   const [message, setMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!resumeVersions.length) {
-      setSelectedResumeId("");
-      setResumeText("");
-      return;
-    }
-
-    if (!resumeVersions.some((version) => version.id === selectedResumeId)) {
-      setSelectedResumeId(resumeVersions[0].id);
-      setResumeText(resumeVersions[0].fullText);
-    }
-  }, [resumeVersions, selectedResumeId]);
-
-  useEffect(() => {
-    if (!coverLetters.length) {
-      setSelectedCoverId("");
-      setCoverText("");
-      return;
-    }
-
-    if (!coverLetters.some((document) => document.id === selectedCoverId)) {
-      setSelectedCoverId(coverLetters[0].id);
-      setCoverText(coverLetters[0].content);
-    }
-  }, [coverLetters, selectedCoverId]);
 
   function chooseResume(id: string) {
     const next = resumeVersions.find((version) => version.id === id) ?? null;

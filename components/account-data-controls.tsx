@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import { Download, Loader2, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { SecondaryButton } from "@/components/ui";
 
 type ActionState = "idle" | "exporting" | "deleting" | "error" | "done";
 
 export function AccountDataControls() {
+  const router = useRouter();
   const [state, setState] = useState<ActionState>("idle");
   const [message, setMessage] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -56,7 +58,8 @@ export function AccountDataControls() {
       return;
     }
 
-    window.location.assign("/login?accountDeleted=1");
+    router.replace("/login?accountDeleted=1");
+    router.refresh();
   }
 
   const busy = state === "exporting" || state === "deleting";

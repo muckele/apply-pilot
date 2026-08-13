@@ -57,8 +57,8 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
   const filters = parseFilters(params);
   const where: Prisma.ApplicationWhereInput = filters.status ? { userId, status: filters.status } : { userId };
   const andConditions: Prisma.ApplicationWhereInput[] = [];
-  const weekStart = new Date(Date.now() - 7 * 86_400_000);
   const now = new Date();
+  const weekStart = new Date(now.getTime() - 7 * 86_400_000);
 
   if (filters.q) {
     andConditions.push({

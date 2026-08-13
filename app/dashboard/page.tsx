@@ -11,8 +11,9 @@ function formatDate(value: Date | null | undefined) {
 
 export default async function DashboardPage() {
   const userId = await requirePageUserId();
-  const weekStart = new Date(Date.now() - 7 * 86_400_000);
   const now = new Date();
+  const weekStart = new Date(now.getTime() - 7 * 86_400_000);
+  const followUpWindowEnd = new Date(now.getTime() + 3 * 86_400_000);
   const [
     savedThisWeek,
     appliedThisWeek,
@@ -28,7 +29,7 @@ export default async function DashboardPage() {
     prisma.application.count({ where: { userId, dateSaved: { gte: weekStart } } }),
     prisma.application.count({ where: { userId, dateApplied: { gte: weekStart } } }),
     prisma.interview.count({ where: { userId, scheduledAt: { gte: now } } }),
-    prisma.followUpReminder.count({ where: { userId, completedAt: null, dueAt: { lte: new Date(Date.now() + 3 * 86_400_000) } } }),
+    prisma.followUpReminder.count({ where: { userId, completedAt: null, dueAt: { lte: followUpWindowEnd } } }),
     prisma.resumeVersion.count({ where: { userId, createdAt: { gte: weekStart } } }),
     prisma.jobPosting.aggregate({ where: { userId, overallFitScore: { not: null } }, _avg: { overallFitScore: true } }),
     prisma.jobPosting.findMany({

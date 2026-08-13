@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { CheckCircle2, Loader2, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -28,28 +28,6 @@ export function JobCrmActions({
   const [coverLetterVersionId, setCoverLetterVersionId] = useState(
     defaultCoverLetterVersionId ?? coverLetters[0]?.id ?? ""
   );
-
-  useEffect(() => {
-    if (!resumeVersions.length) {
-      setResumeVersionId("");
-      return;
-    }
-
-    if (!resumeVersionId || !resumeVersions.some((version) => version.id === resumeVersionId)) {
-      setResumeVersionId(defaultResumeVersionId ?? resumeVersions[0].id);
-    }
-  }, [defaultResumeVersionId, resumeVersionId, resumeVersions]);
-
-  useEffect(() => {
-    if (!coverLetters.length) {
-      setCoverLetterVersionId("");
-      return;
-    }
-
-    if (!coverLetterVersionId || !coverLetters.some((document) => document.id === coverLetterVersionId)) {
-      setCoverLetterVersionId(defaultCoverLetterVersionId ?? coverLetters[0].id);
-    }
-  }, [coverLetterVersionId, coverLetters, defaultCoverLetterVersionId]);
 
   async function updateApplication(action: "save" | "applied") {
     setPending(action);

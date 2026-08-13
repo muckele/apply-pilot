@@ -18,10 +18,13 @@ function hasSessionCookie(request: NextRequest) {
 }
 
 function isPublicPath(pathname: string) {
-  return publicPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+  return (
+    publicPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)) ||
+    (pathname.startsWith("/api/interviews/") && pathname.endsWith("/audio/upload"))
+  );
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   if (

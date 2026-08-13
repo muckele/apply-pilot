@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
-import { Mic, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 
+import { InterviewAudioUpload } from "@/components/interview-audio-upload";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { directAudioMaxBytes, directAudioUploadsEnabled, serverAudioMaxBytes } from "@/lib/interviews/audio-storage";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -81,22 +83,12 @@ export default async function InterviewDetailPage({ params }: Props) {
         <aside className="space-y-6">
           <Panel>
             <PanelHeader title="Recording consent" action={<ShieldCheck className="text-brand-600" size={18} />} />
-            <form className="space-y-4 p-5 text-sm text-slate-700" action={`/api/interviews/${interview.id}/audio`} method="post" encType="multipart/form-data">
-              <label className="flex gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <input type="checkbox" name="consentConfirmed" value="true" className="mt-1" />
-                <span>
-                  I confirm that all participants have been informed and have consented to recording/transcription.
-                </span>
-              </label>
-              <label className="block font-medium">
-                Audio file
-                <input name="file" type="file" accept="audio/*,video/mp4,video/webm" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
-              </label>
-              <button className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white">
-                <Mic size={16} aria-hidden="true" />
-                Upload consented audio
-              </button>
-            </form>
+            <InterviewAudioUpload
+              interviewId={interview.id}
+              directUploadEnabled={directAudioUploadsEnabled()}
+              directUploadMaxMb={Math.floor(directAudioMaxBytes() / 1024 / 1024)}
+              serverUploadMaxMb={Math.floor(serverAudioMaxBytes() / 1024 / 1024)}
+            />
             <div className="border-t border-slate-100 p-5 text-sm text-slate-700">
               Recordings saved: {interview.recordings.length}
             </div>

@@ -9,7 +9,8 @@
 - Profile, jobs, applications, documents, Gmail snippets, interviews, tasks, and files are scoped to the signed-in `userId`; no team/shared workspace model exists yet.
 - Users can export their account data and delete account records from profile settings.
 - Gmail tokens are encrypted with AES-256-GCM.
-- Production file uploads default to database-backed private storage. Local disk storage is intended only for development.
+- Production resume and document uploads default to database-backed private storage. Local disk storage is intended only for development.
+- Consented interview audio can upload directly to a private Vercel Blob store through short-lived, authenticated client-upload tokens. Completion verifies ownership, the private host, interview-specific pathname, content type, and size before saving the CRM record.
 - Sensitive actions write audit-log records.
 - Structured production logs redact tokens, API keys, passwords, database credentials, and email addresses.
 - Health and readiness endpoints are available for uptime monitoring.
@@ -28,7 +29,7 @@
 - Set `ALLOW_DEMO_USER=false`.
 - Keep `AUTH_ALLOW_PUBLIC_SIGNUPS=false` for private deployments and populate `AUTH_ALLOWED_EMAILS` with approved users.
 - Use a managed PostgreSQL database with encrypted storage and backups.
-- For larger-scale production, move uploads from database-backed MVP storage to private object storage with per-user paths and signed URLs.
+- Keep server-routed uploads at 4 MB on Vercel. Use authenticated direct private-object uploads for larger files and add malware scanning before accepting uploads from untrusted users.
 - Move rate limits to Redis or another low-latency atomic store if database contention becomes measurable at larger scale.
 - Add CSRF protection to mutation forms if using cookie-based auth outside API fetches.
 - Add malware scanning for uploaded files.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   CheckCircle2,
   Download,
@@ -161,31 +161,6 @@ export function ApplyPacketBuilder({
     selectedCoverId && application?.coverLetterVersionId === selectedCoverId
   );
   const packetSaved = selectedResumeSaved && selectedCoverSaved;
-
-  useEffect(() => {
-    if (!resumeVersions.length) {
-      setSelectedResumeId("");
-      return;
-    }
-
-    if (!resumeVersions.some((version) => version.id === selectedResumeId)) {
-      const applicationResumeExists = resumeVersions.some((version) => version.id === application?.resumeVersionId);
-      setSelectedResumeId(applicationResumeExists ? application?.resumeVersionId ?? resumeVersions[0].id : resumeVersions[0].id);
-    }
-  }, [application?.resumeVersionId, resumeVersions, selectedResumeId]);
-
-  useEffect(() => {
-    if (!coverLetters.length) {
-      setSelectedCoverId("");
-      setIncludeCoverLetter(false);
-      return;
-    }
-
-    if (!coverLetters.some((document) => document.id === selectedCoverId)) {
-      const applicationCoverExists = coverLetters.some((document) => document.id === application?.coverLetterVersionId);
-      setSelectedCoverId(applicationCoverExists ? application?.coverLetterVersionId ?? coverLetters[0].id : coverLetters[0].id);
-    }
-  }, [application?.coverLetterVersionId, coverLetters, selectedCoverId]);
 
   async function runJobAction(action: "match" | "resume" | "cover") {
     setPending(action);

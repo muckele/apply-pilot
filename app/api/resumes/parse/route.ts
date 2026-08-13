@@ -15,8 +15,10 @@ export const runtime = "nodejs";
 async function extractTextFromFile(file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
   const lowerName = file.name.toLowerCase();
+  const configuredMaxMb = Number(process.env.MAX_UPLOAD_MB ?? 4);
+  const maxMb = Number.isFinite(configuredMaxMb) && configuredMaxMb > 0 ? configuredMaxMb : 4;
 
-  if (file.size > Number(process.env.MAX_UPLOAD_MB ?? 8) * 1024 * 1024) {
+  if (file.size > maxMb * 1024 * 1024) {
     throw new PublicApiError("Resume file is too large.");
   }
 

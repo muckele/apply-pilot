@@ -80,9 +80,11 @@ Open `http://localhost:3000/dashboard`.
 - `CRON_MIN_SOURCE_INTERVAL_MINUTES`: skips sources synced more recently than this window, default `360`.
 - `CRON_RUNNING_LOCK_MINUTES`: treats a stuck `RUNNING` sync as stale after this window, default `30`.
 - `FILE_STORAGE_DRIVER`: `database` for durable MVP production storage, `local` for local development.
-- `UPLOAD_DIR`: local file storage path used only when `FILE_STORAGE_DRIVER=local`.
-- `MAX_UPLOAD_MB`: upload limit.
-- `MAX_AUDIO_UPLOAD_MB`: interview audio/video upload limit.
+- Local-development files are scoped to the repository's ignored `uploads/` directory when `FILE_STORAGE_DRIVER=local`.
+- `MAX_UPLOAD_MB`: resume upload limit for files sent through an application route; keep this at `4` on Vercel.
+- `MAX_AUDIO_UPLOAD_MB`: interview audio/video fallback limit for files sent through an application route; keep this at `4` on Vercel.
+- `BLOB_READ_WRITE_TOKEN`: token for a private Vercel Blob store. When present, interview audio uploads directly from the browser to private object storage.
+- `MAX_DIRECT_AUDIO_UPLOAD_MB`: maximum direct private Blob audio upload size; defaults to `25` MB.
 - `APP_VERSION`: optional deployment version/commit label shown in health output.
 - `LOG_LEVEL`: structured logging threshold: `debug`, `info`, `warn`, or `error`.
 - `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session. Ignored in production.

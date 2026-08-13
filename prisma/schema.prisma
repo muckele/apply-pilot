@@ -493,7 +493,7 @@ model InterviewNote {
 model InterviewRecording {
   id                 String        @id @default(cuid())
   interviewId        String
-  filePath           String?
+  filePath           String?       @unique
   transcript         String?
   consentConfirmedAt DateTime?
   consentStatement   String?
