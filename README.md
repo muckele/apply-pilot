@@ -32,6 +32,18 @@ JobMatch CRM helps discover compliant job postings, compare them against a maste
 
 ## Install
 
+Requirements:
+
+- Node.js 24.x
+- npm (bundled with Node.js)
+
+The repository includes `.nvmrc`, so an `nvm`-managed environment can select the supported runtime before installation:
+
+```bash
+nvm install
+nvm use
+```
+
 ```bash
 npm install
 cp .env.example .env

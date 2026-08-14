@@ -4,7 +4,7 @@
   "private": true,
   "description": "Human-in-the-loop job-search CRM and AI resume optimization app.",
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "next dev",
@@ -34,7 +34,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/node": "^22.9.0",
+    "@types/node": "^24.13.3",
     "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
