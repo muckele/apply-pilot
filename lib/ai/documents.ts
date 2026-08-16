@@ -4,7 +4,7 @@ import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
 import { emailReplyPrompt } from "@/prompts/emailReplyPrompt";
 import { interviewFeedbackPrompt } from "@/prompts/interviewFeedbackPrompt";
 import { interviewPrepPrompt } from "@/prompts/interviewPrepPrompt";
-import { generateJson } from "@/lib/ai/client";
+import { generateJson, type AiInvocationOptions } from "@/lib/ai/client";
 
 const coverLetterSchema = z.object({
   title: z.string(),
@@ -50,7 +50,7 @@ export async function draftCoverLetter(payload: {
   job: { title: string; company: string };
   resume?: unknown;
   profile?: unknown;
-}, userId?: string) {
+}, userId?: string, options: AiInvocationOptions = {}) {
   const fallback = {
     title: `${payload.job.company} ${payload.job.title} cover letter`,
     coverLetter: `Dear ${payload.job.company} Hiring Team,\n\nI am interested in the ${payload.job.title} role because it sits at the intersection of technical problem solving, customer communication, and operational follow-through. My background combines full-stack software engineering training with business development, recruiting, scheduling, payer coordination, and small-business operations.\n\nI would bring a practical, customer-facing technical perspective to the team: translating requirements, troubleshooting workflows, communicating clearly with stakeholders, and staying honest about what is supported by the data and systems in front of me.\n\nThank you for your time and consideration.\n\nMathew Uckele`,
@@ -69,7 +69,7 @@ export async function draftCoverLetter(payload: {
     payload,
     fallback,
     schema: coverLetterSchema,
-    context: userId ? { userId, feature: "COVER_LETTER", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "COVER_LETTER", promptVersion: "2", ...options } : undefined
   });
 
   return {
@@ -85,7 +85,7 @@ export async function draftEmailReply(payload: {
   emailText: string;
   tone: string;
   job?: unknown;
-}, userId?: string) {
+}, userId?: string, options: AiInvocationOptions = {}) {
   const fallback = {
     summary: "Recruiter or hiring-team email requiring user review.",
     requestedAction: "Review the message and confirm the appropriate next step.",
@@ -101,7 +101,7 @@ export async function draftEmailReply(payload: {
     payload,
     fallback,
     schema: emailReplySchema,
-    context: userId ? { userId, feature: "EMAIL_REPLY", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "EMAIL_REPLY", promptVersion: "2", ...options } : undefined
   });
 
   return {
@@ -113,7 +113,7 @@ export async function draftEmailReply(payload: {
   };
 }
 
-export async function generateInterviewPrep(payload: unknown, userId?: string) {
+export async function generateInterviewPrep(payload: unknown, userId?: string, options: AiInvocationOptions = {}) {
   const fallback = {
     prepBrief:
       "Prepare to connect the job requirements to customer-facing technical problem solving, software fundamentals, and operations ownership.",
@@ -144,7 +144,7 @@ export async function generateInterviewPrep(payload: unknown, userId?: string) {
     payload,
     fallback,
     schema: interviewPrepSchema,
-    context: userId ? { userId, feature: "INTERVIEW_PREP", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "INTERVIEW_PREP", promptVersion: "2", ...options } : undefined
   });
 
   return {
@@ -156,7 +156,7 @@ export async function generateInterviewPrep(payload: unknown, userId?: string) {
   };
 }
 
-export async function generateInterviewFeedback(payload: unknown, userId?: string) {
+export async function generateInterviewFeedback(payload: unknown, userId?: string, options: AiInvocationOptions = {}) {
   const fallback = {
     summary: "Interview notes saved. Add a transcript or detailed notes for stronger feedback.",
     questionsAsked: [],
@@ -173,7 +173,7 @@ export async function generateInterviewFeedback(payload: unknown, userId?: strin
     payload,
     fallback,
     schema: interviewFeedbackSchema,
-    context: userId ? { userId, feature: "INTERVIEW_FEEDBACK", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "INTERVIEW_FEEDBACK", promptVersion: "2", ...options } : undefined
   });
 
   return {

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
-import { generateJson } from "@/lib/ai/client";
+import { generateJson, type AiInvocationOptions } from "@/lib/ai/client";
 
 export type ParsedResume = {
   contactInfo: Record<string, string | null>;
@@ -102,7 +102,7 @@ function fallbackParse(text: string): ParsedResume {
   };
 }
 
-export async function parseResumeText(text: string, userId?: string) {
+export async function parseResumeText(text: string, userId?: string, options: AiInvocationOptions = {}) {
   if (!text.trim()) {
     throw new Error("Resume text is empty.");
   }
@@ -113,13 +113,18 @@ export async function parseResumeText(text: string, userId?: string) {
     payload: { resumeText: text },
     fallback: fallbackParse(text),
     schema: parsedResumeSchema,
-    context: userId ? { userId, feature: "RESUME_PARSE", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "RESUME_PARSE", promptVersion: "2", ...options } : undefined
   });
 
-  return generated.data;
+  return generated;
 }
 
-export async function tailorResume(payload: unknown, fallbackText: string, userId?: string) {
+export async function tailorResume(
+  payload: unknown,
+  fallbackText: string,
+  userId?: string,
+  options: AiInvocationOptions = {}
+) {
   const fallback: TailoredResumeOutput = {
     professionalSummary:
       "Customer-facing technical professional with full-stack software engineering training and hands-on operations experience across scheduling, compliance, billing workflows, and stakeholder coordination.",
@@ -163,7 +168,7 @@ export async function tailorResume(payload: unknown, fallbackText: string, userI
     payload,
     fallback,
     schema: tailoredResumeSchema,
-    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "2", ...options } : undefined
   });
 
   return {

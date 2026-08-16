@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { jobMatchPrompt } from "@/prompts/jobMatchPrompt";
 import { scoreFromRatio, uniqueStrings } from "@/lib/normalize";
-import { generateJson } from "@/lib/ai/client";
+import { generateJson, type AiInvocationOptions } from "@/lib/ai/client";
 
 export type JobMatchOutput = {
   overallFitScore: number;
@@ -23,7 +23,7 @@ export type JobMatchOutput = {
   recommendation: "apply now" | "consider" | "skip";
 };
 
-type MatchInput = {
+export type MatchInput = {
   job: {
     title: string;
     company: string;
@@ -54,23 +54,7 @@ type MatchInput = {
   } | null;
 };
 
-const defaultSkills = [
-  "javascript",
-  "react",
-  "node",
-  "express",
-  "python",
-  "sql",
-  "mongodb",
-  "postgresql",
-  "django",
-  "rest api",
-  "aws",
-  "customer success",
-  "sales",
-  "operations",
-  "implementation"
-];
+export const JOB_MATCH_PROMPT_VERSION = "3";
 
 const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
 const recommendationSchema = z.preprocess(
@@ -106,8 +90,7 @@ function heuristicMatch(input: MatchInput): JobMatchOutput {
   const text = `${input.job.title} ${input.job.description} ${(input.job.requirements ?? []).join(" ")} ${(input.job.detectedTechStack ?? []).join(" ")}`.toLowerCase();
   const candidateSkills = uniqueStrings([
     ...(input.resume?.skills ?? []),
-    ...(input.profile?.skillsToEmphasize ?? []),
-    ...defaultSkills
+    ...(input.profile?.skillsToEmphasize ?? [])
   ]).map((skill) => skill.toLowerCase());
   const supportedKeywords = candidateSkills.filter((skill) => hasTerm(text, skill));
   const visibleKeywords = uniqueStrings([
@@ -170,7 +153,34 @@ function heuristicMatch(input: MatchInput): JobMatchOutput {
   };
 }
 
-export async function scoreJobMatch(input: MatchInput, userId?: string) {
+export function enforceJobMatchEvidence(output: JobMatchOutput, input: MatchInput): JobMatchOutput {
+  const evidence = JSON.stringify({ resume: input.resume, profile: input.profile }).toLowerCase();
+  const supportedKeywords = uniqueStrings(
+    output.supportedKeywords.filter((keyword) => hasTerm(evidence, keyword))
+  );
+  const unsupportedClaims = uniqueStrings(
+    output.supportedKeywords.filter((keyword) => !hasTerm(evidence, keyword))
+  );
+  const keywordsToEmphasize = uniqueStrings(
+    output.keywordsToEmphasize.filter((keyword) => hasTerm(evidence, keyword))
+  );
+  const concerns = unsupportedClaims.length
+    ? uniqueStrings([
+        ...output.concerns,
+        `The resume/profile does not explicitly contain: ${unsupportedClaims.join(", ")}. Treat these as missing rather than supported.`
+      ])
+    : output.concerns;
+
+  return {
+    ...output,
+    concerns,
+    missingKeywords: uniqueStrings([...output.missingKeywords, ...unsupportedClaims]),
+    supportedKeywords,
+    keywordsToEmphasize
+  };
+}
+
+export async function scoreJobMatch(input: MatchInput, userId?: string, options: AiInvocationOptions = {}) {
   const fallback = heuristicMatch(input);
 
   const generated = await generateJson<JobMatchOutput>({
@@ -179,11 +189,15 @@ export async function scoreJobMatch(input: MatchInput, userId?: string) {
     payload: input,
     fallback,
     schema: jobMatchOutputSchema,
-    context: userId ? { userId, feature: "JOB_MATCH", promptVersion: "2" } : undefined
+    context: userId
+      ? { userId, feature: "JOB_MATCH", promptVersion: JOB_MATCH_PROMPT_VERSION, ...options }
+      : undefined
   });
 
+  const verified = enforceJobMatchEvidence(generated.data, input);
+
   return {
-    ...generated.data,
+    ...verified,
     model: generated.meta.model,
     promptVersion: generated.meta.promptVersion,
     inputHash: generated.meta.requestHash,
