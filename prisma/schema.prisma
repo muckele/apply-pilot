@@ -64,6 +64,7 @@ enum EventType {
   INTERVIEW_ADDED
   FOLLOW_UP_SCHEDULED
   OUTCOME_RECORDED
+  APPLICATION_RUN_EVENT
 }
 
 enum EmailDirection {
@@ -120,6 +121,57 @@ enum ConsentStatus {
   CONSENT_CONFIRMED
 }
 
+enum AutomationMode {
+  PREPARE_ONLY
+}
+
+enum SensitiveAnswerPolicy {
+  EXCLUDE
+}
+
+enum ApplicationRunState {
+  DRAFT
+  PREPARING
+  READY
+  FILLING
+  REVIEW_REQUIRED
+  READY_FOR_USER_SUBMISSION
+  COMPLETED_BY_USER
+  BLOCKED
+  FAILED
+  CANCELLED
+}
+
+enum ApplicationAnswerSourceType {
+  PROFILE
+  ANSWER_VAULT
+  MASTER_RESUME
+  TAILORED_RESUME
+  APPLICATION_PLAN
+  USER_PROVIDED
+  GENERATED_WITH_EVIDENCE
+}
+
+enum ApplicationRunAnswerStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ApplicationRunStepStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum ApplicationExecutionScope {
+  APPLICATION_READ
+  APPLICATION_FILL
+  APPLICATION_EVENT_WRITE
+}
+
 model User {
   id            String    @id @default(cuid())
   name          String?
@@ -157,6 +209,12 @@ model User {
   aiBudgetLedgers      AIBudgetLedger[]
   aiBudgetReservations AIBudgetReservation[]
   aiResponseCaches     AIResponseCache[]
+
+  applicationAutomationPolicy ApplicationAutomationPolicy?
+  applicationRuns             ApplicationRun[]
+  applicationRunAnswers       ApplicationRunAnswer[]
+  applicationRunSteps         ApplicationRunStep[]
+  applicationExecutionTokens  ApplicationExecutionToken[]
 }
 
 model UserProfile {
@@ -233,11 +291,12 @@ model ResumeVersion {
   lineSpacing      Int      @default(115)
   createdAt        DateTime @default(now())
 
-  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  resume             Resume?       @relation(fields: [resumeId], references: [id], onDelete: SetNull)
-  jobPosting         JobPosting?   @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application        Application?  @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
-  usedByApplications Application[] @relation("ApplicationResumeUsed")
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resume             Resume?          @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  jobPosting         JobPosting?      @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application        Application?     @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
+  usedByApplications Application[]    @relation("ApplicationResumeUsed")
+  applicationRuns    ApplicationRun[]
 }
 
 model StoredFile {
@@ -339,6 +398,7 @@ model JobPosting {
   interviewQuestions InterviewQuestion[]
   tasks              Task[]
   reminders          FollowUpReminder[]
+  applicationRuns    ApplicationRun[]
 
   @@unique([userId, normalizedCompany, normalizedTitle, normalizedLocation, normalizedApplyUrl], map: "job_dedupe_unique")
   @@index([userId, status])
@@ -377,6 +437,7 @@ model Application {
   interviews         Interview[]
   tasks              Task[]
   reminders          FollowUpReminder[]
+  applicationRuns    ApplicationRun[]
 
   @@unique([userId, jobPostingId])
   @@index([userId, status])
@@ -521,10 +582,11 @@ model GeneratedDocument {
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 
-  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting           JobPosting?   @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application          Application?  @relation("GeneratedDocumentsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
-  usedAsCoverLetterFor Application[] @relation("ApplicationCoverLetter")
+  user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting           JobPosting?      @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application          Application?     @relation("GeneratedDocumentsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
+  usedAsCoverLetterFor Application[]    @relation("ApplicationCoverLetter")
+  applicationRuns      ApplicationRun[]
 
   @@index([userId, type])
 }
@@ -738,6 +800,160 @@ model AIResponseCache {
 
   @@unique([userId, provider, model, promptName, promptVersion, requestHash], map: "ai_response_cache_key")
   @@index([userId, expiresAt])
+}
+
+model ApplicationAutomationPolicy {
+  id                     String                @id @default(cuid())
+  userId                 String                @unique
+  enabled                Boolean               @default(false)
+  mode                   AutomationMode        @default(PREPARE_ONLY)
+  minimumFitScore        Int                   @default(85)
+  minimumConfidenceScore Int                   @default(85)
+  dailyApplicationCap    Int                   @default(5)
+  allowedHosts           String[]              @default([])
+  blockedHosts           String[]              @default([])
+  permittedAdapters      String[]              @default([])
+  coverLetterRequired    Boolean               @default(true)
+  sensitiveAnswerPolicy  SensitiveAnswerPolicy @default(EXCLUDE)
+  finalReviewRequired    Boolean               @default(true)
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ApplicationRun {
+  id                             String              @id @default(cuid())
+  userId                         String
+  jobPostingId                   String
+  applicationId                  String
+  state                          ApplicationRunState @default(DRAFT)
+  idempotencyKey                 String
+  activeRunKey                   String?             @unique
+  stateVersion                   Int                 @default(0)
+  prepareAttemptId               String?
+  prepareLeaseExpiresAt          DateTime?
+  firstPreparingAt               DateTime?
+  applyUrlSnapshot               String
+  applyHost                      String
+  detectedAdapter                String?
+  policySnapshot                 Json?
+  policyHash                     String?
+  fitScoreSnapshot               Int?
+  matchConfidenceScoreSnapshot   Int?
+  plannerConfidenceScoreSnapshot Int?
+  resumeVersionId                String?
+  resumeContentHash              String?
+  coverLetterVersionId           String?
+  coverLetterContentHash         String?
+  applicationPlanSnapshot        Json?
+  requirementCatalogSnapshot     Json?
+  evidenceCatalogSnapshot        Json?
+  plannerProvider                String?
+  plannerModel                   String?
+  plannerPromptVersion           String?
+  plannerRequestHash             String?
+  reviewReasons                  String[]            @default([])
+  reviewAcknowledgedAt           DateTime?
+  blockingReason                 String?
+  errorCategory                  String?
+  preparedAt                     DateTime?
+  completedAt                    DateTime?
+  cancelledAt                    DateTime?
+  createdAt                      DateTime            @default(now())
+  updatedAt                      DateTime            @updatedAt
+
+  user               User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting         JobPosting                  @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  application        Application                 @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  resumeVersion      ResumeVersion?              @relation(fields: [resumeVersionId], references: [id], onDelete: SetNull)
+  coverLetterVersion GeneratedDocument?          @relation(fields: [coverLetterVersionId], references: [id], onDelete: SetNull)
+  answers            ApplicationRunAnswer[]
+  steps              ApplicationRunStep[]
+  executionTokens    ApplicationExecutionToken[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, state])
+  @@index([userId, firstPreparingAt])
+  @@index([userId, createdAt])
+}
+
+model ApplicationRunAnswer {
+  id                 String                       @id @default(cuid())
+  runId              String
+  userId             String
+  normalizedFieldKey String
+  originalQuestion   String
+  proposedValue      String?
+  valueRedacted      Boolean                      @default(false)
+  sourceType         ApplicationAnswerSourceType?
+  sourceIds          String[]                     @default([])
+  evidenceIds        String[]                     @default([])
+  confidence         Int                          @default(0)
+  sensitive          Boolean                      @default(false)
+  required           Boolean                      @default(false)
+  requiresReview     Boolean                      @default(true)
+  status             ApplicationRunAnswerStatus   @default(PENDING)
+  reviewedByUser     Boolean                      @default(false)
+  reviewedAt         DateTime?
+  finalValueHash     String?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  run  ApplicationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, normalizedFieldKey])
+  @@index([userId, runId])
+}
+
+model ApplicationRunStep {
+  id                   String                   @id @default(cuid())
+  runId                String
+  userId               String
+  stepKey              String
+  sequence             Int
+  action               String
+  semanticFieldKey     String?
+  adapter              String?
+  status               ApplicationRunStepStatus @default(PENDING)
+  attemptNumber        Int                      @default(1)
+  redactedValueSummary String?
+  errorCategory        String?
+  artifactReference    String?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime                 @default(now())
+  updatedAt            DateTime                 @updatedAt
+
+  run  ApplicationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, stepKey, attemptNumber])
+  @@index([runId, sequence])
+  @@index([userId, runId])
+}
+
+model ApplicationExecutionToken {
+  id          String                    @id @default(cuid())
+  userId      String
+  runId       String
+  tokenHash   String                    @unique
+  tokenPrefix String
+  host        String
+  scope       ApplicationExecutionScope
+  singleUse   Boolean                   @default(true)
+  consumedAt  DateTime?
+  lastUsedAt  DateTime?
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime                  @default(now())
+
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  run  ApplicationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([userId, runId])
+  @@index([expiresAt])
 }
 
 model Task {
