@@ -558,7 +558,7 @@ model BrowserCaptureToken {
   name        String
   tokenHash   String    @unique
   tokenPrefix String
-  scopes      String[]
+  scopes      String[]  @default([])
   lastUsedAt  DateTime?
   expiresAt   DateTime?
   revokedAt   DateTime?
@@ -597,7 +597,7 @@ model InterviewQuestion {
   category           String    @default("GENERAL")
   answer             String?
   improvedAnswer     String?
-  tags               String[]
+  tags               String[]  @default([])
   timesAsked         Int       @default(0)
   lastAskedAt        DateTime?
   createdAt          DateTime  @default(now())
@@ -620,7 +620,7 @@ model StarStory {
   task        String
   action      String
   result      String
-  skills      String[]
+  skills      String[] @default([])
   roleContext String?
   isFavorite  Boolean  @default(false)
   createdAt   DateTime @default(now())
