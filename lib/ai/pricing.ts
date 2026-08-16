@@ -1,6 +1,8 @@
 import { PublicApiError } from "@/lib/api-errors";
 
-export type AiProviderName = "gemini" | "openai";
+export type AiProviderName = "gemini" | "openai" | "kimi";
+
+export const AI_PROVIDER_NAMES: readonly AiProviderName[] = ["gemini", "openai", "kimi"];
 
 export type ModelPricing = {
   provider: AiProviderName;
@@ -12,6 +14,9 @@ export type ModelPricing = {
 // Keep this registry explicit. Paid calls fail closed when a selected model is absent.
 // Standard, real-time Gemini prices: https://ai.google.dev/gemini-api/docs/pricing
 // Do not use lower batch or flex prices for synchronous application requests.
+// Kimi K3 standard real-time prices: https://platform.kimi.ai/docs/pricing (verified 2026-08-15).
+// Kimi output billing includes reasoning tokens. Never register deprecated K2 preview models.
+// Pricing changes require an intentional code update here; environment variables cannot raise them.
 export const MODEL_PRICING_REGISTRY: Record<string, ModelPricing> = {
   "gemini-3.1-flash-lite": {
     provider: "gemini",
@@ -34,6 +39,12 @@ export const MODEL_PRICING_REGISTRY: Record<string, ModelPricing> = {
     inputUsdPerMillion: 0.15,
     outputUsdPerMillion: 0.6,
     cachedInputUsdPerMillion: 0.075
+  },
+  "kimi-k3": {
+    provider: "kimi",
+    inputUsdPerMillion: 3,
+    cachedInputUsdPerMillion: 0.3,
+    outputUsdPerMillion: 15
   }
 };
 

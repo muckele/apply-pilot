@@ -3,6 +3,7 @@ import { zodResponseFormat } from "openai/helpers/zod";
 import type { z } from "zod";
 
 import type { AiProviderName } from "@/lib/ai/pricing";
+import { callKimiJsonProvider } from "@/lib/ai/providers/kimi";
 
 export type ProviderJsonResult = {
   content: string;
@@ -110,6 +111,10 @@ export async function callJsonProvider<T>({
   schema,
   maxOutputTokens
 }: ProviderJsonRequest<T>): Promise<ProviderJsonResult> {
+  if (provider === "kimi") {
+    return callKimiJsonProvider({ model, promptName, systemPrompt, payload, schema, maxOutputTokens });
+  }
+
   if (provider === "gemini") {
     return callGeminiJsonProvider({
       model,

@@ -9,7 +9,8 @@ export type AiFeature =
   | "COVER_LETTER"
   | "EMAIL_REPLY"
   | "INTERVIEW_PREP"
-  | "INTERVIEW_FEEDBACK";
+  | "INTERVIEW_FEEDBACK"
+  | "APPLICATION_PLAN";
 
 export type AiModelTier = "fast" | "quality";
 
@@ -28,7 +29,11 @@ export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
   COVER_LETTER: { maxOutputTokens: 1_500, maxInputTokens: 56_000, modelTier: "quality" },
   EMAIL_REPLY: { maxOutputTokens: 1_000, maxInputTokens: 32_000, modelTier: "fast" },
   INTERVIEW_PREP: { maxOutputTokens: 4_000, maxInputTokens: 56_000, modelTier: "quality" },
-  INTERVIEW_FEEDBACK: { maxOutputTokens: 5_000, maxInputTokens: 42_000, modelTier: "quality" }
+  INTERVIEW_FEEDBACK: { maxOutputTokens: 5_000, maxInputTokens: 42_000, modelTier: "quality" },
+  // Advisory application planning only. Bounded so the worst-case Kimi K3 request
+  // (12,000 uncached input + 4,000 output = $0.096) stays under the compiled
+  // ten-cent per-request ceiling. Do not raise these limits without re-pricing.
+  APPLICATION_PLAN: { maxOutputTokens: 4_000, maxInputTokens: 12_000, modelTier: "quality" }
 };
 
 const FIELD_LIMITS = {

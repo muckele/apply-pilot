@@ -4,7 +4,7 @@ import { afterEach, test } from "node:test";
 import { getAiFinancialPolicy, getAiRuntimeMode } from "@/lib/ai/config";
 import { enforceJobMatchEvidence, type JobMatchOutput, type MatchInput } from "@/lib/ai/job-match";
 import { AI_FEATURE_POLICIES, assertAiInputWithinLimits, splitTranscriptSections } from "@/lib/ai/policy";
-import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { estimateAiCostMicros, getModelPricing, MODEL_PRICING_REGISTRY } from "@/lib/ai/pricing";
 import { PublicApiError } from "@/lib/api-errors";
 
 const trackedEnvironment = [
@@ -135,4 +135,51 @@ test("job match evidence enforcement demotes inferred keywords", () => {
   assert.deepEqual(verified.keywordsToEmphasize, ["SQL"]);
   assert.deepEqual(verified.missingKeywords, ["Customer support"]);
   assert.match(verified.concerns[0], /Customer support/);
+});
+
+test("Kimi K3 pricing is registered at the current standard rates", () => {
+  assert.deepEqual(getModelPricing("kimi-k3"), {
+    provider: "kimi",
+    inputUsdPerMillion: 3,
+    cachedInputUsdPerMillion: 0.3,
+    outputUsdPerMillion: 15
+  });
+});
+
+test("deprecated Kimi K2 preview models are absent and fail closed", () => {
+  assert.equal(MODEL_PRICING_REGISTRY["kimi-k2-0905-preview"], undefined);
+  assert.ok(Object.keys(MODEL_PRICING_REGISTRY).every((model) => !model.startsWith("kimi-k2")));
+  assert.throws(
+    () => getModelPricing("kimi-k2-0905-preview"),
+    (error) => error instanceof PublicApiError && error.details?.code === "AI_MODEL_PRICING_UNKNOWN"
+  );
+});
+
+test("the application plan policy fits the compiled per-request cost ceiling", () => {
+  assert.deepEqual(AI_FEATURE_POLICIES.APPLICATION_PLAN, {
+    maxOutputTokens: 4_000,
+    maxInputTokens: 12_000,
+    modelTier: "quality"
+  });
+
+  const ceilingMicros = getAiFinancialPolicy().maximumRequestCents * 10_000;
+  assert.equal(ceilingMicros, 100_000);
+
+  const worstCase = estimateAiCostMicros({ model: "kimi-k3", inputTokens: 12_000, outputTokens: 4_000 });
+  assert.equal(worstCase, 96_000);
+  assert.ok(worstCase <= ceilingMicros);
+
+  const fullyCachedInput = estimateAiCostMicros({
+    model: "kimi-k3",
+    inputTokens: 12_000,
+    cachedInputTokens: 12_000,
+    outputTokens: 4_000
+  });
+  assert.equal(fullyCachedInput, 63_600);
+});
+
+test("the rejected 56k-input plan sizing would exceed the per-request ceiling", () => {
+  const rejected = estimateAiCostMicros({ model: "kimi-k3", inputTokens: 56_000, outputTokens: 4_000 });
+  assert.equal(rejected, 228_000);
+  assert.ok(rejected > getAiFinancialPolicy().maximumRequestCents * 10_000);
 });

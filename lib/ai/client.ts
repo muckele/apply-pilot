@@ -9,7 +9,7 @@ import {
   getOpenAIModel
 } from "@/lib/ai/config";
 import { assertAiInputWithinLimits, isAiFeature, type AiFeature } from "@/lib/ai/policy";
-import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { estimateAiCostMicros, getModelPricing, type AiProviderName } from "@/lib/ai/pricing";
 import { callJsonProvider } from "@/lib/ai/providers";
 import {
   findCachedAiResponse,
@@ -35,7 +35,7 @@ export type AiInvocationOptions = Pick<AiCallContext, "automation" | "highCostCo
 export type GeneratedJsonResult<T> = {
   data: T;
   meta: {
-    provider: "gemini" | "openai" | "local";
+    provider: AiProviderName | "local";
     model: string;
     promptVersion: string;
     requestHash: string;

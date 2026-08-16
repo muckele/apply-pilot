@@ -1,4 +1,5 @@
 import { getAllowedAuthEmails, requiresEmailAllowlist } from "@/lib/auth-access";
+import { KIMI_REASONING_EFFORTS, parseAiProviderOverrides } from "@/lib/ai/config";
 
 type DeploymentEnv = Record<string, string | undefined>;
 
@@ -77,6 +78,22 @@ export function checkDeploymentReadiness(
     env.AI_MOCK_MODE !== "true" &&
     !(aiProvider === "openai" && env.OPENAI_MOCK_MODE === "true");
 
+  // Feature-level provider overrides: malformed entries fail closed here too, and a
+  // Kimi route requires the Moonshot server key before deployment is considered ready.
+  let kimiRouted = false;
+  try {
+    kimiRouted = Object.values(parseAiProviderOverrides(env.AI_PROVIDER_OVERRIDES)).includes("kimi");
+  } catch {
+    issues.push("invalid_ai_provider_override");
+  }
+  const kimiReasoningEffort = env.KIMI_REASONING_EFFORT?.trim();
+  if (
+    kimiReasoningEffort &&
+    !KIMI_REASONING_EFFORTS.includes(kimiReasoningEffort as (typeof KIMI_REASONING_EFFORTS)[number])
+  ) {
+    issues.push("invalid_kimi_reasoning_effort");
+  }
+
   if (production) {
     const expectedOrigin = productionOrigin(env, requestOrigin);
 
@@ -120,6 +137,9 @@ export function checkDeploymentReadiness(
     }
     if (aiEnabled && aiProvider === "openai" && !env.OPENAI_API_KEY?.trim()) {
       issues.push("missing_openai_api_key");
+    }
+    if (aiEnabled && kimiRouted && !env.MOONSHOT_API_KEY?.trim()) {
+      issues.push("missing_kimi_api_key");
     }
     const aiLimits = [
       ["AI_HARD_CAP_CENTS", 500],
