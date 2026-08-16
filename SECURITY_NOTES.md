@@ -56,4 +56,9 @@
 - Resume tailoring warns against unsupported keywords.
 - Drafts are saved for user review; they are not sent automatically.
 - Application answers can be revealed and copied, but the app and extension do not fill or submit employer forms.
+- Kimi (Moonshot) application planning is opt-in per feature through `AI_PROVIDER_OVERRIDES`; without an override, no data is sent to Moonshot.
+- Application-planning payloads are privacy-minimized by construction: deterministic evidence catalogs exclude contact details, raw resume text, file bytes and paths, Answer Vault entries, EEO/demographic data, work-authorization notes, and browser or session state.
+- Planner output references evidence only by catalog ID. Unknown IDs are discarded and recorded, human-readable evidence text is hydrated locally from the catalog, and Kimi `reasoning_content` is never parsed or persisted.
+- Application plans are advisory only: they never execute code, invoke tools, fill forms, send messages, or submit applications. AUTO_SUBMIT_ALLOWLISTED — NOT IMPLEMENTED. No executable employer-form submission path currently exists.
+- Live Kimi planning evaluation is opt-in: `AI_EVAL_PLAN_TOP` defaults to `0`, real-data evaluation additionally requires `KIMI_EVAL_DATA_ACKNOWLEDGED=true`, and reports write only to the gitignored `evaluation-results/` directory.
 - The Answer Vault is for recurring job-application responses, not passwords, government identifiers, identity documents, or financial credentials.

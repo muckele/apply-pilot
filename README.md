@@ -81,6 +81,12 @@ Open `http://localhost:3000/dashboard`.
 - `AI_CONFIRMATION_THRESHOLD_CENTS`: browser confirmation threshold, limited to `5` ($0.05).
 - `GEMINI_API_KEY`: server-only Gemini API Auth key. Never prefix this variable with `NEXT_PUBLIC_`.
 - `GEMINI_FAST_MODEL` / `GEMINI_QUALITY_MODEL`: provider models selected by each feature policy.
+- `MOONSHOT_API_KEY`: server-only Kimi (Moonshot) credential, required only when a feature override routes to Kimi. Never prefix with `NEXT_PUBLIC_`.
+- `KIMI_MODEL`: Kimi model, default `kimi-k3`. Must exist in the server pricing registry; unknown models fail closed.
+- `KIMI_REASONING_EFFORT`: `low` (default), `high`, or `max`. Higher effort raises reasoning-token cost, which is billed as output.
+- `AI_PROVIDER_OVERRIDES`: feature-level provider routing, e.g. `APPLICATION_PLAN:kimi`. Only `APPLICATION_PLAN` is eligible; all other features remain on the default provider.
+- `AI_EVAL_PLAN_TOP`: application-planning cases per evaluation run, default `0` (no planning calls).
+- `KIMI_EVAL_MODE`: `synthetic` (default, fixture data only), `sanitized`, or `real`. Real-data planning evaluation additionally requires `KIMI_EVAL_DATA_ACKNOWLEDGED=true`.
 - `OPENAI_API_KEY` / `OPENAI_MODEL`: optional alternative provider configuration.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
 - `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.
@@ -160,10 +166,15 @@ The app uses structured JSON prompts in `/prompts`:
 - `emailReplyPrompt`
 - `interviewPrepPrompt`
 - `interviewFeedbackPrompt`
+- `applicationPlanPrompt` (advisory application planning; routed separately)
 
 The recommended private-MVP configuration uses Gemini 3.5 Flash-Lite for both routine analysis and document workflows. Gemini 3.1 Flash-Lite remains in the allowlist as a lower-cost manual option, but the app never falls back to it automatically. Both models keep every feature's maximum request cost below the compiled ten-cent ceiling at standard real-time pricing. Create a server-side Gemini API Auth key, set `GEMINI_API_KEY`, leave `AI_ENABLED=false` while evaluating, and set it to `true` only after the quality and honesty checks pass. Without an enabled provider and key, the app remains usable with deterministic local output and makes no billable AI request.
 
 Paid calls use schema-validated structured outputs with fixed feature input/output limits and no provider tools or search grounding. Before a call, the app atomically reserves the full ten-cent per-request ceiling from a monthly ledger. It then reconciles actual usage and releases unused funds. Interrupted calls remain charged at their full reservation until reconciled. Unknown models fail closed. Identical request hashes use cached output or an in-progress claim, and only one schema-validation retry is permitted when both attempts fit the ten-cent request ceiling.
+
+### Kimi application planning (opt-in)
+
+Application planning (`APPLICATION_PLAN`) can be routed to Kimi K3 while every other feature remains on the default provider: set `AI_PROVIDER_OVERRIDES="APPLICATION_PLAN:kimi"` and `MOONSHOT_API_KEY`. Planning sends a privacy-minimized payload built by `lib/ai/application-plan.ts`: a bounded job-requirements catalog plus a deterministic candidate-evidence catalog with no contact details, raw resume text, file data, or answer-vault content. The model references evidence only by catalog ID; human-readable text is hydrated locally from the catalog, and Kimi reasoning content is never persisted. Plans are advisory only — they never fill forms, send messages, or submit applications. Live planning evaluation is off by default (`AI_EVAL_PLAN_TOP=0`). See `docs/CONTROLLED_APPLICATION_AUTOMATION.md` for the milestone tracker.
 
 The AI Controls page shows spent, reserved, and remaining balances; automation has a separate allowance so discovery cannot consume the manual writing budget. Warnings appear at 50%, 75%, and 90%. Requests that could exceed five cents require explicit browser confirmation. The default layers are a $5 application cap, $1.50 automation cap, $0.10 per-request cap, and `AI_ENABLED=false` emergency switch.
 
