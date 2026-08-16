@@ -8,12 +8,23 @@ import { PrimaryButton } from "@/components/ui";
 
 type Settings = {
   monthlyBudgetCents: number;
+  automationBudgetCents: number;
   maxAnalysesPerSync: number;
   aiDiscoveryEnabled: boolean;
   modelOverride: string | null;
 };
 
-export function AiSettingsPanel({ initialSettings, allowedModels }: { initialSettings: Settings; allowedModels: string[] }) {
+export function AiSettingsPanel({
+  initialSettings,
+  allowedModels,
+  maximumBudgetCents,
+  maximumAutomationBudgetCents
+}: {
+  initialSettings: Settings;
+  allowedModels: string[];
+  maximumBudgetCents: number;
+  maximumAutomationBudgetCents: number;
+}) {
   const router = useRouter();
   const [settings, setSettings] = useState(initialSettings);
   const [pending, setPending] = useState(false);
@@ -56,19 +67,43 @@ export function AiSettingsPanel({ initialSettings, allowedModels }: { initialSet
         </span>
       </label>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <label className="text-sm font-medium text-slate-700">
           Monthly budget (USD)
           <input
             type="number"
             min={1}
-            max={1000}
+            max={maximumBudgetCents / 100}
             step="0.50"
             value={(settings.monthlyBudgetCents / 100).toFixed(2)}
             onChange={(event) =>
               setSettings((current) => ({
                 ...current,
-                monthlyBudgetCents: Math.max(100, Math.round(Number(event.target.value || 0) * 100))
+                monthlyBudgetCents: Math.min(
+                  maximumBudgetCents,
+                  Math.max(100, Math.round(Number(event.target.value || 0) * 100))
+                )
+              }))
+            }
+            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
+          />
+        </label>
+        <label className="text-sm font-medium text-slate-700">
+          Automation allowance (USD)
+          <input
+            type="number"
+            min={0}
+            max={Math.min(maximumAutomationBudgetCents, settings.monthlyBudgetCents) / 100}
+            step="0.25"
+            value={(settings.automationBudgetCents / 100).toFixed(2)}
+            onChange={(event) =>
+              setSettings((current) => ({
+                ...current,
+                automationBudgetCents: Math.min(
+                  maximumAutomationBudgetCents,
+                  current.monthlyBudgetCents,
+                  Math.max(0, Math.round(Number(event.target.value || 0) * 100))
+                )
               }))
             }
             className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"

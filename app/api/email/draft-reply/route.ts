@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { draftEmailReply } from "@/lib/ai/documents";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -24,7 +25,8 @@ export async function POST(request: NextRequest) {
         tone: input.tone,
         job
       },
-      userId
+      userId,
+      aiInvocationFromRequest(request)
     );
 
     if (emailMessage) {

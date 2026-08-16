@@ -19,7 +19,9 @@
 - API routes use PostgreSQL-backed rate-limit buckets that are shared across serverless instances.
 - Browser capture tokens are random, hashed before storage, scope-limited, revocable, expiring, rate-limited, and never included in account exports.
 - The browser extension requests `activeTab` access only after a click and stores its raw token in Chrome session storage rather than long-lived extension storage.
-- AI usage records capture token counts and estimated cost, while user-set monthly budgets block new calls when current pricing is configured.
+- Paid AI calls use an atomic monthly reservation ledger. The app reserves the maximum registered request cost before provider access, reconciles actual usage afterward, and treats interrupted calls as fully spent until reconciled.
+- Paid AI is disabled by `AI_ENABLED=false`; unknown models and missing pricing fail closed. Discovery automation has a separate allowance, duplicate request hashes are claimed atomically, and no provider tools or search grounding are enabled.
+- AI usage records capture provider, model, feature, prompt version, token counts, request hash, automation status, reservation, and estimated cost without repeating raw prompt inputs.
 - Resume uploads validate file type and size.
 - Interview audio upload requires explicit consent confirmation.
 - `.env` is ignored and `.env.example` contains no secrets.

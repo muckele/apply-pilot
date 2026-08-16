@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getAllowedOpenAIModels } from "@/lib/ai/client";
+import { getAiFinancialPolicy, getAllowedAiModels } from "@/lib/ai/config";
 import { getMonthlyAiUsage, getOrCreateAiSettings } from "@/lib/ai/usage";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
@@ -9,7 +9,8 @@ import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
 const settingsSchema = z.object({
-  monthlyBudgetCents: z.coerce.number().int().min(100).max(100_000).optional(),
+  monthlyBudgetCents: z.coerce.number().int().min(100).max(500).optional(),
+  automationBudgetCents: z.coerce.number().int().min(0).max(150).optional(),
   maxAnalysesPerSync: z.coerce.number().int().min(0).max(25).optional(),
   aiDiscoveryEnabled: z.boolean().optional(),
   modelOverride: z.string().trim().max(100).nullable().optional()
@@ -25,6 +26,7 @@ export async function GET() {
         where: { userId },
         select: {
           id: true,
+          provider: true,
           feature: true,
           model: true,
           promptName: true,
@@ -34,6 +36,7 @@ export async function GET() {
           cachedInputTokens: true,
           estimatedCostMicros: true,
           status: true,
+          automation: true,
           createdAt: true
         },
         orderBy: { createdAt: "desc" },
@@ -41,7 +44,7 @@ export async function GET() {
       })
     ]);
 
-    return NextResponse.json({ settings, usage, recent, allowedModels: getAllowedOpenAIModels() });
+    return NextResponse.json({ settings, usage, recent, allowedModels: getAllowedAiModels() });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -52,7 +55,17 @@ export async function PATCH(request: NextRequest) {
     const userId = await requireUserId();
     await checkRateLimit(`ai-settings:update:${userId}`, 20, 60_000);
     const input = settingsSchema.parse(await request.json());
-    if (input.modelOverride && !getAllowedOpenAIModels().includes(input.modelOverride)) {
+    const current = await getOrCreateAiSettings(userId);
+    const financialPolicy = getAiFinancialPolicy();
+    const monthlyBudgetCents = input.monthlyBudgetCents ?? current.monthlyBudgetCents;
+    const automationBudgetCents = input.automationBudgetCents ?? current.automationBudgetCents;
+    if (monthlyBudgetCents > financialPolicy.hardCapCents) {
+      throw new PublicApiError("The monthly AI budget cannot exceed the server's $5 hard cap.");
+    }
+    if (automationBudgetCents > financialPolicy.automationCapCents || automationBudgetCents > monthlyBudgetCents) {
+      throw new PublicApiError("The automation allowance must fit within the $1.50 automation and monthly caps.");
+    }
+    if (input.modelOverride && !getAllowedAiModels().includes(input.modelOverride)) {
       throw new PublicApiError("Choose a model allowed by the server configuration.");
     }
     const modelOverrideUpdate = input.modelOverride !== undefined
@@ -64,6 +77,7 @@ export async function PATCH(request: NextRequest) {
         create: {
           userId,
           monthlyBudgetCents: input.monthlyBudgetCents,
+          automationBudgetCents: input.automationBudgetCents,
           maxAnalysesPerSync: input.maxAnalysesPerSync,
           aiDiscoveryEnabled: input.aiDiscoveryEnabled,
           modelOverride: input.modelOverride || null
@@ -81,6 +95,7 @@ export async function PATCH(request: NextRequest) {
           resourceId: updated.id,
           metadata: {
             monthlyBudgetCents: updated.monthlyBudgetCents,
+            automationBudgetCents: updated.automationBudgetCents,
             maxAnalysesPerSync: updated.maxAnalysesPerSync,
             aiDiscoveryEnabled: updated.aiDiscoveryEnabled,
             modelOverride: updated.modelOverride

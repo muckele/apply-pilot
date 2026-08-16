@@ -47,6 +47,37 @@ test("production readiness reports mock mode as local even when a key exists", (
   assert.equal(result.aiMode, "heuristic-local");
 });
 
+test("production readiness recognizes enabled Gemini and requires its server key", () => {
+  const enabled = checkDeploymentReadiness(
+    productionEnv({
+      AI_ENABLED: "true",
+      AI_PROVIDER: "gemini",
+      AI_MOCK_MODE: "false",
+      GEMINI_API_KEY: "configured-gemini-key"
+    }),
+    productionOrigin
+  );
+  assert.equal(enabled.ready, true);
+  assert.equal(enabled.aiMode, "gemini");
+
+  const missingKey = checkDeploymentReadiness(
+    productionEnv({ AI_ENABLED: "true", AI_PROVIDER: "gemini", AI_MOCK_MODE: "false" }),
+    productionOrigin
+  );
+  assert.equal(missingKey.ready, false);
+  assert.ok(missingKey.issues.includes("missing_gemini_api_key"));
+});
+
+test("production readiness rejects AI limits above the compiled ceilings", () => {
+  const result = checkDeploymentReadiness(
+    productionEnv({ AI_HARD_CAP_CENTS: "501", AI_AUTOMATION_CAP_CENTS: "151" }),
+    productionOrigin
+  );
+  assert.equal(result.ready, false);
+  assert.ok(result.issues.includes("invalid_ai_limit:AI_HARD_CAP_CENTS"));
+  assert.ok(result.issues.includes("invalid_ai_limit:AI_AUTOMATION_CAP_CENTS"));
+});
+
 test("production readiness detects canonical and Gmail callback mismatches", () => {
   const wrongOrigin = "https://apply-pilot.vercel.app";
   const result = checkDeploymentReadiness(

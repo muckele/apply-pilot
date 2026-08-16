@@ -71,11 +71,17 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
-- `OPENAI_API_KEY`: optional OpenAI API key. When omitted, supported workflows use deterministic local fallback output.
-- `OPENAI_MODEL`: default model for structured JSON generations.
-- `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
-- `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
-- `OPENAI_INPUT_COST_PER_1M_USD`, `OPENAI_OUTPUT_COST_PER_1M_USD`, and `OPENAI_CACHED_INPUT_COST_PER_1M_USD`: optional current pricing used to estimate spend and enforce per-user monthly budgets.
+- `AI_ENABLED`: provider kill switch. Paid calls occur only when this is exactly `true`.
+- `AI_PROVIDER`: default paid provider, currently `gemini` or `openai`.
+- `AI_MOCK_MODE`: set `true` to force deterministic local output even when a provider key exists.
+- `AI_ALLOWED_MODELS`: narrow comma-separated model allowlist. Every entry must exist in the server pricing registry.
+- `AI_HARD_CAP_CENTS`: application hard cap, limited in code to `500` ($5.00).
+- `AI_AUTOMATION_CAP_CENTS`: discovery automation sub-cap, limited to `150` ($1.50).
+- `AI_MAX_REQUEST_COST_CENTS`: maximum reserved cost for one request, limited to `10` ($0.10).
+- `AI_CONFIRMATION_THRESHOLD_CENTS`: browser confirmation threshold, limited to `5` ($0.05).
+- `GEMINI_API_KEY`: server-only Gemini API Auth key. Never prefix this variable with `NEXT_PUBLIC_`.
+- `GEMINI_FAST_MODEL` / `GEMINI_QUALITY_MODEL`: provider models selected by each feature policy.
+- `OPENAI_API_KEY` / `OPENAI_MODEL`: optional alternative provider configuration.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
 - `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.
 - `USAJOBS_USER_AGENT`: required USAJOBS API user-agent, usually your registered email.
@@ -144,7 +150,7 @@ npm run dev -- -H 127.0.0.1 -p 3000
 
 If Neon gives you both pooled and direct connection strings, use the pooled string for `DATABASE_URL` and the direct/non-pooled string for `DIRECT_URL`. Prisma uses `DIRECT_URL` for migrations and `DATABASE_URL` for normal app runtime.
 
-## OpenAI Setup
+## AI Provider Setup
 
 The app uses structured JSON prompts in `/prompts`:
 
@@ -155,9 +161,13 @@ The app uses structured JSON prompts in `/prompts`:
 - `interviewPrepPrompt`
 - `interviewFeedbackPrompt`
 
-Set `OPENAI_API_KEY` and `OPENAI_MOCK_MODE=false` to call the API. Without a key, the MVP remains usable with deterministic local fallback output in both development and production; it does not make billable OpenAI requests.
+The recommended private-MVP configuration uses Gemini 3.5 Flash-Lite for both routine analysis and document workflows. Gemini 3.1 Flash-Lite remains in the allowlist as a lower-cost manual option, but the app never falls back to it automatically. Both models keep every feature's maximum request cost below the compiled ten-cent ceiling at standard real-time pricing. Create a server-side Gemini API Auth key, set `GEMINI_API_KEY`, leave `AI_ENABLED=false` while evaluating, and set it to `true` only after the quality and honesty checks pass. Without an enabled provider and key, the app remains usable with deterministic local output and makes no billable AI request.
 
-AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and an estimated cost when pricing variables are configured, including failed responses that report token usage. Users can choose a server-allowlisted model override, cap AI analyses per discovery sync, disable discovery-time AI, and set a monthly budget at `/settings/ai`. The budget blocks later calls after tracked usage reaches the limit, so configure cost estimates conservatively for the most expensive allowed model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
+Paid calls use schema-validated structured outputs with fixed feature input/output limits and no provider tools or search grounding. Before a call, the app atomically reserves the full ten-cent per-request ceiling from a monthly ledger. It then reconciles actual usage and releases unused funds. Interrupted calls remain charged at their full reservation until reconciled. Unknown models fail closed. Identical request hashes use cached output or an in-progress claim, and only one schema-validation retry is permitted when both attempts fit the ten-cent request ceiling.
+
+The AI Controls page shows spent, reserved, and remaining balances; automation has a separate allowance so discovery cannot consume the manual writing budget. Warnings appear at 50%, 75%, and 90%. Requests that could exceed five cents require explicit browser confirmation. The default layers are a $5 application cap, $1.50 automation cap, $0.10 per-request cap, and `AI_ENABLED=false` emergency switch.
+
+For the Google billing backstop, use a $10 prepaid balance, leave automatic reload disabled, and create billing alerts at $5, $8, and $10. Provider billing may lag, so the application ledger is the primary enforcement mechanism.
 
 ## Google Sign-In Setup
 

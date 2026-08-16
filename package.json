@@ -13,6 +13,7 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
+    "ai:evaluate": "tsx evaluation/ai-provider-evaluation.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts"

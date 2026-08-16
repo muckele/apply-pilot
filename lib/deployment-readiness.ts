@@ -5,7 +5,7 @@ type DeploymentEnv = Record<string, string | undefined>;
 export type DeploymentReadiness = {
   ready: boolean;
   issues: string[];
-  aiMode: "openai" | "heuristic-local";
+  aiMode: "gemini" | "openai" | "heuristic-local";
   directAudioUploads: boolean;
 };
 
@@ -67,6 +67,15 @@ export function checkDeploymentReadiness(
 ): DeploymentReadiness {
   const production = env.NODE_ENV === "production" || env.VERCEL_ENV === "production";
   const issues: string[] = [];
+  const configuredAiProvider = env.AI_PROVIDER?.trim();
+  if (configuredAiProvider && configuredAiProvider !== "gemini" && configuredAiProvider !== "openai") {
+    issues.push("invalid_ai_provider");
+  }
+  const aiProvider = env.AI_PROVIDER === "openai" ? "openai" : "gemini";
+  const aiEnabled =
+    env.AI_ENABLED === "true" &&
+    env.AI_MOCK_MODE !== "true" &&
+    !(aiProvider === "openai" && env.OPENAI_MOCK_MODE === "true");
 
   if (production) {
     const expectedOrigin = productionOrigin(env, requestOrigin);
@@ -106,15 +115,35 @@ export function checkDeploymentReadiness(
     if (exceedsVercelFunctionUploadLimit(env.MAX_AUDIO_UPLOAD_MB)) {
       issues.push("audio_upload_limit_exceeds_4mb");
     }
+    if (aiEnabled && aiProvider === "gemini" && !env.GEMINI_API_KEY?.trim()) {
+      issues.push("missing_gemini_api_key");
+    }
+    if (aiEnabled && aiProvider === "openai" && !env.OPENAI_API_KEY?.trim()) {
+      issues.push("missing_openai_api_key");
+    }
+    const aiLimits = [
+      ["AI_HARD_CAP_CENTS", 500],
+      ["AI_AUTOMATION_CAP_CENTS", 150],
+      ["AI_MAX_REQUEST_COST_CENTS", 10],
+      ["AI_CONFIRMATION_THRESHOLD_CENTS", 5]
+    ] as const;
+    for (const [name, maximum] of aiLimits) {
+      if (!env[name]) continue;
+      const value = Number(env[name]);
+      if (!Number.isInteger(value) || value <= 0 || value > maximum) issues.push(`invalid_ai_limit:${name}`);
+    }
   }
 
   return {
     ready: issues.length === 0,
     issues,
-    aiMode:
-      env.OPENAI_API_KEY?.trim() && env.OPENAI_MOCK_MODE !== "true"
-        ? "openai"
-        : "heuristic-local",
+    aiMode: aiEnabled
+      ? aiProvider === "gemini" && env.GEMINI_API_KEY?.trim()
+        ? "gemini"
+        : aiProvider === "openai" && env.OPENAI_API_KEY?.trim()
+          ? "openai"
+          : "heuristic-local"
+      : "heuristic-local",
     directAudioUploads: Boolean(env.BLOB_READ_WRITE_TOKEN?.trim())
   };
 }

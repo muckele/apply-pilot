@@ -4,6 +4,8 @@ import { FormEvent, useState } from "react";
 import { CalendarPlus, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+
 type InterviewOption = {
   id: string;
   label: string;
@@ -55,7 +57,7 @@ export function InterviewCreateForm({ applications, jobs }: InterviewCreateFormP
     };
 
     try {
-      const response = await fetch("/api/interviews", {
+      const response = await fetchWithAiCostConfirmation("/api/interviews", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body)

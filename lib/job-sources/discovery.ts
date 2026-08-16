@@ -466,7 +466,7 @@ export async function scoreTopImportedJobs({
   for (const job of candidates) {
     try {
       const deterministicScore = job.overallFitScore ?? 0;
-      const result = await runJobMatch(userId, job.id);
+      const result = await runJobMatch(userId, job.id, { automation: true });
       results.push({
         jobId: job.id,
         deterministicScore,

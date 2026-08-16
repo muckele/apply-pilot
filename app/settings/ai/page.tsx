@@ -1,6 +1,6 @@
 import { AiSettingsPanel } from "@/components/ai-settings-panel";
 import { MetricCard, PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
-import { getAllowedOpenAIModels } from "@/lib/ai/client";
+import { getAiFinancialPolicy, getAiRuntimeMode, getAllowedAiModels } from "@/lib/ai/config";
 import { getMonthlyAiUsage, getOrCreateAiSettings } from "@/lib/ai/usage";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -23,27 +23,38 @@ export default async function AiSettingsPage() {
       take: 20
     })
   ]);
-  const pricingConfigured = Boolean(
-    process.env.OPENAI_INPUT_COST_PER_1M_USD && process.env.OPENAI_OUTPUT_COST_PER_1M_USD
-  );
+  const financialPolicy = getAiFinancialPolicy();
+  const runtimeMode = getAiRuntimeMode();
 
   return (
     <>
       <PageHeader
         title="AI usage controls"
         description="Bound discovery volume, track prompt versions and token usage, and prevent unexpected model spend."
-        action={<StatusBadge status={settings.aiDiscoveryEnabled ? "Discovery AI enabled" : "Manual AI only"} />}
+        action={<StatusBadge status={runtimeMode === "local" ? "Local AI fallback" : `${runtimeMode} enabled`} />}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {usage.warningLevel ? (
+        <div className={`mb-4 rounded-lg border px-4 py-3 text-sm ${
+          usage.warningLevel >= 90
+            ? "border-rose-200 bg-rose-50 text-rose-800"
+            : "border-amber-200 bg-amber-50 text-amber-800"
+        }`}>
+          AI spending has reached {usage.percentUsed}% of this month&apos;s hard cap.
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <MetricCard label="Requests this month" value={usage.requestCount} />
+        <MetricCard
+          label="Spent this month"
+          value={formatCost(usage.estimatedCostMicros)}
+          detail={`${usage.percentUsed}% of ${formatCost(usage.budgetMicros)}`}
+        />
+        <MetricCard label="Remaining budget" value={formatCost(usage.remainingMicros)} detail={`${formatCost(usage.reservedMicros)} reserved`} />
+        <MetricCard label="Automation spent" value={formatCost(usage.automationSpentMicros)} detail={`${formatCost(usage.automationRemainingMicros)} automation balance`} />
         <MetricCard label="Input tokens" value={usage.inputTokens.toLocaleString()} />
         <MetricCard label="Output tokens" value={usage.outputTokens.toLocaleString()} />
-        <MetricCard
-          label="Estimated cost"
-          value={formatCost(usage.estimatedCostMicros)}
-          detail={pricingConfigured ? `$${(settings.monthlyBudgetCents / 100).toFixed(2)} monthly limit` : "Add pricing env vars to enforce a dollar limit"}
-        />
       </div>
 
       <Panel className="mt-6">
@@ -51,11 +62,14 @@ export default async function AiSettingsPage() {
         <AiSettingsPanel
           initialSettings={{
             monthlyBudgetCents: settings.monthlyBudgetCents,
+            automationBudgetCents: settings.automationBudgetCents,
             maxAnalysesPerSync: settings.maxAnalysesPerSync,
             aiDiscoveryEnabled: settings.aiDiscoveryEnabled,
             modelOverride: settings.modelOverride
           }}
-          allowedModels={getAllowedOpenAIModels()}
+          allowedModels={getAllowedAiModels()}
+          maximumBudgetCents={financialPolicy.hardCapCents}
+          maximumAutomationBudgetCents={financialPolicy.automationCapCents}
         />
       </Panel>
 
@@ -68,7 +82,8 @@ export default async function AiSettingsPage() {
                 <div>
                   <p className="font-semibold text-slate-950">{event.feature.replaceAll("_", " ")}</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    {event.promptName} v{event.promptVersion} · {event.model}
+                    {event.promptName} v{event.promptVersion} · {event.provider} · {event.model}
+                    {event.automation ? " · automation" : ""}
                   </p>
                 </div>
                 <p className="text-xs text-slate-600">

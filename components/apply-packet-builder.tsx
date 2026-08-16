@@ -14,6 +14,7 @@ import {
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, ScoreBadge, SecondaryButton, StatusBadge } from "@/components/ui";
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 type PacketResumeOption = {
   id: string;
@@ -72,7 +73,7 @@ async function parseJson(response: Response) {
 }
 
 async function runJsonPost(url: string, body?: Record<string, unknown>) {
-  const response = await fetch(url, {
+  const response = await fetchWithAiCostConfirmation(url, {
     method: "POST",
     headers: body ? { "content-type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined

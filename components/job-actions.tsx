@@ -5,6 +5,7 @@ import { FileText, Loader2, Mail, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 export function JobActions({ jobId }: { jobId: string }) {
   const router = useRouter();
@@ -20,7 +21,7 @@ export function JobActions({ jobId }: { jobId: string }) {
         : action === "resume"
           ? `/api/jobs/${jobId}/tailored-resume`
           : `/api/jobs/${jobId}/cover-letter`;
-    const response = await fetch(endpoint, { method: "POST" });
+    const response = await fetchWithAiCostConfirmation(endpoint, { method: "POST" });
     const json = await response.json();
     setPending(null);
 

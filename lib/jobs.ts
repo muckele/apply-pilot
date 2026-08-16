@@ -1,7 +1,7 @@
 import type { NormalizedJob } from "@/lib/job-sources/types";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
 import { prisma } from "@/lib/prisma";
-import { scoreJobMatch } from "@/lib/ai/job-match";
+import { JOB_MATCH_PROMPT_VERSION, scoreJobMatch } from "@/lib/ai/job-match";
 import { hashAiInput } from "@/lib/ai/usage";
 
 export async function upsertNormalizedJob({
@@ -79,7 +79,7 @@ export async function upsertNormalizedJob({
 export async function runJobMatch(
   userId: string,
   jobPostingId: string,
-  options: { force?: boolean } = {}
+  options: { force?: boolean; automation?: boolean; highCostConfirmed?: boolean } = {}
 ) {
   const [job, resume, profile] = await Promise.all([
     prisma.jobPosting.findFirstOrThrow({
@@ -128,7 +128,7 @@ export async function runJobMatch(
         }
       : null
   };
-  const inputHash = hashAiInput("jobMatchPrompt", "2", matchInput);
+  const inputHash = hashAiInput("jobMatchPrompt", JOB_MATCH_PROMPT_VERSION, matchInput);
 
   if (!options.force && job.overallFitScore !== null) {
     const existingAnalysis = await prisma.aIAnalysis.findFirst({
@@ -141,7 +141,7 @@ export async function runJobMatch(
     }
   }
 
-  const match = await scoreJobMatch(matchInput, userId);
+  const match = await scoreJobMatch(matchInput, userId, options);
 
   const updatedJob = await prisma.$transaction(async (tx) => {
     const updated = await tx.jobPosting.update({

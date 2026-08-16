@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { tailorResume } from "@/lib/ai/resume";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -10,7 +11,7 @@ type Params = {
   params: Promise<{ id: string }>;
 };
 
-export async function POST(_request: NextRequest, { params }: Params) {
+export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     await checkRateLimit(`tailor-resume:${userId}`, 12, 60_000);
@@ -21,7 +22,12 @@ export async function POST(_request: NextRequest, { params }: Params) {
       prisma.userProfile.findUnique({ where: { userId } })
     ]);
 
-    const tailored = await tailorResume({ job, resume, profile }, resume?.rawText ?? "", userId);
+    const tailored = await tailorResume(
+      { job, resume, profile },
+      resume?.rawText ?? "",
+      userId,
+      aiInvocationFromRequest(request)
+    );
     const version = await prisma.resumeVersion.create({
       data: {
         userId,

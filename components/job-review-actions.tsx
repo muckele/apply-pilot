@@ -5,6 +5,8 @@ import { Archive, BookmarkPlus, BriefcaseBusiness, ExternalLink, Loader2, Sparkl
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+
 type PendingAction = "save" | "interested" | "archive" | "match" | null;
 
 type JobReviewActionsProps = {
@@ -89,7 +91,7 @@ export function JobReviewActions({ jobId, applyUrl }: JobReviewActionsProps) {
     setMessage(null);
 
     try {
-      const response = await fetch(`/api/jobs/${jobId}/match`, { method: "POST" });
+      const response = await fetchWithAiCostConfirmation(`/api/jobs/${jobId}/match`, { method: "POST" });
       const json = await readJson(response);
 
       if (!response.ok) {

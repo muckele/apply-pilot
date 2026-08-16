@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { generateInterviewPrep } from "@/lib/ai/documents";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
 import { normalizeInterviewQuestion } from "@/lib/interviews/library";
 import { resolveInterviewJobPostingId } from "@/lib/interviews/linking";
 import { prisma } from "@/lib/prisma";
@@ -46,7 +47,11 @@ export async function POST(request: NextRequest) {
         ? await prisma.jobPosting.findFirstOrThrow({ where: { id: linkedJobPostingId, userId } })
         : null);
     const prep = input.generatePrep
-      ? await generateInterviewPrep({ job, application, profile, resume }, userId)
+      ? await generateInterviewPrep(
+          { job, application, profile, resume },
+          userId,
+          aiInvocationFromRequest(request)
+        )
       : null;
     const interview = await prisma.$transaction(async (tx) => {
       const savedInterview = await tx.interview.create({

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { generateInterviewFeedback } from "@/lib/ai/documents";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
+import { splitTranscriptSections } from "@/lib/ai/policy";
 import { normalizeInterviewQuestion } from "@/lib/interviews/library";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -10,7 +12,7 @@ type Params = {
   params: Promise<{ id: string }>;
 };
 
-export async function POST(_request: NextRequest, { params }: Params) {
+export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     await checkRateLimit(`interview-feedback:${userId}`, 12, 60_000);
@@ -23,7 +25,26 @@ export async function POST(_request: NextRequest, { params }: Params) {
         recordings: true
       }
     });
-    const feedback = await generateInterviewFeedback({ interview }, userId);
+    const transcript = interview.recordings
+      .map((recording) => recording.transcript?.trim())
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+    const boundedTranscript = splitTranscriptSections(transcript);
+    const feedback = await generateInterviewFeedback(
+      {
+        interview: {
+          id: interview.id,
+          type: interview.type,
+          notes: interview.notes,
+          jobPosting: interview.jobPosting,
+          noteBodies: interview.notesList.map((note) => note.body)
+        },
+        transcriptSections: boundedTranscript.sections,
+        transcriptTruncated: boundedTranscript.truncated
+      },
+      userId,
+      aiInvocationFromRequest(request)
+    );
 
     await prisma.$transaction(async (tx) => {
       await tx.interview.update({
