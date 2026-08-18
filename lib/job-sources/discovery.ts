@@ -108,7 +108,7 @@ function resolveQueries(options: AutomatedDiscoveryOptions, preferredRoles: stri
   const supplied = options.queries?.map((query) => query.trim()).filter(Boolean) ?? [];
   const queries = supplied.length ? supplied : preferredRoles.length ? preferredRoles : targetRoleFallbacks;
 
-  return [...new Set(queries)].slice(0, 8);
+  return [...new Set(queries)].slice(0, 16);
 }
 
 function formatJob(job: JobPosting) {
