@@ -119,7 +119,7 @@ export const gmailTriageSchema = z.object({
 });
 
 export const automatedJobDiscoverySchema = z.object({
-  queries: z.array(z.string().min(2)).max(8).optional(),
+  queries: z.array(z.string().min(2)).max(16).optional(),
   location: z.string().optional(),
   remoteOnly: z.boolean().optional().default(false),
   limitPerQuery: z.coerce.number().int().min(1).max(25).default(8),
