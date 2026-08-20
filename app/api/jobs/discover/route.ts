@@ -13,7 +13,32 @@ export async function POST(request: NextRequest) {
     await checkRateLimit(`job-discovery:${userId}`, 4, 60_000);
 
     const input = automatedJobDiscoverySchema.parse(await request.json());
-    const result = await runAutomatedJobDiscovery({ userId, ...input });
+    const targetSearches = [...new Set(input.queries)];
+
+    await prisma.jobDiscoveryPreference.upsert({
+      where: { userId },
+      create: {
+        userId,
+        targetSearches,
+        location: input.location,
+        limitPerQuery: input.limitPerQuery,
+        remoteOnly: input.remoteOnly,
+        scoreImported: input.scoreImported
+      },
+      update: {
+        targetSearches,
+        location: input.location,
+        limitPerQuery: input.limitPerQuery,
+        remoteOnly: input.remoteOnly,
+        scoreImported: input.scoreImported
+      }
+    });
+
+    const result = await runAutomatedJobDiscovery({
+      userId,
+      ...input,
+      queries: targetSearches
+    });
 
     if (result.imported) {
       await prisma.task.create({

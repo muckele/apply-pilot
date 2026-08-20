@@ -1,6 +1,7 @@
 import type { JobPosting, JobSource, JobSourceType, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
+import { resolveDiscoveryLocation, resolveDiscoveryQueries } from "@/lib/job-sources/discovery-preferences";
 import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
 import { isRemoteLikeText } from "@/lib/job-sources/remote";
 import { assertSourceCanSync, buildCriteriaFromSource } from "@/lib/job-sources/source-policy";
@@ -53,17 +54,6 @@ export type DiscoveryAiScoreResult = {
   error?: string;
 };
 
-const targetRoleFallbacks = [
-  "Sales Engineer",
-  "Solutions Engineer",
-  "Technical Account Manager",
-  "Customer Success Engineer",
-  "Implementation Specialist",
-  "Full-Stack Developer",
-  "Junior Software Engineer",
-  "SaaS Operations"
-];
-
 const sourceTypesForConfiguredSync: JobSourceType[] = [
   "GREENHOUSE",
   "LEVER",
@@ -103,13 +93,6 @@ export const restrictedJobBoardPolicies: RestrictedBoardPolicy[] = [
     policyUrl: "https://www.ziprecruiter.com/robots.txt"
   }
 ];
-
-function resolveQueries(options: AutomatedDiscoveryOptions, preferredRoles: string[]) {
-  const supplied = options.queries?.map((query) => query.trim()).filter(Boolean) ?? [];
-  const queries = supplied.length ? supplied : preferredRoles.length ? preferredRoles : targetRoleFallbacks;
-
-  return [...new Set(queries)].slice(0, 16);
-}
 
 function formatJob(job: JobPosting) {
   return {
@@ -487,14 +470,27 @@ export async function scoreTopImportedJobs({
 }
 
 export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOptions) {
-  const limitPerQuery = options.limitPerQuery ?? 10;
   const aiSettings = await getOrCreateAiSettings(options.userId);
   const maxJobsToScore = Math.min(options.maxJobsToScore ?? 8, aiSettings.maxAnalysesPerSync);
   const reports: DiscoverySourceReport[] = [];
   const importedJobs = new Map<string, JobPosting>();
-  const profile = await prisma.userProfile.findUnique({ where: { userId: options.userId } });
-  const queries = resolveQueries(options, profile?.preferredRoles ?? []);
-  const location = options.location || profile?.preferredLocations?.[0] || "Los Angeles, CA";
+  const [profile, savedPreference] = await Promise.all([
+    prisma.userProfile.findUnique({ where: { userId: options.userId } }),
+    prisma.jobDiscoveryPreference.findUnique({ where: { userId: options.userId } })
+  ]);
+  const queries = resolveDiscoveryQueries({
+    suppliedQueries: options.queries,
+    savedPreference,
+    profilePreferredRoles: profile?.preferredRoles
+  });
+  const location = resolveDiscoveryLocation({
+    suppliedLocation: options.location,
+    savedPreference,
+    profile
+  });
+  const limitPerQuery = options.limitPerQuery ?? savedPreference?.limitPerQuery ?? 8;
+  const remoteOnly = options.remoteOnly ?? savedPreference?.remoteOnly ?? false;
+  const scoreImported = options.scoreImported ?? savedPreference?.scoreImported ?? false;
 
   const remotiveSource = await getOrCreateJobSource({
     userId: options.userId,
@@ -549,7 +545,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
           criteria: {
             query,
             location,
-            remote: options.remoteOnly,
+            remote: remoteOnly,
             limit: limitPerQuery
           },
           profile
@@ -601,7 +597,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
           criteria: {
             query,
             location,
-            remote: options.remoteOnly,
+            remote: remoteOnly,
             limit: limitPerQuery
           },
           profile
@@ -653,7 +649,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
           criteria: {
             query,
             location,
-            remote: options.remoteOnly,
+            remote: remoteOnly,
             limit: limitPerQuery
           },
           profile
@@ -710,7 +706,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
           criteria: {
             query,
             location,
-            remote: options.remoteOnly,
+            remote: remoteOnly,
             limit: Math.min(limitPerQuery, 10)
           },
           profile
@@ -776,7 +772,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
         source,
         criteria: buildCriteriaFromSource(source, {
           location,
-          remoteOnly: options.remoteOnly,
+          remoteOnly,
           limit: limitPerQuery
         }),
         profile
@@ -820,7 +816,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
     }
   }
 
-  const scoredJobs = options.scoreImported && aiSettings.aiDiscoveryEnabled
+  const scoredJobs = scoreImported && aiSettings.aiDiscoveryEnabled
     ? await scoreTopImportedJobs({ userId: options.userId, jobs: [...importedJobs.values()], limit: maxJobsToScore })
     : [];
 
