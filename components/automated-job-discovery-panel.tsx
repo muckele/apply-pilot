@@ -6,6 +6,7 @@ import { AlertTriangle, Bot, CheckCircle2, ExternalLink, Loader2, Search } from 
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton, StatusBadge } from "@/components/ui";
+import type { JobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
 
 type DiscoveryResult = {
   imported: number;
@@ -38,42 +39,56 @@ type DiscoveryResult = {
   error?: string;
 };
 
-const defaultQueryText = [
-  "Sales Engineer",
-  "Solutions Engineer",
-  "Technical Account Manager",
-  "Customer Success Engineer",
-  "Implementation Specialist",
-  "Full-Stack Developer",
-  "Junior Software Engineer",
-  "SaaS Operations"
-].join(", ");
-
-export function AutomatedJobDiscoveryPanel() {
+export function AutomatedJobDiscoveryPanel({
+  initialPreferences
+}: {
+  initialPreferences: JobDiscoveryPreferences;
+}) {
   const router = useRouter();
+  const [queryText, setQueryText] = useState(initialPreferences.targetSearches.join(", "));
+  const [location, setLocation] = useState(initialPreferences.location);
+  const [limitPerQueryText, setLimitPerQueryText] = useState(String(initialPreferences.limitPerQuery));
+  const [remoteOnly, setRemoteOnly] = useState(initialPreferences.remoteOnly);
+  const [scoreImported, setScoreImported] = useState(initialPreferences.scoreImported);
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<DiscoveryResult | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   async function runDiscovery(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const queries = [
+      ...new Set(
+        queryText
+          .split(",")
+          .map((query) => query.trim())
+          .filter(Boolean)
+      )
+    ];
+
+    if (!queries.length) {
+      setFormError("Enter at least one target search before running automated discovery.");
+      return;
+    }
+
+    const limitPerQuery = Number(limitPerQueryText);
+    if (!Number.isInteger(limitPerQuery) || limitPerQuery < 1 || limitPerQuery > 25) {
+      setFormError("Per search must be a whole number between 1 and 25.");
+      return;
+    }
+
+    setFormError(null);
     setPending(true);
     setResult(null);
-
-    const formData = new FormData(event.currentTarget);
-    const queries = String(formData.get("queries") ?? "")
-      .split(",")
-      .map((query) => query.trim())
-      .filter(Boolean);
 
     const response = await fetch("/api/jobs/discover", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         queries,
-        location: String(formData.get("location") ?? "") || undefined,
-        remoteOnly: formData.get("remoteOnly") === "on",
-        scoreImported: formData.get("scoreImported") === "on",
-        limitPerQuery: Number(formData.get("limitPerQuery") ?? 8),
+        location,
+        remoteOnly,
+        scoreImported,
+        limitPerQuery,
         maxJobsToScore: 6
       })
     });
@@ -81,7 +96,9 @@ export function AutomatedJobDiscoveryPanel() {
 
     setResult(response.ok ? json : { ...json, imported: 0, queries, location: "", jobs: [], scoredJobs: [], reports: [], restrictedBoards: [] });
     setPending(false);
-    router.refresh();
+    if (response.ok) {
+      router.refresh();
+    }
   }
 
   return (
@@ -91,7 +108,8 @@ export function AutomatedJobDiscoveryPanel() {
           Target searches
           <textarea
             name="queries"
-            defaultValue={defaultQueryText}
+            value={queryText}
+            onChange={(event) => setQueryText(event.target.value)}
             rows={3}
             className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
           />
@@ -101,7 +119,8 @@ export function AutomatedJobDiscoveryPanel() {
             Location
             <input
               name="location"
-              defaultValue="Los Angeles, CA"
+              value={location}
+              onChange={(event) => setLocation(event.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
             />
           </label>
@@ -112,18 +131,31 @@ export function AutomatedJobDiscoveryPanel() {
               type="number"
               min={1}
               max={25}
-              defaultValue={8}
+              value={limitPerQueryText}
+              onChange={(event) => setLimitPerQueryText(event.target.value)}
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
             />
           </label>
         </div>
         <div className="grid gap-2 text-sm text-slate-700">
           <label className="inline-flex items-center gap-2">
-            <input name="remoteOnly" type="checkbox" className="h-4 w-4 rounded border-slate-300 text-brand-600" />
+            <input
+              name="remoteOnly"
+              type="checkbox"
+              checked={remoteOnly}
+              onChange={(event) => setRemoteOnly(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-brand-600"
+            />
             Remote-only where the provider supports it
           </label>
           <label className="inline-flex items-center gap-2">
-            <input name="scoreImported" type="checkbox" className="h-4 w-4 rounded border-slate-300 text-brand-600" />
+            <input
+              name="scoreImported"
+              type="checkbox"
+              checked={scoreImported}
+              onChange={(event) => setScoreImported(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-brand-600"
+            />
             Run AI fit scoring on the first matches
           </label>
         </div>
@@ -132,6 +164,10 @@ export function AutomatedJobDiscoveryPanel() {
           Run automated discovery
         </PrimaryButton>
       </form>
+
+      {formError ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{formError}</div>
+      ) : null}
 
       {result?.error ? (
         <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{result.error}</div>
@@ -145,7 +181,7 @@ export function AutomatedJobDiscoveryPanel() {
               {result.imported} jobs imported or updated
             </div>
             <p className="mt-1 text-xs leading-5 text-emerald-800">
-              Searched {result.queries.length} target terms around {result.location || "your profile locations"}.
+              Searched {result.queries.length} target terms {result.location ? `around ${result.location}` : "without a location restriction"}.
             </p>
           </div>
 

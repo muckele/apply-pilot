@@ -5,6 +5,7 @@ import { AutomatedJobDiscoveryPanel } from "@/components/automated-job-discovery
 import { JobCard } from "@/components/job-card";
 import { ManualJobImportForm } from "@/components/manual-job-import-form";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { resolveInitialJobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -45,9 +46,7 @@ function parseFilters(params: SearchParams = {}) {
   };
 }
 
-async function getJobsForPage(params: SearchParams) {
-  const userId = await requirePageUserId();
-
+async function getJobsForPage(params: SearchParams, userId: string) {
   const filters = parseFilters(params);
   const where: Prisma.JobPostingWhereInput = { userId };
   const andConditions: Prisma.JobPostingWhereInput[] = [];
@@ -135,8 +134,33 @@ type JobsPageProps = {
 
 export default async function JobsPage({ searchParams }: JobsPageProps) {
   const params = (await searchParams) ?? {};
+  const userId = await requirePageUserId();
   const filters = parseFilters(params);
-  const jobs = await getJobsForPage(params);
+  const [jobs, savedPreference, profile] = await Promise.all([
+    getJobsForPage(params, userId),
+    prisma.jobDiscoveryPreference.findUnique({
+      where: { userId },
+      select: {
+        targetSearches: true,
+        location: true,
+        limitPerQuery: true,
+        remoteOnly: true,
+        scoreImported: true
+      }
+    }),
+    prisma.userProfile.findUnique({
+      where: { userId },
+      select: {
+        preferredRoles: true,
+        preferredLocations: true,
+        location: true
+      }
+    })
+  ]);
+  const initialDiscoveryPreferences = resolveInitialJobDiscoveryPreferences({
+    savedPreference,
+    profile
+  });
 
   return (
     <>
@@ -249,7 +273,10 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
               description="Search allowed sources and import matches without auto-applying."
             />
             <div className="p-5">
-              <AutomatedJobDiscoveryPanel />
+              <AutomatedJobDiscoveryPanel
+                key={userId}
+                initialPreferences={initialDiscoveryPreferences}
+              />
             </div>
           </Panel>
 
