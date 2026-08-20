@@ -129,31 +129,32 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  profile              UserProfile?
-  accounts             Account[]
-  sessions             Session[]
-  resumes              Resume[]
-  resumeVersions       ResumeVersion[]
-  jobSources           JobSource[]
-  jobPostings          JobPosting[]
-  applications         Application[]
-  applicationEvents    ApplicationEvent[]
-  contacts             Contact[]
-  emailMessages        EmailMessage[]
-  interviews           Interview[]
-  generatedDocs        GeneratedDocument[]
-  aiAnalyses           AIAnalysis[]
-  tasks                Task[]
-  reminders            FollowUpReminder[]
-  storedFiles          StoredFile[]
-  gmailIntegration     GmailIntegration?
-  auditLogs            AuditLog[]
-  browserCaptureTokens BrowserCaptureToken[]
-  applicationAnswers   ApplicationAnswer[]
-  interviewQuestions   InterviewQuestion[]
-  starStories          StarStory[]
-  aiSettings           AISettings?
-  aiUsageEvents        AIUsageEvent[]
+  profile                UserProfile?
+  accounts               Account[]
+  sessions               Session[]
+  resumes                Resume[]
+  resumeVersions         ResumeVersion[]
+  jobSources             JobSource[]
+  jobPostings            JobPosting[]
+  applications           Application[]
+  applicationEvents      ApplicationEvent[]
+  contacts               Contact[]
+  emailMessages          EmailMessage[]
+  interviews             Interview[]
+  generatedDocs          GeneratedDocument[]
+  aiAnalyses             AIAnalysis[]
+  tasks                  Task[]
+  reminders              FollowUpReminder[]
+  storedFiles            StoredFile[]
+  gmailIntegration       GmailIntegration?
+  auditLogs              AuditLog[]
+  browserCaptureTokens   BrowserCaptureToken[]
+  applicationAnswers     ApplicationAnswer[]
+  interviewQuestions     InterviewQuestion[]
+  starStories            StarStory[]
+  aiSettings             AISettings?
+  aiUsageEvents          AIUsageEvent[]
+  jobDiscoveryPreference JobDiscoveryPreference?
 }
 
 model UserProfile {
@@ -175,6 +176,20 @@ model UserProfile {
   preferredResumeTone    String           @default("clear, honest, concise, role-specific")
   createdAt              DateTime         @default(now())
   updatedAt              DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model JobDiscoveryPreference {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  targetSearches String[] @default([])
+  location       String   @default("")
+  limitPerQuery  Int      @default(8)
+  remoteOnly     Boolean  @default(false)
+  scoreImported  Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -555,7 +570,7 @@ model BrowserCaptureToken {
   name        String
   tokenHash   String    @unique
   tokenPrefix String
-  scopes      String[]
+  scopes      String[]  @default([])
   lastUsedAt  DateTime?
   expiresAt   DateTime?
   revokedAt   DateTime?
@@ -585,28 +600,28 @@ model ApplicationAnswer {
 }
 
 model InterviewQuestion {
-  id             String    @id @default(cuid())
-  userId         String
-  jobPostingId   String?
-  interviewId    String?
-  question       String
+  id                 String    @id @default(cuid())
+  userId             String
+  jobPostingId       String?
+  interviewId        String?
+  question           String
   normalizedQuestion String
-  category       String    @default("GENERAL")
-  answer         String?
-  improvedAnswer String?
-  tags           String[]
-  timesAsked     Int       @default(0)
-  lastAskedAt    DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  category           String    @default("GENERAL")
+  answer             String?
+  improvedAnswer     String?
+  tags               String[]  @default([])
+  timesAsked         Int       @default(0)
+  lastAskedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   jobPosting JobPosting? @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
   interview  Interview?  @relation(fields: [interviewId], references: [id], onDelete: SetNull)
 
+  @@unique([userId, normalizedQuestion])
   @@index([userId, category])
   @@index([userId, lastAskedAt])
-  @@unique([userId, normalizedQuestion])
 }
 
 model StarStory {
@@ -617,7 +632,7 @@ model StarStory {
   task        String
   action      String
   result      String
-  skills      String[]
+  skills      String[] @default([])
   roleContext String?
   isFavorite  Boolean  @default(false)
   createdAt   DateTime @default(now())
