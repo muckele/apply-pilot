@@ -8,6 +8,9 @@ import {
   buildExecutionTokenCreateData,
   buildReplacementRevokeWhere,
   buildRevokeWhere,
+  buildRunBoundRevokeWhere,
+  buildUsableExecutionTokenWhereForRun,
+  buildUsableExecutionTokenWhereForUser,
   canConsumeToken,
   createExecutionTokenService,
   EXECUTION_TOKEN_PATTERN,
@@ -23,12 +26,16 @@ import {
   isTokenRevoked,
   READ_TOKEN_ISSUABLE_RUN_STATES,
   READ_TOKEN_TTL_MS,
+  revokeUsableExecutionTokensForRunInTransaction,
+  revokeUsableExecutionTokensForUserInTransaction,
   type ExecutionTokenBindingInput,
   type ExecutionTokenPrismaClient,
+  type ExecutionTokenRevocationTransaction,
   type ExecutionTokenSnapshot,
   type ExpectedTokenBinding,
   type IssueExecutionTokenInput,
   type RevokeExecutionTokenInput,
+  type RevokeExecutionTokenForRunInput,
   type TokenSlot
 } from "@/lib/application-runs/execution-token";
 
@@ -280,6 +287,56 @@ test("revocation database predicate is ownership-scoped and idempotency-compatib
   });
 });
 
+test("run-bound and bulk revocation predicates retain every required binding", () => {
+  assert.deepEqual(buildRunBoundRevokeWhere({ userId: "user-1", runId: "run-1", tokenId: "token-1" }), {
+    id: "token-1",
+    userId: "user-1",
+    runId: "run-1",
+    revokedAt: null
+  });
+  assert.deepEqual(
+    buildUsableExecutionTokenWhereForUser({ userId: "user-1", now: T0, reason: "policy_changed" }),
+    {
+      userId: "user-1",
+      revokedAt: null,
+      expiresAt: { gt: T0 },
+      OR: [{ singleUse: false }, { singleUse: true, consumedAt: null }]
+    }
+  );
+  assert.equal(
+    "runId" in buildUsableExecutionTokenWhereForUser({
+      userId: "user-1",
+      runId: "must-not-narrow-user-revocation",
+      now: T0,
+      reason: "policy_changed"
+    } as Parameters<typeof buildUsableExecutionTokenWhereForUser>[0]),
+    false
+  );
+  assert.deepEqual(
+    buildUsableExecutionTokenWhereForRun({
+      userId: "user-1",
+      runId: "run-1",
+      now: T0,
+      reason: "run_cancelled"
+    }),
+    {
+      userId: "user-1",
+      runId: "run-1",
+      revokedAt: null,
+      expiresAt: { gt: T0 },
+      OR: [{ singleUse: false }, { singleUse: true, consumedAt: null }]
+    }
+  );
+  assert.throws(() =>
+    buildUsableExecutionTokenWhereForRun({
+      userId: "user-1",
+      runId: "",
+      now: T0,
+      reason: "run_cancelled"
+    })
+  );
+});
+
 test("execution scope enum contains no SUBMIT scope", () => {
   assert.equal(Object.values(ApplicationExecutionScope).includes("SUBMIT" as ApplicationExecutionScope), false);
 });
@@ -405,6 +462,11 @@ function deterministicGeneratedToken() {
 function matchesTokenWhere(token: FakeToken, where: Record<string, unknown>): boolean {
   for (const [key, expectedValue] of Object.entries(where)) {
     if (expectedValue === undefined) continue; // Mirrors Prisma's default undefined omission.
+    if (key === "OR") {
+      const clauses = expectedValue as Record<string, unknown>[];
+      if (!clauses.some((clause) => matchesTokenWhere(token, clause))) return false;
+      continue;
+    }
     if (key === "expiresAt") {
       const comparison = record(expectedValue);
       if (comparison.gt instanceof Date && token.expiresAt.getTime() <= comparison.gt.getTime()) return false;
@@ -883,6 +945,42 @@ test("valid reusable authorization updates lastUsedAt without consuming", async 
   assert.equal(token.consumedAt, null);
 });
 
+test("global emergency stop pauses reusable authorization without database work or token mutation, then re-enables", async () => {
+  const database = new FakeExecutionTokenDatabase();
+  const token = database.addToken();
+  const env: Record<string, string | undefined> = { APPLICATION_AUTOMATION_ENABLED: "false" };
+  const service = serviceFor(database, { env });
+  const before = cloneToken(token);
+
+  await assert.rejects(
+    service.authorizeReusableExecutionToken(bindingInput()),
+    (error: unknown) => error instanceof PublicApiError && error.status === 403 && error.details?.code === "AUTOMATION_DISABLED"
+  );
+  assert.deepEqual(database.operations, []);
+  assert.deepEqual(token, before);
+
+  env.APPLICATION_AUTOMATION_ENABLED = "true";
+  const authorized = await service.authorizeReusableExecutionToken(bindingInput());
+  assert.equal(authorized.id, token.id);
+  assert.equal(token.lastUsedAt?.getTime(), ISSUE_TIME.getTime());
+  assert.equal(token.revokedAt, null);
+  assert.equal(token.consumedAt, null);
+});
+
+test("malformed reusable credential wins over the disabled global gate before database work", async () => {
+  const database = new FakeExecutionTokenDatabase();
+  database.addToken();
+
+  await assert.rejects(
+    serviceFor(database, { env: { APPLICATION_AUTOMATION_ENABLED: "false" } }).authorizeReusableExecutionToken({
+      ...bindingInput(),
+      rawToken: "malformed"
+    }),
+    isTokenError("EXECUTION_TOKEN_INVALID", 401)
+  );
+  assert.deepEqual(database.operations, []);
+});
+
 test("reusable authorization rejects single-use, wrong bindings, expired, and revoked tokens generically", async () => {
   const cases: Array<{ token?: Partial<FakeToken>; binding?: Partial<ExpectedTokenBinding> }> = [
     { token: { singleUse: true } },
@@ -946,6 +1044,41 @@ test("single-use consume claims once, updates telemetry, and writes one secret-f
 
   await assert.rejects(service.consumeSingleUseExecutionToken(fillBindingInput()), isTokenError("EXECUTION_TOKEN_INVALID", 401));
   assert.equal(database.audits.length, 1);
+});
+
+test("global emergency stop pauses single-use consumption without database work or token mutation, then re-enables", async () => {
+  const database = new FakeExecutionTokenDatabase();
+  const token = addFillToken(database);
+  const env: Record<string, string | undefined> = { APPLICATION_AUTOMATION_ENABLED: "false" };
+  const service = serviceFor(database, { env });
+  const before = cloneToken(token);
+
+  await assert.rejects(
+    service.consumeSingleUseExecutionToken(fillBindingInput()),
+    (error: unknown) => error instanceof PublicApiError && error.status === 403 && error.details?.code === "AUTOMATION_DISABLED"
+  );
+  assert.deepEqual(database.operations, []);
+  assert.deepEqual(token, before);
+
+  env.APPLICATION_AUTOMATION_ENABLED = "true";
+  const consumed = await service.consumeSingleUseExecutionToken(fillBindingInput());
+  assert.equal(consumed.id, token.id);
+  assert.equal(token.consumedAt?.getTime(), ISSUE_TIME.getTime());
+  assert.equal(token.revokedAt, null);
+});
+
+test("malformed single-use credential wins over the disabled global gate before database work", async () => {
+  const database = new FakeExecutionTokenDatabase();
+  addFillToken(database);
+
+  await assert.rejects(
+    serviceFor(database, { env: { APPLICATION_AUTOMATION_ENABLED: "false" } }).consumeSingleUseExecutionToken({
+      ...fillBindingInput(),
+      rawToken: "malformed"
+    }),
+    isTokenError("EXECUTION_TOKEN_INVALID", 401)
+  );
+  assert.deepEqual(database.operations, []);
 });
 
 test("reusable token cannot be consumed through the single-use path", async () => {
@@ -1039,13 +1172,128 @@ test("revocation audit failure rolls back mutation", async () => {
   assert.equal(database.audits.length, 0);
 });
 
-test("revocation remains available while automation policy is disabled", async () => {
+test("normal and run-bound revocation remain available while global automation and user policy are disabled", async () => {
   const database = new FakeExecutionTokenDatabase();
   database.policy = fakePolicy({ enabled: false });
-  const token = database.addToken();
-  const result = await serviceFor(database).revokeExecutionToken({ userId: "user-1", tokenId: token.id });
+  const normalToken = database.addToken({ id: "normal-token" });
+  const runBoundToken = database.addToken({ id: "run-bound-token" });
+  const service = serviceFor(database, { env: { APPLICATION_AUTOMATION_ENABLED: "false" } });
+  const normalResult = await service.revokeExecutionToken({ userId: "user-1", tokenId: normalToken.id });
+  const runBoundResult = await service.revokeExecutionTokenForRun({
+    userId: "user-1",
+    runId: "run-1",
+    tokenId: runBoundToken.id
+  });
 
-  assert.deepEqual(result, { revoked: true, alreadyRevoked: false });
+  assert.deepEqual(normalResult, { revoked: true, alreadyRevoked: false });
+  assert.deepEqual(runBoundResult, { revoked: true, alreadyRevoked: false });
   assert.equal(database.operations.includes("policy.lock"), false);
   assert.equal(database.operations.includes("policy.findUnique"), false);
+});
+
+test("run-bound revocation requires token, owner, and run inside the authoritative transaction", async () => {
+  const validDatabase = new FakeExecutionTokenDatabase();
+  const validToken = validDatabase.addToken();
+  assert.deepEqual(
+    await serviceFor(validDatabase).revokeExecutionTokenForRun({
+      userId: "user-1",
+      runId: "run-1",
+      tokenId: validToken.id
+    }),
+    { revoked: true, alreadyRevoked: false }
+  );
+
+  for (const input of [
+    { userId: "user-1", runId: "other-run", tokenId: "token-1" },
+    { userId: "other-user", runId: "run-1", tokenId: "token-1" },
+    { userId: "user-1", runId: "run-1", tokenId: "missing-token" }
+  ]) {
+    const database = new FakeExecutionTokenDatabase();
+    database.addToken();
+    await assert.rejects(
+      serviceFor(database).revokeExecutionTokenForRun(input),
+      isTokenError("EXECUTION_TOKEN_NOT_FOUND", 404)
+    );
+    assert.equal(database.tokens[0]?.revokedAt, null);
+    assert.equal(database.audits.length, 0);
+  }
+});
+
+test("run-bound revocation validates every identifier before database access", async () => {
+  for (const input of [
+    { userId: "user-1", runId: undefined, tokenId: "token-1" },
+    { userId: undefined, runId: "run-1", tokenId: "token-1" },
+    { userId: "user-1", runId: "run-1", tokenId: undefined }
+  ]) {
+    const database = new FakeExecutionTokenDatabase();
+    await assert.rejects(
+      serviceFor(database).revokeExecutionTokenForRun(input as unknown as RevokeExecutionTokenForRunInput),
+      isTokenError("EXECUTION_TOKEN_NOT_FOUND", 404)
+    );
+    assert.deepEqual(database.operations, []);
+  }
+});
+
+test("user-wide bulk invalidation revokes only currently usable tokens and writes a secret-free audit", async () => {
+  const database = new FakeExecutionTokenDatabase();
+  const reusable = database.addToken({ id: "reusable" });
+  const singleUse = database.addToken({ id: "single-use", runId: "run-2", singleUse: true });
+  const consumed = database.addToken({ id: "consumed", singleUse: true, consumedAt: ISSUE_TIME });
+  const expired = database.addToken({ id: "expired", expiresAt: ISSUE_TIME });
+  const revokedAt = new Date(ISSUE_TIME.getTime() - 1);
+  const revoked = database.addToken({ id: "revoked", revokedAt });
+  const otherUser = database.addToken({ id: "other-user", userId: "user-2" });
+
+  const count = await database.client.$transaction((tx) =>
+    revokeUsableExecutionTokensForUserInTransaction(tx as ExecutionTokenRevocationTransaction, {
+      userId: "user-1",
+      now: ISSUE_TIME,
+      reason: "policy_changed"
+    })
+  );
+
+  assert.equal(count, 2);
+  assert.equal(reusable.revokedAt?.getTime(), ISSUE_TIME.getTime());
+  assert.equal(singleUse.revokedAt?.getTime(), ISSUE_TIME.getTime());
+  assert.equal(consumed.revokedAt, null);
+  assert.equal(expired.revokedAt, null);
+  assert.equal(revoked.revokedAt?.getTime(), revokedAt.getTime());
+  assert.equal(otherUser.revokedAt, null);
+  assert.deepEqual(database.audits[0], {
+    userId: "user-1",
+    action: "application-execution-token.revoke-bulk",
+    resource: "User",
+    resourceId: "user-1",
+    metadata: {
+      reason: "policy_changed",
+      revokedCount: 2,
+      revokedAt: ISSUE_TIME.toISOString()
+    }
+  });
+  const serialized = JSON.stringify(database.audits[0]);
+  assert.equal(serialized.includes(RAW_READ_TOKEN), false);
+  assert.equal(serialized.includes("tokenHash"), false);
+  assert.equal(serialized.includes(hashExecutionToken(RAW_READ_TOKEN)), false);
+});
+
+test("run-wide bulk invalidation is run-bound and audit failure rolls the revocation back", async () => {
+  const database = new FakeExecutionTokenDatabase();
+  database.addToken({ id: "target", runId: "run-1" });
+  database.addToken({ id: "other-run", runId: "run-2" });
+  database.failAudit = true;
+
+  await assert.rejects(
+    database.client.$transaction((tx) =>
+      revokeUsableExecutionTokensForRunInTransaction(tx as ExecutionTokenRevocationTransaction, {
+        userId: "user-1",
+        runId: "run-1",
+        now: ISSUE_TIME,
+        reason: "run_cancelled"
+      })
+    ),
+    /simulated audit failure/
+  );
+  assert.equal(database.tokens[0]?.revokedAt, null);
+  assert.equal(database.tokens[1]?.revokedAt, null);
+  assert.equal(database.audits.length, 0);
 });

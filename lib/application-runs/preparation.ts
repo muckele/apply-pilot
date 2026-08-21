@@ -174,15 +174,47 @@ export function buildPreparationAcquireData(run: PreparationRunFence, now: Date,
   };
 }
 
-// Leaving PREPARING always clears the lease and attempt ownership. READY /
-// REVIEW_REQUIRED / BLOCKED / FAILED remain the same active historical run, so
-// activeRunKey is deliberately NOT cleared here (only CANCELLED clears it, via
-// buildCancelRunData in lib/application-runs/state-machine.ts).
-export function buildPreparationExitData(fields: { blockingReason?: string; errorCategory?: string } = {}) {
+export type PreparationBlockingReason =
+  | PreparationGateBlocker
+  | "automation_disabled"
+  | "automation_disabled_during_preparation"
+  | "daily_application_cap_reached"
+  | "ai_budget_exceeded"
+  | "ai_request_cost_limit"
+  | "ai_cost_confirmation_required"
+  | "ai_duplicate_in_progress";
+
+export type PreparationErrorCategory =
+  | "planner_input_invalid"
+  | "planner_output_invalid"
+  | "planner_confidence_invalid"
+  | "planner_provider_failure"
+  | "ai_provider_usage_exceeded_reservation";
+
+// Deterministic and provider-budget exits both use the same narrow BLOCKED shape.
+// Extra runtime properties are ignored because the lifecycle fields are rebuilt
+// explicitly rather than spread from the caller.
+export function buildPreparationBlockedData(blockingReason: PreparationBlockingReason) {
   return {
+    state: "BLOCKED" as ApplicationRunState,
+    stateVersion: { increment: 1 },
     prepareAttemptId: null,
     prepareLeaseExpiresAt: null,
-    ...fields
+    blockingReason,
+    errorCategory: null
+  };
+}
+
+// A failed acquired attempt retains firstPreparingAt (and therefore its lifetime
+// daily-cap slot) while relinquishing only its attempt/lease ownership.
+export function buildPreparationFailedData(errorCategory: PreparationErrorCategory) {
+  return {
+    state: "FAILED" as ApplicationRunState,
+    stateVersion: { increment: 1 },
+    prepareAttemptId: null,
+    prepareLeaseExpiresAt: null,
+    blockingReason: null,
+    errorCategory
   };
 }
 
@@ -248,54 +280,3 @@ export function buildPreparationCommitData(
     plannerRequestHash: commit.plannerRequestHash
   };
 }
-// ---------------------------------------------------------------------------
-// Future transaction contract (implemented in the later ApplicationRun API commit;
-// documented here so the boundary is unambiguous):
-//
-// TX1 (short interactive transaction):
-//
-//   1. Load the ownership-scoped run and get-or-create the user's policy.
-//
-//   2. Check the initially loaded run for a live PREPARING lease.
-//      A live lease fails fast with conflict and must never be overwritten by gate
-//      evaluation.
-//
-//   3. Acquire the per-user ApplicationAutomationPolicy row lock using minimal,
-//     parameterized Prisma tagged-template SQL:
-//       tx.$queryRaw`SELECT "id" FROM "ApplicationAutomationPolicy" WHERE "userId" = ${userId} FOR UPDATE`
-//
-//   4. After the lock, re-read the authoritative:
-//        - policy;
-//        - run state / version / lease;
-//        - current job fit score;
-//        - current job-match confidence;
-//        - explicit resume assignment / selectability;
-//        - explicit cover-letter assignment / selectability;
-//        - blocked-host status.
-//
-//   5. Re-check the live PREPARING lease and classify acquisition using the
-//      authoritative run state.
-//
-//   6. Evaluate the global capability flag and the locked/current policy.
-//
-//   7. Evaluate all deterministic preparation gates using the authoritative
-//      post-lock values.
-//
-//   8. If a gate fails:
-//        - perform a guarded BLOCKED transition;
-//        - do not set firstPreparingAt;
-//        - do not consume a daily-cap slot.
-//
-//   9. Only for first-acquire:
-//        count runs where firstPreparingAt >= dailyCapWindowStart(now)
-//        and enforce the rolling cap.
-//
-//   10. CAS acquire PREPARING with the expected state/version, fresh attempt ID,
-//       ten-minute lease, incremented stateVersion, and firstPreparingAt written
-//       only when currently null.
-//
-// COMMIT TX1.
-// Provider call (Kimi/Gemini) happens with NO transaction open.
-// TX2 (short): guarded updateMany { id, state: PREPARING, prepareAttemptId, stateVersion }
-//   with buildPreparationCommitData(); count ≠ 1 ⇒ discard the provider result.
-// ---------------------------------------------------------------------------

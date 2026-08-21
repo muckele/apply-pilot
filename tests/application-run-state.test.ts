@@ -7,6 +7,7 @@ import {
   ALLOWED_RUN_TRANSITIONS,
   assertRunTransition,
   buildCancelRunData,
+  buildResolveRunReviewData,
   isTerminalRunState,
   RunTransitionError
 } from "@/lib/application-runs/state-machine";
@@ -110,4 +111,14 @@ test("cancellation data clears the active run key, lease, and attempt while fenc
   assert.equal(data.prepareAttemptId, null);
   assert.equal(data.prepareLeaseExpiresAt, null);
   assert.deepEqual(data.stateVersion, { increment: 1 });
+});
+
+test("review-resolution data records acknowledgment and advances only the READY fence", () => {
+  const now = new Date("2026-08-16T12:00:00.000Z");
+
+  assert.deepEqual(buildResolveRunReviewData(now), {
+    state: "READY",
+    stateVersion: { increment: 1 },
+    reviewAcknowledgedAt: now
+  });
 });

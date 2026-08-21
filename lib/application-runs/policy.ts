@@ -39,8 +39,9 @@ export function isAutomationAllowed(policy: { enabled: boolean }, env: Automatio
   return isApplicationAutomationEnabled(env) && policy.enabled;
 }
 
-// CAPABILITY-INCREASING OPERATIONS ONLY (create run, prepare, future token issuance,
-// future fill). Safety/recovery operations — reading runs/policy, PATCH policy, cancel,
+// CAPABILITY-INCREASING OPERATIONS ONLY (prepare, future token issuance, future fill).
+// Creating an inert DRAFT run is deliberately outside this guard. Safety/recovery
+// operations — reading runs/policy, PATCH policy, cancel,
 // token revocation, answer review — must never call this guard, so automation stays
 // recoverable while disabled.
 export function assertAutomationCapability(

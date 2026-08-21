@@ -230,6 +230,13 @@ function validateRevokeInput(value: unknown): RevokeExecutionTokenInput {
   };
 }
 
+function validateRunBoundRevokeInput(value: unknown): RevokeExecutionTokenForRunInput {
+  const input = validateRevokeInput(value);
+  const candidate = value as Record<string, unknown>;
+  if (!isNonBlankString(candidate.runId)) throw executionTokenNotFound();
+  return { ...input, runId: candidate.runId };
+}
+
 // ---------------------------------------------------------------------------
 // Token generation and hashing (Node built-in crypto only)
 // ---------------------------------------------------------------------------
@@ -414,6 +421,68 @@ export function buildReplacementRevokeWhere(slot: TokenSlot): Prisma.Application
 export function buildRevokeWhere(input: { userId: string; tokenId: string }): Prisma.ApplicationExecutionTokenWhereInput {
   if (!isNonBlankString(input?.userId) || !isNonBlankString(input?.tokenId)) throw executionTokenNotFound();
   return { id: input.tokenId, userId: input.userId, revokedAt: null };
+}
+
+export function buildRunBoundRevokeWhere(
+  input: RevokeExecutionTokenForRunInput
+): Prisma.ApplicationExecutionTokenWhereInput {
+  const validated = validateRunBoundRevokeInput(input);
+  return {
+    id: validated.tokenId,
+    userId: validated.userId,
+    runId: validated.runId,
+    revokedAt: null
+  };
+}
+
+export type BulkExecutionTokenRevocationReason = "policy_changed" | "run_cancelled";
+
+function validateBulkRevocationInput(
+  input: { userId: string; runId?: string; now: Date; reason: BulkExecutionTokenRevocationReason },
+  requireRun: boolean
+) {
+  if (
+    !isNonBlankString(input?.userId) ||
+    (requireRun && !isNonBlankString(input?.runId)) ||
+    !isValidDate(input?.now) ||
+    (input?.reason !== "policy_changed" && input?.reason !== "run_cancelled")
+  ) {
+    throw invalidTokenData();
+  }
+}
+
+function buildUsableExecutionTokenWhere(
+  input: { userId: string; now: Date; reason: BulkExecutionTokenRevocationReason },
+  requireRun: boolean
+): Prisma.ApplicationExecutionTokenWhereInput {
+  validateBulkRevocationInput(input, requireRun);
+  return {
+    userId: input.userId,
+    revokedAt: null,
+    expiresAt: { gt: input.now },
+    OR: [{ singleUse: false }, { singleUse: true, consumedAt: null }]
+  };
+}
+
+export function buildUsableExecutionTokenWhereForUser(input: {
+  userId: string;
+  now: Date;
+  reason: BulkExecutionTokenRevocationReason;
+}): Prisma.ApplicationExecutionTokenWhereInput {
+  return buildUsableExecutionTokenWhere(input, false);
+}
+
+export function buildUsableExecutionTokenWhereForRun(input: {
+  userId: string;
+  runId: string;
+  now: Date;
+  reason: BulkExecutionTokenRevocationReason;
+}): Prisma.ApplicationExecutionTokenWhereInput {
+  validateBulkRevocationInput(input, true);
+  return {
+    ...buildUsableExecutionTokenWhere(input, false),
+    runId: input.runId
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +713,11 @@ async function authorizeReusableExecutionTokenWithDependencies(
   dependencies: ResolvedExecutionTokenServiceDependencies
 ): Promise<ExecutionTokenBinding> {
   const input = validateBindingInput(unvalidatedInput);
+  // The server-global gate is an authorization-time emergency pause. Input validation stays
+  // first, while this check stays before the clock and every database authorization/mutation.
+  // Passing an enabled policy value intentionally checks only the global half of the existing
+  // capability helper; user-policy changes are enforced by atomic persistent token revocation.
+  assertAutomationCapability({ enabled: true }, dependencies.env);
   const now = resolveServiceNow(dependencies);
   const tokenHash = hashExecutionToken(input.rawToken);
 
@@ -695,6 +769,9 @@ async function consumeSingleUseExecutionTokenWithDependencies(
   dependencies: ResolvedExecutionTokenServiceDependencies
 ): Promise<ExecutionTokenBinding> {
   const input = validateBindingInput(unvalidatedInput);
+  // Match reusable authorization: validate first, then apply the global emergency pause before
+  // hashing, clock access, transaction creation, or any capability-side database mutation.
+  assertAutomationCapability({ enabled: true }, dependencies.env);
   const tokenHash = hashExecutionToken(input.rawToken);
 
   return dependencies.prismaClient.$transaction(async (tx) => {
@@ -773,6 +850,10 @@ export type RevokeExecutionTokenInput = {
   tokenId: string;
 };
 
+export type RevokeExecutionTokenForRunInput = RevokeExecutionTokenInput & {
+  runId: string;
+};
+
 export type RevokeExecutionTokenResult = {
   revoked: boolean;
   alreadyRevoked: boolean;
@@ -785,14 +866,16 @@ export type RevokeExecutionTokenResult = {
 // fails both reusable authorization and single-use consumption (their predicates require
 // revokedAt=null).
 async function revokeExecutionTokenWithDependencies(
-  unvalidatedInput: RevokeExecutionTokenInput,
-  dependencies: ResolvedExecutionTokenServiceDependencies
+  unvalidatedInput: RevokeExecutionTokenInput | RevokeExecutionTokenForRunInput,
+  dependencies: ResolvedExecutionTokenServiceDependencies,
+  runBound: boolean
 ): Promise<RevokeExecutionTokenResult> {
   const input = validateRevokeInput(unvalidatedInput);
+  const runId = runBound ? validateRunBoundRevokeInput(unvalidatedInput).runId : undefined;
 
   return dependencies.prismaClient.$transaction(async (tx) => {
     const existing = await tx.applicationExecutionToken.findFirst({
-      where: { id: input.tokenId, userId: input.userId },
+      where: { id: input.tokenId, userId: input.userId, ...(runId ? { runId } : {}) },
       select: {
         id: true,
         userId: true,
@@ -808,7 +891,9 @@ async function revokeExecutionTokenWithDependencies(
 
     const now = resolveServiceNow(dependencies);
     const result = await tx.applicationExecutionToken.updateMany({
-      where: buildRevokeWhere({ userId: input.userId, tokenId: input.tokenId }),
+      where: runId
+        ? buildRunBoundRevokeWhere({ userId: input.userId, runId, tokenId: input.tokenId })
+        : buildRevokeWhere({ userId: input.userId, tokenId: input.tokenId }),
       data: { revokedAt: now }
     });
     if (result.count === 0) return { revoked: false, alreadyRevoked: true };
@@ -836,6 +921,68 @@ async function revokeExecutionTokenWithDependencies(
   });
 }
 
+export type ExecutionTokenRevocationTransaction = Pick<
+  Prisma.TransactionClient,
+  "applicationExecutionToken" | "auditLog"
+>;
+
+async function revokeUsableExecutionTokensInTransaction(
+  tx: ExecutionTokenRevocationTransaction,
+  input: {
+    userId: string;
+    now: Date;
+    reason: BulkExecutionTokenRevocationReason;
+  },
+  where: Prisma.ApplicationExecutionTokenWhereInput,
+  resource: { name: "User" | "ApplicationRun"; id: string; runId?: string }
+): Promise<number> {
+  const revoked = await tx.applicationExecutionToken.updateMany({
+    where,
+    data: { revokedAt: input.now }
+  });
+
+  await tx.auditLog.create({
+    data: {
+      userId: input.userId,
+      action: "application-execution-token.revoke-bulk",
+      resource: resource.name,
+      resourceId: resource.id,
+      metadata: {
+        ...(resource.runId ? { runId: resource.runId } : {}),
+        reason: input.reason,
+        revokedCount: revoked.count,
+        revokedAt: input.now.toISOString()
+      } as Prisma.InputJsonValue
+    }
+  });
+
+  return revoked.count;
+}
+
+export function revokeUsableExecutionTokensForUserInTransaction(
+  tx: ExecutionTokenRevocationTransaction,
+  input: { userId: string; now: Date; reason: "policy_changed" }
+): Promise<number> {
+  return revokeUsableExecutionTokensInTransaction(
+    tx,
+    input,
+    buildUsableExecutionTokenWhereForUser(input),
+    { name: "User", id: input.userId }
+  );
+}
+
+export function revokeUsableExecutionTokensForRunInTransaction(
+  tx: ExecutionTokenRevocationTransaction,
+  input: { userId: string; runId: string; now: Date; reason: "run_cancelled" }
+): Promise<number> {
+  return revokeUsableExecutionTokensInTransaction(
+    tx,
+    input,
+    buildUsableExecutionTokenWhereForRun(input),
+    { name: "ApplicationRun", id: input.runId, runId: input.runId }
+  );
+}
+
 export function createExecutionTokenService(dependencies: ExecutionTokenServiceDependencies = {}) {
   const resolved: ResolvedExecutionTokenServiceDependencies = {
     prismaClient: dependencies.prismaClient ?? prisma,
@@ -850,7 +997,10 @@ export function createExecutionTokenService(dependencies: ExecutionTokenServiceD
       authorizeReusableExecutionTokenWithDependencies(input, resolved),
     consumeSingleUseExecutionToken: (input: ExecutionTokenBindingInput) =>
       consumeSingleUseExecutionTokenWithDependencies(input, resolved),
-    revokeExecutionToken: (input: RevokeExecutionTokenInput) => revokeExecutionTokenWithDependencies(input, resolved)
+    revokeExecutionToken: (input: RevokeExecutionTokenInput) =>
+      revokeExecutionTokenWithDependencies(input, resolved, false),
+    revokeExecutionTokenForRun: (input: RevokeExecutionTokenForRunInput) =>
+      revokeExecutionTokenWithDependencies(input, resolved, true)
   };
 }
 
@@ -870,4 +1020,10 @@ export function consumeSingleUseExecutionToken(input: ExecutionTokenBindingInput
 
 export function revokeExecutionToken(input: RevokeExecutionTokenInput): Promise<RevokeExecutionTokenResult> {
   return defaultExecutionTokenService.revokeExecutionToken(input);
+}
+
+export function revokeExecutionTokenForRun(
+  input: RevokeExecutionTokenForRunInput
+): Promise<RevokeExecutionTokenResult> {
+  return defaultExecutionTokenService.revokeExecutionTokenForRun(input);
 }

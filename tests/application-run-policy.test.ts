@@ -201,12 +201,29 @@ test("execution rejects localhost, loopback, private networks, and all IP litera
   assert.equal(parseExecutionTargetUrl("https://[::1]/apply"), null);
   assert.equal(parseExecutionTargetUrl("https://localhost/apply"), null);
   assert.equal(parseExecutionTargetUrl("https://192.168.0.5/apply"), null);
+  assert.equal(parseExecutionTargetUrl("https://intranet/apply"), null);
+  assert.equal(parseExecutionTargetUrl("https://printer.local/apply"), null);
+  assert.equal(parseExecutionTargetUrl("https://metadata.google.internal/apply"), null);
+  assert.equal(parseExecutionTargetUrl("https://printer.home.arpa/apply"), null);
+
+  for (const host of ["jobs.example.com", "notlocal.example", "local.example", "internal.example", "home.arpa.attacker.test"]) {
+    assert.equal(parseExecutionTargetUrl(`https://${host}/apply`)?.host, host);
+  }
 
   // IP literals stay rejected for execution even when explicitly allowlisted.
   assert.equal(
     isHostAllowedForExecution("127.0.0.1", { allowedHosts: ["127.0.0.1"], blockedHosts: [] }),
     false
   );
+});
+
+test("policy hosts reject structurally local DNS names without substring overblocking", () => {
+  for (const host of ["intranet", "printer.local", "metadata.google.internal", "printer.home.arpa"]) {
+    assert.equal(canonicalizePolicyHostEntry(host), null, host);
+  }
+  for (const host of ["jobs.example.com", "notlocal.example", "local.example", "internal.example", "home.arpa.attacker.test"]) {
+    assert.equal(canonicalizePolicyHostEntry(host), host);
+  }
 });
 
 test("preparation enforces blocked hosts only and never requires the execution allowlist", () => {

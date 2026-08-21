@@ -1,4 +1,5 @@
 import { PublicApiError } from "@/lib/api-errors";
+import { isProhibitedJobBoardHost } from "@/lib/security/restricted-hosts";
 
 // ---------------------------------------------------------------------------
 // Static host classification (no DNS, no network)
@@ -11,11 +12,19 @@ export function isIpLiteral(host: string): boolean {
 }
 
 export function isPrivateOrLocalHost(host: string): boolean {
-  const bare = (host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host).toLowerCase();
+  const bare = (host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host)
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, "");
   if (bare === "localhost" || bare.endsWith(".localhost")) return true;
   if (bare === "::1" || bare === "::" || bare === "0:0:0:0:0:0:0:1") return true;
   const v4 = bare.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!v4) return false;
+  if (!v4) {
+    if (!bare.includes(".")) return true;
+    return ["local", "internal", "home.arpa"].some(
+      (suffix) => bare === suffix || bare.endsWith(`.${suffix}`)
+    );
+  }
   const a = Number(v4[1]);
   const b = Number(v4[2]);
   if (a === 0 || a === 10 || a === 127) return true; // 0.0.0.0/8, loopback, 10/8
@@ -105,7 +114,8 @@ export type HostPolicy = {
 };
 
 export function isHostBlocked(host: string, policy: Pick<HostPolicy, "blockedHosts">): boolean {
-  return isHostInPolicyList(host, policy.blockedHosts);
+  const normalizedHost = normalizeHostname(host);
+  return isProhibitedJobBoardHost(normalizedHost) || isHostInPolicyList(normalizedHost, policy.blockedHosts);
 }
 
 export function isHostAllowedForExecution(host: string, policy: HostPolicy): boolean {

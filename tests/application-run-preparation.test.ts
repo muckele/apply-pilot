@@ -3,8 +3,9 @@ import { test } from "node:test";
 
 import {
   buildPreparationAcquireData,
+  buildPreparationBlockedData,
   buildPreparationCommitData,
-  buildPreparationExitData,
+  buildPreparationFailedData,
   canCommitPreparation,
   classifyPreparationAcquisition,
   dailyCapWindowStart,
@@ -16,6 +17,7 @@ import {
   type PreparationCommitInput,
   type PreparationRunFence
 } from "@/lib/application-runs/preparation";
+import { buildCancelRunData } from "@/lib/application-runs/state-machine";
 
 const NOW = new Date("2026-08-16T12:00:00.000Z");
 
@@ -110,6 +112,28 @@ test("commit fencing requires PREPARING plus exact attempt and version", () => {
   assert.equal(canCommitPreparation(fence({ state: "PREPARING", prepareAttemptId: null, stateVersion: 3 }), attempt), false);
 });
 
+test("cancellation invalidates a captured provider attempt so it cannot commit later", () => {
+  const attempt = { prepareAttemptId: "attempt-1", stateVersion: 3 };
+  const preparing = fence({
+    state: "PREPARING",
+    prepareAttemptId: attempt.prepareAttemptId,
+    stateVersion: attempt.stateVersion,
+    prepareLeaseExpiresAt: new Date(NOW.getTime() + 60_000),
+    firstPreparingAt: NOW
+  });
+  const cancellation = buildCancelRunData(NOW);
+  const cancelled = fence({
+    ...preparing,
+    state: cancellation.state,
+    stateVersion: preparing.stateVersion + cancellation.stateVersion.increment,
+    prepareAttemptId: cancellation.prepareAttemptId,
+    prepareLeaseExpiresAt: cancellation.prepareLeaseExpiresAt
+  });
+
+  assert.equal(canCommitPreparation(preparing, attempt), true);
+  assert.equal(canCommitPreparation(cancelled, attempt), false);
+});
+
 test("the preparation lease is exactly ten minutes", () => {
   assert.equal(PREPARE_LEASE_MS, 600_000);
 });
@@ -143,10 +167,10 @@ test("acquisition data installs a fresh attempt, a 10-minute lease, and writes f
 });
 
 test("leaving PREPARING clears lease and attempt but keeps the active run key", () => {
-  const exit = buildPreparationExitData({ blockingReason: "daily_cap_reached" });
+  const exit = buildPreparationBlockedData("daily_application_cap_reached");
   assert.equal(exit.prepareAttemptId, null);
   assert.equal(exit.prepareLeaseExpiresAt, null);
-  assert.equal(exit.blockingReason, "daily_cap_reached");
+  assert.equal(exit.blockingReason, "daily_application_cap_reached");
   assert.ok(!("activeRunKey" in exit));
 
   const commit = buildPreparationCommitData("READY", NOW, fullCommitInput({ reviewReasons: [] }));
@@ -157,6 +181,63 @@ test("leaving PREPARING clears lease and attempt but keeps the active run key", 
   assert.deepEqual(commit.stateVersion, { increment: 1 });
   assert.ok(!("activeRunKey" in commit));
   assert.deepEqual(commit.reviewReasons, []);
+});
+
+test("BLOCKED and FAILED builders own every preparation-exit lifecycle field", () => {
+  const blocked = buildPreparationBlockedData("daily_application_cap_reached");
+  assert.deepEqual(blocked, {
+    state: "BLOCKED",
+    stateVersion: { increment: 1 },
+    prepareAttemptId: null,
+    prepareLeaseExpiresAt: null,
+    blockingReason: "daily_application_cap_reached",
+    errorCategory: null
+  });
+
+  const failed = buildPreparationFailedData("planner_output_invalid");
+  assert.deepEqual(failed, {
+    state: "FAILED",
+    stateVersion: { increment: 1 },
+    prepareAttemptId: null,
+    prepareLeaseExpiresAt: null,
+    blockingReason: null,
+    errorCategory: "planner_output_invalid"
+  });
+  assert.ok(!("firstPreparingAt" in blocked));
+  assert.ok(!("activeRunKey" in blocked));
+  assert.ok(!("firstPreparingAt" in failed));
+  assert.ok(!("activeRunKey" in failed));
+});
+
+test("preparation exit builders ignore hostile runtime lifecycle overrides", () => {
+  const hostileBlocked = {
+    valueOf: () => "host_blocked",
+    state: "FILLING",
+    stateVersion: 500,
+    prepareAttemptId: "hijacked",
+    prepareLeaseExpiresAt: NOW,
+    firstPreparingAt: NOW,
+    activeRunKey: null
+  } as unknown as "host_blocked";
+  const blocked = buildPreparationBlockedData(hostileBlocked);
+  assert.equal(blocked.state, "BLOCKED");
+  assert.deepEqual(blocked.stateVersion, { increment: 1 });
+  assert.equal(blocked.prepareAttemptId, null);
+  assert.equal(blocked.prepareLeaseExpiresAt, null);
+  assert.ok(!("firstPreparingAt" in blocked));
+  assert.ok(!("activeRunKey" in blocked));
+
+  const hostileFailed = Object.assign(new String("planner_provider_failure"), {
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 999,
+    firstPreparingAt: null,
+    activeRunKey: null
+  }) as unknown as "planner_provider_failure";
+  const failed = buildPreparationFailedData(hostileFailed);
+  assert.equal(failed.state, "FAILED");
+  assert.deepEqual(failed.stateVersion, { increment: 1 });
+  assert.ok(!("firstPreparingAt" in failed));
+  assert.ok(!("activeRunKey" in failed));
 });
 
 test("successful preparation preserves all approved snapshot fields and reviewReasons", () => {
