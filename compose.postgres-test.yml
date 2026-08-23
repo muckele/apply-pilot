@@ -1,0 +1,19 @@
+services:
+  postgres-commit5-test:
+    image: postgres:16
+    restart: "no"
+    environment:
+      POSTGRES_DB: apply_pilot_commit5_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d apply_pilot_commit5_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    tmpfs:
+      - /var/lib/postgresql/data
+    stop_grace_period: 5s

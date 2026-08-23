@@ -66,3 +66,52 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  postgres-concurrency:
+    name: PostgreSQL concurrency harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: apply_pilot_commit5_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d apply_pilot_commit5_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CI: "true"
+      NODE_ENV: "test"
+      COMMIT5_POSTGRES_TEST: "1"
+      TEST_DATABASE_URL: "postgresql://postgres:postgres@127.0.0.1:5432/apply_pilot_commit5_test?schema=public"
+      APPLICATION_AUTOMATION_ENABLED: "true"
+      AI_ENABLED: "false"
+      AI_MOCK_MODE: "true"
+      GEMINI_API_KEY: ""
+      MOONSHOT_API_KEY: ""
+      OPENAI_API_KEY: ""
+      OPENAI_MOCK_MODE: "true"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run PostgreSQL concurrency harness
+        run: npm run test:postgres
