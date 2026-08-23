@@ -47,7 +47,7 @@ export default async function IntegrationsPage() {
           />
           <div className="space-y-4 p-5 text-sm leading-6 text-slate-700">
             <p>
-              Gmail search requests readonly access so JobMatch CRM can find recruiter and hiring-team messages, show snippets,
+              Gmail search requests readonly access so Apply Pilot can find recruiter and hiring-team messages, show snippets,
               and let you explicitly save selected emails to application records.
             </p>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">

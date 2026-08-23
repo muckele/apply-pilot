@@ -24,7 +24,7 @@ export default async function LoginPage() {
     <>
       <PageHeader
         title="Sign in"
-        description="Use your Google account to access JobMatch CRM. Gmail permissions are separate and requested only from the integrations page."
+        description="Use your Google account to access Apply Pilot. Gmail permissions are separate and requested only from the integrations page."
       />
 
       <div className="mx-auto max-w-xl">

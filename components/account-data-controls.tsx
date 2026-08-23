@@ -32,7 +32,7 @@ export function AccountDataControls() {
     const link = document.createElement("a");
     const today = new Date().toISOString().slice(0, 10);
     link.href = url;
-    link.download = `jobmatch-crm-export-${today}.json`;
+    link.download = `apply-pilot-export-${today}.json`;
     document.body.appendChild(link);
     link.click();
     link.remove();
