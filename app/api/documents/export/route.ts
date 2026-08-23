@@ -143,7 +143,7 @@ export async function POST(request: NextRequest) {
       ? await prisma.resumeVersion.findFirst({ where: { id: input.resumeVersionId, userId } })
       : null;
 
-    const title = document?.title ?? resumeVersion?.title ?? "JobMatch CRM document";
+    const title = document?.title ?? resumeVersion?.title ?? "Apply Pilot document";
     const content = document?.content ?? resumeVersion?.fullText;
 
     if (!content) {

@@ -1,6 +1,6 @@
 # Deployment Checklist
 
-JobMatch CRM is ready to deploy after these production settings are configured in the hosting provider.
+Apply Pilot is ready to deploy after these production settings are configured in the hosting provider.
 
 ## Required production environment variables
 

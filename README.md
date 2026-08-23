@@ -1,8 +1,8 @@
-# JobMatch CRM
+# Apply Pilot
 
-Private job-search CRM and AI resume optimization app for individual users.
+**Automate the search. Own the results.**
 
-JobMatch CRM helps discover compliant job postings, compare them against a master resume and career goals, create honest tailored documents, track applications, manage recruiter communications, and prepare for interviews. It is intentionally human-in-the-loop: it does not auto-apply, secretly scrape prohibited job boards, send emails without review, or record/transcribe interviews without consent confirmation.
+Apply Pilot is a private, AI-assisted job discovery and controlled application workflow app for individual users. It helps discover compliant job postings, compare them against a master resume and career goals, create honest tailored documents, track applications, manage recruiter communications, and prepare for interviews. It is intentionally human-in-the-loop: it does not auto-apply, secretly scrape prohibited job boards, send emails without review, or record/transcribe interviews without consent confirmation.
 
 ## MVP Scope
 
