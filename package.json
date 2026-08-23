@@ -1,8 +1,8 @@
 {
-  "name": "jobmatch-crm",
+  "name": "apply-pilot",
   "version": "0.1.0",
   "private": true,
-  "description": "Human-in-the-loop job-search CRM and AI resume optimization app.",
+  "description": "AI-assisted job discovery and controlled application workflows that keep you in control.",
   "engines": {
     "node": "24.x"
   },

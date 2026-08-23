@@ -4,8 +4,8 @@ import { AppShell } from "@/components/app-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "JobMatch CRM",
-  description: "Personal job-search CRM and AI resume optimization app"
+  title: "Apply Pilot",
+  description: "AI-assisted job discovery and controlled application workflows that keep you in control."
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -12,11 +12,11 @@ import {
   ListChecks,
   Menu,
   Mic,
-  Settings,
-  Sparkles
+  Settings
 } from "lucide-react";
 
 import { AuthMenu } from "@/components/auth-menu";
+import { ApplyPilotLogo } from "@/components/brand/apply-pilot-logo";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
@@ -39,13 +39,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-slate-50">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-200 bg-white lg:block">
         <div className="flex h-16 items-center gap-3 border-b border-slate-200 px-6">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600 text-white">
-            <Sparkles size={18} aria-hidden="true" />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-slate-950">JobMatch CRM</p>
-            <p className="text-xs text-slate-500">Human-in-the-loop</p>
-          </div>
+          <ApplyPilotLogo subtitle="Human-in-the-loop" />
         </div>
         <nav className="max-h-[calc(100vh-18rem)] space-y-1 overflow-y-auto px-3 py-5">
           {navItems.map((item) => (
@@ -72,10 +66,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
       <div className="lg:pl-64">
         <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Sparkles size={18} className="text-brand-600" aria-hidden="true" />
-              JobMatch CRM
-            </div>
+            <ApplyPilotLogo className="gap-2" markClassName="h-6 w-6" />
             <div className="flex items-center gap-2">
               <AuthMenu />
               <details className="group relative">

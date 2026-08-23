@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "JobMatch CRM Capture",
+  "name": "Apply Pilot Capture",
   "version": "0.1.0",
-  "description": "Review and save the active job posting to JobMatch CRM. Never submits applications.",
+  "description": "Review and save the active job posting to Apply Pilot. Never submits applications.",
   "permissions": ["activeTab", "scripting", "storage"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "action": {
-    "default_title": "Save job to JobMatch CRM",
+    "default_title": "Save job to Apply Pilot",
     "default_popup": "popup.html"
   }
 }

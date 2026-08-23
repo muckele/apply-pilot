@@ -130,7 +130,7 @@ export async function GET() {
     const exportedAt = new Date().toISOString();
     const body = {
       exportedAt,
-      app: "JobMatch CRM",
+      app: "Apply Pilot",
       privacyNote:
         "This export excludes encrypted OAuth tokens, Auth.js sessions/accounts, and raw stored file bytes.",
       user,
@@ -167,7 +167,7 @@ export async function GET() {
 
     return NextResponse.json(body, {
       headers: {
-        "Content-Disposition": `attachment; filename="jobmatch-crm-export-${exportedAt.slice(0, 10)}.json"`
+        "Content-Disposition": `attachment; filename="apply-pilot-export-${exportedAt.slice(0, 10)}.json"`
       }
     });
   } catch (error) {

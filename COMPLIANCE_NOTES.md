@@ -2,7 +2,7 @@
 
 ## Human-In-The-Loop Rules
 
-JobMatch CRM is designed to assist, not act autonomously.
+Apply Pilot is designed to assist, not act autonomously.
 
 - The app may open an apply link, but it must not submit applications.
 - The app may draft emails, but it must not send them without explicit approval.
