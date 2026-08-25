@@ -71,7 +71,8 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
-- `AI_ENABLED`: provider kill switch. Paid calls occur only when this is exactly `true`.
+- `APPLICATION_AUTOMATION_ENABLED`: global controlled-application emergency stop. Only exact lowercase `true` enables capability-increasing automation, and the user's database policy must also be enabled; missing or any other value fails closed.
+- `AI_ENABLED`: paid/provider execution switch. Paid calls occur only when this is exactly `true`; this setting does not enable or disable the overall controlled-application capability.
 - `AI_PROVIDER`: default paid provider, currently `gemini` or `openai`.
 - `AI_MOCK_MODE`: set `true` to force deterministic local output even when a provider key exists.
 - `AI_ALLOWED_MODELS`: narrow comma-separated model allowlist. Every entry must exist in the server pricing registry.
@@ -120,7 +121,7 @@ The MVP is multi-user but not team-based. There are no organizations, shared wor
 For a private deployment, keep `AUTH_ALLOW_PUBLIC_SIGNUPS=false` and add every approved Google account to `AUTH_ALLOWED_EMAILS`:
 
 ```env
-AUTH_ALLOWED_EMAILS="you@gmail.com,second.user@gmail.com"
+AUTH_ALLOWED_EMAILS="approved.user@example.test,second.user@example.test"
 AUTH_ALLOW_PUBLIC_SIGNUPS="false"
 ALLOW_DEMO_USER="false"
 ```
@@ -174,11 +175,17 @@ Paid calls use schema-validated structured outputs with fixed feature input/outp
 
 ### Kimi application planning (opt-in)
 
-Application planning (`APPLICATION_PLAN`) can be routed to Kimi K3 while every other feature remains on the default provider: set `AI_PROVIDER_OVERRIDES="APPLICATION_PLAN:kimi"` and `MOONSHOT_API_KEY`. Planning sends a privacy-minimized payload built by `lib/ai/application-plan.ts`: a bounded job-requirements catalog plus a deterministic candidate-evidence catalog with no contact details, raw resume text, file data, or answer-vault content. The model references evidence only by catalog ID; human-readable text is hydrated locally from the catalog, and Kimi reasoning content is never persisted. Plans are advisory only — they never fill forms, send messages, or submit applications. Live planning evaluation is off by default (`AI_EVAL_PLAN_TOP=0`). See `docs/CONTROLLED_APPLICATION_AUTOMATION.md` for the milestone tracker.
+Application planning (`APPLICATION_PLAN`) can be routed to Kimi K3 while every other feature remains on the default provider: set `AI_PROVIDER_OVERRIDES="APPLICATION_PLAN:kimi"` and `MOONSHOT_API_KEY`. Planning sends a privacy-minimized payload built by `lib/ai/application-plan.ts`: a bounded job-requirements catalog plus a deterministic candidate-evidence catalog with no contact details, raw resume text, file data, or answer-vault content. The model references evidence only by catalog ID; human-readable text is hydrated locally from the catalog, and Kimi reasoning content is never persisted. Plans are advisory only — they never fill forms, send messages, or submit applications. Live planning evaluation is off by default (`AI_EVAL_PLAN_TOP=0`). See `docs/CONTROLLED_APPLICATION_AUTOMATION.md` for the canonical technical and operator reference.
 
-The AI Controls page shows spent, reserved, and remaining balances; automation has a separate allowance so discovery cannot consume the manual writing budget. Warnings appear at 50%, 75%, and 90%. Requests that could exceed five cents require explicit browser confirmation. The default layers are a $5 application cap, $1.50 automation cap, $0.10 per-request cap, and `AI_ENABLED=false` emergency switch.
+The AI Controls page shows spent, reserved, and remaining balances; automation has a separate allowance so discovery cannot consume the manual writing budget. Warnings appear at 50%, 75%, and 90%. Requests that could exceed five cents require explicit browser confirmation. The default layers are a $5 application cap, $1.50 automation cap, $0.10 per-request cap, and `AI_ENABLED=false` paid-provider switch.
 
 For the Google billing backstop, use a $10 prepaid balance, leave automatic reload disabled, and create billing alerts at $5, $8, and $10. Provider billing may lag, so the application ledger is the primary enforcement mechanism.
+
+## Controlled Application Automation
+
+The authenticated backend includes controlled preparation, deterministic review, cancellation, audit, and execution-token foundations. `PREPARE_ONLY` is the only current policy mode, and `APPLICATION_READ` is the only execution-token scope that can currently be issued.
+
+Employer-form inspection, browser form filling, ATS application-form adapters, and application submission are not implemented. The manual browser capture extension is a separate review-before-save workflow and does not execute controlled application runs. See [docs/CONTROLLED_APPLICATION_AUTOMATION.md](docs/CONTROLLED_APPLICATION_AUTOMATION.md) for the current capability, safety, policy, token, concurrency, and operator reference.
 
 ## Google Sign-In Setup
 
@@ -193,7 +200,7 @@ Then set these in `.env`:
 ```env
 GOOGLE_CLIENT_ID="..."
 GOOGLE_CLIENT_SECRET="..."
-AUTH_ALLOWED_EMAILS="your-email@gmail.com"
+AUTH_ALLOWED_EMAILS="approved.user@example.test"
 ```
 
 Restart the dev server after changing `.env`. Sign in at `/login`.

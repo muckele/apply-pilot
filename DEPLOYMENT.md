@@ -18,9 +18,11 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `GOOGLE_CLIENT_SECRET`
 - `AUTH_ALLOWED_EMAILS`
 - `ALLOW_DEMO_USER=false`
-- `OPENAI_API_KEY` only when live AI generation is enabled. It may be omitted for the deterministic local fallback mode.
-- `OPENAI_MODEL` and `OPENAI_MOCK_MODE=false` when live AI generation is enabled.
-- Current OpenAI per-million-token pricing variables when live AI budget enforcement is enabled.
+- `APPLICATION_AUTOMATION_ENABLED=false` until the per-user policy and reviewed execution hosts are configured.
+- `AI_ENABLED=false` until paid/provider execution is intentionally enabled. Deterministic local output remains available while paid execution is disabled or provider configuration is missing.
+- `AI_PROVIDER=gemini` by default. The global provider accepts only `gemini` or `openai`.
+- `AI_MOCK_MODE=false` only when live provider execution is intended.
+- The server-only key and model variables for each enabled provider. Never expose provider keys through `NEXT_PUBLIC_` variables.
 - `GMAIL_REDIRECT_URI`
 - `GMAIL_SCOPES`
 - `TOKEN_ENCRYPTION_KEY`
@@ -30,6 +32,9 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 
 Optional provider keys:
 
+- `GEMINI_API_KEY`
+- `OPENAI_API_KEY`
+- `MOONSHOT_API_KEY` when `APPLICATION_PLAN` is explicitly routed to Kimi
 - `ADZUNA_APP_ID`
 - `ADZUNA_APP_KEY`
 - `ADZUNA_COUNTRY`
@@ -66,6 +71,34 @@ https://your-production-domain.com/api/gmail/callback
 
 Keep Gmail access readonly. The app should remain human-in-the-loop: no automatic email sending, no deletion, and no hidden data capture.
 
+## Controlled application automation
+
+Start every environment fail-closed with:
+
+```env
+APPLICATION_AUTOMATION_ENABLED="false"
+```
+
+Only exact lowercase `true` enables capability-increasing controlled application operations. Enabling the global flag does not override a user's disabled `ApplicationAutomationPolicy`; configure and inspect that policy and its reviewed execution hosts first. Environment changes must reach every runtime instance, and instances must be restarted or redeployed when the hosting platform does not apply environment changes to already-running processes.
+
+`AI_ENABLED` is a separate paid/provider execution switch. It is not the controlled-application emergency stop. When paid execution is disabled, mocked, or missing usable provider credentials, current planning can use deterministic local behavior.
+
+Global `AI_PROVIDER` defaults to `gemini` and accepts only `gemini` or `openai`. Kimi is not a valid global provider. Kimi can be selected for advisory application planning through a feature override:
+
+```env
+AI_PROVIDER_OVERRIDES="APPLICATION_PLAN:kimi"
+```
+
+`APPLICATION_PLAN` is currently the only override-eligible feature, but its override slot can select any registered provider; it is not intrinsically Kimi-only. Kimi uses the server-side `MOONSHOT_API_KEY`, `KIMI_MODEL`, and `KIMI_REASONING_EFFORT` settings. Keep the complete provider and evaluation reference in [README.md](README.md) and the controlled-execution invariants in [docs/CONTROLLED_APPLICATION_AUTOMATION.md](docs/CONTROLLED_APPLICATION_AUTOMATION.md).
+
+### Emergency stop
+
+1. Set `APPLICATION_AUTOMATION_ENABLED=false` in the hosting environment.
+2. Apply the change consistently and restart or redeploy every runtime instance.
+3. Verify that preparation, execution-token issuance, and credential authorization/consumption are paused. Policy reads/updates, cancellation, review, answer review, and revocation remain available for recovery.
+
+The global stop does not itself write `revokedAt`. An otherwise-live token can become usable again after re-enablement, although a preparation run already persisted as `BLOCKED` is not automatically resumed. For durable invalidation, use a real persisted action such as a policy change, run cancellation, token replacement, or explicit token revocation. The current `APPLICATION_READ` lifetime is a fixed 15-minute code invariant, not an environment setting.
+
 ## Storage
 
 Use `FILE_STORAGE_DRIVER=database` for private resume and document storage in the MVP. Keep `MAX_UPLOAD_MB=4` and `MAX_AUDIO_UPLOAD_MB=4` because files sent through Vercel Functions are subject to the platform request-body limit.
@@ -99,7 +132,7 @@ GET /api/health/readiness
 ```
 
 Use `/api/health/readiness` for uptime checks because it verifies database connectivity and returns `503` when the app cannot reach PostgreSQL.
-It also validates the production Auth.js URLs, Gmail callback, private sign-in configuration, encryption key, cron secret, and Vercel function upload limits. OpenAI and private Blob storage are reported as capabilities rather than required launch dependencies.
+It also validates the production Auth.js URLs, Gmail callback, private sign-in configuration, encryption key, cron secret, and Vercel function upload limits. AI-provider and private Blob storage are reported as capabilities rather than required launch dependencies.
 
 ## Pre-deploy validation
 
