@@ -150,6 +150,73 @@ enum ApplicationAnswerSourceType {
   APPLICATION_PLAN
   USER_PROVIDED
   GENERATED_WITH_EVIDENCE
+  COVER_LETTER
+}
+
+enum ApplicationFormFieldType {
+  TEXT
+  EMAIL
+  TEL
+  URL
+  TEXTAREA
+  SELECT_ONE
+  SELECT_MANY
+  RADIO_GROUP
+  CHECKBOX_BOOLEAN
+  CHECKBOX_GROUP
+  NUMBER
+  DATE
+  FILE_UPLOAD
+  UNSUPPORTED
+}
+
+enum ApplicationQuestionClassification {
+  CONTACT
+  PROFESSIONAL_LINK
+  EXPERIENCE
+  EDUCATION
+  SKILL
+  CITIZENSHIP_IMMIGRATION
+  WORK_AUTHORIZATION
+  SPONSORSHIP
+  AVAILABILITY
+  RELOCATION
+  COMPENSATION
+  DEMOGRAPHIC
+  DISABILITY
+  VETERAN
+  CRIMINAL_HISTORY
+  LEGAL_ATTESTATION
+  DOCUMENT
+  UNKNOWN
+}
+
+enum ApplicationAnswerDisposition {
+  PROPOSABLE
+  MANUAL_ONLY
+  EXCLUDED
+  UNSUPPORTED
+}
+
+enum ApplicationAnswerDispositionReason {
+  NO_ELIGIBLE_SOURCE
+  INVALID_SOURCE_VALUE
+  AMBIGUOUS_SOURCE
+  UNCONFIRMED_APPLICANT_CONTACT
+  POLICY_EXCLUDED
+  LEGAL_ATTESTATION
+  V1_MANUAL_POLICY
+  UNSUPPORTED_CONTROL
+  AMBIGUOUS_FIELD
+  AMBIGUOUS_CHOICES
+  MULTIPLE_FILE_UPLOAD
+  NO_SELECTED_DOCUMENT
+  UNKNOWN_QUESTION
+}
+
+enum ApplicationAnswerReviewHashVersion {
+  LEGACY_SCALAR_SHA256
+  CANONICAL_PROPOSAL_V1
 }
 
 enum ApplicationRunAnswerStatus {
@@ -213,6 +280,8 @@ model User {
 
   applicationAutomationPolicy ApplicationAutomationPolicy?
   applicationRuns             ApplicationRun[]
+  applicationRunFormInspections ApplicationRunFormInspection[]
+  applicationRunAnswerPackets   ApplicationRunAnswerPacket[]
   applicationRunAnswers       ApplicationRunAnswer[]
   applicationRunSteps         ApplicationRunStep[]
   applicationExecutionTokens  ApplicationExecutionToken[]
@@ -846,6 +915,8 @@ model ApplicationRun {
   idempotencyKey                 String
   activeRunKey                   String?             @unique
   stateVersion                   Int                 @default(0)
+  currentFormInspectionVersion   Int                 @default(0)
+  currentAnswerPacketVersion     Int                 @default(0)
   prepareAttemptId               String?
   prepareLeaseExpiresAt          DateTime?
   firstPreparingAt               DateTime?
@@ -883,6 +954,8 @@ model ApplicationRun {
   application        Application                 @relation(fields: [applicationId], references: [id], onDelete: Cascade)
   resumeVersion      ResumeVersion?              @relation(fields: [resumeVersionId], references: [id], onDelete: SetNull)
   coverLetterVersion GeneratedDocument?          @relation(fields: [coverLetterVersionId], references: [id], onDelete: SetNull)
+  formInspections   ApplicationRunFormInspection[]
+  answerPackets     ApplicationRunAnswerPacket[]
   answers            ApplicationRunAnswer[]
   steps              ApplicationRunStep[]
   executionTokens    ApplicationExecutionToken[]
@@ -893,17 +966,72 @@ model ApplicationRun {
   @@index([userId, createdAt])
 }
 
+model ApplicationRunFormInspection {
+  id                 String   @id @default(cuid())
+  runId              String
+  userId             String
+  version            Int
+  schemaVersion      Int
+  normalizerVersion  Int
+  classifierVersion  Int
+  fingerprintVersion Int
+  formFingerprint    String
+  normalizedSnapshot Json
+  createdAt          DateTime @default(now())
+
+  run           ApplicationRun             @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user          User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answerPackets ApplicationRunAnswerPacket[]
+
+  @@unique([runId, version])
+  @@index([userId, runId])
+}
+
+model ApplicationRunAnswerPacket {
+  id               String   @id @default(cuid())
+  runId            String
+  userId           String
+  version          Int
+  formInspectionId String
+  schemaVersion    Int
+  builderVersion   Int
+  policyHash       String
+  inputHash        String
+  packetHash       String
+  reviewedAt       DateTime?
+  createdAt        DateTime @default(now())
+
+  run            ApplicationRun               @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user           User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  formInspection ApplicationRunFormInspection @relation(fields: [formInspectionId], references: [id], onDelete: Cascade)
+  answers        ApplicationRunAnswer[]
+
+  @@unique([runId, version])
+  @@index([userId, runId])
+  @@index([formInspectionId])
+}
+
 model ApplicationRunAnswer {
   id                 String                       @id @default(cuid())
   runId              String
   userId             String
+  answerPacketId     String?
   normalizedFieldKey String
   originalQuestion   String
+  normalizedQuestion String?
+  fieldFingerprint   String?
+  semanticFieldKey   String?
+  fieldType          ApplicationFormFieldType?
+  classification     ApplicationQuestionClassification?
+  disposition        ApplicationAnswerDisposition?
+  dispositionReason  ApplicationAnswerDispositionReason?
   proposedValue      String?
+  proposal           Json?
   valueRedacted      Boolean                      @default(false)
   sourceType         ApplicationAnswerSourceType?
   sourceIds          String[]                     @default([])
   evidenceIds        String[]                     @default([])
+  sourceFingerprint  String?
   confidence         Int                          @default(0)
   sensitive          Boolean                      @default(false)
   required           Boolean                      @default(false)
@@ -912,13 +1040,16 @@ model ApplicationRunAnswer {
   reviewedByUser     Boolean                      @default(false)
   reviewedAt         DateTime?
   finalValueHash     String?
+  reviewHashVersion  ApplicationAnswerReviewHashVersion?
   createdAt          DateTime                     @default(now())
   updatedAt          DateTime                     @updatedAt
 
-  run  ApplicationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  run          ApplicationRun              @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user         User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answerPacket ApplicationRunAnswerPacket? @relation(fields: [answerPacketId], references: [id], onDelete: Cascade)
 
-  @@unique([runId, normalizedFieldKey])
+  @@unique([answerPacketId, normalizedFieldKey])
+  @@index([runId])
   @@index([userId, runId])
 }
 
