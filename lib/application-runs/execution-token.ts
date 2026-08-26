@@ -435,7 +435,10 @@ export function buildRunBoundRevokeWhere(
   };
 }
 
-export type BulkExecutionTokenRevocationReason = "policy_changed" | "run_cancelled";
+export type BulkExecutionTokenRevocationReason =
+  | "policy_changed"
+  | "run_cancelled"
+  | "answer_packet_changed";
 
 function validateBulkRevocationInput(
   input: { userId: string; runId?: string; now: Date; reason: BulkExecutionTokenRevocationReason },
@@ -445,7 +448,9 @@ function validateBulkRevocationInput(
     !isNonBlankString(input?.userId) ||
     (requireRun && !isNonBlankString(input?.runId)) ||
     !isValidDate(input?.now) ||
-    (input?.reason !== "policy_changed" && input?.reason !== "run_cancelled")
+    input?.reason !== "policy_changed" &&
+    input?.reason !== "run_cancelled" &&
+    input?.reason !== "answer_packet_changed"
   ) {
     throw invalidTokenData();
   }
@@ -973,7 +978,12 @@ export function revokeUsableExecutionTokensForUserInTransaction(
 
 export function revokeUsableExecutionTokensForRunInTransaction(
   tx: ExecutionTokenRevocationTransaction,
-  input: { userId: string; runId: string; now: Date; reason: "run_cancelled" }
+  input: {
+    userId: string;
+    runId: string;
+    now: Date;
+    reason: "run_cancelled" | "answer_packet_changed";
+  }
 ): Promise<number> {
   return revokeUsableExecutionTokensInTransaction(
     tx,

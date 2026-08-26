@@ -327,6 +327,21 @@ test("run-bound and bulk revocation predicates retain every required binding", (
       OR: [{ singleUse: false }, { singleUse: true, consumedAt: null }]
     }
   );
+  assert.deepEqual(
+    buildUsableExecutionTokenWhereForRun({
+      userId: "user-1",
+      runId: "run-1",
+      now: T0,
+      reason: "answer_packet_changed"
+    }),
+    {
+      userId: "user-1",
+      runId: "run-1",
+      revokedAt: null,
+      expiresAt: { gt: T0 },
+      OR: [{ singleUse: false }, { singleUse: true, consumedAt: null }]
+    }
+  );
   assert.throws(() =>
     buildUsableExecutionTokenWhereForRun({
       userId: "user-1",
@@ -1276,7 +1291,7 @@ test("user-wide bulk invalidation revokes only currently usable tokens and write
   assert.equal(serialized.includes(hashExecutionToken(RAW_READ_TOKEN)), false);
 });
 
-test("run-wide bulk invalidation is run-bound and audit failure rolls the revocation back", async () => {
+test("answer-packet invalidation is run-bound and audit failure rolls the revocation back", async () => {
   const database = new FakeExecutionTokenDatabase();
   database.addToken({ id: "target", runId: "run-1" });
   database.addToken({ id: "other-run", runId: "run-2" });
@@ -1288,7 +1303,7 @@ test("run-wide bulk invalidation is run-bound and audit failure rolls the revoca
         userId: "user-1",
         runId: "run-1",
         now: ISSUE_TIME,
-        reason: "run_cancelled"
+        reason: "answer_packet_changed"
       })
     ),
     /simulated audit failure/
