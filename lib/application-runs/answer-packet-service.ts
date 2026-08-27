@@ -210,6 +210,7 @@ type OwnerSafeAnswer = {
   classification: NormalizedApplicationFormField["classification"];
   disposition: NormalizedApplicationFormField["permittedDisposition"];
   dispositionReason: NormalizedApplicationFormField["dispositionReason"];
+  choices: Array<{ key: string; label: string; disabled: boolean }>;
   proposal: ApplicationAnswerProposal | null;
   required: boolean;
   requiresReview: boolean;
@@ -586,7 +587,8 @@ function ownerSafePacket(
   packet: StoredPacket,
   rows: readonly StoredPacketAnswer[],
   canonicalPacket: ApplicationAnswerPacketProjection,
-  summary: ApplicationAnswerPacketSummary
+  summary: ApplicationAnswerPacketSummary,
+  fieldsByKey: ReadonlyMap<string, NormalizedApplicationFormField>
 ): OwnerSafePacket {
   const byKey = new Map(canonicalPacket.answers.map((answer) => [answer.normalizedFieldKey, answer] as const));
   return {
@@ -599,6 +601,7 @@ function ownerSafePacket(
     answers: rows
       .map((row): OwnerSafeAnswer => {
         const answer = byKey.get(row.normalizedFieldKey)!;
+        const field = fieldsByKey.get(row.normalizedFieldKey)!;
         return {
           id: row.id,
           normalizedFieldKey: row.normalizedFieldKey,
@@ -609,6 +612,11 @@ function ownerSafePacket(
           classification: row.classification!,
           disposition: answer.disposition,
           dispositionReason: answer.dispositionReason,
+          choices: field.choices.map((choice) => ({
+            key: choice.key,
+            label: choice.label,
+            disabled: choice.disabled
+          })),
           proposal: answer.proposal,
           required: row.required,
           requiresReview: row.requiresReview,
@@ -689,7 +697,14 @@ export async function loadVerifiedCurrentAnswerPacketForLockedRunInTransaction(
     packet: projected.packet,
     validationContext: projected.validationContext,
     summary,
-    ownerSafe: ownerSafePacket(inspection, packet, rows, projected.packet, summary)
+    ownerSafe: ownerSafePacket(
+      inspection,
+      packet,
+      rows,
+      projected.packet,
+      summary,
+      projected.fieldsByKey
+    )
   };
 }
 

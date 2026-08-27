@@ -4,10 +4,13 @@ import { test } from "node:test";
 import { NextRequest } from "next/server";
 
 import { createApplicationAutomationPolicyRouteHandlers } from "@/app/api/application-automation-policy/route";
+import { createApplicationRunAnswerPacketRouteHandlers } from "@/app/api/application-runs/[id]/answer-packet/route";
+import { createRebuildApplicationRunAnswerPacketRouteHandlers } from "@/app/api/application-runs/[id]/answer-packet/rebuild/route";
 import { createReviewApplicationRunAnswerRouteHandlers } from "@/app/api/application-runs/[id]/answers/[answerId]/review/route";
 import { createCancelApplicationRunRouteHandlers } from "@/app/api/application-runs/[id]/cancel/route";
 import { createIssueApplicationRunExecutionTokenRouteHandlers } from "@/app/api/application-runs/[id]/execution-token/route";
 import { createRevokeApplicationRunExecutionTokenRouteHandlers } from "@/app/api/application-runs/[id]/execution-tokens/[tokenId]/route";
+import { createPublishApplicationRunFormInspectionRouteHandlers } from "@/app/api/application-runs/[id]/form-inspection/route";
 import { createPrepareApplicationRunRouteHandlers } from "@/app/api/application-runs/[id]/prepare/route";
 import { createResolveApplicationRunReviewRouteHandlers } from "@/app/api/application-runs/[id]/resolve-review/route";
 import { createApplicationRunRouteHandlers } from "@/app/api/application-runs/[id]/route";
@@ -65,6 +68,61 @@ function answerDto() {
     sensitive: false,
     valueRedacted: false
   };
+}
+
+function ownerSafePacket() {
+  return {
+    inspectionVersion: 1,
+    packetVersion: 2,
+    packetHash: PACKET_HASH,
+    reviewedAt: null,
+    createdAt: NOW,
+    summary: {
+      fieldCount: 1,
+      proposableCount: 1,
+      pendingReviewCount: 1,
+      approvedCount: 0,
+      rejectedCount: 0,
+      manualOnlyCount: 0,
+      excludedCount: 0,
+      unsupportedCount: 0,
+      manualRequiredCount: 1,
+      readyForRunResolution: false
+    },
+    answers: [{
+      id: ANSWER_ID,
+      normalizedFieldKey: "b".repeat(64),
+      originalQuestion: "Upload résumé",
+      normalizedQuestion: "upload résumé",
+      semanticFieldKey: "document.resume",
+      fieldType: "FILE_UPLOAD" as const,
+      classification: "DOCUMENT" as const,
+      disposition: "PROPOSABLE" as const,
+      dispositionReason: null,
+      choices: [],
+      proposal: {
+        kind: "DOCUMENT_REFERENCE" as const,
+        artifactType: "RESUME" as const,
+        documentId: "resume-version-1",
+        contentHash: "c".repeat(64)
+      },
+      required: true,
+      requiresReview: true,
+      sensitive: false,
+      valueRedacted: false,
+      status: "PENDING" as const,
+      reviewedByUser: false,
+      reviewedAt: null
+    }]
+  };
+}
+
+function rawPostRequest(path: string, body: string, headers: Record<string, string> = {}) {
+  return new NextRequest(`http://localhost${path}`, {
+    method: "POST",
+    headers,
+    body
+  });
 }
 
 test("policy GET authenticates, rate limits, returns a narrow no-store response", async () => {
@@ -844,5 +902,426 @@ test("execution-token DELETE preserves the same non-enumerating service 404 with
   assert.deepEqual(await response.json(), {
     error: "This execution token was not found.",
     code: "EXECUTION_TOKEN_NOT_FOUND"
+  });
+});
+
+test("form-inspection publication authenticates and validates the path before charging or reading", async () => {
+  let rateCalls = 0;
+  let serviceCalls = 0;
+  const handlers = createPublishApplicationRunFormInspectionRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => { rateCalls += 1; },
+    publishFormInspectionAndAnswerPacket: async () => {
+      serviceCalls += 1;
+      throw new Error("unexpected service call");
+    }
+  });
+
+  const invalidPath = await handlers.POST(
+    rawPostRequest("/api/application-runs/not-a-cuid/form-inspection", "not-json"),
+    { params: Promise.resolve({ id: "not-a-cuid" }) }
+  );
+  assert.equal(invalidPath.status, 422);
+  assert.equal(invalidPath.headers.get("Cache-Control"), "no-store");
+  assert.equal(rateCalls, 0);
+  assert.equal(serviceCalls, 0);
+
+  const unauthenticated = createPublishApplicationRunFormInspectionRouteHandlers({
+    requireUserId: async () => { throw new UnauthorizedError(); },
+    checkRateLimit: async () => { rateCalls += 1; },
+    publishFormInspectionAndAnswerPacket: async () => {
+      serviceCalls += 1;
+      throw new Error("unexpected service call");
+    }
+  });
+  const unauthorized = await unauthenticated.POST(
+    rawPostRequest("/api/application-runs/not-a-cuid/form-inspection", "not-json"),
+    { params: Promise.resolve({ id: "not-a-cuid" }) }
+  );
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get("Cache-Control"), "no-store");
+  assert.equal(rateCalls, 0);
+  assert.equal(serviceCalls, 0);
+});
+
+test("form-inspection publication charges rate before media, body, and schema failures", async () => {
+  const calls: string[] = [];
+  const handlers = createPublishApplicationRunFormInspectionRouteHandlers({
+    requireUserId: async () => {
+      calls.push("auth");
+      return USER_ID;
+    },
+    checkRateLimit: async (key, limit, windowMs) => {
+      calls.push("rate");
+      assert.equal(key, `application-runs:form-inspection:publish:${USER_ID}`);
+      assert.equal(limit, 10);
+      assert.equal(windowMs, 60_000);
+    },
+    publishFormInspectionAndAnswerPacket: async () => {
+      calls.push("service");
+      throw new Error("unexpected service call");
+    }
+  });
+  const context = () => ({ params: Promise.resolve({ id: RUN_ID }) });
+  const cases = [
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "{}"), 415, "UNSUPPORTED_MEDIA_TYPE"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "{}", {
+      "Content-Type": "text/plain"
+    }), 415, "UNSUPPORTED_MEDIA_TYPE"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "{}", {
+      "Content-Type": "application/json",
+      "Content-Length": "262145"
+    }), 413, "REQUEST_BODY_TOO_LARGE"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/form-inspection`, '{"private":"do not leak",}', {
+      "Content-Type": "application/json"
+    }), 400, "INVALID_JSON"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "{}", {
+      "Content-Type": "application/json"
+    }), 422, undefined],
+    [jsonRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "POST", {
+      expectedStateVersion: "5",
+      expectedFormInspectionVersion: 1,
+      expectedAnswerPacketVersion: 2,
+      observedUrl: "https://jobs.example.com/apply/123",
+      inspectionReport: {}
+    }), 422, undefined],
+    [jsonRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "POST", {
+      expectedStateVersion: 5,
+      expectedFormInspectionVersion: 1,
+      expectedAnswerPacketVersion: 2,
+      observedUrl: "https://jobs.example.com/apply/123"
+    }), 422, undefined],
+    [jsonRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "POST", {
+      expectedStateVersion: 5,
+      expectedFormInspectionVersion: 1,
+      expectedAnswerPacketVersion: 2,
+      observedUrl: "https://jobs.example.com/apply/123",
+      inspectionReport: {},
+      userId: "smuggled"
+    }), 422, undefined]
+  ] as const;
+
+  for (const [request, status, code] of cases) {
+    calls.length = 0;
+    const response = await handlers.POST(request, context());
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    const payload = await response.json();
+    if (code) assert.equal(payload.code, code);
+    assert.deepEqual(calls, ["auth", "rate"]);
+  }
+});
+
+test("form-inspection publication forwards exact server authority and returns narrow material/replay responses", async () => {
+  let replayed = false;
+  const report = { schemaVersion: 1, forms: [{ title: null, sections: [] }] };
+  const body = {
+    expectedStateVersion: 5,
+    expectedFormInspectionVersion: 1,
+    expectedAnswerPacketVersion: 2,
+    observedUrl: "https://jobs.example.com/apply/123",
+    inspectionReport: report
+  };
+  const handlers = createPublishApplicationRunFormInspectionRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => undefined,
+    publishFormInspectionAndAnswerPacket: async (input) => {
+      assert.deepEqual(input, { userId: USER_ID, runId: RUN_ID, ...body });
+      return {
+        replayed,
+        runId: RUN_ID,
+        state: "REVIEW_REQUIRED" as const,
+        stateVersion: 6,
+        inspectionVersion: 1,
+        packetVersion: 2,
+        packetHash: PACKET_HASH,
+        packet: ownerSafePacket()
+      };
+    }
+  });
+  const request = () => jsonRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "POST", body);
+  const context = () => ({ params: Promise.resolve({ id: RUN_ID }) });
+
+  const material = await handlers.POST(request(), context());
+  assert.equal(material.status, 201);
+  assert.equal(material.headers.get("Cache-Control"), "no-store");
+  const materialBody = await material.json();
+  assert.deepEqual(materialBody.run, { id: RUN_ID, state: "REVIEW_REQUIRED", stateVersion: 6 });
+  assert.equal(materialBody.current.answerPacketVersion, 2);
+  assert.equal(materialBody.current.packetHash, PACKET_HASH);
+  assert.equal(materialBody.current.answers[0].proposal.documentId, "resume-version-1");
+  assert.equal("contentHash" in materialBody.current.answers[0].proposal, false);
+  assert.equal("packetVersion" in materialBody, false);
+
+  replayed = true;
+  const replay = await handlers.POST(request(), context());
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).replayed, true);
+});
+
+test("form-inspection publication preserves F3a target errors with no-store", async () => {
+  const handlers = createPublishApplicationRunFormInspectionRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => undefined,
+    publishFormInspectionAndAnswerPacket: async () => {
+      throw new PublicApiError("The observed application target is invalid.", 422, {
+        code: "RUN_TARGET_INVALID"
+      });
+    }
+  });
+  const response = await handlers.POST(
+    jsonRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "POST", {
+      expectedStateVersion: 5,
+      expectedFormInspectionVersion: 1,
+      expectedAnswerPacketVersion: 2,
+      observedUrl: "https://jobs.example.com/apply/123",
+      inspectionReport: { schemaVersion: 1 }
+    }),
+    { params: Promise.resolve({ id: RUN_ID }) }
+  );
+  assert.equal(response.status, 422);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await response.json(), {
+    error: "The observed application target is invalid.",
+    code: "RUN_TARGET_INVALID"
+  });
+
+  const otherFailure = createPublishApplicationRunFormInspectionRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => undefined,
+    publishFormInspectionAndAnswerPacket: async () => {
+      throw new PublicApiError("The publication is stale.", 409, { code: "RUN_VERSION_CONFLICT" });
+    }
+  });
+  const otherResponse = await otherFailure.POST(
+    jsonRequest(`/api/application-runs/${RUN_ID}/form-inspection`, "POST", {
+      expectedStateVersion: 5,
+      expectedFormInspectionVersion: 1,
+      expectedAnswerPacketVersion: 2,
+      observedUrl: "https://jobs.example.com/apply/123",
+      inspectionReport: { schemaVersion: 1 }
+    }),
+    { params: Promise.resolve({ id: RUN_ID }) }
+  );
+  assert.equal(otherResponse.status, 409);
+  assert.equal(otherResponse.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await otherResponse.json(), {
+    error: "The publication is stale.",
+    code: "RUN_VERSION_CONFLICT"
+  });
+});
+
+test("current answer-packet GET validates, rate limits, maps null or packet, and preserves service errors", async () => {
+  let current: ReturnType<typeof ownerSafePacket> | null = null;
+  const calls: string[] = [];
+  const handlers = createApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => {
+      calls.push("auth");
+      return USER_ID;
+    },
+    checkRateLimit: async (key, limit, windowMs) => {
+      calls.push("rate");
+      assert.equal(key, `application-runs:answer-packet:read:${USER_ID}`);
+      assert.equal(limit, 60);
+      assert.equal(windowMs, 60_000);
+    },
+    getCurrentAnswerPacket: async (input) => {
+      calls.push("service");
+      assert.deepEqual(input, { userId: USER_ID, runId: RUN_ID });
+      return { runId: RUN_ID, current };
+    }
+  });
+  const request = () => new Request(`http://localhost/api/application-runs/${RUN_ID}/answer-packet`);
+  const context = () => ({ params: Promise.resolve({ id: RUN_ID }) });
+
+  const unauthenticated = createApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => { throw new UnauthorizedError(); },
+    checkRateLimit: async () => { throw new Error("unexpected rate call"); },
+    getCurrentAnswerPacket: async () => { throw new Error("unexpected service call"); }
+  });
+  const unauthorized = await unauthenticated.GET(request(), context());
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get("Cache-Control"), "no-store");
+
+  const empty = await handlers.GET(request(), context());
+  assert.equal(empty.status, 200);
+  assert.equal(empty.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await empty.json(), { runId: RUN_ID, current: null });
+  assert.deepEqual(calls, ["auth", "rate", "service"]);
+
+  calls.length = 0;
+  current = ownerSafePacket();
+  const populated = await handlers.GET(request(), context());
+  const populatedBody = await populated.json();
+  assert.equal(populated.status, 200);
+  assert.equal(populatedBody.current.packetHash, PACKET_HASH);
+  assert.equal("contentHash" in populatedBody.current.answers[0].proposal, false);
+  assert.deepEqual(calls, ["auth", "rate", "service"]);
+
+  calls.length = 0;
+  const invalid = await handlers.GET(
+    new Request("http://localhost/api/application-runs/not-a-cuid/answer-packet"),
+    { params: Promise.resolve({ id: "not-a-cuid" }) }
+  );
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(calls, ["auth"]);
+
+  const failing = createApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => undefined,
+    getCurrentAnswerPacket: async () => {
+      throw new PublicApiError("The current answer packet is invalid.", 409, { code: "RUN_PACKET_INVALID" });
+    }
+  });
+  const failure = await failing.GET(request(), context());
+  assert.equal(failure.status, 409);
+  assert.equal(failure.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await failure.json(), {
+    error: "The current answer packet is invalid.",
+    code: "RUN_PACKET_INVALID"
+  });
+});
+
+test("answer-packet rebuild charges rate before its strict boundary and returns material or replay", async () => {
+  let replayed = false;
+  let serviceCalls = 0;
+  let shortCircuitRateCalls = 0;
+  const expectedBody = {
+    expectedStateVersion: 5,
+    expectedFormInspectionVersion: 1,
+    expectedAnswerPacketVersion: 2
+  };
+  const shortCircuitHandlers = createRebuildApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => { shortCircuitRateCalls += 1; },
+    rebuildCurrentAnswerPacket: async () => {
+      serviceCalls += 1;
+      throw new Error("unexpected service call");
+    }
+  });
+  const invalidPath = await shortCircuitHandlers.POST(
+    rawPostRequest("/api/application-runs/not-a-cuid/answer-packet/rebuild", "not-json"),
+    { params: Promise.resolve({ id: "not-a-cuid" }) }
+  );
+  assert.equal(invalidPath.status, 422);
+  assert.equal(invalidPath.headers.get("Cache-Control"), "no-store");
+  assert.equal(shortCircuitRateCalls, 0);
+  assert.equal(serviceCalls, 0);
+
+  const unauthenticated = createRebuildApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => { throw new UnauthorizedError(); },
+    checkRateLimit: async () => { shortCircuitRateCalls += 1; },
+    rebuildCurrentAnswerPacket: async () => {
+      serviceCalls += 1;
+      throw new Error("unexpected service call");
+    }
+  });
+  const unauthorized = await unauthenticated.POST(
+    rawPostRequest("/api/application-runs/not-a-cuid/answer-packet/rebuild", "not-json"),
+    { params: Promise.resolve({ id: "not-a-cuid" }) }
+  );
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get("Cache-Control"), "no-store");
+  assert.equal(shortCircuitRateCalls, 0);
+  assert.equal(serviceCalls, 0);
+
+  const handlers = createRebuildApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async (key, limit, windowMs) => {
+      assert.equal(key, `application-runs:answer-packet:rebuild:${USER_ID}`);
+      assert.equal(limit, 10);
+      assert.equal(windowMs, 60_000);
+    },
+    rebuildCurrentAnswerPacket: async (input) => {
+      serviceCalls += 1;
+      assert.deepEqual(input, { userId: USER_ID, runId: RUN_ID, ...expectedBody });
+      return {
+        replayed,
+        runId: RUN_ID,
+        state: "REVIEW_REQUIRED" as const,
+        stateVersion: 5,
+        inspectionVersion: 1,
+        packetVersion: 2,
+        packetHash: PACKET_HASH,
+        packet: ownerSafePacket()
+      };
+    }
+  });
+  const context = () => ({ params: Promise.resolve({ id: RUN_ID }) });
+  const invalidCases: Array<readonly [NextRequest, number, string | undefined]> = [
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/answer-packet/rebuild`, "{}"), 415, "UNSUPPORTED_MEDIA_TYPE"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/answer-packet/rebuild`, "{}", {
+      "Content-Type": "text/plain"
+    }), 415, "UNSUPPORTED_MEDIA_TYPE"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/answer-packet/rebuild`, "{}", {
+      "Content-Type": "application/json",
+      "Content-Length": "262145"
+    }), 413, "REQUEST_BODY_TOO_LARGE"],
+    [rawPostRequest(`/api/application-runs/${RUN_ID}/answer-packet/rebuild`, "{bad", {
+      "Content-Type": "application/json"
+    }), 400, "INVALID_JSON"],
+  ];
+  for (const [field, value] of [
+    ["observedUrl", "https://jobs.example.com/apply/123"],
+    ["inspectionReport", {}],
+    ["sourceId", "source-1"],
+    ["sourceIds", ["source-1"]],
+    ["sourceValue", "secret"],
+    ["documentId", "document-1"],
+    ["proposal", { kind: "SCALAR", value: "secret" }],
+    ["packetHash", PACKET_HASH],
+    ["userId", "smuggled"],
+    ["runId", "smuggled"],
+    ["scope", "APPLICATION_FILL"],
+    ["token", "secret"]
+  ] as const) {
+    invalidCases.push([
+      jsonRequest(`/api/application-runs/${RUN_ID}/answer-packet/rebuild`, "POST", {
+        ...expectedBody,
+        [field]: value
+      }),
+      422,
+      undefined
+    ]);
+  }
+  for (const [request, status, code] of invalidCases) {
+    const response = await handlers.POST(request, context());
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    const payload = await response.json();
+    if (code) assert.equal(payload.code, code);
+  }
+  assert.equal(serviceCalls, 0);
+
+  const request = () => jsonRequest(
+    `/api/application-runs/${RUN_ID}/answer-packet/rebuild`,
+    "POST",
+    expectedBody
+  );
+  const material = await handlers.POST(request(), context());
+  assert.equal(material.status, 201);
+  assert.equal(material.headers.get("Cache-Control"), "no-store");
+  assert.equal((await material.json()).current.answerPacketVersion, 2);
+
+  replayed = true;
+  const replay = await handlers.POST(request(), context());
+  assert.equal(replay.status, 200);
+  assert.equal((await replay.json()).replayed, true);
+  assert.equal(serviceCalls, 2);
+
+  const failing = createRebuildApplicationRunAnswerPacketRouteHandlers({
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => undefined,
+    rebuildCurrentAnswerPacket: async () => {
+      throw new PublicApiError("The rebuild is stale.", 409, { code: "RUN_VERSION_CONFLICT" });
+    }
+  });
+  const failure = await failing.POST(request(), context());
+  assert.equal(failure.status, 409);
+  assert.equal(failure.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await failure.json(), {
+    error: "The rebuild is stale.",
+    code: "RUN_VERSION_CONFLICT"
   });
 });

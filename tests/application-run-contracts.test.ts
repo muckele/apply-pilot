@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import * as applicationRunContracts from "@/lib/application-runs/contracts";
 import {
   applicationRunAnswerPathSchema,
   applicationRunExecutionTokenPathSchema,
@@ -15,6 +16,17 @@ const CUID = "clz8w7m9a0000qwer1234tyui";
 const ANSWER_CUID = "clz8w7m9a0001qwer1234tyui";
 const TOKEN_CUID = "clz8w7m9a0002qwer1234tyui";
 const PACKET_HASH = "a".repeat(64);
+
+type RuntimeSchema = {
+  parse(value: unknown): unknown;
+  safeParse(value: unknown): { success: boolean };
+};
+
+function contractSchema(name: string): RuntimeSchema {
+  const schema = (applicationRunContracts as Record<string, unknown>)[name];
+  assert.ok(schema, `expected ${name} to be exported`);
+  return schema as RuntimeSchema;
+}
 
 test("application-run path identifiers require a runtime-valid CUID", () => {
   assert.equal(applicationRunPathSchema.safeParse({ id: CUID }).success, true);
@@ -159,5 +171,89 @@ test("answer review requires an explicit nonnegative integer packet version and 
     { status: "APPROVED", answerPacketVersion: 0, disposition: "PROPOSABLE" }
   ]) {
     assert.equal(reviewApplicationRunAnswerBodySchema.safeParse(invalid).success, false);
+  }
+});
+
+test("form-inspection publication requires the exact safe versioned envelope", () => {
+  const schema = contractSchema("publishApplicationRunFormInspectionBodySchema");
+  const report = { schemaVersion: 1, forms: [] };
+  const valid = {
+    expectedStateVersion: 7,
+    expectedFormInspectionVersion: 3,
+    expectedAnswerPacketVersion: 4,
+    observedUrl: "https://jobs.example.com/apply/123",
+    inspectionReport: report
+  };
+
+  assert.deepEqual(schema.parse(valid), valid);
+  for (const field of [
+    "expectedStateVersion",
+    "expectedFormInspectionVersion",
+    "expectedAnswerPacketVersion"
+  ]) {
+    for (const invalid of [undefined, -1, 1.5, "1", Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      const candidate = { ...valid, [field]: invalid };
+      if (invalid === undefined) delete candidate[field as keyof typeof candidate];
+      assert.equal(schema.safeParse(candidate).success, false, `${field}:${String(invalid)}`);
+    }
+  }
+
+  assert.equal(schema.safeParse({ ...valid, observedUrl: "x".repeat(2_049) }).success, false);
+  assert.equal(schema.safeParse({ ...valid, inspectionReport: null }).success, true);
+  assert.equal(schema.safeParse({ ...valid, inspectionReport: "deferred-to-F1" }).success, true);
+
+  const missingReport = { ...valid } as Record<string, unknown>;
+  delete missingReport.inspectionReport;
+  assert.equal(schema.safeParse(missingReport).success, false);
+
+  for (const field of [
+    "userId",
+    "runId",
+    "state",
+    "applyHost",
+    "packetHash",
+    "proposal",
+    "sourceIds",
+    "documentId",
+    "contentHash",
+    "scope",
+    "token"
+  ]) {
+    assert.equal(schema.safeParse({ ...valid, [field]: "smuggled" }).success, false, field);
+  }
+});
+
+test("answer-packet rebuild accepts only the three required safe version counters", () => {
+  const schema = contractSchema("rebuildApplicationRunAnswerPacketBodySchema");
+  const valid = {
+    expectedStateVersion: 7,
+    expectedFormInspectionVersion: 3,
+    expectedAnswerPacketVersion: 4
+  };
+
+  assert.deepEqual(schema.parse(valid), valid);
+  for (const field of Object.keys(valid)) {
+    for (const invalid of [undefined, -1, 1.5, "1", Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      const candidate = { ...valid, [field]: invalid };
+      if (invalid === undefined) delete candidate[field as keyof typeof candidate];
+      assert.equal(schema.safeParse(candidate).success, false, `${field}:${String(invalid)}`);
+    }
+  }
+
+  for (const field of [
+    "observedUrl",
+    "inspectionReport",
+    "sourceValue",
+    "sourceIds",
+    "documentId",
+    "proposal",
+    "packetHash",
+    "policy",
+    "scope",
+    "token",
+    "userId",
+    "runId"
+  ]) {
+    assert.equal(schema.safeParse({ ...valid, [field]: "smuggled" }).success, false, field);
   }
 });

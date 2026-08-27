@@ -611,6 +611,55 @@ test("current read verifies the packet without an automation or state gate and o
   assert.equal(String(database.transactionIsolationLevels.at(-1)), "RepeatableRead");
 });
 
+test("owner-safe choice projection preserves the pinned packet hash and exact replay authority", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  const choiceInspection = report([
+    field({
+      question: "Are you legally authorized to work in the United States?",
+      fieldType: "RADIO_GROUP",
+      autocomplete: null,
+      choices: [
+        { label: " Yes ", disabled: false },
+        { label: "Not now", disabled: true }
+      ]
+    })
+  ]);
+
+  const first = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: choiceInspection
+  }));
+
+  assert.equal(first.packetHash, "bc7a0de0b23d435b03764d7fcbf886564426de51bf212061a9043f5a3cedb9dc");
+  assert.deepEqual(first.packet.answers[0].choices, [
+    {
+      key: "a9c9e34d4cb7ae5e7596dd4f6f096bd7f0ca2f8bec27df13977ef599a51badc7",
+      label: "Yes",
+      disabled: false
+    },
+    {
+      key: "f05dbce0b60af42f2c4187986379e2347631c85dd2d301c59e4929edeed4e63b",
+      label: "Not now",
+      disabled: true
+    }
+  ]);
+  for (const choice of first.packet.answers[0].choices) {
+    assert.deepEqual(Object.keys(choice).sort(), ["disabled", "key", "label"]);
+  }
+
+  const beforeReplay = cloneState(database.state);
+  const replay = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    expectedStateVersion: 5,
+    expectedFormInspectionVersion: 0,
+    expectedAnswerPacketVersion: 0,
+    inspectionReport: choiceInspection
+  }));
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.packetHash, first.packetHash);
+  assert.deepEqual(replay.packet.answers[0].choices, first.packet.answers[0].choices);
+  assert.deepEqual(database.state, beforeReplay);
+});
+
 test("current read returns null only for 0/0 and rejects every broken or unverifiable current artifact", async () => {
   const empty = new FakeAnswerPacketDatabase();
   assert.deepEqual(
