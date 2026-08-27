@@ -62,10 +62,13 @@ export function buildCancelRunData(now: Date) {
 // Deterministic human-review acknowledgment update. The persisted reasons remain
 // immutable attempt provenance; acknowledging them only records the timestamp and
 // advances the already-approved REVIEW_REQUIRED -> READY transition fence.
-export function buildResolveRunReviewData(now: Date) {
+export function buildResolveRunReviewData(
+  now: Date,
+  input: { acknowledgePlannerReview: boolean }
+) {
   return {
     state: "READY" as ApplicationRunState,
     stateVersion: { increment: 1 },
-    reviewAcknowledgedAt: now
+    ...(input.acknowledgePlannerReview ? { reviewAcknowledgedAt: now } : {})
   };
 }

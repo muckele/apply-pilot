@@ -32,7 +32,8 @@ export function createReviewApplicationRunAnswerRouteHandlers(
           userId,
           runId,
           answerId,
-          status: body.status
+          status: body.status,
+          answerPacketVersion: body.answerPacketVersion
         });
         return NextResponse.json({ answer }, { headers: NO_STORE });
       } catch (error) {

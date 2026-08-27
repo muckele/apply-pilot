@@ -113,12 +113,31 @@ test("cancellation data clears the active run key, lease, and attempt while fenc
   assert.deepEqual(data.stateVersion, { increment: 1 });
 });
 
-test("review-resolution data records acknowledgment and advances only the READY fence", () => {
+test("review-resolution data records a new planner acknowledgment when requested", () => {
   const now = new Date("2026-08-16T12:00:00.000Z");
 
-  assert.deepEqual(buildResolveRunReviewData(now), {
+  assert.deepEqual(buildResolveRunReviewData(now, { acknowledgePlannerReview: true }), {
     state: "READY",
     stateVersion: { increment: 1 },
     reviewAcknowledgedAt: now
   });
+});
+
+test("review-resolution data preserves an existing planner acknowledgment by omitting the field", () => {
+  const now = new Date("2026-08-16T12:00:00.000Z");
+  const data = buildResolveRunReviewData(now, { acknowledgePlannerReview: false });
+
+  assert.deepEqual(data, {
+    state: "READY",
+    stateVersion: { increment: 1 }
+  });
+  assert.equal("reviewAcknowledgedAt" in data, false);
+});
+
+test("review-resolution data does not fabricate a planner acknowledgment when reasons are empty", () => {
+  const now = new Date("2026-08-16T12:00:00.000Z");
+  const acknowledgePlannerReview = ([] as string[]).length > 0 && null === null;
+  const data = buildResolveRunReviewData(now, { acknowledgePlannerReview });
+
+  assert.equal("reviewAcknowledgedAt" in data, false);
 });

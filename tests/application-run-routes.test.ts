@@ -24,6 +24,7 @@ const TOKEN_ID = "clz8w7m9a0004qwer1234tyui";
 const USER_ID = "user-1";
 const NOW = new Date("2026-08-20T18:00:00.000Z");
 const RAW_TOKEN = `aet_${"A".repeat(43)}`;
+const PACKET_HASH = "a".repeat(64);
 
 function jsonRequest(path: string, method: string, body: unknown, headers: Record<string, string> = {}) {
   return new NextRequest(`http://localhost${path}`, {
@@ -469,14 +470,27 @@ test("resolve-review POST rejects malformed paths and strict body violations bef
     checkRateLimit: async () => { rateCalls += 1; },
     resolveApplicationRunReview: async () => { serviceCalls += 1; return runDto(); }
   });
-  const valid = { stateVersion: 2, acknowledgedReviewReasons: ["evidence_gaps_present"] };
+  const valid = {
+    stateVersion: 2,
+    acknowledgedReviewReasons: ["evidence_gaps_present"],
+    answerPacketVersion: 0,
+    packetHash: null
+  };
   const invalidCases: Array<[string, unknown]> = [
     ["not-a-cuid", valid],
+    [RUN_ID, { stateVersion: 2, acknowledgedReviewReasons: ["evidence_gaps_present"], packetHash: null }],
+    [RUN_ID, { stateVersion: 2, acknowledgedReviewReasons: ["evidence_gaps_present"], answerPacketVersion: 0 }],
     [RUN_ID, { ...valid, stateVersion: -1 }],
     [RUN_ID, { ...valid, stateVersion: 1.5 }],
+    [RUN_ID, { ...valid, answerPacketVersion: -1 }],
+    [RUN_ID, { ...valid, answerPacketVersion: 1.5 }],
+    [RUN_ID, { ...valid, answerPacketVersion: 0, packetHash: PACKET_HASH }],
+    [RUN_ID, { ...valid, answerPacketVersion: 3, packetHash: null }],
+    [RUN_ID, { ...valid, answerPacketVersion: 3, packetHash: "malformed" }],
     [RUN_ID, { ...valid, acknowledgedReviewReasons: ["not-real"] }],
     [RUN_ID, { ...valid, acknowledgedReviewReasons: ["evidence_gaps_present", "evidence_gaps_present"] }],
-    [RUN_ID, { ...valid, state: "READY" }]
+    [RUN_ID, { ...valid, state: "READY" }],
+    [RUN_ID, { ...valid, userId: "attacker" }]
   ];
   for (const [id, body] of invalidCases) {
     const response = await handlers.POST(jsonRequest(`/api/application-runs/${id}/resolve-review`, "POST", body), {
@@ -491,7 +505,12 @@ test("resolve-review POST rejects malformed paths and strict body violations bef
 
 test("resolve-review POST maps authenticated acknowledgment, rate limits, and returns no-store", async () => {
   const calls: string[] = [];
-  const body = { stateVersion: 2, acknowledgedReviewReasons: ["evidence_gaps_present"] as const };
+  let expectedBody = {
+    stateVersion: 2,
+    acknowledgedReviewReasons: ["evidence_gaps_present"] as const,
+    answerPacketVersion: 0,
+    packetHash: null as string | null
+  };
   const handlers = createResolveApplicationRunReviewRouteHandlers({
     requireUserId: async () => { calls.push("auth"); return USER_ID; },
     checkRateLimit: async (key, limit, windowMs) => {
@@ -502,21 +521,32 @@ test("resolve-review POST maps authenticated acknowledgment, rate limits, and re
     },
     resolveApplicationRunReview: async (input) => {
       calls.push("resolve");
-      assert.deepEqual(input, { userId: USER_ID, runId: RUN_ID, ...body });
+      assert.deepEqual(input, { userId: USER_ID, runId: RUN_ID, ...expectedBody });
       return { ...runDto(), state: "READY" as const, stateVersion: 3, reviewAcknowledgedAt: NOW };
     }
   });
-  const response = await handlers.POST(
-    jsonRequest(`/api/application-runs/${RUN_ID}/resolve-review`, "POST", body),
+  const legacyResponse = await handlers.POST(
+    jsonRequest(`/api/application-runs/${RUN_ID}/resolve-review`, "POST", expectedBody),
     { params: Promise.resolve({ id: RUN_ID }) }
   );
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("Cache-Control"), "no-store");
-  assert.equal((await response.json()).run.state, "READY");
-  assert.deepEqual(calls, ["auth", "rate", "resolve"]);
+  assert.equal(legacyResponse.status, 200);
+  assert.equal(legacyResponse.headers.get("Cache-Control"), "no-store");
+  assert.equal((await legacyResponse.json()).run.state, "READY");
+
+  expectedBody = {
+    ...expectedBody,
+    answerPacketVersion: 3,
+    packetHash: PACKET_HASH
+  };
+  const packetResponse = await handlers.POST(
+    jsonRequest(`/api/application-runs/${RUN_ID}/resolve-review`, "POST", expectedBody),
+    { params: Promise.resolve({ id: RUN_ID }) }
+  );
+  assert.equal(packetResponse.status, 200);
+  assert.deepEqual(calls, ["auth", "rate", "resolve", "auth", "rate", "resolve"]);
 });
 
-test("answer-review POST validates both path IDs and accepts only a strict status body before rate limiting", async () => {
+test("answer-review POST validates both path IDs and requires a strict packet-versioned body before rate limiting", async () => {
   let rateCalls = 0;
   let reviewCalls = 0;
   const handlers = createReviewApplicationRunAnswerRouteHandlers({
@@ -525,13 +555,19 @@ test("answer-review POST validates both path IDs and accepts only a strict statu
     reviewApplicationRunAnswer: async () => { reviewCalls += 1; return answerDto(); }
   });
   const invalidCases: Array<[{ id: string; answerId: string }, unknown]> = [
-    [{ id: "not-a-cuid", answerId: ANSWER_ID }, { status: "APPROVED" }],
-    [{ id: RUN_ID, answerId: "not-a-cuid" }, { status: "APPROVED" }],
-    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "PENDING" }],
-    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", userId: "attacker" }],
-    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", runId: RUN_ID }],
-    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", proposedValue: "secret" }],
-    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", finalValueHash: "attacker" }]
+    [{ id: "not-a-cuid", answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0 }],
+    [{ id: RUN_ID, answerId: "not-a-cuid" }, { status: "APPROVED", answerPacketVersion: 0 }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED" }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "PENDING", answerPacketVersion: 0 }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: -1 }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 1.5 }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: "0" }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0, userId: "attacker" }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0, runId: RUN_ID }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0, answerPacketId: "attacker" }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0, proposal: {} }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0, proposedValue: "secret" }],
+    [{ id: RUN_ID, answerId: ANSWER_ID }, { status: "APPROVED", answerPacketVersion: 0, finalValueHash: "attacker" }]
   ];
   for (const [params, body] of invalidCases) {
     const response = await handlers.POST(
@@ -545,8 +581,10 @@ test("answer-review POST validates both path IDs and accepts only a strict statu
   assert.equal(reviewCalls, 0);
 });
 
-test("answer-review POST forwards authenticated path/status only at 60/minute and preserves service errors", async () => {
+test("answer-review POST forwards authenticated path, status, and exact packet version at 60/minute", async () => {
   let shouldFail = false;
+  let expectedStatus: "APPROVED" | "REJECTED" = "REJECTED";
+  let expectedPacketVersion = 0;
   const handlers = createReviewApplicationRunAnswerRouteHandlers({
     requireUserId: async () => USER_ID,
     checkRateLimit: async (key, limit, windowMs) => {
@@ -559,22 +597,29 @@ test("answer-review POST forwards authenticated path/status only at 60/minute an
         userId: USER_ID,
         runId: RUN_ID,
         answerId: ANSWER_ID,
-        status: "REJECTED"
+        status: expectedStatus,
+        answerPacketVersion: expectedPacketVersion
       });
       if (shouldFail) throw new PublicApiError("Already reviewed.", 409, { code: "RUN_ANSWER_ALREADY_REVIEWED" });
-      return { ...answerDto(), status: "REJECTED" as const };
+      return { ...answerDto(), status: expectedStatus };
     }
   });
   const request = () => jsonRequest(
     `/api/application-runs/${RUN_ID}/answers/${ANSWER_ID}/review`,
     "POST",
-    { status: "REJECTED" }
+    { status: expectedStatus, answerPacketVersion: expectedPacketVersion }
   );
   const context = () => ({ params: Promise.resolve({ id: RUN_ID, answerId: ANSWER_ID }) });
   const success = await handlers.POST(request(), context());
   assert.equal(success.status, 200);
   assert.equal(success.headers.get("Cache-Control"), "no-store");
   assert.equal((await success.json()).answer.status, "REJECTED");
+
+  expectedStatus = "APPROVED";
+  expectedPacketVersion = 3;
+  const packetSuccess = await handlers.POST(request(), context());
+  assert.equal(packetSuccess.status, 200);
+  assert.equal((await packetSuccess.json()).answer.status, "APPROVED");
 
   shouldFail = true;
   const failure = await handlers.POST(request(), context());

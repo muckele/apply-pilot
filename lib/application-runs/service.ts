@@ -4,6 +4,14 @@ import { Prisma } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  computeApplicationAnswerProposalHash,
+  parseCompatibleApplicationAnswerProposal
+} from "@/lib/application-runs/answer-packet-domain";
+import {
+  loadVerifiedCurrentAnswerPacketForLockedRunInTransaction,
+  type LockedAnswerPacketRun
+} from "@/lib/application-runs/answer-packet-service";
+import {
   applicationRunPathSchema,
   applicationRunAnswerPathSchema,
   createApplicationRunBodySchema,
@@ -75,6 +83,13 @@ const APPLICATION_RUN_LIFECYCLE_SELECT = {
   userId: true,
   prepareAttemptId: true,
   firstPreparingAt: true,
+  currentFormInspectionVersion: true,
+  currentAnswerPacketVersion: true,
+  applyUrlSnapshot: true,
+  resumeVersionId: true,
+  resumeContentHash: true,
+  coverLetterVersionId: true,
+  coverLetterContentHash: true,
   application: {
     select: { id: true, userId: true, jobPostingId: true }
   },
@@ -87,7 +102,15 @@ const APPLICATION_RUN_ANSWER_REVIEW_SELECT = {
   id: true,
   runId: true,
   userId: true,
+  answerPacketId: true,
+  normalizedFieldKey: true,
+  fieldFingerprint: true,
+  semanticFieldKey: true,
+  fieldType: true,
+  classification: true,
+  disposition: true,
   proposedValue: true,
+  proposal: true,
   valueRedacted: true,
   sensitive: true,
   status: true,
@@ -114,6 +137,8 @@ export type ApplicationRunServiceDependencies = {
   prismaClient?: ApplicationRunServicePrismaClient;
   env?: AutomationEnv;
   clock?: () => Date;
+  loadVerifiedCurrentAnswerPacketForLockedRunInTransaction?:
+    typeof loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
 };
 
 function validateUserId(userId: unknown): asserts userId is string {
@@ -234,6 +259,30 @@ function staleRunLifecycle(): PublicApiError {
   });
 }
 
+function packetStale(): PublicApiError {
+  return new PublicApiError("The requested answer packet is no longer current.", 409, {
+    code: "RUN_PACKET_STALE"
+  });
+}
+
+function packetInvalid(): PublicApiError {
+  return new PublicApiError("The current answer packet is invalid.", 409, {
+    code: "RUN_PACKET_INVALID"
+  });
+}
+
+function packetReviewIncomplete(): PublicApiError {
+  return new PublicApiError("The current answer packet review is incomplete.", 409, {
+    code: "RUN_PACKET_REVIEW_INCOMPLETE"
+  });
+}
+
+function answerNotApprovable(): PublicApiError {
+  return new PublicApiError("This application run answer cannot be approved.", 422, {
+    code: "RUN_ANSWER_NOT_APPROVABLE"
+  });
+}
+
 function toApplicationRunAnswerDto(answer: ApplicationRunAnswerDto): ApplicationRunAnswerDto {
   return {
     id: answer.id,
@@ -265,6 +314,9 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
   const prismaClient = dependencies.prismaClient ?? prisma;
   const env = dependencies.env ?? process.env;
   const clock = dependencies.clock ?? (() => new Date());
+  const loadVerifiedCurrentPacket =
+    dependencies.loadVerifiedCurrentAnswerPacketForLockedRunInTransaction ??
+    loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
 
   async function readAutomationPolicy(userId: string): Promise<AutomationPolicyDto> {
     validateUserId(userId);
@@ -623,13 +675,17 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     runId: unknown;
     stateVersion: unknown;
     acknowledgedReviewReasons: unknown;
+    answerPacketVersion?: unknown;
+    packetHash?: unknown;
   }): Promise<ApplicationRunDto> {
     validateUserId(input?.userId);
     const userId = input.userId;
     const { id: runId } = applicationRunPathSchema.parse({ id: input?.runId });
     const acknowledgment = resolveApplicationRunReviewBodySchema.parse({
       stateVersion: input?.stateVersion,
-      acknowledgedReviewReasons: input?.acknowledgedReviewReasons
+      acknowledgedReviewReasons: input?.acknowledgedReviewReasons,
+      answerPacketVersion: input?.answerPacketVersion,
+      packetHash: input?.packetHash
     });
 
     return prismaClient.$transaction(async (tx) => {
@@ -658,15 +714,88 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
         });
       }
 
-      const now = resolveNow(clock);
+      if (acknowledgment.answerPacketVersion !== run.currentAnswerPacketVersion) {
+        throw packetStale();
+      }
+
+      let now: Date;
+      if (acknowledgment.answerPacketVersion === 0) {
+        if (run.currentFormInspectionVersion !== 0 || run.currentAnswerPacketVersion !== 0) {
+          throw packetInvalid();
+        }
+        now = resolveNow(clock);
+      } else {
+        const storedPacket = await tx.applicationRunAnswerPacket.findUnique({
+          where: {
+            runId_version: {
+              runId: run.id,
+              version: run.currentAnswerPacketVersion
+            }
+          }
+        });
+        if (
+          !storedPacket ||
+          storedPacket.runId !== run.id ||
+          storedPacket.userId !== userId ||
+          storedPacket.version !== run.currentAnswerPacketVersion ||
+          !/^[a-f0-9]{64}$/.test(storedPacket.packetHash)
+        ) {
+          throw packetInvalid();
+        }
+        if (acknowledgment.packetHash !== storedPacket.packetHash) {
+          throw packetStale();
+        }
+
+        const verified = await loadVerifiedCurrentPacket(tx, {
+          userId,
+          run: run as LockedAnswerPacketRun
+        });
+        if (!verified || verified.packetRecord.id !== storedPacket.id) {
+          throw packetInvalid();
+        }
+        if (verified.packetRecord.reviewedAt !== null) {
+          throw packetInvalid();
+        }
+        if (!verified.summary.readyForRunResolution) {
+          throw packetReviewIncomplete();
+        }
+
+        const databaseTimes = await tx.$queryRaw<Array<{ now: Date }>>`
+          SELECT CURRENT_TIMESTAMP AS "now"
+        `;
+        if (
+          databaseTimes.length !== 1 ||
+          !(databaseTimes[0].now instanceof Date) ||
+          !Number.isFinite(databaseTimes[0].now.getTime())
+        ) {
+          throw new PublicApiError("The request could not be completed.", 500);
+        }
+        now = databaseTimes[0].now;
+        const acknowledgedPacket = await tx.applicationRunAnswerPacket.updateMany({
+          where: {
+            id: verified.packetRecord.id,
+            runId: run.id,
+            userId,
+            version: acknowledgment.answerPacketVersion,
+            reviewedAt: null
+          },
+          data: { reviewedAt: now }
+        });
+        if (acknowledgedPacket.count !== 1) throw packetInvalid();
+      }
+
+      const acknowledgePlannerReview =
+        run.reviewReasons.length > 0 && run.reviewAcknowledgedAt === null;
       const updated = await tx.applicationRun.updateMany({
         where: {
           id: run.id,
           userId,
           state: "REVIEW_REQUIRED",
-          stateVersion: acknowledgment.stateVersion
+          stateVersion: acknowledgment.stateVersion,
+          currentFormInspectionVersion: run.currentFormInspectionVersion,
+          currentAnswerPacketVersion: run.currentAnswerPacketVersion
         },
-        data: buildResolveRunReviewData(now)
+        data: buildResolveRunReviewData(now, { acknowledgePlannerReview })
       });
       if (updated.count !== 1) {
         throw new PublicApiError("The application run review has changed. Refresh and try again.", 409, {
@@ -682,6 +811,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           metadata: {
             runId: run.id,
             reviewReasons: acknowledgment.acknowledgedReviewReasons,
+            answerPacketVersion: acknowledgment.answerPacketVersion,
             previousStateVersion: run.stateVersion,
             nextStateVersion: run.stateVersion + 1,
             acknowledgedAt: now.toISOString()
@@ -716,6 +846,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     runId: unknown;
     answerId: unknown;
     status: unknown;
+    answerPacketVersion?: unknown;
   }): Promise<ApplicationRunAnswerDto> {
     validateUserId(input?.userId);
     const userId = input.userId;
@@ -723,7 +854,10 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
       id: input?.runId,
       answerId: input?.answerId
     });
-    const review = reviewApplicationRunAnswerBodySchema.parse({ status: input?.status });
+    const review = reviewApplicationRunAnswerBodySchema.parse({
+      status: input?.status,
+      answerPacketVersion: input?.answerPacketVersion
+    });
 
     return prismaClient.$transaction(async (tx) => {
       const run = await lockOwnedApplicationRun(tx, userId, runId);
@@ -733,17 +867,55 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
         });
       }
 
-      const lockedAnswers = await tx.$queryRaw<Array<{ id: string }>>`
-        SELECT "id" FROM "ApplicationRunAnswer"
-        WHERE "id" = ${answerId} AND "runId" = ${runId} AND "userId" = ${userId}
-        FOR UPDATE
-      `;
-      if (lockedAnswers.length !== 1) throw answerNotFound();
+      if (review.answerPacketVersion !== run.currentAnswerPacketVersion) {
+        throw packetStale();
+      }
+
+      let currentPacketId: string | null = null;
+      let verifiedPacket: Awaited<ReturnType<typeof loadVerifiedCurrentPacket>> = null;
+      if (review.answerPacketVersion === 0) {
+        if (run.currentFormInspectionVersion !== 0 || run.currentAnswerPacketVersion !== 0) {
+          throw packetInvalid();
+        }
+        const lockedAnswers = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "ApplicationRunAnswer"
+          WHERE "id" = ${answerId}
+            AND "runId" = ${runId}
+            AND "userId" = ${userId}
+            AND "answerPacketId" IS NULL
+          FOR UPDATE
+        `;
+        if (lockedAnswers.length !== 1) throw answerNotFound();
+      } else {
+        verifiedPacket = await loadVerifiedCurrentPacket(tx, {
+          userId,
+          run: run as LockedAnswerPacketRun
+        });
+        if (!verifiedPacket) throw packetInvalid();
+        currentPacketId = verifiedPacket.packetRecord.id;
+        const lockedAnswers = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "ApplicationRunAnswer"
+          WHERE "id" = ${answerId}
+            AND "runId" = ${runId}
+            AND "userId" = ${userId}
+            AND "answerPacketId" = ${currentPacketId}
+          FOR UPDATE
+        `;
+        if (lockedAnswers.length !== 1) throw answerNotFound();
+      }
+
       const answer = await tx.applicationRunAnswer.findFirst({
-        where: { id: answerId, runId, userId },
+        where: { id: answerId, runId, userId, answerPacketId: currentPacketId },
         select: APPLICATION_RUN_ANSWER_REVIEW_SELECT
       });
-      if (!answer || answer.runId !== run.id || answer.userId !== userId) throw answerNotFound();
+      if (
+        !answer ||
+        answer.runId !== run.id ||
+        answer.userId !== userId ||
+        answer.answerPacketId !== currentPacketId
+      ) {
+        throw answerNotFound();
+      }
       if (answer.status !== "PENDING") {
         throw new PublicApiError("This application run answer has already been reviewed.", 409, {
           code: "RUN_ANSWER_ALREADY_REVIEWED"
@@ -751,28 +923,70 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
       }
 
       let finalValueHash: string | null = null;
-      if (review.status === "APPROVED") {
+      let reviewHashVersion: "LEGACY_SCALAR_SHA256" | "CANONICAL_PROPOSAL_V1" | null = null;
+      if (review.answerPacketVersion > 0) {
+        const frozenField = verifiedPacket?.fieldsByKey.get(answer.normalizedFieldKey);
         if (
+          !frozenField ||
+          answer.disposition !== "PROPOSABLE" ||
+          answer.proposal === null ||
           answer.sensitive ||
           answer.valueRedacted ||
-          answer.proposedValue === null ||
-          answer.proposedValue.trim().length === 0
+          answer.fieldFingerprint === null ||
+          answer.fieldType === null
         ) {
-          throw new PublicApiError("This application run answer cannot be approved.", 422, {
-            code: "RUN_ANSWER_NOT_APPROVABLE"
-          });
+          throw answerNotApprovable();
         }
-        finalValueHash = createHash("sha256").update(answer.proposedValue).digest("hex");
+        let proposal;
+        try {
+          proposal = parseCompatibleApplicationAnswerProposal(answer.proposal, {
+            expectedField: {
+              normalizedFieldKey: answer.normalizedFieldKey,
+              fieldFingerprint: answer.fieldFingerprint,
+              fieldType: answer.fieldType,
+              semanticFieldKey: answer.semanticFieldKey
+            },
+            frozenField: {
+              normalizedFieldKey: frozenField.normalizedFieldKey,
+              fieldFingerprint: frozenField.fieldFingerprint,
+              fieldType: frozenField.fieldType,
+              semanticFieldKey: frozenField.semanticFieldKey,
+              choices: frozenField.choices.map((choice) => ({
+                key: choice.key,
+                disabled: choice.disabled
+              }))
+            }
+          });
+        } catch {
+          throw answerNotApprovable();
+        }
+        if (review.status === "APPROVED") {
+          finalValueHash = computeApplicationAnswerProposalHash(proposal);
+          reviewHashVersion = "CANONICAL_PROPOSAL_V1";
+        }
+      } else if (review.status === "APPROVED") {
+        if (answer.sensitive || answer.valueRedacted || answer.proposedValue === null) {
+          throw answerNotApprovable();
+        }
+        finalValueHash = createHash("sha256").update(answer.proposedValue, "utf8").digest("hex");
+        reviewHashVersion = "LEGACY_SCALAR_SHA256";
       }
 
       const now = resolveNow(clock);
       const updated = await tx.applicationRunAnswer.updateMany({
-        where: { id: answer.id, runId, userId, status: "PENDING" },
+        where: {
+          id: answer.id,
+          runId,
+          userId,
+          answerPacketId: currentPacketId,
+          status: "PENDING"
+        },
         data: {
           status: review.status,
           reviewedByUser: true,
           reviewedAt: now,
-          finalValueHash
+          finalValueHash,
+          reviewHashVersion
         }
       });
       if (updated.count !== 1) {
@@ -789,8 +1003,9 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           metadata: {
             runId,
             answerId: answer.id,
+            answerPacketVersion: review.answerPacketVersion,
+            normalizedFieldKey: answer.normalizedFieldKey,
             status: review.status,
-            finalValueHashStored: finalValueHash !== null,
             reviewedAt: now.toISOString()
           } as Prisma.InputJsonValue
         }

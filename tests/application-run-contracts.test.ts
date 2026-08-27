@@ -14,6 +14,7 @@ import {
 const CUID = "clz8w7m9a0000qwer1234tyui";
 const ANSWER_CUID = "clz8w7m9a0001qwer1234tyui";
 const TOKEN_CUID = "clz8w7m9a0002qwer1234tyui";
+const PACKET_HASH = "a".repeat(64);
 
 test("application-run path identifiers require a runtime-valid CUID", () => {
   assert.equal(applicationRunPathSchema.safeParse({ id: CUID }).success, true);
@@ -89,20 +90,37 @@ test("strict empty bodies reject authoritative-looking properties", () => {
   assert.equal(strictEmptyBodySchema.safeParse({ state: "READY" }).success, false);
 });
 
-test("review resolution requires a version and unique known reasons with no extra authority", () => {
+test("review resolution requires packet fences correlated to legacy or packet-backed review", () => {
   const valid = {
     stateVersion: 7,
-    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"]
+    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
+    answerPacketVersion: 3,
+    packetHash: PACKET_HASH
   } as const;
   assert.deepEqual(resolveApplicationRunReviewBodySchema.parse(valid), valid);
   assert.deepEqual(
-    resolveApplicationRunReviewBodySchema.parse({ stateVersion: 0, acknowledgedReviewReasons: [] }),
-    { stateVersion: 0, acknowledgedReviewReasons: [] }
+    resolveApplicationRunReviewBodySchema.parse({
+      stateVersion: 0,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 0,
+      packetHash: null
+    }),
+    { stateVersion: 0, acknowledgedReviewReasons: [], answerPacketVersion: 0, packetHash: null }
   );
 
   for (const invalid of [
     { ...valid, stateVersion: -1 },
     { ...valid, stateVersion: 1.5 },
+    { stateVersion: 7, acknowledgedReviewReasons: valid.acknowledgedReviewReasons, packetHash: PACKET_HASH },
+    { stateVersion: 7, acknowledgedReviewReasons: valid.acknowledgedReviewReasons, answerPacketVersion: 3 },
+    { ...valid, answerPacketVersion: -1 },
+    { ...valid, answerPacketVersion: 1.5 },
+    { ...valid, answerPacketVersion: "3" },
+    { ...valid, answerPacketVersion: 0 },
+    { ...valid, packetHash: null },
+    { ...valid, packetHash: "A".repeat(64) },
+    { ...valid, packetHash: "a".repeat(63) },
+    { ...valid, packetHash: "g".repeat(64) },
     { ...valid, acknowledgedReviewReasons: ["unknown_reason"] },
     { ...valid, acknowledgedReviewReasons: ["evidence_gaps_present", "evidence_gaps_present"] },
     { ...valid, state: "READY" },
@@ -112,15 +130,33 @@ test("review resolution requires a version and unique known reasons with no extr
   }
 });
 
-test("answer review accepts only APPROVED or REJECTED and rejects content/lifecycle fields", () => {
-  assert.deepEqual(reviewApplicationRunAnswerBodySchema.parse({ status: "APPROVED" }), { status: "APPROVED" });
-  assert.deepEqual(reviewApplicationRunAnswerBodySchema.parse({ status: "REJECTED" }), { status: "REJECTED" });
+test("answer review requires an explicit nonnegative integer packet version and rejects caller authority", () => {
+  assert.deepEqual(reviewApplicationRunAnswerBodySchema.parse({ status: "APPROVED", answerPacketVersion: 0 }), {
+    status: "APPROVED",
+    answerPacketVersion: 0
+  });
+  assert.deepEqual(reviewApplicationRunAnswerBodySchema.parse({ status: "REJECTED", answerPacketVersion: 3 }), {
+    status: "REJECTED",
+    answerPacketVersion: 3
+  });
   for (const invalid of [
     { status: "PENDING" },
-    { status: "APPROVED", userId: "user-1" },
-    { status: "APPROVED", runId: CUID },
-    { status: "APPROVED", proposedValue: "secret" },
-    { status: "APPROVED", finalValueHash: "attacker" }
+    { status: "APPROVED" },
+    { status: "APPROVED", answerPacketVersion: -1 },
+    { status: "APPROVED", answerPacketVersion: 1.5 },
+    { status: "APPROVED", answerPacketVersion: "0" },
+    { status: "APPROVED", answerPacketVersion: 0, userId: "user-1" },
+    { status: "APPROVED", answerPacketVersion: 0, runId: CUID },
+    { status: "APPROVED", answerPacketVersion: 0, answerPacketId: "packet-1" },
+    { status: "APPROVED", answerPacketVersion: 0, proposal: { kind: "SCALAR", value: "secret" } },
+    { status: "APPROVED", answerPacketVersion: 0, proposedValue: "secret" },
+    { status: "APPROVED", answerPacketVersion: 0, finalValueHash: "attacker" },
+    { status: "APPROVED", answerPacketVersion: 0, reviewHashVersion: "CANONICAL_PROPOSAL_V1" },
+    { status: "APPROVED", answerPacketVersion: 0, sourceIds: ["source-1"] },
+    { status: "APPROVED", answerPacketVersion: 0, sourceFingerprint: "fingerprint" },
+    { status: "APPROVED", answerPacketVersion: 0, fieldFingerprint: "fingerprint" },
+    { status: "APPROVED", answerPacketVersion: 0, classification: "AVAILABILITY" },
+    { status: "APPROVED", answerPacketVersion: 0, disposition: "PROPOSABLE" }
   ]) {
     assert.equal(reviewApplicationRunAnswerBodySchema.safeParse(invalid).success, false);
   }

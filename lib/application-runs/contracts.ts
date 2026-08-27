@@ -47,7 +47,9 @@ export const strictEmptyBodySchema = z.object({}).strict();
 export const resolveApplicationRunReviewBodySchema = z
   .object({
     stateVersion: z.number().int().nonnegative(),
-    acknowledgedReviewReasons: z.array(z.enum(PLAN_REVIEW_REASONS))
+    acknowledgedReviewReasons: z.array(z.enum(PLAN_REVIEW_REASONS)),
+    answerPacketVersion: z.number().int().nonnegative(),
+    packetHash: z.string().regex(/^[a-f0-9]{64}$/).nullable()
   })
   .strict()
   .superRefine((value, context) => {
@@ -58,11 +60,22 @@ export const resolveApplicationRunReviewBodySchema = z
         message: "Review reasons must not contain duplicates."
       });
     }
+    if (
+      (value.answerPacketVersion === 0 && value.packetHash !== null) ||
+      (value.answerPacketVersion > 0 && value.packetHash === null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["packetHash"],
+        message: "Packet hash must match the answer packet version."
+      });
+    }
   });
 
 export const reviewApplicationRunAnswerBodySchema = z
   .object({
-    status: z.enum(["APPROVED", "REJECTED"])
+    status: z.enum(["APPROVED", "REJECTED"]),
+    answerPacketVersion: z.number().int().nonnegative()
   })
   .strict();
 

@@ -5,6 +5,8 @@ import { test } from "node:test";
 import type { ApplicationRunAnswerStatus, ApplicationRunState } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
+import { computeApplicationAnswerProposalHash } from "@/lib/application-runs/answer-packet-domain";
+import type { VerifiedCurrentAnswerPacket } from "@/lib/application-runs/answer-packet-service";
 import type {
   ApplicationRunDto,
   AutomationPolicyValues
@@ -26,6 +28,10 @@ const JOB_ID = "clz8w7m9a0002qwer1234tyui";
 const OTHER_JOB_ID = "clz8w7m9a0003qwer1234tyui";
 const RUN_ID = "clz8w7m9a0004qwer1234tyui";
 const ANSWER_ID = "clz8w7m9a0005qwer1234tyui";
+const PACKET_ID = "clz8w7m9a0006qwer1234tyui";
+const NORMALIZED_FIELD_KEY = "b".repeat(64);
+const FIELD_FINGERPRINT = "c".repeat(64);
+const PACKET_HASH = "d".repeat(64);
 
 type FakePolicy = AutomationPolicyValues & {
   id: string;
@@ -55,19 +61,45 @@ type FakeRun = ApplicationRunDto & {
   policySnapshot: unknown;
   applicationPlanSnapshot: unknown;
   firstPreparingAt: Date | null;
+  currentFormInspectionVersion: number;
+  currentAnswerPacketVersion: number;
+  resumeVersionId: string | null;
+  resumeContentHash: string | null;
+  coverLetterVersionId: string | null;
+  coverLetterContentHash: string | null;
 };
 
 type FakeAnswer = {
   id: string;
   runId: string;
   userId: string;
+  answerPacketId: string | null;
+  normalizedFieldKey: string;
+  fieldFingerprint: string | null;
+  semanticFieldKey: string | null;
+  fieldType: "TEXT" | "CHECKBOX_BOOLEAN";
+  classification: "AVAILABILITY";
+  disposition: "PROPOSABLE" | "MANUAL_ONLY";
   proposedValue: string | null;
+  proposal: unknown;
   valueRedacted: boolean;
   sensitive: boolean;
   status: ApplicationRunAnswerStatus;
   reviewedByUser: boolean;
   reviewedAt: Date | null;
   finalValueHash: string | null;
+  reviewHashVersion: "LEGACY_SCALAR_SHA256" | "CANONICAL_PROPOSAL_V1" | null;
+};
+
+type FakePacket = {
+  id: string;
+  runId: string;
+  userId: string;
+  version: number;
+  formInspectionId: string;
+  packetHash: string;
+  reviewedAt: Date | null;
+  createdAt: Date;
 };
 
 type FakeToken = {
@@ -157,6 +189,12 @@ function fakeRun(overrides: Partial<FakeRun> = {}): FakeRun {
     policySnapshot: null,
     applicationPlanSnapshot: null,
     firstPreparingAt: null,
+    currentFormInspectionVersion: 0,
+    currentAnswerPacketVersion: 0,
+    resumeVersionId: null,
+    resumeContentHash: null,
+    coverLetterVersionId: null,
+    coverLetterContentHash: null,
     ...overrides
   };
 }
@@ -166,15 +204,70 @@ function fakeAnswer(overrides: Partial<FakeAnswer> = {}): FakeAnswer {
     id: ANSWER_ID,
     runId: RUN_ID,
     userId: USER_ID,
+    answerPacketId: null,
+    normalizedFieldKey: NORMALIZED_FIELD_KEY,
+    fieldFingerprint: FIELD_FINGERPRINT,
+    semanticFieldKey: null,
+    fieldType: "TEXT",
+    classification: "AVAILABILITY",
+    disposition: "PROPOSABLE",
     proposedValue: "A private proposed answer sentinel",
+    proposal: null,
     valueRedacted: false,
     sensitive: false,
     status: "PENDING",
     reviewedByUser: false,
     reviewedAt: null,
     finalValueHash: null,
+    reviewHashVersion: null,
     ...overrides
   };
+}
+
+function fakePacket(overrides: Partial<FakePacket> = {}): FakePacket {
+  return {
+    id: PACKET_ID,
+    runId: RUN_ID,
+    userId: USER_ID,
+    version: 3,
+    formInspectionId: "inspection-1",
+    packetHash: PACKET_HASH,
+    reviewedAt: null,
+    createdAt: new Date(NOW.getTime() - 60_000),
+    ...overrides
+  };
+}
+
+function verifiedPacketFor(
+  database: FakeApplicationRunDatabase,
+  summaryOverrides: Partial<VerifiedCurrentAnswerPacket["summary"]> = {}
+): VerifiedCurrentAnswerPacket {
+  const packet = database.packets[0] ?? fakePacket();
+  const answer = database.answers.find((candidate) => candidate.answerPacketId === packet.id);
+  return {
+    packetRecord: packet,
+    answerRows: answer ? [answer] : [],
+    fieldsByKey: new Map([[NORMALIZED_FIELD_KEY, {
+      normalizedFieldKey: NORMALIZED_FIELD_KEY,
+      fieldFingerprint: FIELD_FINGERPRINT,
+      fieldType: "TEXT",
+      semanticFieldKey: null,
+      choices: []
+    }]]),
+    summary: {
+      fieldCount: 1,
+      proposableCount: 1,
+      pendingReviewCount: 0,
+      approvedCount: 1,
+      rejectedCount: 0,
+      manualOnlyCount: 0,
+      excludedCount: 0,
+      unsupportedCount: 0,
+      manualRequiredCount: 0,
+      readyForRunResolution: true,
+      ...summaryOverrides
+    }
+  } as unknown as VerifiedCurrentAnswerPacket;
 }
 
 function fakeToken(overrides: Partial<FakeToken> = {}): FakeToken {
@@ -216,21 +309,40 @@ function tokenMatches(token: FakeToken, where: Record<string, unknown>): boolean
   return true;
 }
 
+type FakeApplicationRunDatabaseState = {
+  policy: FakePolicy | null;
+  applications: FakeApplication[];
+  runs: FakeRun[];
+  tokens: FakeToken[];
+  answers: FakeAnswer[];
+  packets: FakePacket[];
+  audits: FakeAudit[];
+  events: Array<Record<string, unknown>>;
+  runCounter: number;
+};
+
 class FakeApplicationRunDatabase {
   policy: FakePolicy | null = null;
   applications: FakeApplication[] = [fakeApplication()];
   runs: FakeRun[] = [];
   tokens: FakeToken[] = [];
   answers: FakeAnswer[] = [];
+  packets: FakePacket[] = [];
   audits: FakeAudit[] = [];
   events: Array<Record<string, unknown>> = [];
   operations: string[] = [];
   failAudit = false;
   failEvent = false;
   failTokenUpdate = false;
+  failPacketUpdate = false;
+  failRunUpdate = false;
+  onEventCreate: (() => void) | null = null;
+  verifiedPacket: VerifiedCurrentAnswerPacket | null = null;
+  verificationError: Error | null = null;
   raceRun: FakeRun | null = null;
   createConflictRun: FakeRun | null = null;
   private runCounter = 0;
+  private readonly transactionStates = new WeakMap<object, FakeApplicationRunDatabaseState>();
 
   readonly client = {
     $transaction: async (callback: (tx: unknown) => Promise<unknown>) => this.transaction(callback),
@@ -246,46 +358,79 @@ class FakeApplicationRunDatabase {
     },
     applicationRunAnswer: {
       findFirst: async (args: unknown) => this.findAnswerFirst(args)
+    },
+    applicationRunAnswerPacket: {
+      findUnique: async (args: unknown) => this.findPacketUnique(args)
     }
   } as unknown as ApplicationRunServicePrismaClient;
 
-  private findPolicy(args: unknown, operation: string) {
-    this.operations.push(operation);
-    const userId = nested(args, "where").userId;
-    return this.policy?.userId === userId ? structuredClone(this.policy) : null;
+  private committedState(): FakeApplicationRunDatabaseState {
+    return {
+      policy: this.policy,
+      applications: this.applications,
+      runs: this.runs,
+      tokens: this.tokens,
+      answers: this.answers,
+      packets: this.packets,
+      audits: this.audits,
+      events: this.events,
+      runCounter: this.runCounter
+    };
   }
 
-  private findApplication(args: unknown) {
+  private publishCommittedState(state: FakeApplicationRunDatabaseState) {
+    this.policy = state.policy;
+    this.applications = state.applications;
+    this.runs = state.runs;
+    this.tokens = state.tokens;
+    this.answers = state.answers;
+    this.packets = state.packets;
+    this.audits = state.audits;
+    this.events = state.events;
+    this.runCounter = state.runCounter;
+  }
+
+  private findPolicy(
+    args: unknown,
+    operation: string,
+    state: FakeApplicationRunDatabaseState = this.committedState()
+  ) {
+    this.operations.push(operation);
+    const userId = nested(args, "where").userId;
+    return state.policy?.userId === userId ? structuredClone(state.policy) : null;
+  }
+
+  private findApplication(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
     this.operations.push("application.findFirst");
     const where = nested(args, "where");
-    const found = this.applications.find(
+    const found = state.applications.find(
       (application) => application.id === where.id && application.userId === where.userId
     );
     return found ? structuredClone(found) : null;
   }
 
-  private visibleRuns() {
-    return this.raceRun ? [...this.runs, this.raceRun] : this.runs;
+  private visibleRuns(state: FakeApplicationRunDatabaseState = this.committedState()) {
+    return this.raceRun ? [...state.runs, this.raceRun] : state.runs;
   }
 
-  private findRunUnique(args: unknown) {
+  private findRunUnique(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
     this.operations.push("run.findUnique");
     const where = nested(args, "where");
     const composite = where.userId_idempotencyKey as Record<string, unknown> | undefined;
     const found = composite
-      ? this.visibleRuns().find(
+      ? this.visibleRuns(state).find(
           (run) => run.userId === composite.userId && run.idempotencyKey === composite.idempotencyKey
         )
-      : this.visibleRuns().find((run) => run.activeRunKey === where.activeRunKey);
+      : this.visibleRuns(state).find((run) => run.activeRunKey === where.activeRunKey);
     return found ? structuredClone(found) : null;
   }
 
-  private findRunFirst(args: unknown) {
+  private findRunFirst(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
     this.operations.push("run.findFirst");
     const where = nested(args, "where");
-    const found = this.visibleRuns().find((run) => run.id === where.id && run.userId === where.userId);
+    const found = this.visibleRuns(state).find((run) => run.id === where.id && run.userId === where.userId);
     if (!found) return null;
-    const application = this.applications.find((candidate) => candidate.id === found.applicationId);
+    const application = state.applications.find((candidate) => candidate.id === found.applicationId);
     return structuredClone({
       ...found,
       application: application
@@ -297,19 +442,58 @@ class FakeApplicationRunDatabase {
     });
   }
 
-  private findAnswerFirst(args: unknown) {
+  private findAnswerFirst(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
     this.operations.push("answer.findFirst");
     const where = nested(args, "where");
-    const found = this.answers.find(
-      (answer) => answer.id === where.id && answer.runId === where.runId && answer.userId === where.userId
+    const found = state.answers.find(
+      (answer) =>
+        answer.id === where.id &&
+        answer.runId === where.runId &&
+        answer.userId === where.userId &&
+        (where.answerPacketId === undefined || answer.answerPacketId === where.answerPacketId)
     );
     return found ? structuredClone(found) : null;
   }
 
-  private transactionClient() {
+  private findPacketUnique(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
+    this.operations.push("packet.findUnique");
+    const where = nested(args, "where");
+    const binding = object(where.runId_version);
+    const found = state.packets.find(
+      (packet) => packet.runId === binding.runId && packet.version === binding.version
+    );
+    return found ? structuredClone(found) : null;
+  }
+
+  async loadVerifiedCurrentPacket(tx: unknown): Promise<VerifiedCurrentAnswerPacket | null> {
+    this.operations.push("packet.verify");
+    if (this.verificationError) throw this.verificationError;
+    const state = typeof tx === "object" && tx !== null
+      ? this.transactionStates.get(tx)
+      : undefined;
+    assert.ok(state, "packet verifier must use the active transaction working state");
+    if (!this.verifiedPacket) return null;
+    const packetRecord = state.packets.find(
+      (packet) => packet.id === this.verifiedPacket?.packetRecord.id
+    );
+    if (!packetRecord) return null;
+    return {
+      ...this.verifiedPacket,
+      packetRecord: structuredClone(packetRecord) as VerifiedCurrentAnswerPacket["packetRecord"],
+      answerRows: structuredClone(
+        state.answers.filter((answer) => answer.answerPacketId === packetRecord.id)
+      ) as unknown as VerifiedCurrentAnswerPacket["answerRows"]
+    };
+  }
+
+  private transactionClient(state: FakeApplicationRunDatabaseState) {
     return {
       $queryRaw: async <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> => {
         const query = strings.join("?");
+        if (query.includes("CURRENT_TIMESTAMP")) {
+          this.operations.push("database.now");
+          return [{ now: new Date(NOW) }] as T;
+        }
         if (query.includes('FROM "User"')) {
           assert.equal(
             query.replace(/\s+/g, " ").trim(),
@@ -320,49 +504,54 @@ class FakeApplicationRunDatabase {
         }
         if (query.includes('FROM "ApplicationRunAnswer"')) {
           this.operations.push("answer.lock");
-          const answer = this.answers.find(
-            (candidate) => candidate.id === values[0] && candidate.runId === values[1] && candidate.userId === values[2]
+          const answer = state.answers.find(
+            (candidate) =>
+              candidate.id === values[0] &&
+              candidate.runId === values[1] &&
+              candidate.userId === values[2] &&
+              (values.length < 4 || candidate.answerPacketId === values[3])
           );
           return (answer ? [{ id: answer.id }] : []) as T;
         }
         if (query.includes('FROM "ApplicationRun"')) {
           this.operations.push("run.lock");
-          const run = this.runs.find((candidate) => candidate.id === values[0] && candidate.userId === values[1]);
+          const run = state.runs.find((candidate) => candidate.id === values[0] && candidate.userId === values[1]);
           return (run ? [{ id: run.id }] : []) as T;
         }
         this.operations.push("policy.lock");
-        const policy = this.policy;
+        const policy = state.policy;
         if (policy && policy.userId === values[0]) return [{ id: policy.id }] as T;
         return [] as T;
       },
       applicationAutomationPolicy: {
-        findUnique: async (args: unknown) => this.findPolicy(args, "policy.findUnique.tx"),
+        findUnique: async (args: unknown) => this.findPolicy(args, "policy.findUnique.tx", state),
         create: async (args: unknown) => {
           this.operations.push("policy.create");
-          assert.equal(this.policy, null);
+          assert.equal(state.policy, null);
           const data = nested(args, "data");
-          this.policy = fakePolicy({ ...data, id: "policy-created" } as Partial<FakePolicy>);
-          return { id: this.policy.id };
+          state.policy = fakePolicy({ ...data, id: "policy-created" } as Partial<FakePolicy>);
+          return { id: state.policy.id };
         },
         update: async (args: unknown) => {
           this.operations.push("policy.update");
-          assert.ok(this.policy);
+          assert.ok(state.policy);
           const data = nested(args, "data");
-          this.policy = {
-            ...this.policy,
+          state.policy = {
+            ...state.policy,
             ...structuredClone(data),
             updatedAt: new Date(NOW)
           };
-          return structuredClone(this.policy);
+          return structuredClone(state.policy);
         }
       },
       applicationRun: {
-        findFirst: async (args: unknown) => this.findRunFirst(args),
+        findFirst: async (args: unknown) => this.findRunFirst(args, state),
         updateMany: async (args: unknown) => {
           this.operations.push("run.updateMany");
+          if (this.failRunUpdate) return { count: 0 };
           const where = nested(args, "where");
           const data = nested(args, "data");
-          const matches = this.runs.filter((run) =>
+          const matches = state.runs.filter((run) =>
             Object.entries(where).every(([key, expected]) => run[key as keyof FakeRun] === expected)
           );
           for (const run of matches) {
@@ -386,7 +575,7 @@ class FakeApplicationRunDatabase {
           }
           const data = nested(args, "data");
           const created = fakeRun({
-            id: this.runCounter++ === 0 ? RUN_ID : `clz8w7m9a000${this.runCounter + 4}qwer1234tyui`,
+            id: state.runCounter++ === 0 ? RUN_ID : `clz8w7m9a000${state.runCounter + 4}qwer1234tyui`,
             userId: data.userId as string,
             applicationId: data.applicationId as string,
             jobPostingId: data.jobPostingId as string,
@@ -396,20 +585,34 @@ class FakeApplicationRunDatabase {
             applyUrlSnapshot: data.applyUrlSnapshot as string,
             applyHost: data.applyHost as string
           });
-          this.runs.push(created);
+          state.runs.push(created);
           return structuredClone(created);
         }
       },
       applicationRunAnswer: {
-        findFirst: async (args: unknown) => this.findAnswerFirst(args),
+        findFirst: async (args: unknown) => this.findAnswerFirst(args, state),
         updateMany: async (args: unknown) => {
           this.operations.push("answer.updateMany");
           const where = nested(args, "where");
           const data = nested(args, "data");
-          const matches = this.answers.filter((answer) =>
+          const matches = state.answers.filter((answer) =>
             Object.entries(where).every(([key, expected]) => answer[key as keyof FakeAnswer] === expected)
           );
           for (const answer of matches) Object.assign(answer, structuredClone(data));
+          return { count: matches.length };
+        }
+      },
+      applicationRunAnswerPacket: {
+        findUnique: async (args: unknown) => this.findPacketUnique(args, state),
+        updateMany: async (args: unknown) => {
+          this.operations.push("packet.updateMany");
+          if (this.failPacketUpdate) return { count: 0 };
+          const where = nested(args, "where");
+          const data = nested(args, "data");
+          const matches = state.packets.filter((packet) =>
+            Object.entries(where).every(([key, expected]) => packet[key as keyof FakePacket] === expected)
+          );
+          for (const packet of matches) Object.assign(packet, structuredClone(data));
           return { count: matches.length };
         }
       },
@@ -419,7 +622,7 @@ class FakeApplicationRunDatabase {
           if (this.failTokenUpdate) throw new Error("simulated token update failure");
           const where = nested(args, "where");
           const data = nested(args, "data");
-          const matches = this.tokens.filter((token) => tokenMatches(token, where));
+          const matches = state.tokens.filter((token) => tokenMatches(token, where));
           for (const token of matches) Object.assign(token, data);
           return { count: matches.length };
         }
@@ -427,9 +630,10 @@ class FakeApplicationRunDatabase {
       applicationEvent: {
         create: async (args: unknown) => {
           this.operations.push("event.create");
+          this.onEventCreate?.();
           if (this.failEvent) throw new Error("simulated event failure");
           const data = nested(args, "data");
-          this.events.push(structuredClone(data));
+          state.events.push(structuredClone(data));
           return structuredClone(data);
         }
       },
@@ -438,7 +642,7 @@ class FakeApplicationRunDatabase {
           this.operations.push("audit.create");
           if (this.failAudit) throw new Error("simulated audit failure");
           const data = nested(args, "data") as unknown as FakeAudit;
-          this.audits.push(structuredClone(data));
+          state.audits.push(structuredClone(data));
           return structuredClone(data);
         }
       }
@@ -447,29 +651,19 @@ class FakeApplicationRunDatabase {
 
   private async transaction(callback: (tx: unknown) => Promise<unknown>) {
     this.operations.push("transaction.begin");
-    const before = structuredClone({
-      policy: this.policy,
-      runs: this.runs,
-      answers: this.answers,
-      tokens: this.tokens,
-      audits: this.audits,
-      events: this.events,
-      runCounter: this.runCounter
-    });
+    const workingState = structuredClone(this.committedState());
+    const tx = this.transactionClient(workingState);
+    this.transactionStates.set(tx, workingState);
     try {
-      const result = await callback(this.transactionClient());
+      const result = await callback(tx);
+      this.publishCommittedState(workingState);
       this.operations.push("transaction.commit");
       return result;
     } catch (error) {
-      this.policy = before.policy;
-      this.runs = before.runs;
-      this.answers = before.answers;
-      this.tokens = before.tokens;
-      this.audits = before.audits;
-      this.events = before.events;
-      this.runCounter = before.runCounter;
       this.operations.push("transaction.rollback");
       throw error;
+    } finally {
+      this.transactionStates.delete(tx);
     }
   }
 }
@@ -478,8 +672,35 @@ function serviceFor(database: FakeApplicationRunDatabase, enabled = false) {
   return createApplicationRunService({
     prismaClient: database.client,
     env: enabled ? { APPLICATION_AUTOMATION_ENABLED: "true" } : {},
-    clock: () => new Date(NOW)
+    clock: () => new Date(NOW),
+    loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async (tx) =>
+      database.loadVerifiedCurrentPacket(tx)
   });
+}
+
+function packetReviewDatabase(input: {
+  run?: Partial<FakeRun>;
+  answer?: Partial<FakeAnswer>;
+  packet?: Partial<FakePacket>;
+  summary?: Partial<VerifiedCurrentAnswerPacket["summary"]>;
+} = {}) {
+  const database = new FakeApplicationRunDatabase();
+  database.runs.push(fakeRun({
+    state: "REVIEW_REQUIRED",
+    stateVersion: 4,
+    currentFormInspectionVersion: 2,
+    currentAnswerPacketVersion: 3,
+    ...input.run
+  }));
+  database.packets.push(fakePacket(input.packet));
+  database.answers.push(fakeAnswer({
+    answerPacketId: PACKET_ID,
+    proposedValue: null,
+    proposal: { kind: "SCALAR", value: "Persisted packet proposal sentinel" },
+    ...input.answer
+  }));
+  database.verifiedPacket = verifiedPacketFor(database, input.summary);
+  return database;
 }
 
 function assertPublicError(error: unknown, status: number, code: string) {
@@ -1135,7 +1356,9 @@ test("review resolution requires the exact version and deterministic ordered cur
     userId: USER_ID,
     runId: RUN_ID,
     stateVersion: 8,
-    acknowledgedReviewReasons: [...reasons]
+    acknowledgedReviewReasons: [...reasons],
+    answerPacketVersion: 0,
+    packetHash: null
   });
 
   assert.equal(result.state, "READY");
@@ -1173,7 +1396,9 @@ test("review resolution rejects stale versions, wrong states, and inexact reason
         userId: USER_ID,
         runId: RUN_ID,
         stateVersion: testCase.stateVersion,
-        acknowledgedReviewReasons: testCase.reasons
+        acknowledgedReviewReasons: testCase.reasons,
+        answerPacketVersion: 0,
+        packetHash: null
       }),
       (error) => assertPublicError(error, 409, testCase.code)
     );
@@ -1193,7 +1418,9 @@ test("review resolution is ownership-scoped and rolls back if its audit or event
         userId,
         runId,
         stateVersion: 0,
-        acknowledgedReviewReasons: ["evidence_gaps_present"]
+        acknowledgedReviewReasons: ["evidence_gaps_present"],
+        answerPacketVersion: 0,
+        packetHash: null
       }),
       (error) => assertPublicError(error, 404, "RUN_NOT_FOUND")
     );
@@ -1204,7 +1431,9 @@ test("review resolution is ownership-scoped and rolls back if its audit or event
     userId: USER_ID,
     runId: "not-a-cuid",
     stateVersion: 0,
-    acknowledgedReviewReasons: ["evidence_gaps_present"]
+    acknowledgedReviewReasons: ["evidence_gaps_present"],
+    answerPacketVersion: 0,
+    packetHash: null
   }));
   assert.equal(malformed.operations.length, 0);
 
@@ -1218,13 +1447,227 @@ test("review resolution is ownership-scoped and rolls back if its audit or event
         userId: USER_ID,
         runId: RUN_ID,
         stateVersion: 0,
-        acknowledgedReviewReasons: ["evidence_gaps_present"]
+        acknowledgedReviewReasons: ["evidence_gaps_present"],
+        answerPacketVersion: 0,
+        packetHash: null
       }),
       /simulated/
     );
     assert.equal(database.runs[0].state, "REVIEW_REQUIRED");
     assert.equal(database.runs[0].reviewAcknowledgedAt, null);
   }
+});
+
+test("legacy review resolution requires artifact counters 0/0", async () => {
+  const database = new FakeApplicationRunDatabase();
+  database.runs.push(fakeRun({
+    state: "REVIEW_REQUIRED",
+    currentFormInspectionVersion: 1,
+    currentAnswerPacketVersion: 0
+  }));
+
+  await assert.rejects(
+    serviceFor(database).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 0,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 0,
+      packetHash: null
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_INVALID")
+  );
+  assert.equal(database.runs[0].state, "REVIEW_REQUIRED");
+  assert.equal(database.operations.includes("packet.findUnique"), false);
+});
+
+test("packet review resolution applies version and stored-hash stale fences before verification", async () => {
+  const staleVersion = packetReviewDatabase();
+  await assert.rejects(
+    serviceFor(staleVersion).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 2,
+      packetHash: PACKET_HASH
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_STALE")
+  );
+  assert.equal(staleVersion.operations.includes("packet.findUnique"), false);
+  assert.equal(staleVersion.operations.includes("packet.verify"), false);
+
+  const staleHash = packetReviewDatabase();
+  await assert.rejects(
+    serviceFor(staleHash).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 3,
+      packetHash: "e".repeat(64)
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_STALE")
+  );
+  assert.equal(staleHash.operations.includes("packet.findUnique"), true);
+  assert.equal(staleHash.operations.includes("packet.verify"), false);
+});
+
+test("packet review resolution distinguishes structural invalidity from incomplete review", async () => {
+  const invalid = packetReviewDatabase();
+  invalid.verificationError = new PublicApiError("The current answer packet is invalid.", 409, {
+    code: "RUN_PACKET_INVALID"
+  });
+  await assert.rejects(
+    serviceFor(invalid).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 3,
+      packetHash: PACKET_HASH
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_INVALID")
+  );
+
+  const alreadyAcknowledged = packetReviewDatabase({ packet: { reviewedAt: new Date(NOW) } });
+  await assert.rejects(
+    serviceFor(alreadyAcknowledged).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 3,
+      packetHash: PACKET_HASH
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_INVALID")
+  );
+
+  for (const summary of [
+    { pendingReviewCount: 1, readyForRunResolution: false },
+    { approvedCount: 1, readyForRunResolution: false }
+  ]) {
+    const incomplete = packetReviewDatabase({ summary });
+    await assert.rejects(
+      serviceFor(incomplete).resolveApplicationRunReview({
+        userId: USER_ID,
+        runId: RUN_ID,
+        stateVersion: 4,
+        acknowledgedReviewReasons: [],
+        answerPacketVersion: 3,
+        packetHash: PACKET_HASH
+      }),
+      (error) => assertPublicError(error, 409, "RUN_PACKET_REVIEW_INCOMPLETE")
+    );
+    assert.equal(incomplete.packets[0].reviewedAt, null);
+  }
+});
+
+test("packet review resolution uses one database timestamp and permits manual-required work", async () => {
+  const database = packetReviewDatabase({
+    run: { reviewReasons: ["evidence_gaps_present"] },
+    summary: { manualRequiredCount: 2, readyForRunResolution: true }
+  });
+  database.tokens.push(fakeToken());
+
+  const result = await serviceFor(database).resolveApplicationRunReview({
+    userId: USER_ID,
+    runId: RUN_ID,
+    stateVersion: 4,
+    acknowledgedReviewReasons: ["evidence_gaps_present"],
+    answerPacketVersion: 3,
+    packetHash: PACKET_HASH
+  });
+
+  assert.equal(result.state, "READY");
+  assert.equal(result.stateVersion, 5);
+  assert.deepEqual(database.packets[0].reviewedAt, NOW);
+  assert.equal(database.runs[0].state, "READY");
+  assert.equal(database.runs[0].stateVersion, 5);
+  assert.deepEqual(database.runs[0].reviewAcknowledgedAt, NOW);
+  assert.equal(database.audits.length, 1);
+  assert.equal(database.events.length, 1);
+  assert.equal(database.operations.filter((operation) => operation === "database.now").length, 1);
+  assert.ok(database.operations.indexOf("packet.updateMany") < database.operations.indexOf("run.updateMany"));
+  assert.equal(database.tokens[0].revokedAt, null);
+  assert.equal(database.operations.includes("token.updateMany"), false);
+});
+
+test("packet review resolution preserves existing planner acknowledgment and does not fabricate one", async () => {
+  const existing = new Date("2026-08-19T00:00:00.000Z");
+  const cases: Array<[string, Partial<FakeRun>, Date | null]> = [
+    ["existing", { reviewReasons: ["evidence_gaps_present"], reviewAcknowledgedAt: existing }, existing],
+    ["empty reasons", { reviewReasons: [], reviewAcknowledgedAt: null }, null]
+  ];
+  for (const [label, run, expected] of cases) {
+    const database = packetReviewDatabase({ run });
+    await serviceFor(database).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [...(run.reviewReasons ?? [])],
+      answerPacketVersion: 3,
+      packetHash: PACKET_HASH
+    });
+    assert.deepEqual(database.runs[0].reviewAcknowledgedAt, expected, label);
+    assert.deepEqual(database.packets[0].reviewedAt, NOW, label);
+  }
+});
+
+test("packet review resolution rolls back packet acknowledgment on every later transactional failure", async () => {
+  for (const failure of ["packet", "run", "audit", "event"] as const) {
+    const database = packetReviewDatabase({ run: { reviewReasons: ["evidence_gaps_present"] } });
+    database.failPacketUpdate = failure === "packet";
+    database.failRunUpdate = failure === "run";
+    database.failAudit = failure === "audit";
+    database.failEvent = failure === "event";
+
+    await assert.rejects(
+      serviceFor(database).resolveApplicationRunReview({
+        userId: USER_ID,
+        runId: RUN_ID,
+        stateVersion: 4,
+        acknowledgedReviewReasons: ["evidence_gaps_present"],
+        answerPacketVersion: 3,
+        packetHash: PACKET_HASH
+      })
+    );
+    assert.equal(database.packets[0].reviewedAt, null, failure);
+    assert.equal(database.runs[0].state, "REVIEW_REQUIRED", failure);
+    assert.equal(database.runs[0].stateVersion, 4, failure);
+    assert.equal(database.runs[0].reviewAcknowledgedAt, null, failure);
+    assert.equal(database.audits.length, 0, failure);
+    assert.equal(database.events.length, 0, failure);
+    assert.equal(database.operations.at(-1), "transaction.rollback", failure);
+  }
+});
+
+test("packet review resolution publishes committed state only after transaction callback success", async () => {
+  const database = packetReviewDatabase({ run: { reviewReasons: ["evidence_gaps_present"] } });
+  database.failEvent = true;
+  let observedBeforeFailure = false;
+  database.onEventCreate = () => {
+    observedBeforeFailure = true;
+    assert.equal(database.packets[0].reviewedAt, null);
+    assert.equal(database.runs[0].state, "REVIEW_REQUIRED");
+    assert.equal(database.runs[0].stateVersion, 4);
+    assert.equal(database.runs[0].reviewAcknowledgedAt, null);
+    assert.equal(database.audits.length, 0);
+    assert.equal(database.events.length, 0);
+  };
+
+  await assert.rejects(
+    serviceFor(database).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: ["evidence_gaps_present"],
+      answerPacketVersion: 3,
+      packetHash: PACKET_HASH
+    }),
+    /simulated event failure/
+  );
+  assert.equal(observedBeforeFailure, true);
 });
 
 test("answer review binds owner, run, and answer; locks run before answer; and returns a safe DTO", async () => {
@@ -1237,11 +1680,13 @@ test("answer review binds owner, run, and answer; locks run before answer; and r
     userId: USER_ID,
     runId: RUN_ID,
     answerId: ANSWER_ID,
-    status: "APPROVED"
+    status: "APPROVED",
+    answerPacketVersion: 0
   });
 
   const expectedHash = createHash("sha256").update("A private proposed answer sentinel").digest("hex");
   assert.equal(database.answers[0].finalValueHash, expectedHash);
+  assert.equal(database.answers[0].reviewHashVersion, "LEGACY_SCALAR_SHA256");
   assert.equal(database.answers[0].status, "APPROVED");
   assert.equal(database.answers[0].reviewedByUser, true);
   assert.deepEqual(database.answers[0].reviewedAt, NOW);
@@ -1255,10 +1700,29 @@ test("answer review binds owner, run, and answer; locks run before answer; and r
   assert.equal(serialized.includes(expectedHash), false);
 });
 
-test("answer approval fails closed for null, blank, sensitive, or redacted proposed values without disclosure", async () => {
+test("legacy answer approval hashes the exact persisted UTF-8 scalar without trimming", async () => {
+  const database = new FakeApplicationRunDatabase();
+  database.runs.push(fakeRun({ state: "READY" }));
+  database.answers.push(fakeAnswer({ proposedValue: "  exact scalar\n" }));
+
+  await serviceFor(database).reviewApplicationRunAnswer({
+    userId: USER_ID,
+    runId: RUN_ID,
+    answerId: ANSWER_ID,
+    status: "APPROVED",
+    answerPacketVersion: 0
+  });
+
+  assert.equal(
+    database.answers[0].finalValueHash,
+    createHash("sha256").update("  exact scalar\n", "utf8").digest("hex")
+  );
+  assert.equal(database.answers[0].reviewHashVersion, "LEGACY_SCALAR_SHA256");
+});
+
+test("answer approval fails closed for null, sensitive, or redacted legacy values without disclosure", async () => {
   const cases: Partial<FakeAnswer>[] = [
     { proposedValue: null },
-    { proposedValue: "   " },
     { sensitive: true, proposedValue: "sensitive sentinel" },
     { valueRedacted: true, proposedValue: "redacted sentinel" }
   ];
@@ -1271,7 +1735,8 @@ test("answer approval fails closed for null, blank, sensitive, or redacted propo
         userId: USER_ID,
         runId: RUN_ID,
         answerId: ANSWER_ID,
-        status: "APPROVED"
+        status: "APPROVED",
+        answerPacketVersion: 0
       }),
       (error) => {
         assert.equal(JSON.stringify(error).includes("sentinel"), false);
@@ -1297,14 +1762,183 @@ test("answer rejection is allowed for sensitive/redacted values and clears any a
     userId: USER_ID,
     runId: RUN_ID,
     answerId: ANSWER_ID,
-    status: "REJECTED"
+    status: "REJECTED",
+    answerPacketVersion: 0
   });
 
   assert.equal(result.status, "REJECTED");
   assert.equal(database.answers[0].finalValueHash, null);
+  assert.equal(database.answers[0].reviewHashVersion, null);
   assert.equal(JSON.stringify({ result, audits: database.audits }).includes("never serialize this answer"), false);
   assert.equal(database.audits.length, 1);
   assert.equal(database.events.length, 0);
+});
+
+test("legacy answer review requires artifact counters 0/0 and an answer without packet membership", async () => {
+  const mixed = new FakeApplicationRunDatabase();
+  mixed.runs.push(fakeRun({
+    state: "REVIEW_REQUIRED",
+    currentFormInspectionVersion: 1,
+    currentAnswerPacketVersion: 0
+  }));
+  mixed.answers.push(fakeAnswer());
+  await assert.rejects(
+    serviceFor(mixed).reviewApplicationRunAnswer({
+      userId: USER_ID,
+      runId: RUN_ID,
+      answerId: ANSWER_ID,
+      status: "REJECTED",
+      answerPacketVersion: 0
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_INVALID")
+  );
+  assert.equal(mixed.operations.includes("answer.lock"), false);
+
+  const packetMember = new FakeApplicationRunDatabase();
+  packetMember.runs.push(fakeRun({ state: "READY" }));
+  packetMember.answers.push(fakeAnswer({ answerPacketId: PACKET_ID }));
+  await assert.rejects(
+    serviceFor(packetMember).reviewApplicationRunAnswer({
+      userId: USER_ID,
+      runId: RUN_ID,
+      answerId: ANSWER_ID,
+      status: "REJECTED",
+      answerPacketVersion: 0
+    }),
+    (error) => assertPublicError(error, 404, "RUN_ANSWER_NOT_FOUND")
+  );
+});
+
+test("packet answer review fences stale versions before historical answer status or existence", async () => {
+  const database = packetReviewDatabase({
+    answer: {
+      answerPacketId: "historical-packet",
+      status: "APPROVED",
+      reviewedByUser: true,
+      reviewedAt: NOW
+    }
+  });
+
+  await assert.rejects(
+    serviceFor(database).reviewApplicationRunAnswer({
+      userId: USER_ID,
+      runId: RUN_ID,
+      answerId: ANSWER_ID,
+      status: "REJECTED",
+      answerPacketVersion: 2
+    }),
+    (error) => assertPublicError(error, 409, "RUN_PACKET_STALE")
+  );
+  assert.equal(database.operations.includes("packet.verify"), false);
+  assert.equal(database.operations.includes("answer.lock"), false);
+});
+
+test("packet answer review verifies the current packet before a packet-scoped nonmember lookup", async () => {
+  const database = packetReviewDatabase({ answer: { answerPacketId: "other-packet" } });
+
+  await assert.rejects(
+    serviceFor(database).reviewApplicationRunAnswer({
+      userId: USER_ID,
+      runId: RUN_ID,
+      answerId: ANSWER_ID,
+      status: "REJECTED",
+      answerPacketVersion: 3
+    }),
+    (error) => assertPublicError(error, 404, "RUN_ANSWER_NOT_FOUND")
+  );
+  assert.ok(database.operations.indexOf("packet.verify") < database.operations.indexOf("answer.lock"));
+});
+
+test("packet answer approval requires a pending approvable proposal compatible with the frozen field", async () => {
+  const cases: Array<[string, Partial<FakeAnswer>]> = [
+    ["manual disposition", { disposition: "MANUAL_ONLY" }],
+    ["missing proposal", { proposal: null }],
+    ["sensitive", { sensitive: true }],
+    ["redacted", { valueRedacted: true }],
+    ["incompatible proposal", { fieldType: "CHECKBOX_BOOLEAN" }]
+  ];
+  for (const [label, answer] of cases) {
+    const database = packetReviewDatabase({ answer });
+    await assert.rejects(
+      serviceFor(database).reviewApplicationRunAnswer({
+        userId: USER_ID,
+        runId: RUN_ID,
+        answerId: ANSWER_ID,
+        status: "APPROVED",
+        answerPacketVersion: 3
+      }),
+      (error) => assertPublicError(error, 422, "RUN_ANSWER_NOT_APPROVABLE"),
+      label
+    );
+    assert.equal(database.answers[0].status, "PENDING", label);
+  }
+
+  const reviewed = packetReviewDatabase({
+    answer: { status: "REJECTED", reviewedByUser: true, reviewedAt: NOW }
+  });
+  await assert.rejects(
+    serviceFor(reviewed).reviewApplicationRunAnswer({
+      userId: USER_ID,
+      runId: RUN_ID,
+      answerId: ANSWER_ID,
+      status: "APPROVED",
+      answerPacketVersion: 3
+    }),
+    (error) => assertPublicError(error, 409, "RUN_ANSWER_ALREADY_REVIEWED")
+  );
+});
+
+test("packet answer approval stores the F1 canonical proposal hash and canonical review version", async () => {
+  const database = packetReviewDatabase();
+  const proposal = database.answers[0].proposal;
+
+  const result = await serviceFor(database).reviewApplicationRunAnswer({
+    userId: USER_ID,
+    runId: RUN_ID,
+    answerId: ANSWER_ID,
+    status: "APPROVED",
+    answerPacketVersion: 3
+  });
+
+  assert.equal(result.status, "APPROVED");
+  assert.equal(database.answers[0].finalValueHash, computeApplicationAnswerProposalHash(proposal));
+  assert.equal(database.answers[0].reviewHashVersion, "CANONICAL_PROPOSAL_V1");
+  assert.equal(database.operations.filter((operation) => operation === "packet.verify").length, 1);
+});
+
+test("packet answer rejection preserves the proposal, clears review hashes, and emits only a private audit", async () => {
+  const database = packetReviewDatabase({
+    answer: { finalValueHash: "stale-hash", reviewHashVersion: "CANONICAL_PROPOSAL_V1" }
+  });
+  database.tokens.push(fakeToken());
+  const proposalBefore = structuredClone(database.answers[0].proposal);
+
+  await serviceFor(database).reviewApplicationRunAnswer({
+    userId: USER_ID,
+    runId: RUN_ID,
+    answerId: ANSWER_ID,
+    status: "REJECTED",
+    answerPacketVersion: 3
+  });
+
+  assert.deepEqual(database.answers[0].proposal, proposalBefore);
+  assert.equal(database.answers[0].finalValueHash, null);
+  assert.equal(database.answers[0].reviewHashVersion, null);
+  assert.equal(database.events.length, 0);
+  assert.equal(database.tokens[0].revokedAt, null);
+  assert.equal(database.operations.includes("token.updateMany"), false);
+  const serialized = JSON.stringify(database.audits);
+  for (const forbidden of ["Persisted packet proposal sentinel", "finalValueHash", "sourceIds", "sourceFingerprint"]) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+  assert.deepEqual(database.audits[0].metadata, {
+    runId: RUN_ID,
+    answerId: ANSWER_ID,
+    answerPacketVersion: 3,
+    normalizedFieldKey: NORMALIZED_FIELD_KEY,
+    status: "REJECTED",
+    reviewedAt: NOW.toISOString()
+  });
 });
 
 test("answer review rejects invalid parent states, repeats, and mismatched owner/run/answer bindings", async () => {
@@ -1317,7 +1951,8 @@ test("answer review rejects invalid parent states, repeats, and mismatched owner
         userId: USER_ID,
         runId: RUN_ID,
         answerId: ANSWER_ID,
-        status: "REJECTED"
+        status: "REJECTED",
+        answerPacketVersion: 0
       }),
       (error) => assertPublicError(error, 409, "RUN_INVALID_STATE")
     );
@@ -1328,7 +1963,7 @@ test("answer review rejects invalid parent states, repeats, and mismatched owner
   repeats.answers.push(fakeAnswer({ status: "APPROVED", reviewedByUser: true, reviewedAt: NOW }));
   await assert.rejects(
     serviceFor(repeats).reviewApplicationRunAnswer({
-      userId: USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "APPROVED"
+      userId: USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "APPROVED", answerPacketVersion: 0
     }),
     (error) => assertPublicError(error, 409, "RUN_ANSWER_ALREADY_REVIEWED")
   );
@@ -1338,7 +1973,7 @@ test("answer review rejects invalid parent states, repeats, and mismatched owner
   wrongOwnerRun.answers.push(fakeAnswer());
   await assert.rejects(
     serviceFor(wrongOwnerRun).reviewApplicationRunAnswer({
-      userId: OTHER_USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "REJECTED"
+      userId: OTHER_USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "REJECTED", answerPacketVersion: 0
     }),
     (error) => assertPublicError(error, 404, "RUN_NOT_FOUND")
   );
@@ -1353,7 +1988,7 @@ test("answer review rejects invalid parent states, repeats, and mismatched owner
     }
     await assert.rejects(
       serviceFor(database).reviewApplicationRunAnswer({
-        userId: USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "REJECTED"
+        userId: USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "REJECTED", answerPacketVersion: 0
       }),
       (error) => assertPublicError(error, 404, "RUN_ANSWER_NOT_FOUND")
     );
@@ -1370,7 +2005,8 @@ test("answer review validates both IDs before Prisma and rolls back mutation whe
     await assert.rejects(serviceFor(database).reviewApplicationRunAnswer({
       userId: USER_ID,
       ...input,
-      status: "REJECTED"
+      status: "REJECTED",
+      answerPacketVersion: 0
     }));
     assert.equal(database.operations.length, 0);
   }
@@ -1381,7 +2017,7 @@ test("answer review validates both IDs before Prisma and rolls back mutation whe
   database.failAudit = true;
   await assert.rejects(
     serviceFor(database).reviewApplicationRunAnswer({
-      userId: USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "REJECTED"
+      userId: USER_ID, runId: RUN_ID, answerId: ANSWER_ID, status: "REJECTED", answerPacketVersion: 0
     }),
     /simulated audit failure/
   );
