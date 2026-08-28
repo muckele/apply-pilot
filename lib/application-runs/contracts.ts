@@ -149,6 +149,7 @@ export type ApplicationRunDto = Pick<
   | "state"
   | "stateVersion"
   | "applyHost"
+  | "applyUrlSnapshot"
   | "detectedAdapter"
   | "prepareLeaseExpiresAt"
   | "reviewReasons"

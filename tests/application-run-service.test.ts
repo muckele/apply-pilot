@@ -1006,6 +1006,7 @@ test("DRAFT creation derives owner, job, target URL, host, state, and active key
     state: "DRAFT",
     stateVersion: 0,
     applyHost: "jobs.example.com",
+    applyUrlSnapshot: "https://jobs.example.com/apply/123",
     detectedAdapter: null,
     prepareLeaseExpiresAt: null,
     reviewReasons: [],
@@ -1192,6 +1193,7 @@ test("owned run GET returns only the narrow DTO and wrong/missing users share 40
   assert.deepEqual(Object.keys(result).sort(), [
     "applicationId",
     "applyHost",
+    "applyUrlSnapshot",
     "blockingReason",
     "cancelledAt",
     "createdAt",
@@ -1207,6 +1209,7 @@ test("owned run GET returns only the narrow DTO and wrong/missing users share 40
     "stateVersion",
     "updatedAt"
   ]);
+  assert.equal(result.applyUrlSnapshot, "https://jobs.example.com/apply/123");
   for (const userId of [OTHER_USER_ID, USER_ID]) {
     const id = userId === USER_ID ? "clz8w7m9a0099qwer1234tyui" : RUN_ID;
     await assert.rejects(
@@ -1214,6 +1217,30 @@ test("owned run GET returns only the narrow DTO and wrong/missing users share 40
       (error) => assertPublicError(error, 404, "RUN_NOT_FOUND")
     );
   }
+});
+
+test("owned run GET keeps the canonical frozen target after the posting URL changes", async () => {
+  const database = new FakeApplicationRunDatabase();
+  database.applications[0].jobPosting.applyUrl =
+    "https://JOBS.example.com:443/apply/123?source=posting#frozen-authority";
+  const service = serviceFor(database);
+
+  const created = await service.createApplicationRun(USER_ID, {
+    applicationId: APPLICATION_ID,
+    idempotencyKey: "request-frozen-target"
+  });
+  database.applications[0].jobPosting.applyUrl = "https://jobs.example.com/apply/replaced";
+
+  const reread = await service.getApplicationRun(USER_ID, created.run.id);
+  assert.equal(
+    reread.applyUrlSnapshot,
+    "https://jobs.example.com/apply/123?source=posting#frozen-authority"
+  );
+  assert.notEqual(reread.applyUrlSnapshot, database.applications[0].jobPosting.applyUrl);
+  await assert.rejects(
+    service.getApplicationRun(OTHER_USER_ID, created.run.id),
+    (error) => assertPublicError(error, 404, "RUN_NOT_FOUND")
+  );
 });
 
 test("run GET validates a CUID before constructing a Prisma predicate", async () => {

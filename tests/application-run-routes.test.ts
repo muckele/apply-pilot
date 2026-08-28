@@ -45,6 +45,7 @@ function runDto() {
     state: "DRAFT" as const,
     stateVersion: 0,
     applyHost: "jobs.example.com",
+    applyUrlSnapshot: "https://jobs.example.com/apply/123#frozen-run-target",
     detectedAdapter: null,
     prepareLeaseExpiresAt: null,
     reviewReasons: [],
@@ -261,6 +262,7 @@ test("ApplicationRun POST returns 201 on creation, 200 on replay, and no-store",
 test("ApplicationRun GET validates the CUID before rate limiting or Prisma-facing service use", async () => {
   let rateCalls = 0;
   let getCalls = 0;
+  let requestedByOwner = true;
   const handlers = createApplicationRunRouteHandlers({
     requireUserId: async () => "user-1",
     checkRateLimit: async () => {
@@ -268,6 +270,9 @@ test("ApplicationRun GET validates the CUID before rate limiting or Prisma-facin
     },
     getApplicationRun: async () => {
       getCalls += 1;
+      if (!requestedByOwner) {
+        throw new PublicApiError("This application run was not found.", 404, { code: "RUN_NOT_FOUND" });
+      }
       return runDto();
     }
   });
@@ -292,6 +297,17 @@ test("ApplicationRun GET validates the CUID before rate limiting or Prisma-facin
   });
   assert.equal(rateCalls, 1);
   assert.equal(getCalls, 1);
+
+  requestedByOwner = false;
+  const notOwned = await handlers.GET(new Request(`http://localhost/api/application-runs/${RUN_ID}`), {
+    params: Promise.resolve({ id: RUN_ID })
+  });
+  assert.equal(notOwned.status, 404);
+  assert.equal(notOwned.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await notOwned.json(), {
+    error: "This application run was not found.",
+    code: "RUN_NOT_FOUND"
+  });
 });
 
 test("prepare POST rejects unauthenticated callers with no-store before validation or dispatch", async () => {
