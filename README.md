@@ -187,6 +187,8 @@ The authenticated backend includes controlled preparation, deterministic review,
 
 Employer-form inspection, browser form filling, ATS application-form adapters, and application submission are not implemented. The manual browser capture extension is a separate review-before-save workflow and does not execute controlled application runs. See [docs/CONTROLLED_APPLICATION_AUTOMATION.md](docs/CONTROLLED_APPLICATION_AUTOMATION.md) for the current capability, safety, policy, token, concurrency, and operator reference.
 
+The local B1 browser companion proves a headed Chromium lifecycle and same-origin control boundary without inspecting, filling, uploading, or submitting. See [docs/APPLICATION_BROWSER_COMPANION.md](docs/APPLICATION_BROWSER_COMPANION.md) for installation, operation, and safe-stop behavior.
+
 ## Google Sign-In Setup
 
 Create an OAuth client in Google Cloud Console:
