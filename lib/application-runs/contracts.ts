@@ -109,6 +109,15 @@ export const reviewApplicationRunAnswerBodySchema = z
   })
   .strict();
 
+export const applicationRunDocumentExportBodySchema = z
+  .object({
+    expectedStateVersion: nonnegativeSafeVersionSchema,
+    answerPacketVersion: z.number().int().safe().positive(),
+    packetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    format: z.literal("docx")
+  })
+  .strict();
+
 export const automationPolicyPatchContract = applicationAutomationPolicyPatchSchema;
 
 export type CreateApplicationRunBody = z.infer<typeof createApplicationRunBodySchema>;
@@ -120,6 +129,9 @@ export type RebuildApplicationRunAnswerPacketBody = z.infer<
 >;
 export type ResolveApplicationRunReviewBody = z.infer<typeof resolveApplicationRunReviewBodySchema>;
 export type ReviewApplicationRunAnswerBody = z.infer<typeof reviewApplicationRunAnswerBodySchema>;
+export type ApplicationRunDocumentExportBody = z.infer<
+  typeof applicationRunDocumentExportBodySchema
+>;
 
 export type AutomationPolicyValues = Pick<
   ApplicationAutomationPolicy,
