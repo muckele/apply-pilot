@@ -686,6 +686,7 @@ function assertReviewRecords(
   assert.deepEqual(jsonRecord(audit.metadata), {
     runId,
     reviewReasons: [...reasons],
+    answerPacketVersion: 0,
     previousStateVersion: 8,
     nextStateVersion: 9,
     acknowledgedAt: acknowledgedAt.toISOString()
@@ -720,8 +721,9 @@ function assertAnswerReviewRecords(
   assert.deepEqual(jsonRecord(audit.metadata), {
     runId,
     answerId,
+    answerPacketVersion: 0,
+    normalizedFieldKey: "synthetic-work-authorization",
     status: "APPROVED",
-    finalValueHashStored: true,
     reviewedAt: reviewedAt.toISOString()
   });
 }
@@ -1345,7 +1347,9 @@ test("concurrent review resolution permits exactly one REVIEW_REQUIRED to READY 
       userId: fixture.userId,
       runId,
       stateVersion: 8,
-      acknowledgedReviewReasons: [...reviewReasons]
+      acknowledgedReviewReasons: [...reviewReasons],
+      answerPacketVersion: 0,
+      packetHash: null
     };
 
     const winnerOperation = trackOperation(
@@ -1537,7 +1541,8 @@ test("concurrent opposing answer review preserves the first PENDING decision", a
         userId: fixture.userId,
         runId,
         answerId,
-        status: "APPROVED"
+        status: "APPROVED",
+        answerPacketVersion: 0
       })
     );
     await winnerMutationCompleted.wait();
@@ -1549,7 +1554,8 @@ test("concurrent opposing answer review preserves the first PENDING decision", a
         userId: fixture.userId,
         runId,
         answerId,
-        status: "REJECTED"
+        status: "REJECTED",
+        answerPacketVersion: 0
       })
     );
     await contenderRunLockAttempted.wait();
