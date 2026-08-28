@@ -1324,6 +1324,7 @@ test("same-user first preparations serialize the daily cap without oversubscript
       scenario,
       prepareB({ userId: fixture.userId, runId: runB.runId, highCostConfirmed: false })
     );
+    const operationBSettled = Promise.allSettled([operationB]);
     await bPolicyLockAttempted.wait();
     await assertObservedLockWait(scenario.observer, scenario.actorB, scenario.actorA);
 
@@ -1331,7 +1332,7 @@ test("same-user first preparations serialize the daily cap without oversubscript
     await aPlanner.called.wait();
     await assertNoIdleTransactions(scenario.observer, [scenario.actorA]);
     const bSettled = await withTimeout(
-      Promise.allSettled([operationB]),
+      operationBSettled,
       OPERATION_TIMEOUT_MS,
       "daily cap B blocked completion"
     );
@@ -1528,6 +1529,7 @@ test("a live PREPARING lease cannot be stolen by a concurrent prepare", async ()
       scenario,
       prepareB({ userId: fixture.userId, runId: run.runId, highCostConfirmed: false })
     );
+    const operationBSettled = Promise.allSettled([operationB]);
     await bPolicyLockAttempted.wait();
     await assertObservedLockWait(scenario.observer, scenario.actorB, scenario.actorA);
     assert.equal(
@@ -1549,7 +1551,7 @@ test("a live PREPARING lease cannot be stolen by a concurrent prepare", async ()
       new Date(acquireAt.getTime() + PREPARE_LEASE_MS).toISOString()
     );
     const bSettled = await withTimeout(
-      Promise.allSettled([operationB]),
+      operationBSettled,
       OPERATION_TIMEOUT_MS,
       "live lease B rejection"
     );
@@ -1702,6 +1704,7 @@ test("an expired PREPARING lease is reclaimed by exactly one concurrent actor", 
       scenario,
       prepareB({ userId: fixture.userId, runId: run.runId, highCostConfirmed: false })
     );
+    const operationBSettled = Promise.allSettled([operationB]);
     await bPolicyLockAttempted.wait();
     await assertObservedLockWait(scenario.observer, scenario.actorB, scenario.actorA);
     assert.equal(
@@ -1723,7 +1726,7 @@ test("an expired PREPARING lease is reclaimed by exactly one concurrent actor", 
       new Date(reclaimAt.getTime() + PREPARE_LEASE_MS).toISOString()
     );
     const bSettled = await withTimeout(
-      Promise.allSettled([operationB]),
+      operationBSettled,
       OPERATION_TIMEOUT_MS,
       "expired reclaim B rejection"
     );
