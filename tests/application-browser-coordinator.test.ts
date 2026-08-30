@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   ApplicationBrowserCoordinator,
+  ApplicationBrowserError,
   createSafeBrowserDiagnostic
 } from "@/lib/application-browser/coordinator";
 import {
@@ -10,6 +11,8 @@ import {
   MISSING_CHROMIUM_MESSAGE
 } from "@/lib/application-browser/browser-runtime";
 import {
+  BROWSER_INSPECTION_RECOVERABLE_CODES,
+  isB1CommandAllowed,
   parseApplyPilotOrigin,
   parseB1Command,
   parseImmutableRunId
@@ -26,6 +29,14 @@ const UNEXPECTED_B23A_CLIENT_METHODS = {
   async publishFormInspection() {
     throw new Error("unexpected form-inspection publication");
   }
+} as const;
+const NO_FORM_INSPECTION = {
+  initializeFormInspectionController() {},
+  getFormInspectionPort: () => ({
+    async inspect() { throw new Error("unexpected form inspection"); },
+    async assertCurrent() { throw new Error("unexpected currentness assertion"); },
+    currentTargetUrl: () => null
+  })
 } as const;
 
 const { parseCompanionArguments } = companionModule;
@@ -105,6 +116,7 @@ test("the B1 command parser accepts only the closed no-payload union", () => {
   assert.deepEqual(parseB1Command({ type: "GET_STATUS" }), { type: "GET_STATUS" });
   assert.deepEqual(parseB1Command({ type: "OPEN_TARGET" }), { type: "OPEN_TARGET" });
   assert.deepEqual(parseB1Command({ type: "CLOSE_WORKFLOW" }), { type: "CLOSE_WORKFLOW" });
+  assert.deepEqual(parseB1Command({ type: "INSPECT_FORM" }), { type: "INSPECT_FORM" });
 
   for (const invalid of [
     { type: "CLICK" },
@@ -117,6 +129,12 @@ test("the B1 command parser accepts only the closed no-payload union", () => {
     { type: "OPEN_TARGET", url: "https://attacker.example" },
     { type: "OPEN_TARGET", runId: "clz8w7m9a0003qwer1234tyui" },
     { type: "GET_STATUS", extra: true },
+    { type: "INSPECT_FORM", runId: RUN_ID },
+    { type: "INSPECT_FORM", url: "https://jobs.example.test/apply" },
+    { type: "INSPECT_FORM", observedUrl: "https://jobs.example.test/apply" },
+    { type: "INSPECT_FORM", expectedStateVersion: 1 },
+    { type: "INSPECT_FORM", inspectionReport: {} },
+    { type: "INSPECT_FORM", fields: [] },
     { type: 1 },
     null
   ]) {
@@ -124,10 +142,354 @@ test("the B1 command parser accepts only the closed no-payload union", () => {
   }
 });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+test("INSPECT_FORM is single-flight, privately sequenced, and publishes fresh authority", async () => {
+  const calls: string[] = [];
+  const generationId = Symbol("private-generation");
+  const report = { schemaVersion: "application-form-inspection.v1", forms: [] } as never;
+  const inspectionGate = deferred<{ generationId: symbol; inspectionReport: never }>();
+  let inspectionPort: {
+    inspect(): Promise<{ generationId: symbol; inspectionReport: never }>;
+    assertCurrent(id: symbol): Promise<{ generationId: symbol; inspectionReport: never }>;
+    currentTargetUrl(): string | null;
+  } | null = null;
+  let runRead = 0;
+  let published: Record<string, unknown> | undefined;
+  const coordinator = new ApplicationBrowserCoordinator({
+    ...NO_FORM_INSPECTION,
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      async getApplicationRun() {
+        runRead += 1;
+        calls.push(`run:${runRead}`);
+        return {
+          id: RUN_ID,
+          state: "READY",
+          stateVersion: runRead === 1 ? 7 : 8,
+          applyHost: "jobs.example.test",
+          applyUrlSnapshot: "https://jobs.example.test/apply?posting=123#fresh"
+        };
+      },
+      async getAutomationPolicy() {
+        calls.push("policy");
+        return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
+      },
+      async getCurrentAnswerPacket() {
+        calls.push("packet");
+        return { runId: RUN_ID, current: { inspectionVersion: 4, answerPacketVersion: 6 } };
+      },
+      async publishFormInspection(input: Record<string, unknown>, assertReadyToDispatch: () => void) {
+        calls.push("publish-callback");
+        assertReadyToDispatch();
+        published = input as unknown as Record<string, unknown>;
+        calls.push("publish");
+        return {
+          replayed: false,
+          run: { id: RUN_ID, state: "READY", stateVersion: 9 },
+          current: { inspectionVersion: 5, answerPacketVersion: 7 }
+        };
+      }
+    },
+    async openTarget() {
+      calls.push("open");
+      return { finalUrl: "https://jobs.example.test/apply?posting=123#opened" };
+    },
+    initializeFormInspectionController({ authoritativeApplyHost }: { authoritativeApplyHost: string }) {
+      calls.push(`initialize:${authoritativeApplyHost}`);
+      inspectionPort = {
+        async inspect() {
+          calls.push("inspect");
+          return inspectionGate.promise;
+        },
+        async assertCurrent(id) {
+          calls.push("assert-current");
+          assert.equal(id, generationId);
+          return { generationId, inspectionReport: report };
+        },
+        currentTargetUrl() {
+          return "https://jobs.example.test/apply?posting=123#current";
+        }
+      };
+    },
+    getFormInspectionPort: () => inspectionPort,
+    async closeResources() {}
+  } as never);
+
+  coordinator.markControlReady();
+  await coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  calls.length = 0;
+  runRead = 0;
+  const primary = coordinator.handleCommand({ type: "INSPECT_FORM" } as never, () => undefined);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(coordinator.status().inspection, { outcome: "IN_PROGRESS" });
+  const secondary = await coordinator.handleCommand({ type: "INSPECT_FORM" } as never, () => undefined);
+  assert.deepEqual(secondary.inspection, {
+    outcome: "FAILED",
+    errorCode: "FORM_INSPECTION_IN_PROGRESS",
+    retryAllowed: true
+  });
+  assert.deepEqual(coordinator.status().inspection, { outcome: "IN_PROGRESS" });
+
+  inspectionGate.resolve({ generationId, inspectionReport: report });
+  const result = await primary;
+  assert.deepEqual(calls, [
+    "run:1",
+    "policy",
+    "inspect",
+    "run:2",
+    "packet",
+    "policy",
+    "assert-current",
+    "publish-callback",
+    "publish"
+  ]);
+  assert.deepEqual(published, {
+    runId: RUN_ID,
+    freshRunState: "READY",
+    expectedStateVersion: 8,
+    expectedFormInspectionVersion: 4,
+    expectedAnswerPacketVersion: 6,
+    observedUrl: "https://jobs.example.test/apply?posting=123#current",
+    inspectionReport: report
+  });
+  assert.deepEqual(result.inspection, {
+    outcome: "SUCCEEDED",
+    replayed: false,
+    inspectionVersion: 5,
+    answerPacketVersion: 7,
+    reinspectionRequired: false
+  });
+  assert.equal("inspectionReport" in result, false);
+  assert.equal(JSON.stringify(result).includes("posting=123"), false);
+});
+
+test("inspection invalidation is monotonic and PAGE_CLOSED is terminal", async () => {
+  let releaseCleanup!: () => void;
+  const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+  const coordinator = new ApplicationBrowserCoordinator({
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      ...UNEXPECTED_B23A_CLIENT_METHODS,
+      async getApplicationRun() { throw new Error("unexpected"); },
+      async getAutomationPolicy() { throw new Error("unexpected"); }
+    },
+    async openTarget() { throw new Error("unexpected"); },
+    initializeFormInspectionController() {},
+    getFormInspectionPort: () => null,
+    async closeResources() { await cleanup; }
+  } as never);
+
+  coordinator.handleFormInspectionInvalidation("REINSPECTION_REQUIRED");
+  assert.equal(coordinator.status().inspection, undefined);
+  const stopping = coordinator.handleFormInspectionInvalidation("PAGE_CLOSED");
+  assert.equal(coordinator.state(), "ERROR");
+  assert.equal(coordinator.status().errorCode, "TARGET_PAGE_CLOSED");
+  coordinator.handleFormInspectionInvalidation("TARGET_NAVIGATED");
+  assert.equal(coordinator.state(), "ERROR");
+  releaseCleanup();
+  await stopping;
+  await coordinator.close();
+  assert.equal(coordinator.state(), "CLOSED");
+});
+
+test("INSPECT_FORM authorization is closed to TARGET_OPEN and recoverable codes are exact", () => {
+  for (const state of [
+    "STARTING",
+    "APPLY_PILOT_AUTH_REQUIRED",
+    "CONTROL_READY",
+    "OPENING_TARGET",
+    "ERROR",
+    "CLOSED"
+  ] as const) {
+    assert.equal(isB1CommandAllowed({ type: "INSPECT_FORM" }, state), false, state);
+  }
+  assert.equal(isB1CommandAllowed({ type: "INSPECT_FORM" }, "TARGET_OPEN"), true);
+  assert.deepEqual(BROWSER_INSPECTION_RECOVERABLE_CODES, [
+    "FORM_INSPECTION_IN_PROGRESS",
+    "FORM_STABILITY_TIMEOUT",
+    "FORM_GENERATION_INVALIDATED",
+    "FORM_CORRELATION_INVALID",
+    "AMBIGUOUS_DUPLICATE_FIELD",
+    "FORM_INSPECTION_CANCELLED",
+    "FORM_INSPECTION_REQUEST_TOO_LARGE",
+    "RUN_LIFECYCLE_STALE",
+    "RUN_DOCUMENT_STALE",
+    "SAME_ORIGIN_RATE_LIMITED",
+    "SAME_ORIGIN_REQUEST_FAILED"
+  ]);
+});
+
+function createInspectionErrorFixture(publicationError?: Error, publicationWait?: Promise<void>) {
+  const generationId = Symbol("fixture-generation");
+  let assertedGenerationId = generationId;
+  const report = { schemaVersion: "application-form-inspection.v1", forms: [] } as never;
+  let cleanupCalls = 0;
+  let publicationCalls = 0;
+  let currentUrl = "https://jobs.example.test/apply#current";
+  const port = {
+    async inspect() { return { generationId, inspectionReport: report }; },
+    async assertCurrent() { return { generationId: assertedGenerationId, inspectionReport: report }; },
+    currentTargetUrl: () => currentUrl
+  };
+  const coordinator = new ApplicationBrowserCoordinator({
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      async getApplicationRun() {
+        return { id: RUN_ID, state: "READY", stateVersion: 3, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply#fresh" };
+      },
+      async getAutomationPolicy() {
+        return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
+      },
+      async getCurrentAnswerPacket() { return { runId: RUN_ID, current: null }; },
+      async publishFormInspection(_input, assertReadyToDispatch) {
+        publicationCalls += 1;
+        assertReadyToDispatch();
+        if (publicationError) throw publicationError;
+        await publicationWait;
+        return { replayed: true, run: { id: RUN_ID, state: "READY", stateVersion: 4 }, current: { inspectionVersion: 1, answerPacketVersion: 1 } };
+      }
+    },
+    async openTarget() { return { finalUrl: "https://jobs.example.test/apply#opened" }; },
+    initializeFormInspectionController() {},
+    getFormInspectionPort: () => port,
+    async closeResources() { cleanupCalls += 1; }
+  });
+  return {
+    coordinator,
+    cleanupCalls: () => cleanupCalls,
+    publicationCalls: () => publicationCalls,
+    returnGenerationFromAssertCurrent(value: symbol) { assertedGenerationId = value; },
+    setCurrentUrl(value: string) { currentUrl = value; }
+  };
+}
+
+test("the closed recoverable error set remains TARGET_OPEN without throwing", async () => {
+  for (const code of BROWSER_INSPECTION_RECOVERABLE_CODES.slice(1)) {
+    const fixture = createInspectionErrorFixture(Object.assign(new Error("bounded failure"), { code }));
+    fixture.coordinator.markControlReady();
+    await fixture.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+    const result = await fixture.coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined);
+    assert.equal(result.state, "TARGET_OPEN", code);
+    assert.equal(result.inspection?.outcome, code === "FORM_GENERATION_INVALIDATED" ? "REINSPECTION_REQUIRED" : "FAILED", code);
+    assert.equal(result.inspection && "errorCode" in result.inspection ? result.inspection.errorCode : null, code);
+    assert.equal(fixture.cleanupCalls(), 0, code);
+  }
+});
+
+test("terminal and unknown inspection errors synchronously establish ERROR and preserve first code", async () => {
+  for (const [thrownCode, expectedCode] of [
+    ["APPLY_PILOT_AUTH_REQUIRED", "APPLY_PILOT_AUTH_REQUIRED"],
+    ["SAME_ORIGIN_REDIRECT_REJECTED", "SAME_ORIGIN_REDIRECT_REJECTED"],
+    ["CALLER_SUPPLIED_ARBITRARY_CODE", "BROWSER_WORKFLOW_FAILED"],
+    [undefined, "BROWSER_WORKFLOW_FAILED"]
+  ] as const) {
+    const error = thrownCode
+      ? Object.assign(new Error("terminal"), { code: thrownCode })
+      : new Error("unknown implementation failure");
+    const fixture = createInspectionErrorFixture(error);
+    fixture.coordinator.markControlReady();
+    await fixture.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+    await assert.rejects(
+      fixture.coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined),
+      (rejected: unknown) => {
+        assert.ok(rejected instanceof ApplicationBrowserError);
+        assert.equal(rejected.code, expectedCode);
+        assert.equal(rejected.message, "The form inspection command failed safely.");
+        assert.notEqual(rejected, error);
+        assert.doesNotMatch(rejected.message, /terminal|unknown implementation failure/);
+        return true;
+      }
+    );
+    assert.equal(fixture.coordinator.state(), "ERROR");
+    assert.equal(fixture.coordinator.status().errorCode, expectedCode);
+    assert.equal(fixture.cleanupCalls(), 1);
+    await fixture.coordinator.safeStop("LATER_ERROR");
+    assert.equal(fixture.coordinator.status().errorCode, expectedCode);
+  }
+});
+
+test("assertCurrent returning a different generation is a terminal integrity failure", async () => {
+  const fixture = createInspectionErrorFixture();
+  fixture.returnGenerationFromAssertCurrent(Symbol("impossible-returned-generation"));
+  fixture.coordinator.markControlReady();
+  await fixture.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+
+  await assert.rejects(
+    fixture.coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined),
+    (error: unknown) => {
+      assert.ok(error instanceof ApplicationBrowserError);
+      assert.equal(error.code, "BROWSER_WORKFLOW_FAILED");
+      assert.equal(error.message, "The form inspection command failed safely.");
+      return true;
+    }
+  );
+  assert.equal(fixture.publicationCalls(), 0);
+  assert.equal(fixture.coordinator.state(), "ERROR");
+  assert.equal(fixture.coordinator.status().errorCode, "BROWSER_WORKFLOW_FAILED");
+  assert.equal(fixture.coordinator.status().inspection, undefined);
+  assert.equal(fixture.cleanupCalls(), 1);
+  await assert.rejects(
+    fixture.coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined),
+    (error: unknown) => error instanceof ApplicationBrowserError && error.code === "COMMAND_NOT_ALLOWED"
+  );
+});
+
+test("target drift prevents publication and safe-stops before inspecting", async () => {
+  const fixture = createInspectionErrorFixture();
+  fixture.coordinator.markControlReady();
+  await fixture.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  fixture.setCurrentUrl("https://jobs.example.test/other?posting=changed");
+  await assert.rejects(
+    fixture.coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined),
+    (error: unknown) => error instanceof Error && "code" in error && error.code === "RUN_TARGET_STALE"
+  );
+  assert.equal(fixture.coordinator.state(), "ERROR");
+  assert.equal(fixture.publicationCalls(), 0);
+  assert.equal(fixture.cleanupCalls(), 1);
+});
+
+test("invalidation during publication wins persisted status without hiding safe replay metadata", async () => {
+  const publicationGate = deferred<void>();
+  const fixture = createInspectionErrorFixture(undefined, publicationGate.promise);
+  fixture.coordinator.markControlReady();
+  await fixture.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  const pending = fixture.coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  fixture.coordinator.handleFormInspectionInvalidation("TARGET_NAVIGATED");
+  publicationGate.resolve();
+  const result = await pending;
+  assert.deepEqual(result.inspection, {
+    outcome: "SUCCEEDED",
+    replayed: true,
+    inspectionVersion: 1,
+    answerPacketVersion: 1,
+    reinspectionRequired: true
+  });
+  assert.deepEqual(fixture.coordinator.status().inspection, {
+    outcome: "REINSPECTION_REQUIRED",
+    errorCode: "FORM_GENERATION_INVALIDATED",
+    retryAllowed: true
+  });
+});
+
 test("coordinator opens only the immutable run's frozen, policy-allowed READY target", async () => {
   const calls: string[] = [];
   let openedTarget = "";
   const coordinator = new ApplicationBrowserCoordinator({
+    ...NO_FORM_INSPECTION,
     configuredApplyPilotOrigin: APP_ORIGIN,
     immutableRunId: RUN_ID,
     client: {
@@ -199,6 +561,7 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
   for (const scenario of scenarios) {
     let openCalls = 0;
     const coordinator = new ApplicationBrowserCoordinator({
+      ...NO_FORM_INSPECTION,
       configuredApplyPilotOrigin: APP_ORIGIN,
       immutableRunId: RUN_ID,
       client: {
@@ -228,6 +591,7 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
 
   let clientCalls = 0;
   const stale = new ApplicationBrowserCoordinator({
+    ...NO_FORM_INSPECTION,
     configuredApplyPilotOrigin: APP_ORIGIN,
     immutableRunId: RUN_ID,
     client: {
@@ -258,6 +622,7 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
 test("coordinator enforces command state and idempotent close", async () => {
   let closeCalls = 0;
   const coordinator = new ApplicationBrowserCoordinator({
+    ...NO_FORM_INSPECTION,
     configuredApplyPilotOrigin: APP_ORIGIN,
     immutableRunId: RUN_ID,
     client: {

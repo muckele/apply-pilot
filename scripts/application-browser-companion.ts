@@ -8,10 +8,15 @@ import {
 } from "@/lib/application-browser/browser-runtime";
 import { installControlBridge } from "@/lib/application-browser/control-bridge";
 import {
+  createApplicationFormInspectionController,
+  type ApplicationFormInspectionController
+} from "@/lib/application-browser/form-inspection-controller";
+import {
   ApplicationBrowserError,
   ApplicationBrowserCoordinator,
   createPlaywrightTargetController,
-  createSafeBrowserDiagnostic
+  createSafeBrowserDiagnostic,
+  type FormInspectionPort
 } from "@/lib/application-browser/coordinator";
 import { createSameOriginClient } from "@/lib/application-browser/same-origin-client";
 import { parseApplyPilotOrigin, parseImmutableRunId } from "@/lib/application-browser/types";
@@ -39,6 +44,7 @@ type CompanionDependencies = Readonly<{
   launchRuntime(): Promise<ApplicationBrowserRuntime>;
   createClient: typeof createSameOriginClient;
   createTargetController: typeof createPlaywrightTargetController;
+  createFormInspectionController: typeof createApplicationFormInspectionController;
   installBridge: typeof installControlBridge;
   writeOutput(message: string): void;
 }>;
@@ -47,6 +53,7 @@ const productionDependencies: CompanionDependencies = {
   launchRuntime: launchApplicationBrowserRuntime,
   createClient: createSameOriginClient,
   createTargetController: createPlaywrightTargetController,
+  createFormInspectionController: createApplicationFormInspectionController,
   installBridge: installControlBridge,
   writeOutput(message) {
     process.stdout.write(message);
@@ -68,15 +75,23 @@ export async function runApplicationBrowserCompanion(
   const context = runtime.context as BrowserContext;
   const controlPage = runtime.controlPage as Page;
   let targetController: ReturnType<typeof createPlaywrightTargetController> | null = null;
+  let ownedEmployerPage: Page | null = null;
+  let formInspectionController: ApplicationFormInspectionController | null = null;
+  let formInspectionPort: FormInspectionPort | null = null;
   let closeOwnedResourcesPromise: Promise<void> | null = null;
   const closeOwnedResources = (): Promise<void> => {
     if (closeOwnedResourcesPromise) return closeOwnedResourcesPromise;
     closeOwnedResourcesPromise = (async () => {
       let firstError: unknown;
       try {
-        await targetController?.close();
+        await formInspectionController?.close();
       } catch (error) {
         firstError = error;
+      }
+      try {
+        await targetController?.close();
+      } catch (error) {
+        firstError ??= error;
       }
       try {
         await runtime.close();
@@ -108,6 +123,55 @@ export async function runApplicationBrowserCompanion(
       ...identity,
       client,
       openTarget: (target, assertActive) => createdTargetController.open(target, assertActive),
+      initializeFormInspectionController: ({ authoritativeApplyHost }) => {
+        if (ownedEmployerPage || formInspectionController || formInspectionPort) {
+          throw new ApplicationBrowserError(
+            "The form inspection controller is already initialized.",
+            "BROWSER_WORKFLOW_FAILED"
+          );
+        }
+        const page = createdTargetController.page();
+        if (!page || page.isClosed()) {
+          throw new ApplicationBrowserError(
+            "The exact employer page is unavailable.",
+            "TARGET_PAGE_CLOSED"
+          );
+        }
+        ownedEmployerPage = page;
+        const controller = dependencies.createFormInspectionController({
+          page,
+          authoritativeApplyHost,
+          onInvalidated: (code) => {
+            void coordinator.handleFormInspectionInvalidation(code);
+          }
+        });
+        formInspectionController = controller;
+        formInspectionPort = Object.freeze({
+          async inspect() {
+            const generation = await controller.inspect();
+            return Object.freeze({
+              generationId: generation.generationId,
+              inspectionReport: generation.inspectionReport
+            });
+          },
+          async assertCurrent(generationId: symbol) {
+            const generation = await controller.assertCurrent(generationId);
+            return Object.freeze({
+              generationId: generation.generationId,
+              inspectionReport: generation.inspectionReport
+            });
+          },
+          currentTargetUrl() {
+            if (
+              !ownedEmployerPage ||
+              createdTargetController.page() !== ownedEmployerPage ||
+              ownedEmployerPage.isClosed()
+            ) return null;
+            return ownedEmployerPage.url();
+          }
+        });
+      },
+      getFormInspectionPort: () => formInspectionPort,
       closeResources: closeOwnedResources,
       onClosed: resolveClosed
     });
