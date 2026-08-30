@@ -27,7 +27,7 @@ export default async function ApplicationBrowserPage({ params }: Props) {
     <>
       <PageHeader
         title="Local application browser"
-        description="Control the bounded B1 browser workflow from this authenticated, run-owned page."
+        description="Inspect the frozen employer form and review the resulting answer packet from this authenticated, run-owned page."
       />
       <Panel>
         <PanelHeader

@@ -185,9 +185,9 @@ For the Google billing backstop, use a $10 prepaid balance, leave automatic relo
 
 The authenticated backend includes controlled preparation, deterministic review, cancellation, audit, and execution-token foundations. `PREPARE_ONLY` is the only current policy mode, and `APPLICATION_READ` is the only execution-token scope that can currently be issued.
 
-Employer-form inspection, browser form filling, ATS application-form adapters, and application submission are not implemented. The manual browser capture extension is a separate review-before-save workflow and does not execute controlled application runs. See [docs/CONTROLLED_APPLICATION_AUTOMATION.md](docs/CONTROLLED_APPLICATION_AUTOMATION.md) for the current capability, safety, policy, token, concurrency, and operator reference.
+The local companion can explicitly inspect the frozen anonymous employer form, publish or replay the correlated inspection, and let the authenticated run-owned page present the current answer packet read only. Packet content remains outside the status-only browser binding. Browser form filling, employer uploads or clicks, ATS application-form adapters, answer-review mutation, application submission, and auto-submit are not implemented. The manual browser capture extension remains a separate review-before-save workflow. See [docs/CONTROLLED_APPLICATION_AUTOMATION.md](docs/CONTROLLED_APPLICATION_AUTOMATION.md) for the current capability, safety, policy, token, concurrency, and operator reference.
 
-The local B1 browser companion proves a headed Chromium lifecycle and same-origin control boundary without inspecting, filling, uploading, or submitting. See [docs/APPLICATION_BROWSER_COMPANION.md](docs/APPLICATION_BROWSER_COMPANION.md) for installation, operation, and safe-stop behavior.
+The headed local browser companion uses the authenticated same-origin control route for `OPEN_TARGET`, payload-free `INSPECT_FORM`, progress and safe retry outcomes, material publication or replay, reinspection-required handling, and authenticated packet reading. It never fills employer fields, uploads documents, clicks employer controls, submits, or auto-submits. See [docs/APPLICATION_BROWSER_COMPANION.md](docs/APPLICATION_BROWSER_COMPANION.md) for launch, operation, privacy, and safe-stop behavior.
 
 ## Google Sign-In Setup
 

@@ -11,8 +11,9 @@ The current capability is deliberately narrow:
 - `PREPARE_ONLY` is the only `AutomationMode`.
 - `APPLICATION_READ` is the only execution-token scope that can be issued.
 - The per-user policy has an authenticated API at `/api/application-automation-policy`; there is no user-facing policy-management UI.
-- Preparation produces an evidence-grounded advisory plan and review state. It does not inspect or operate an employer form.
-- Browser/form execution and application submission are not implemented.
+- Preparation produces an evidence-grounded advisory plan and review state.
+- The local browser companion can open a frozen anonymous employer target, inspect its visible form on explicit request, publish or replay the correlated inspection, and present the authenticated owner-scoped answer packet read only.
+- Browser form filling, employer-control operation, document upload, and application submission are not implemented.
 
 This is not a completed Human-Submit workflow. Forward-compatible schema names do not make future execution behavior operational.
 
@@ -25,9 +26,10 @@ The current system has:
 - no CAPTCHA bypass;
 - no anti-bot evasion;
 - no automation against statically restricted job boards;
-- no employer application-form inspection;
-- no live-form answer packet;
+- bounded employer application-form inspection only after an explicit `INSPECT_FORM` command;
+- authenticated, owner-scoped read-only presentation of the published answer packet;
 - no browser form fill;
+- no employer document upload or employer-control clicking;
 - no Greenhouse application-form adapter;
 - no generic ATS application-form adapter;
 - no automated application submission or auto-submit; and
@@ -36,6 +38,14 @@ The current system has:
 The existing Greenhouse integration under `lib/job-sources/greenhouse.ts` is for job discovery. A future Greenhouse application-form adapter would be a separate capability requiring its own design, safety review, and implementation.
 
 The manual browser capture extension is also separate. It performs a user-initiated, review-before-save capture workflow with its own credentials; it does not execute an ApplicationRun, fill a form, or submit an application.
+
+### Browser inspection and answer-packet presentation
+
+Start the headed local companion with the canonical Apply Pilot origin and immutable run ID, then use the authenticated route `/application-runs/<run-id>/browser`. `OPEN_TARGET` opens only the frozen anonymous employer URL. Once the workflow reaches `TARGET_OPEN`, the user may explicitly invoke payload-free `INSPECT_FORM` and see bounded progress.
+
+A successful material inspection publishes a new current packet version; a replay confirms that the verified inspection already matches the current packet without creating another version. A changed form produces reinspection-required and marks the prior displayed packet stale. Recoverable outcomes provide bounded retry or manual-handling guidance. Connection and command rejection preserve the last authoritative browser status and stop safely.
+
+The control binding remains status-only. Packet contents are read separately through the authenticated owner-scoped answer-packet API and displayed read only, including version metadata, summary counts, questions, proposed values, manual/excluded/unsupported outcomes, review status, and freshness. The page does not mutate answer review, resolve run review, transition the run, fill fields, upload documents, click employer controls, or submit. No execution token or browser bearer token is required for this authenticated packet read.
 
 ## Control planes
 
@@ -104,7 +114,7 @@ Those persisted changes remain effective after global re-enablement.
 | `blockedHosts` | `[]` | At most 50 canonical hostname entries; each input entry is at most 253 characters | Applied during preparation and issuance. Blocking wins. |
 | `permittedAdapters` | `[]` | At most 25 values matching `[a-z0-9-]{1,64}` | Persisted and snapshotted; no executable form-adapter path exists today. |
 | `coverLetterRequired` | `true` | Boolean | Preparation requires a selectable cover letter when true. |
-| `sensitiveAnswerPolicy` | `EXCLUDE` | `EXCLUDE` only | Persisted and snapshotted; no live-form answer generation exists today. |
+| `sensitiveAnswerPolicy` | `EXCLUDE` | `EXCLUDE` only | Persisted and snapshotted; sensitive fields remain excluded from proposed answers. |
 | `finalReviewRequired` | `true` | Only `true` is accepted | Persisted, snapshotted, and cannot be disabled. Current successful state is driven by deterministic review reasons, not by a generic always-`REVIEW_REQUIRED` branch. |
 
 ### Missing policy and PATCH lifecycle
@@ -330,7 +340,7 @@ CI has a separate PostgreSQL concurrency job using Node.js 24 and PostgreSQL 16.
 - Remember that the global pause is not persistent revocation.
 - Use real policy changes, cancellation, replacement, or explicit revocation when durable invalidation is required.
 - Keep AI provider credentials server-only.
-- Keep browser form operation and submission unavailable; those capabilities do not exist today.
+- Keep employer-form writing, uploads, control clicking, and submission unavailable; those capabilities do not exist today.
 
 ## Roadmap-only work
 
