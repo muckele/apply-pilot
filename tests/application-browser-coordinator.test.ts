@@ -19,6 +19,14 @@ import * as companionModule from "@/scripts/application-browser-companion";
 const RUN_ID = "clz8w7m9a0002qwer1234tyui";
 const APP_ORIGIN = "https://apply.example.com";
 const CONTROL_URL = `${APP_ORIGIN}/application-runs/${RUN_ID}/browser`;
+const UNEXPECTED_B23A_CLIENT_METHODS = {
+  async getCurrentAnswerPacket() {
+    throw new Error("unexpected answer-packet read");
+  },
+  async publishFormInspection() {
+    throw new Error("unexpected form-inspection publication");
+  }
+} as const;
 
 const { parseCompanionArguments } = companionModule;
 
@@ -123,11 +131,13 @@ test("coordinator opens only the immutable run's frozen, policy-allowed READY ta
     configuredApplyPilotOrigin: APP_ORIGIN,
     immutableRunId: RUN_ID,
     client: {
+      ...UNEXPECTED_B23A_CLIENT_METHODS,
       async getApplicationRun(runId) {
         calls.push(`run:${runId}`);
         return {
           id: RUN_ID,
           state: "READY",
+          stateVersion: 0,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: "https://jobs.example.test/apply?posting=123#intro"
         };
@@ -168,19 +178,19 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
   const scenarios = [
     {
       name: "alternate run",
-      run: { id: "clz8w7m9a0003qwer1234tyui", state: "READY", applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
+      run: { id: "clz8w7m9a0003qwer1234tyui", state: "READY", stateVersion: 0, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
       policy: { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] },
       code: "RUN_IDENTITY_MISMATCH"
     },
     {
       name: "invalid state",
-      run: { id: RUN_ID, state: "DRAFT", applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
+      run: { id: RUN_ID, state: "DRAFT", stateVersion: 0, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
       policy: { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] },
       code: "RUN_INVALID_STATE"
     },
     {
       name: "disabled policy",
-      run: { id: RUN_ID, state: "READY", applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
+      run: { id: RUN_ID, state: "READY", stateVersion: 0, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
       policy: { effectiveEnabled: false, allowedHosts: ["jobs.example.test"], blockedHosts: [] },
       code: "AUTOMATION_DISABLED"
     }
@@ -192,6 +202,7 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
       configuredApplyPilotOrigin: APP_ORIGIN,
       immutableRunId: RUN_ID,
       client: {
+        ...UNEXPECTED_B23A_CLIENT_METHODS,
         async getApplicationRun() {
           return scenario.run;
         },
@@ -220,6 +231,7 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
     configuredApplyPilotOrigin: APP_ORIGIN,
     immutableRunId: RUN_ID,
     client: {
+      ...UNEXPECTED_B23A_CLIENT_METHODS,
       async getApplicationRun() {
         clientCalls += 1;
         throw new Error("unexpected");
@@ -249,6 +261,7 @@ test("coordinator enforces command state and idempotent close", async () => {
     configuredApplyPilotOrigin: APP_ORIGIN,
     immutableRunId: RUN_ID,
     client: {
+      ...UNEXPECTED_B23A_CLIENT_METHODS,
       async getApplicationRun() {
         throw new Error("unexpected");
       },
@@ -344,6 +357,7 @@ test("companion closes the target controller and runtime when control navigation
         };
       },
       createClient: () => ({
+        ...UNEXPECTED_B23A_CLIENT_METHODS,
         async getApplicationRun() { throw new Error("unexpected owner read"); },
         async getAutomationPolicy() { throw new Error("unexpected policy read"); }
       }),
@@ -395,6 +409,7 @@ test("companion proves run ownership before installing a bridge on an exact cont
         };
       },
       createClient: () => ({
+        ...UNEXPECTED_B23A_CLIENT_METHODS,
         async getApplicationRun(runId: string) {
           calls.push(`owner:${runId}`);
           throw ownerFailure;

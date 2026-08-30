@@ -45,6 +45,7 @@ export async function startBrowserFixtureServers() {
         run: {
           id: BROWSER_SMOKE_RUN_ID,
           state: "READY",
+          stateVersion: 0,
           applyHost: "employer.example.test",
           applyUrlSnapshot: SYNTHETIC_EMPLOYER_URL
         }
