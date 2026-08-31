@@ -7,16 +7,23 @@ import {
   applyAuthoritativeBrowserStatus,
   bindingRejectionPlan,
   browserCommandAvailability,
+  buildAnswerReviewRequest,
   derivePacketFreshness,
   dispositionMessage,
+  isAnswerReviewEligible,
+  isAnswerReviewPostconditionCurrent,
+  parseApplicationRunReviewResponse,
   parseAnswerPacketResponse,
+  parseAnswerReviewResponse,
   presentProposal,
   readinessMessage,
   shouldOfferRetryConnection,
+  type AnswerReviewMutationSnapshot,
   type AnswerPacket,
   type CommandNotice,
   type ControlConnection,
   type PacketFreshness,
+  type PendingReviewMutation,
   type PendingBrowserCommand
 } from "@/lib/application-browser/control-presentation";
 import {
@@ -30,25 +37,29 @@ type ControlWindow = Window & {
   [APPLICATION_BROWSER_BINDING_NAME]?: (command: B1Command) => Promise<B1Status>;
 };
 
-type PacketLoad = {
+type ReviewLoad = {
   phase: "idle" | "loading" | "loaded" | "error";
+  run: import("@/lib/application-browser/control-presentation").ReviewRunAuthority | null;
   packet: AnswerPacket | null;
   latestResponseWasNull: boolean;
   unverified: boolean;
-  notice: string | null;
+  notice: CommandNotice | null;
 };
 
-const initialPacketLoad: PacketLoad = {
+type ReviewAuthorityRefreshResult =
+  | Readonly<{ outcome: "COMMITTED" }>
+  | Readonly<{ outcome: "FAILED" }>
+  | Readonly<{ outcome: "SUPERSEDED" }>
+  | Readonly<{ outcome: "INACTIVE" }>;
+
+const initialReviewLoad: ReviewLoad = {
   phase: "idle",
+  run: null,
   packet: null,
   latestResponseWasNull: false,
   unverified: false,
   notice: null
 };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function noticeClass(tone: CommandNotice["tone"]): string {
   if (tone === "SUCCESS") return "bg-emerald-50 text-emerald-800";
@@ -95,131 +106,124 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     tone: "INFO",
     text: "Start the local companion, then refresh status."
   });
-  const [packetLoad, setPacketLoad] = useState<PacketLoad>(initialPacketLoad);
+  const [reviewLoad, setReviewLoad] = useState<ReviewLoad>(initialReviewLoad);
+  const [pendingReviewMutation, setPendingReviewMutation] = useState<PendingReviewMutation>(null);
   const [lastAcceptedInspection, setLastAcceptedInspection] = useState<B2InspectionCommandStatus | null>(null);
   const [formInvalidatedSinceVerifiedSuccess, setFormInvalidatedSinceVerifiedSuccess] = useState(false);
 
   const statusRef = useRef(status);
-  const packetLoadRef = useRef(packetLoad);
+  const reviewLoadRef = useRef(reviewLoad);
   const formInvalidatedRef = useRef(formInvalidatedSinceVerifiedSuccess);
-  const packetRequestSequenceRef = useRef(0);
-  const packetAbortControllerRef = useRef<AbortController | null>(null);
+  const reviewRequestSequenceRef = useRef(0);
+  const reviewAbortControllerRef = useRef<AbortController | null>(null);
+  const pendingReviewMutationRef = useRef<PendingReviewMutation>(null);
+  const mutationAbortControllerRef = useRef<AbortController | null>(null);
   const lastAutoRefreshAttemptKeyRef = useRef<string | null>(null);
   const componentGenerationRef = useRef(0);
   const activeComponentGenerationRef = useRef<number | null>(null);
 
-  const updatePacketLoad = useCallback((update: (current: PacketLoad) => PacketLoad) => {
-    setPacketLoad((current) => {
-      const next = update(current);
-      packetLoadRef.current = next;
-      return next;
-    });
+  const updateReviewLoad = useCallback((update: (current: ReviewLoad) => ReviewLoad) => {
+    const next = update(reviewLoadRef.current);
+    reviewLoadRef.current = next;
+    setReviewLoad(next);
   }, []);
 
-  const fetchPacket = useCallback(async (expectedGeneration = activeComponentGenerationRef.current) => {
-    if (
-      expectedGeneration === null ||
-      activeComponentGenerationRef.current !== expectedGeneration
-    ) {
-      return;
+  const invalidateReviewAuthority = useCallback(() => {
+    reviewRequestSequenceRef.current += 1;
+    reviewAbortControllerRef.current?.abort();
+    reviewAbortControllerRef.current = null;
+  }, []);
+
+  const fetchReviewAuthority = useCallback(async (
+    expectedGeneration = activeComponentGenerationRef.current
+  ): Promise<ReviewAuthorityRefreshResult> => {
+    if (expectedGeneration === null || activeComponentGenerationRef.current !== expectedGeneration) {
+      return { outcome: "INACTIVE" };
     }
-    packetAbortControllerRef.current?.abort();
-    const requestId = packetRequestSequenceRef.current + 1;
-    packetRequestSequenceRef.current = requestId;
+    reviewAbortControllerRef.current?.abort();
+    const requestId = reviewRequestSequenceRef.current + 1;
+    reviewRequestSequenceRef.current = requestId;
     const controller = new AbortController();
-    packetAbortControllerRef.current = controller;
-    const isCurrent = () =>
-      activeComponentGenerationRef.current === expectedGeneration &&
-      packetRequestSequenceRef.current === requestId &&
-      !controller.signal.aborted;
+    reviewAbortControllerRef.current = controller;
+    const resultForInactiveOrSuperseded = (): ReviewAuthorityRefreshResult | null => {
+      if (activeComponentGenerationRef.current !== expectedGeneration) return { outcome: "INACTIVE" };
+      if (reviewRequestSequenceRef.current !== requestId || controller.signal.aborted) return { outcome: "SUPERSEDED" };
+      return null;
+    };
+    const currentResult = resultForInactiveOrSuperseded();
+    if (currentResult !== null) return currentResult;
 
-    updatePacketLoad((current) => ({ ...current, phase: "loading", notice: null }));
+    updateReviewLoad((current) => ({ ...current, phase: "loading", unverified: true, notice: null }));
+    const fail = (notice: CommandNotice, clear = false): ReviewAuthorityRefreshResult => {
+      const result = resultForInactiveOrSuperseded();
+      if (result !== null) return result;
+      updateReviewLoad((current) => clear
+        ? { phase: "error", run: null, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        : { ...current, phase: "error", unverified: true, notice }
+      );
+      return { outcome: "FAILED" };
+    };
     try {
-      const response = await fetch(`/api/application-runs/${encodeURIComponent(runId)}/answer-packet`, {
-        cache: "no-store",
-        signal: controller.signal
-      });
-      if (!isCurrent()) return;
-
-      if (!response.ok) {
-        if (response.status === 401 || response.status === 403 || response.status === 404) {
-          const notice = response.status === 401
-            ? "Your session is no longer authenticated. Sign in again to read this answer packet."
-            : response.status === 403
-              ? "You are not authorized to read this answer packet."
-              : "This application run or answer packet is unavailable.";
-          updatePacketLoad(() => ({
-            phase: "error",
-            packet: null,
-            latestResponseWasNull: false,
-            unverified: true,
-            notice
-          }));
-          return;
-        }
-        const notice = response.status === 429
-          ? "Answer packet reads are temporarily limited. Wait a moment, then refresh the packet."
-          : response.status >= 500
-            ? "The answer packet is temporarily unavailable. Try refreshing it again."
-            : "The answer packet could not be refreshed safely. The displayed packet is unverified.";
-        updatePacketLoad((current) => ({ ...current, phase: "error", unverified: true, notice }));
-        return;
+      const [runResult, packetResult] = await Promise.allSettled([
+        fetch(`/api/application-runs/${encodeURIComponent(runId)}`, { cache: "no-store", signal: controller.signal }),
+        fetch(`/api/application-runs/${encodeURIComponent(runId)}/answer-packet`, { cache: "no-store", signal: controller.signal })
+      ]);
+      const afterResponses = resultForInactiveOrSuperseded();
+      if (afterResponses !== null) return afterResponses;
+      const runResponse = runResult.status === "fulfilled" ? runResult.value : null;
+      const packetResponse = packetResult.status === "fulfilled" ? packetResult.value : null;
+      const fulfilledResponses = [runResponse, packetResponse].filter((response): response is Response => response !== null);
+      const authFailure = fulfilledResponses.find((response) =>
+        !response.ok && (response.status === 401 || response.status === 403 || response.status === 404)
+      );
+      if (authFailure !== undefined) {
+        if (authFailure.status === 401) return fail({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read review data." }, true);
+        if (authFailure.status === 403) return fail({ tone: "ERROR", text: "You are not authorized to read review data for this application run." }, true);
+        return fail({ tone: "ERROR", text: "This application run or answer packet is unavailable." }, true);
       }
-
-      let value: unknown;
+      if (runResponse === null || packetResponse === null) {
+        return fail({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
+      }
+      const failedResponses = [runResponse, packetResponse].filter((response) => !response.ok);
+      const failedResponse = failedResponses[0] ?? null;
+      if (failedResponse !== null) {
+        const status = failedResponse.status;
+        if (status === 401) return fail({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read review data." }, true);
+        if (status === 403) return fail({ tone: "ERROR", text: "You are not authorized to read review data for this application run." }, true);
+        if (status === 404) return fail({ tone: "ERROR", text: "This application run or answer packet is unavailable." }, true);
+        if (status === 429) return fail({ tone: "WARNING", text: "Review data reads are temporarily limited. Wait a moment, then refresh review data." });
+        return fail({ tone: "ERROR", text: "Review data is temporarily unavailable. Refresh review data before another action." });
+      }
+      let runValue: unknown;
+      let packetValue: unknown;
       try {
-        value = await response.json();
+        [runValue, packetValue] = await Promise.all([runResponse.json(), packetResponse.json()]);
       } catch {
-        if (!isCurrent()) return;
-        updatePacketLoad((current) => ({
-          ...current,
-          phase: "error",
-          unverified: true,
-          notice: "Apply Pilot could not safely read the answer packet response."
-        }));
-        return;
+        return fail({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
       }
-      if (!isCurrent()) return;
-
-      if (isRecord(value) && typeof value.runId === "string" && value.runId !== runId) {
-        updatePacketLoad((current) => ({
-          ...current,
-          phase: "error",
-          unverified: true,
-          notice: "The answer packet response did not match this application run."
-        }));
-        return;
-      }
-
+      const afterJson = resultForInactiveOrSuperseded();
+      if (afterJson !== null) return afterJson;
       try {
-        const parsed = parseAnswerPacketResponse(value, runId);
-        if (!isCurrent()) return;
-        updatePacketLoad(() => ({
+        const run = parseApplicationRunReviewResponse(runValue, runId);
+        const packet = parseAnswerPacketResponse(packetValue, runId).current;
+        const afterParse = resultForInactiveOrSuperseded();
+        if (afterParse !== null) return afterParse;
+        updateReviewLoad(() => ({
           phase: "loaded",
-          packet: parsed.current,
-          latestResponseWasNull: parsed.current === null,
+          run,
+          packet,
+          latestResponseWasNull: packet === null,
           unverified: false,
-          notice: parsed.current === null ? "No current answer packet has been published yet." : null
+          notice: packet === null ? { tone: "INFO", text: "No current answer packet has been published yet." } : null
         }));
+        return { outcome: "COMMITTED" };
       } catch {
-        if (!isCurrent()) return;
-        updatePacketLoad((current) => ({
-          ...current,
-          phase: "error",
-          unverified: true,
-          notice: "Apply Pilot could not safely read the answer packet response."
-        }));
+        return fail({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
       }
     } catch {
-      if (!isCurrent()) return;
-      updatePacketLoad((current) => ({
-        ...current,
-        phase: "error",
-        unverified: true,
-        notice: "Apply Pilot could not reach the answer packet service. Check the connection and try again."
-      }));
+      return fail({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
     }
-  }, [runId, updatePacketLoad]);
+  }, [runId, updateReviewLoad]);
 
   const acceptAuthoritativeStatus = useCallback((value: unknown, expectedGeneration: number) => {
     if (activeComponentGenerationRef.current !== expectedGeneration) {
@@ -246,21 +250,22 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
 
     const refreshKey = result.automaticPacketRefreshKey;
     if (refreshKey !== null) {
-      const displayed = packetLoadRef.current.packet;
+      const authority = reviewLoadRef.current;
+      const displayed = authority.packet;
       const matches = displayed !== null && `${displayed.inspectionVersion}:${displayed.answerPacketVersion}` === refreshKey;
+      const trustedMatch = matches && authority.phase === "loaded" && !authority.unverified;
+      const needsTrustRestoration = authority.unverified || authority.phase === "error";
       if (
-        matches &&
-        packetLoadRef.current.phase === "loaded" &&
-        packetLoadRef.current.notice === null
+        !trustedMatch &&
+        (lastAutoRefreshAttemptKeyRef.current !== refreshKey ||
+          (needsTrustRestoration && authority.phase !== "loading"))
       ) {
-        updatePacketLoad((current) => ({ ...current, unverified: false }));
-      } else if (lastAutoRefreshAttemptKeyRef.current !== refreshKey) {
         lastAutoRefreshAttemptKeyRef.current = refreshKey;
-        void fetchPacket(expectedGeneration);
+        void fetchReviewAuthority(expectedGeneration);
       }
     }
     return { active: true, accepted: true, suppliedNotice: result.notice !== null };
-  }, [fetchPacket, runId, updatePacketLoad]);
+  }, [fetchReviewAuthority, runId]);
 
   const invoke = useCallback(async (command: B1Command) => {
     const expectedGeneration = activeComponentGenerationRef.current;
@@ -301,9 +306,9 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
       } catch {
         if (activeComponentGenerationRef.current !== expectedGeneration) return;
         const freshness = derivePacketFreshness({
-          packet: packetLoadRef.current.packet,
-          latestPacketResponseWasNull: packetLoadRef.current.latestResponseWasNull,
-          packetLoadUnverified: packetLoadRef.current.unverified,
+          packet: reviewLoadRef.current.packet,
+          latestPacketResponseWasNull: reviewLoadRef.current.latestResponseWasNull,
+          packetLoadUnverified: reviewLoadRef.current.unverified,
           connection: controlConnection,
           workflowState: statusRef.current.state,
           lastAcceptedInspection,
@@ -319,7 +324,12 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
               : "The close command stopped safely. Browser status was checked once.";
         setCommandNotice({ tone: "WARNING", text });
         if (plan.packetTrust === "UNVERIFIED") {
-          updatePacketLoad((current) => ({ ...current, unverified: true }));
+          invalidateReviewAuthority();
+          updateReviewLoad((current) => ({
+            ...current,
+            phase: current.phase === "loading" ? "error" : current.phase,
+            unverified: true
+          }));
         }
         if (!plan.recoverWithGetStatus) {
           setControlConnection(plan.connection);
@@ -341,33 +351,145 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
         setPendingCommand(null);
       }
     }
-  }, [acceptAuthoritativeStatus, controlConnection, lastAcceptedInspection, updatePacketLoad]);
+  }, [acceptAuthoritativeStatus, controlConnection, invalidateReviewAuthority, lastAcceptedInspection, updateReviewLoad]);
+
+  const reviewAnswer = useCallback(async (
+    answer: AnswerPacket["answers"][number],
+    status: "APPROVED" | "REJECTED"
+  ) => {
+    const current = reviewLoadRef.current;
+    const currentAnswer = current.packet?.answers.find((entry) => entry.id === answer.id);
+    if (
+      pendingReviewMutationRef.current !== null ||
+      current.phase !== "loaded" ||
+      current.unverified ||
+      current.packet === null ||
+      currentAnswer !== answer ||
+      !isAnswerReviewEligible(currentAnswer)
+    ) return;
+    const expectedGeneration = activeComponentGenerationRef.current;
+    if (expectedGeneration === null) return;
+
+    const mutation: Exclude<PendingReviewMutation, null> = { type: "ANSWER", answerId: currentAnswer.id, status };
+    const snapshot: AnswerReviewMutationSnapshot = {
+      answerId: currentAnswer.id,
+      requestedStatus: status,
+      answerPacketVersion: current.packet.answerPacketVersion
+    };
+    pendingReviewMutationRef.current = mutation;
+    setPendingReviewMutation(mutation);
+    const controller = new AbortController();
+    mutationAbortControllerRef.current = controller;
+    const active = () => activeComponentGenerationRef.current === expectedGeneration;
+    const markUnverified = (notice: CommandNotice, clear = false) => {
+      if (!active()) return;
+      invalidateReviewAuthority();
+      updateReviewLoad((loaded) => clear
+        ? { phase: "error", run: null, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        : { ...loaded, phase: "error", unverified: true, notice }
+      );
+    };
+    try {
+      const request = buildAnswerReviewRequest({
+        runId,
+        answerId: snapshot.answerId,
+        answerPacketVersion: snapshot.answerPacketVersion,
+        status: snapshot.requestedStatus
+      });
+      const response = await fetch(request.url, { ...request.init, signal: controller.signal });
+      if (!active()) return;
+      if (response.status === 409) {
+        const conflictNotice: CommandNotice = {
+          tone: "WARNING",
+          text: "Review authority changed. Refreshing current review data."
+        };
+        markUnverified(conflictNotice);
+        const recovery = await fetchReviewAuthority(expectedGeneration);
+        if (active() && recovery.outcome === "COMMITTED") {
+          updateReviewLoad((loaded) => ({ ...loaded, notice: conflictNotice }));
+        }
+        return;
+      }
+      if (!response.ok) {
+        if (response.status === 401) markUnverified({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to review answers." }, true);
+        else if (response.status === 403) markUnverified({ tone: "ERROR", text: "You are not authorized to review this answer." }, true);
+        else if (response.status === 404) markUnverified({ tone: "ERROR", text: "This application run or answer is unavailable." }, true);
+        else if (response.status === 429) markUnverified({ tone: "WARNING", text: "Review actions are temporarily limited. Wait before refreshing review data." });
+        else markUnverified({ tone: "ERROR", text: "The review action outcome is unverified. Refresh review data before another action." });
+        return;
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
+        return;
+      }
+      if (!active()) return;
+      try {
+        parseAnswerReviewResponse(value, { runId, answerId: snapshot.answerId, status: snapshot.requestedStatus });
+      } catch {
+        markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
+        return;
+      }
+      const refreshResult = await fetchReviewAuthority(expectedGeneration);
+      if (!active() || refreshResult.outcome !== "COMMITTED") return;
+      const refreshed = reviewLoadRef.current;
+      if (isAnswerReviewPostconditionCurrent({
+        phase: refreshed.phase,
+        unverified: refreshed.unverified,
+        packet: refreshed.packet,
+        snapshot
+      })) {
+        updateReviewLoad((loaded) => ({
+          ...loaded,
+          notice: { tone: "SUCCESS", text: status === "APPROVED" ? "Answer approved." : "Answer rejected." }
+        }));
+      } else {
+        updateReviewLoad((loaded) => ({
+          ...loaded,
+          notice: { tone: "WARNING", text: "Review data changed after the action. Review the current packet before continuing." }
+        }));
+      }
+    } catch {
+      if (active()) markUnverified({ tone: "ERROR", text: "The review action outcome is unverified. Refresh review data before another action." });
+    } finally {
+      if (activeComponentGenerationRef.current === expectedGeneration && pendingReviewMutationRef.current === mutation) {
+        pendingReviewMutationRef.current = null;
+        setPendingReviewMutation(null);
+      }
+      if (mutationAbortControllerRef.current === controller) mutationAbortControllerRef.current = null;
+    }
+  }, [fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
 
   useEffect(() => {
     const generation = componentGenerationRef.current + 1;
     componentGenerationRef.current = generation;
     activeComponentGenerationRef.current = generation;
-    void fetchPacket(generation);
+    void fetchReviewAuthority(generation);
     return () => {
       if (activeComponentGenerationRef.current === generation) {
         activeComponentGenerationRef.current = null;
       }
       componentGenerationRef.current += 1;
-      packetRequestSequenceRef.current += 1;
-      packetAbortControllerRef.current?.abort();
+      pendingReviewMutationRef.current = null;
+      mutationAbortControllerRef.current?.abort();
+      mutationAbortControllerRef.current = null;
+      reviewRequestSequenceRef.current += 1;
+      reviewAbortControllerRef.current?.abort();
     };
-  }, [fetchPacket]);
+  }, [fetchReviewAuthority]);
 
   const availability = browserCommandAvailability({ status, connection: controlConnection, pendingCommand });
   const freshness = useMemo(() => derivePacketFreshness({
-    packet: packetLoad.packet,
-    latestPacketResponseWasNull: packetLoad.latestResponseWasNull,
-    packetLoadUnverified: packetLoad.unverified,
+    packet: reviewLoad.packet,
+    latestPacketResponseWasNull: reviewLoad.latestResponseWasNull,
+    packetLoadUnverified: reviewLoad.unverified,
     connection: controlConnection,
     workflowState: status.state,
     lastAcceptedInspection,
     formInvalidatedSinceVerifiedSuccess
-  }), [controlConnection, formInvalidatedSinceVerifiedSuccess, lastAcceptedInspection, packetLoad, status.state]);
+  }), [controlConnection, formInvalidatedSinceVerifiedSuccess, lastAcceptedInspection, reviewLoad, status.state]);
   const freshnessStatus = freshnessCopy(freshness);
 
   return (
@@ -394,36 +516,36 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
       <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="answer-packet-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div><h2 id="answer-packet-heading" className="font-semibold text-slate-950">Current answer packet</h2><p className="mt-1 text-sm text-slate-600">Read-only proposed answers from the authenticated ApplicationRun packet API.</p></div>
-          <SecondaryButton type="button" disabled={packetLoad.phase === "loading"} onClick={() => void fetchPacket()}>{packetLoad.phase === "loading" ? "Refreshing…" : "Refresh packet"}</SecondaryButton>
+          <SecondaryButton type="button" disabled={reviewLoad.phase === "loading" || pendingReviewMutation !== null} onClick={() => void fetchReviewAuthority()}>{reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data"}</SecondaryButton>
         </div>
-        {packetLoad.notice ? <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700">{packetLoad.notice}</p> : null}
+        {reviewLoad.notice ? <p aria-live="polite" role={reviewLoad.notice.tone === "ERROR" ? "alert" : undefined} className={`rounded-lg px-3 py-2 text-sm ${noticeClass(reviewLoad.notice.tone)}`}>{reviewLoad.notice.text}</p> : null}
         <p className={`rounded-lg border px-3 py-2 text-sm ${freshnessStatus.className}`}>{freshnessStatus.text}</p>
 
-        {packetLoad.packet ? <div className="space-y-5">
+        {reviewLoad.packet ? <div className="space-y-5">
           <dl className="grid gap-3 rounded-lg border border-slate-200 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Inspection version</dt><dd className="mt-1 text-slate-900">{packetLoad.packet.inspectionVersion}</dd></div>
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Packet version</dt><dd className="mt-1 text-slate-900">{packetLoad.packet.answerPacketVersion}</dd></div>
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Created</dt><dd className="mt-1 text-slate-900">{displayDate(packetLoad.packet.createdAt)}</dd></div>
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Review time</dt><dd className="mt-1 text-slate-900">{displayDate(packetLoad.packet.reviewedAt)}</dd></div>
-            <div className="sm:col-span-2 lg:col-span-4"><dt className="text-xs font-semibold uppercase text-slate-500">Packet hash</dt><dd className="mt-1 break-all font-mono text-xs text-slate-700">{packetLoad.packet.packetHash}</dd></div>
+            <div><dt className="text-xs font-semibold uppercase text-slate-500">Inspection version</dt><dd className="mt-1 text-slate-900">{reviewLoad.packet.inspectionVersion}</dd></div>
+            <div><dt className="text-xs font-semibold uppercase text-slate-500">Packet version</dt><dd className="mt-1 text-slate-900">{reviewLoad.packet.answerPacketVersion}</dd></div>
+            <div><dt className="text-xs font-semibold uppercase text-slate-500">Created</dt><dd className="mt-1 text-slate-900">{displayDate(reviewLoad.packet.createdAt)}</dd></div>
+            <div><dt className="text-xs font-semibold uppercase text-slate-500">Review time</dt><dd className="mt-1 text-slate-900">{displayDate(reviewLoad.packet.reviewedAt)}</dd></div>
+            <div className="sm:col-span-2 lg:col-span-4"><dt className="text-xs font-semibold uppercase text-slate-500">Packet hash</dt><dd className="mt-1 break-all font-mono text-xs text-slate-700">{reviewLoad.packet.packetHash}</dd></div>
           </dl>
 
           <div className="rounded-lg border border-slate-200 p-4">
             <h3 className="font-medium text-slate-950">Packet summary</h3>
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
               {[
-                ["Fields", packetLoad.packet.summary.fieldCount], ["Proposable", packetLoad.packet.summary.proposableCount],
-                ["Pending review", packetLoad.packet.summary.pendingReviewCount], ["Approved", packetLoad.packet.summary.approvedCount],
-                ["Rejected", packetLoad.packet.summary.rejectedCount], ["Manual only", packetLoad.packet.summary.manualOnlyCount],
-                ["Excluded", packetLoad.packet.summary.excludedCount], ["Unsupported", packetLoad.packet.summary.unsupportedCount],
-                ["Manual required", packetLoad.packet.summary.manualRequiredCount]
+                ["Fields", reviewLoad.packet.summary.fieldCount], ["Proposable", reviewLoad.packet.summary.proposableCount],
+                ["Pending review", reviewLoad.packet.summary.pendingReviewCount], ["Approved", reviewLoad.packet.summary.approvedCount],
+                ["Rejected", reviewLoad.packet.summary.rejectedCount], ["Manual only", reviewLoad.packet.summary.manualOnlyCount],
+                ["Excluded", reviewLoad.packet.summary.excludedCount], ["Unsupported", reviewLoad.packet.summary.unsupportedCount],
+                ["Manual required", reviewLoad.packet.summary.manualRequiredCount]
               ].map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-1 font-medium text-slate-900">{value}</dd></div>)}
             </dl>
-            <p className="mt-4 text-sm text-slate-700">{readinessMessage(packetLoad.packet.summary.readyForRunResolution)}</p>
+            <p className="mt-4 text-sm text-slate-700">{readinessMessage(reviewLoad.packet.summary.readyForRunResolution)}</p>
           </div>
 
           <div className="space-y-4">
-            {packetLoad.packet.answers.map((answer) => {
+            {reviewLoad.packet.answers.map((answer) => {
               const proposal = answer.proposal ? presentProposal(answer.proposal, answer.choices, answer) : null;
               return <article key={answer.id} className="rounded-lg border border-slate-200 p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><h3 className="font-medium text-slate-950">{answer.question}</h3><p className="mt-1 text-xs text-slate-500">{answer.fieldType} · {answer.classification}</p></div><span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{answer.status}</span></div>
@@ -440,6 +562,10 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
                 {answer.dispositionReason ? <p className="mt-2 text-sm text-slate-700">Disposition reason: <span className="font-mono text-xs">{answer.dispositionReason}</span></p> : null}
                 {answer.choices.length > 0 ? <div className="mt-4"><h4 className="text-xs font-semibold uppercase text-slate-500">Public choices</h4><ul className="mt-2 space-y-1 text-sm text-slate-700">{answer.choices.map((choice, index) => <li key={`${choice.key}:${index}`}>{choice.label}{choice.disabled ? " — Disabled option" : ""}</li>)}</ul></div> : null}
                 {proposal ? <div className="mt-4 rounded-lg bg-slate-50 p-3"><h4 className="text-sm font-medium text-slate-900">{proposal.label}</h4><ul className="mt-2 space-y-1 text-sm text-slate-800">{proposal.values.map((value, index) => <li key={`${value.text}:${index}`} className="break-words">{value.text}{value.annotation ? ` — ${value.annotation}` : ""}</li>)}</ul></div> : null}
+                {isAnswerReviewEligible(answer) ? <div className="mt-4 flex gap-2">
+                  <PrimaryButton type="button" aria-label={`Approve proposed answer for ${answer.question}`} disabled={pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer} onClick={() => void reviewAnswer(answer, "APPROVED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "APPROVED" ? "Approving…" : "Approve"}</PrimaryButton>
+                  <SecondaryButton type="button" aria-label={`Reject proposed answer for ${answer.question}`} disabled={pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer} onClick={() => void reviewAnswer(answer, "REJECTED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "REJECTED" ? "Rejecting…" : "Reject"}</SecondaryButton>
+                </div> : null}
               </article>;
             })}
           </div>

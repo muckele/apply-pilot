@@ -84,6 +84,24 @@ function packetResponse(current: AnswerPacket | null, runId = RUN_ID): Response 
   });
 }
 
+function runResponse(run = validRunAuthority()): Response {
+  return new Response(JSON.stringify({ run }), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
+}
+
+function answerReviewPath(answerId = "answer-scalar"): string {
+  return `/api/application-runs/${encodeURIComponent(RUN_ID)}/answers/${encodeURIComponent(answerId)}/review`;
+}
+
+function defaultReviewFetchHandler(input: RequestInfo | URL): Promise<Response> {
+  const url = String(input);
+  if (url === `/api/application-runs/${RUN_ID}`) return Promise.resolve(runResponse());
+  if (url === `/api/application-runs/${RUN_ID}/answer-packet`) return Promise.resolve(packetResponse(null));
+  throw new Error(`Unexpected review request: ${url}`);
+}
+
 async function flushComponentWork(): Promise<void> {
   await act(async () => {
     await Promise.resolve();
@@ -93,7 +111,7 @@ async function flushComponentWork(): Promise<void> {
 }
 
 async function mountControl(
-  initialFetchHandler: FetchHandler = async () => packetResponse(null)
+  initialFetchHandler: FetchHandler = defaultReviewFetchHandler
 ): Promise<MountedControl> {
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
     url: "http://localhost/application-runs/test/browser"
@@ -190,6 +208,93 @@ function buttonNamed(container: HTMLElement, name: string): HTMLButtonElement {
   );
   assert.ok(button, `Expected button named ${name}.`);
   return button;
+}
+
+function reviewButton(container: HTMLElement, action: "Approve" | "Reject", question: string): HTMLButtonElement {
+  const article = [...container.querySelectorAll("article")].find((candidate) =>
+    candidate.querySelector("h3")?.textContent?.trim() === question
+  );
+  assert.ok(article, `Expected article for ${question}.`);
+  const button = [...article.querySelectorAll("button")].find((candidate) =>
+    candidate.getAttribute("aria-label") === `${action} proposed answer for ${question}`
+  );
+  assert.ok(button, `Expected ${action} button for ${question}.`);
+  return button;
+}
+
+type ReviewLoadRefProbe = {
+  phase: string;
+  unverified: boolean;
+  packet: AnswerPacket | null;
+};
+
+type ReactHookProbe = {
+  memoizedState?: { current?: ReviewLoadRefProbe };
+  next?: ReactHookProbe | null;
+};
+
+type ReactFiberProbe = {
+  memoizedState?: ReactHookProbe | null;
+  alternate?: ReactFiberProbe | null;
+  return?: ReactFiberProbe | null;
+};
+
+async function clickReviewButton(
+  control: MountedControl,
+  action: "Approve" | "Reject",
+  question: string
+): Promise<void> {
+  await act(async () => {
+    reviewButton(control.container, action, question).click();
+  });
+  await flushComponentWork();
+}
+
+async function startReviewButton(
+  control: MountedControl,
+  action: "Approve" | "Reject",
+  question: string
+): Promise<void> {
+  await act(async () => {
+    reviewButton(control.container, action, question).click();
+    await Promise.resolve();
+  });
+}
+
+function trustedReviewLoadRefFromButton(button: HTMLButtonElement): {
+  phase: string;
+  unverified: boolean;
+  packet: AnswerPacket | null;
+} | null {
+  const fiberKey = Object.keys(button).find((key) => key.startsWith("__reactFiber$"));
+  if (fiberKey === undefined) return null;
+  let fiber: ReactFiberProbe | null = (button as unknown as Record<string, ReactFiberProbe | undefined>)[fiberKey] ?? null;
+  while (fiber !== null) {
+    for (const candidate of [fiber, fiber.alternate]) {
+      if (candidate === undefined || candidate === null) continue;
+      let hook: ReactHookProbe | null = candidate.memoizedState ?? null;
+      while (hook !== null) {
+        const current = hook.memoizedState?.current;
+        if (typeof current === "object" && current !== null && current.phase === "loaded" && current.unverified === false && current.packet?.answers?.[0]?.id === "answer-b") return current;
+        hook = hook.next ?? null;
+      }
+    }
+    fiber = fiber.return ?? null;
+  }
+  return null;
+}
+
+async function waitForTrustedReviewLoadRef(button: HTMLButtonElement): Promise<{
+  phase: string;
+  unverified: boolean;
+  packet: AnswerPacket | null;
+}> {
+  for (let turn = 0; turn < 100; turn += 1) {
+    const reviewLoad = trustedReviewLoadRefFromButton(button);
+    if (reviewLoad !== null) return reviewLoad;
+    await Promise.resolve();
+  }
+  assert.fail("Expected the component-owned reviewLoadRef to advance to trusted answer B.");
 }
 
 async function clickButton(control: MountedControl, name: string): Promise<void> {
@@ -1259,7 +1364,7 @@ test("mounted control harness renders the real component and completes its initi
 
   assert.match(control.container.textContent ?? "", /Current answer packet/);
   assert.match(control.container.textContent ?? "", /No current answer packet has been published yet/);
-  assert.equal(control.fetchCalls.length, 1);
+  assert.equal(control.fetchCalls.length, 2);
 });
 
 test("mounted control never presents local STARTING as accepted companion authority", async (t) => {
@@ -1328,11 +1433,11 @@ test("mounted packet boundary rejects a redacted proposal without rendering its 
     sensitive: true,
     valueRedacted: true
   };
-  const control = await mountControl(async () => packetResponse(packet));
+  const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse());
   t.after(() => control.cleanup());
 
   const text = control.container.textContent ?? "";
-  assert.match(text, /could not safely read the answer packet response/i);
+  assert.match(text, /could not safely read the review authority response/i);
   assert.doesNotMatch(text, /render-privacy-sentinel/);
 });
 
@@ -1349,7 +1454,7 @@ test("matching browser status cannot make a retained packet-read error current",
       reinspectionRequired: false
     }
   };
-  const control = await mountControl(async () => packetResponse(packet));
+  const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse());
   t.after(() => control.cleanup());
   control.setBinding(async () => successfulStatus);
 
@@ -1357,7 +1462,7 @@ test("matching browser status cannot make a retained packet-read error current",
   assert.match(control.container.textContent ?? "", /Current packet —/);
 
   control.setFetchHandler(async () => new Response("{}", { status: 503 }));
-  await clickButton(control, "Refresh packet");
+  await clickButton(control, "Refresh review data");
   let text = control.container.textContent ?? "";
   assert.match(text, /temporarily unavailable/i);
   assert.match(text, /Unverified packet —/);
@@ -1368,6 +1473,215 @@ test("matching browser status cannot make a retained packet-read error current",
   assert.match(text, /temporarily unavailable/i);
   assert.match(text, /Unverified packet —/);
   assert.doesNotMatch(text, /Current packet —/);
+});
+
+test("Task 2 mounted failed inspection publication fences an older manual authority read without phantom loading", async (t) => {
+  const oldRun = deferred<Response>();
+  const oldPacket = deferred<Response>();
+  const newRun = deferred<Response>();
+  const newPacket = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetReads === 1 ? packetResponse(validPacket()) : packetReads === 2 ? oldPacket.promise : newPacket.promise;
+    }
+    runReads += 1;
+    return runReads === 1 ? runResponse() : runReads === 2 ? oldRun.promise : newRun.promise;
+  });
+  t.after(() => control.cleanup());
+  let statusReads = 0;
+  control.setBinding(async (command) => {
+    if (command.type === "INSPECT_FORM") throw new Error("inspection publication failed");
+    if (command.type === "GET_STATUS") {
+      statusReads += 1;
+      if (statusReads === 1) return { state: "TARGET_OPEN", runId: RUN_ID };
+      throw new Error("guarded status recovery failed");
+    }
+    throw new Error("unexpected command");
+  });
+
+  await clickButton(control, "Refresh status");
+  await clickButton(control, "Refresh review data");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
+
+  await clickButton(control, "Inspect form");
+  assert.match(control.container.textContent ?? "", /Portfolio URL/);
+  assert.match(control.container.textContent ?? "", /Unverified packet —/);
+  assert.match(control.container.textContent ?? "", /displayed packet is unverified until browser status is recovered/i);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
+  assert.equal(buttonNamed(control.container, "Refresh review data").disabled, false);
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).includes("/review")).length, 0);
+
+  oldRun.resolve(runResponse());
+  oldPacket.resolve(packetResponse(validPacket()));
+  await flushComponentWork();
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
+  assert.match(control.container.textContent ?? "", /displayed packet is unverified until browser status is recovered/i);
+
+  await clickButton(control, "Refresh review data");
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  newRun.resolve(runResponse());
+  newPacket.resolve(packetResponse(validPacket()));
+  await flushComponentWork();
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, false);
+});
+
+test("Task 2 mounted matching browser status cannot re-trust inspection-invalidated review authority without a fresh paired read", async (t) => {
+  const published = validPacket();
+  published.answerPacketVersion = 4;
+  const recoveryRun = deferred<Response>();
+  const recoveryPacket = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  const successfulStatus: B1Status = {
+    state: "TARGET_OPEN",
+    runId: RUN_ID,
+    inspection: {
+      outcome: "SUCCEEDED",
+      replayed: false,
+      inspectionVersion: 2,
+      answerPacketVersion: 4,
+      reinspectionRequired: false
+    }
+  };
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetReads === 1 ? packetResponse(validPacket()) : packetReads === 2 ? packetResponse(published) : recoveryPacket.promise;
+    }
+    runReads += 1;
+    return runReads <= 2 ? runResponse() : recoveryRun.promise;
+  });
+  t.after(() => control.cleanup());
+  control.setBinding(async (command) => {
+    if (command.type === "GET_STATUS") return successfulStatus;
+    if (command.type === "INSPECT_FORM") throw new Error("inspection command interrupted");
+    throw new Error("unexpected command");
+  });
+
+  await clickButton(control, "Refresh status");
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
+
+  await clickButton(control, "Inspect form");
+  assert.match(control.container.textContent ?? "", /Portfolio URL/);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).includes("/review")).length, 0);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 3);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 3);
+
+  recoveryRun.resolve(runResponse());
+  recoveryPacket.resolve(packetResponse(published));
+  await flushComponentWork();
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
+});
+
+test("Task 2 mounted 401 mutation failure fences an older automatic paired authority read", async (t) => {
+  const staleRun = deferred<Response>();
+  const stalePacket = deferred<Response>();
+  const post = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === answerReviewPath()) return post.promise;
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : stalePacket.promise;
+    return runReads++ === 0 ? runResponse() : staleRun.promise;
+  });
+  t.after(() => control.cleanup());
+  control.setBinding(async () => ({
+    state: "TARGET_OPEN",
+    runId: RUN_ID,
+    inspection: {
+      outcome: "SUCCEEDED",
+      replayed: false,
+      inspectionVersion: 2,
+      answerPacketVersion: 4,
+      reinspectionRequired: false
+    }
+  }));
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  await act(async () => {
+    buttonNamed(control.container, "Refresh status").click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
+
+  post.resolve(new Response("{}", { status: 401 }));
+  await flushComponentWork();
+  assert.equal(control.container.querySelector("article"), null);
+  assert.doesNotMatch(control.container.textContent ?? "", /Approve/);
+  assert.match(control.container.textContent ?? "", /session is no longer authenticated/i);
+
+  staleRun.resolve(runResponse());
+  stalePacket.resolve(packetResponse(validPacket()));
+  await flushComponentWork();
+  const staleReadRestoredAuthority = control.container.querySelector("article");
+  const staleReadRestoredActions = /Approve/.test(control.container.textContent ?? "");
+  const staleReadErasedAuthenticationNotice = !/session is no longer authenticated/i.test(control.container.textContent ?? "");
+  await control.cleanup();
+  assert.equal(staleReadRestoredAuthority, null);
+  assert.equal(staleReadRestoredActions, false);
+  assert.equal(staleReadErasedAuthenticationNotice, false);
+});
+
+test("Task 2 mounted uncertain mutation failure fences an older paired read until an explicitly new refresh commits", async (t) => {
+  const staleRun = deferred<Response>();
+  const stalePacket = deferred<Response>();
+  const post = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === answerReviewPath()) return post.promise;
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : stalePacket.promise;
+    return runReads++ === 0 ? runResponse() : staleRun.promise;
+  });
+  t.after(() => control.cleanup());
+  control.setBinding(async () => ({
+    state: "TARGET_OPEN",
+    runId: RUN_ID,
+    inspection: {
+      outcome: "SUCCEEDED",
+      replayed: false,
+      inspectionVersion: 2,
+      answerPacketVersion: 4,
+      reinspectionRequired: false
+    }
+  }));
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  await act(async () => {
+    buttonNamed(control.container, "Refresh status").click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  post.resolve(new Response("{}", { status: 500 }));
+  await flushComponentWork();
+  assert.match(control.container.textContent ?? "", /Portfolio URL/);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+
+  staleRun.resolve(runResponse());
+  stalePacket.resolve(packetResponse(validPacket()));
+  await flushComponentWork();
+  const staleReadRestoredTrustedAction = reviewButton(control.container, "Approve", "Portfolio URL").disabled;
+  assert.equal(staleReadRestoredTrustedAction, true);
+
+  control.setFetchHandler(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
+  await clickButton(control, "Refresh review data");
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
 });
 
 test("successful INSPECT_FORM settlement after unmount is inert", async (t) => {
@@ -1477,4 +1791,629 @@ test("control component consumes the canonical binding constant without a duplic
   );
   assert.match(source, /APPLICATION_BROWSER_BINDING_NAME/);
   assert.doesNotMatch(source, /["']__applyPilotB1Command["']/);
+});
+
+test("Task 2 mounted review authority load uses paired no-store run and packet reads with one signal", async (t) => {
+  const control = await mountControl();
+  t.after(() => control.cleanup());
+
+  assert.equal(control.fetchCalls.length, 2);
+  assert.deepEqual(control.fetchCalls.map((call) => String(call.input)), [
+    `/api/application-runs/${RUN_ID}`,
+    `/api/application-runs/${RUN_ID}/answer-packet`
+  ]);
+  assert.equal(control.fetchCalls[0].init?.cache, "no-store");
+  assert.equal(control.fetchCalls[1].init?.cache, "no-store");
+  assert.equal(control.fetchCalls[0].init?.signal, control.fetchCalls[1].init?.signal);
+});
+
+test("Task 2 mounted pending proposable answer exposes enabled accessible approve and reject controls", async (t) => {
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, false);
+});
+
+test("Task 2 mounted pending manual-only excluded and unsupported answers expose no review controls", async (t) => {
+  const packet = validPacket();
+  packet.answers.push(
+    { ...packet.answers[3], id: "answer-excluded", question: "Excluded", disposition: "EXCLUDED", dispositionReason: "POLICY_EXCLUDED" },
+    { ...packet.answers[3], id: "answer-unsupported", question: "Unsupported", disposition: "UNSUPPORTED", dispositionReason: "UNSUPPORTED_CONTROL" }
+  );
+  const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse());
+  t.after(() => control.cleanup());
+
+  for (const question of ["Résumé", "Excluded", "Unsupported"]) {
+    assert.equal(control.container.querySelector(`[aria-label="Approve proposed answer for ${question}"]`), null);
+    assert.equal(control.container.querySelector(`[aria-label="Reject proposed answer for ${question}"]`), null);
+  }
+});
+
+test("Task 2 mounted approved and rejected proposable answers expose no review controls", async (t) => {
+  const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
+  t.after(() => control.cleanup());
+
+  for (const question of ["Available immediately?", "Preferred office"]) {
+    assert.equal(control.container.querySelector(`[aria-label="Approve proposed answer for ${question}"]`), null);
+    assert.equal(control.container.querySelector(`[aria-label="Reject proposed answer for ${question}"]`), null);
+  }
+});
+
+test("Task 2 mounted approve posts only exact current answer review authority", async (t) => {
+  const control = await mountControl(async (input, init) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    if (init?.method === "GET") return runResponse();
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  const request = control.fetchCalls.find((call) => String(call.input) === answerReviewPath());
+  assert.ok(request);
+  assert.equal(request.init?.method, "POST");
+  assert.equal(request.init?.cache, "no-store");
+  assert.deepEqual(JSON.parse(String(request.init?.body)), { status: "APPROVED", answerPacketVersion: 3 });
+  assert.equal(JSON.stringify(request).includes("https://example.com"), false);
+});
+
+test("Task 2 mounted reject posts only exact current answer review authority", async (t) => {
+  const control = await mountControl(async (input, init) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse({ status: "REJECTED" })), { status: 200 });
+    if (init?.method === "GET") return runResponse();
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickReviewButton(control, "Reject", "Portfolio URL");
+  const request = control.fetchCalls.find((call) => String(call.input) === answerReviewPath());
+  assert.ok(request);
+  assert.deepEqual(JSON.parse(String(request.init?.body)), { status: "REJECTED", answerPacketVersion: 3 });
+  assert.equal(JSON.stringify(request).includes("https://example.com"), false);
+});
+
+test("Task 2 mounted duplicate answer clicks create exactly one post", async (t) => {
+  const post = deferred<Response>();
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return post.promise;
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 1);
+});
+
+test("Task 2 mounted pending answer mutation disables all review actions and refresh", async (t) => {
+  const post = deferred<Response>();
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return post.promise;
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(buttonNamed(control.container, "Approving…").disabled, true);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
+  assert.equal(buttonNamed(control.container, "Refresh review data").disabled, true);
+});
+
+test("Task 2 mounted confirmed approve replaces display only from paired refreshed authority", async (t) => {
+  const approved = validPacket();
+  approved.answers[0] = { ...approved.answers[0], status: "APPROVED", reviewedByUser: true, reviewedAt: "2026-08-30T00:00:00.000Z" };
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : approved);
+    if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.match(control.container.textContent ?? "", /Answer approved/);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
+  assert.equal(control.container.querySelector('[aria-label="Approve proposed answer for Portfolio URL"]'), null);
+});
+
+test("Task 2 mounted confirmed reject replaces display only from paired refreshed authority", async (t) => {
+  const rejected = validPacket();
+  rejected.answers[0] = { ...rejected.answers[0], status: "REJECTED", reviewedByUser: true, reviewedAt: "2026-08-30T00:00:00.000Z" };
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : rejected);
+    if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse({ status: "REJECTED" })), { status: 200 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Reject", "Portfolio URL");
+  assert.match(control.container.textContent ?? "", /Answer rejected/);
+  assert.equal(control.container.querySelector('[aria-label="Reject proposed answer for Portfolio URL"]'), null);
+});
+
+test("Task 2 mounted approve and reject remain pending until their deferred paired authority refresh confirms", async () => {
+  for (const status of ["APPROVED", "REJECTED"] as const) {
+    const runRead = deferred<Response>();
+    const packetRead = deferred<Response>();
+    const confirmed = validPacket();
+    confirmed.answers[0] = {
+      ...confirmed.answers[0],
+      status,
+      reviewedByUser: true,
+      reviewedAt: "2026-08-30T00:00:00.000Z"
+    };
+    let packetReads = 0;
+    let runReads = 0;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse({ status })), { status: 200 });
+      if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : packetRead.promise;
+      return runReads++ === 0 ? runResponse() : runRead.promise;
+    });
+    try {
+      await startReviewButton(control, status === "APPROVED" ? "Approve" : "Reject", "Portfolio URL");
+      assert.match(control.container.textContent ?? "", /Portfolio URL[\s\S]*PENDING/);
+      assert.equal(buttonNamed(control.container, "Refreshing…").disabled, true);
+      assert.doesNotMatch(control.container.textContent ?? "", /Answer (approved|rejected)\./);
+      runRead.resolve(runResponse());
+      packetRead.resolve(packetResponse(confirmed));
+      await flushComponentWork();
+      assert.match(control.container.textContent ?? "", status === "APPROVED" ? /Answer approved\./ : /Answer rejected\./);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 mounted changed committed packet remains trusted and warns instead of claiming stale success", async (t) => {
+  const changed = validPacket();
+  changed.answerPacketVersion = 4;
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : changed);
+    if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.match(control.container.textContent ?? "", /Review data changed after the action\. Review the current packet before continuing\./);
+  assert.doesNotMatch(control.container.textContent ?? "", /Answer approved/);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
+});
+
+test("Task 2 mounted same-version missing or mismatched postconditions warn without stale success", async () => {
+  const confirmed = validPacket();
+  confirmed.answers[0] = {
+    ...confirmed.answers[0],
+    status: "APPROVED",
+    reviewedByUser: true,
+    reviewedAt: "2026-08-30T00:00:00.000Z"
+  };
+  const mutations: Array<(packet: AnswerPacket) => AnswerPacket> = [
+    (packet: AnswerPacket) => ({ ...packet, answers: packet.answers.slice(1) }),
+    (packet: AnswerPacket) => ({ ...packet, answers: [{ ...packet.answers[0], status: "REJECTED" as const }, ...packet.answers.slice(1)] }),
+    (packet: AnswerPacket) => ({ ...packet, answers: [{ ...packet.answers[0], reviewedByUser: false }, ...packet.answers.slice(1)] }),
+    (packet: AnswerPacket) => ({ ...packet, answers: [{ ...packet.answers[0], reviewedAt: null }, ...packet.answers.slice(1)] })
+  ];
+  for (const mutate of mutations) {
+    let packetReads = 0;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : mutate(confirmed));
+      if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+      return runResponse();
+    });
+    try {
+      await clickReviewButton(control, "Approve", "Portfolio URL");
+      assert.match(control.container.textContent ?? "", /Review data changed after the action\. Review the current packet before continuing\./);
+      assert.doesNotMatch(control.container.textContent ?? "", /Answer approved/);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 mounted valid post plus failed authority refresh stays inert and releases its lock", async (t) => {
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : new Response("{}", { status: 503 });
+    if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.match(control.container.textContent ?? "", /temporarily unavailable/i);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  control.setFetchHandler(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    return runResponse();
+  });
+  await clickButton(control, "Refresh review data");
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 2);
+});
+
+test("Task 2 mounted superseded mutation refresh publishes no stale success and releases old lock", async (t) => {
+  const oldRun = deferred<Response>();
+  const oldPacket = deferred<Response>();
+  const next = validPacket();
+  next.answerPacketVersion = 4;
+  next.answers[0] = { ...next.answers[0], id: "answer-b", question: "Replacement answer" };
+  let packetReads = 0;
+  let runReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : packetReads === 2 ? oldPacket.promise : packetResponse(next);
+    if (url === answerReviewPath()) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    if (url === answerReviewPath("answer-b")) return new Response(JSON.stringify(answerReviewResponse({ id: "answer-b" })), { status: 200 });
+    return runReads++ === 0 ? runResponse() : runReads === 2 ? oldRun.promise : runResponse(validRunAuthority({ stateVersion: 8 }));
+  });
+  t.after(() => control.cleanup());
+  control.setBinding(async (command) => command.type === "GET_STATUS"
+    ? { state: "TARGET_OPEN", runId: RUN_ID }
+    : {
+        state: "TARGET_OPEN",
+        runId: RUN_ID,
+        inspection: { outcome: "SUCCEEDED", replayed: false, inspectionVersion: 2, answerPacketVersion: 4, reinspectionRequired: false }
+      });
+  await startReviewButton(control, "Approve", "Portfolio URL");
+  await clickButton(control, "Refresh status");
+  await clickButton(control, "Inspect form");
+  oldRun.resolve(runResponse());
+  oldPacket.resolve(packetResponse(validPacket()));
+  await flushComponentWork();
+  assert.doesNotMatch(control.container.textContent ?? "", /Answer approved/);
+  await clickReviewButton(control, "Approve", "Replacement answer");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath("answer-b")).length, 1);
+});
+
+test("Task 2 mounted unmount invalidates active answer mutation and permits no late effects", async (t) => {
+  const post = deferred<Response>();
+  let postSignal: AbortSignal | undefined;
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return post.promise;
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  control.setFetchHandler(async (input, init) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) {
+      postSignal = init?.signal ?? undefined;
+      return post.promise;
+    }
+    return runResponse();
+  });
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  const count = control.fetchCalls.length;
+  await control.unmount();
+  assert.equal(postSignal?.aborted, true);
+  post.resolve(new Response(JSON.stringify(answerReviewResponse()), { status: 200 }));
+  await flushComponentWork();
+  assert.equal(control.fetchCalls.length, count);
+});
+
+test("Task 2 mounted global pending lock prevents a second review mutation", async (t) => {
+  const post = deferred<Response>();
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return post.promise;
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  await clickReviewButton(control, "Reject", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 1);
+});
+
+test("Task 2 mounted confirmed answer flow releases lock for newly current eligible actions", async (t) => {
+  const approved = validPacket();
+  approved.answers[0] = { ...approved.answers[0], status: "APPROVED", reviewedByUser: true, reviewedAt: "2026-08-30T00:00:00.000Z" };
+  approved.answers.push({ ...validPacket().answers[0], id: "answer-next", question: "Next URL" });
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : approved);
+    if (url === answerReviewPath() || url === answerReviewPath("answer-next")) return new Response(JSON.stringify(answerReviewResponse({ id: url.endsWith("answer-next/review") ? "answer-next" : "answer-scalar" })), { status: 200 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  await clickReviewButton(control, "Approve", "Next URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath("answer-next")).length, 1);
+});
+
+test("Task 2 mounted post failure releases lock while separately unverified authority remains inert", async (t) => {
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return new Response("{}", { status: 500 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  control.setFetchHandler(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+    if (String(input) === answerReviewPath()) return new Response("{}", { status: 500 });
+    return runResponse();
+  });
+  await clickButton(control, "Refresh review data");
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 2);
+});
+
+test("Task 2 mounted 409 holds lock through one recovery refresh", async (t) => {
+  const recovery = deferred<Response>();
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : recovery.promise;
+    if (url === answerReviewPath()) return new Response("{}", { status: 409 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  await clickReviewButton(control, "Reject", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 1);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
+  recovery.resolve(packetResponse(validPacket()));
+  await flushComponentWork();
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 2);
+});
+
+test("Task 2 mounted loading replacement makes visible old action inert and only new answer dispatches", async (t) => {
+  const replacement = deferred<Response>();
+  const next = validPacket();
+  next.answerPacketVersion = 4;
+  next.answers[0] = { ...next.answers[0], id: "answer-new", question: "New Portfolio URL" };
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : replacement.promise;
+    if (url.includes("/review")) return new Response(JSON.stringify(answerReviewResponse({ id: "answer-new" })), { status: 200 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+  await clickButton(control, "Refresh review data");
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).includes("/review")).length, 0);
+  replacement.resolve(packetResponse(next));
+  await flushComponentWork();
+  await clickReviewButton(control, "Approve", "New Portfolio URL");
+  const request = control.fetchCalls.find((call) => String(call.input).includes("/review"));
+  assert.ok(request);
+  assert.match(String(request.input), /answer-new/);
+  assert.deepEqual(JSON.parse(String(request.init?.body)), { status: "APPROVED", answerPacketVersion: 4 });
+});
+
+test("Task 2 mounted current answer object guard rejects a still-connected stale action", async (t) => {
+  const replacementRun = deferred<Response>();
+  const replacementPacket = deferred<Response>();
+  let consumedBodies = 0;
+  const jsonResponse = (value: unknown): Response => ({
+    ok: true,
+    status: 200,
+    json: async () => {
+      consumedBodies += 1;
+      return value;
+    }
+  } as unknown as Response);
+  const next = validPacket();
+  next.answerPacketVersion = 4;
+  next.answers[0] = { ...next.answers[0], id: "answer-b", question: "Answer B" };
+  let packetReads = 0;
+  let runReads = 0;
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : replacementPacket.promise;
+    if (String(input).includes("/review")) return new Response(JSON.stringify(answerReviewResponse()), { status: 200 });
+    return runReads++ === 0 ? runResponse() : replacementRun.promise;
+  });
+  t.after(() => control.cleanup());
+  const oldButton = reviewButton(control.container, "Approve", "Portfolio URL");
+  await clickButton(control, "Refresh review data");
+  await act(async () => {
+    replacementRun.resolve(jsonResponse({ run: validRunAuthority({ stateVersion: 8 }) }));
+    replacementPacket.resolve(jsonResponse({ runId: RUN_ID, current: next }));
+    while (consumedBodies !== 2) await Promise.resolve();
+    const trustedRef = await waitForTrustedReviewLoadRef(oldButton);
+    assert.equal(trustedRef.phase, "loaded");
+    assert.equal(trustedRef.unverified, false);
+    assert.equal(trustedRef.packet?.answers[0]?.id, "answer-b");
+    assert.equal(control.container.contains(oldButton), true);
+    oldButton.disabled = false;
+    oldButton.click();
+    assert.equal(control.fetchCalls.filter((call) => String(call.input).includes("/review")).length, 0);
+  });
+  await flushComponentWork();
+  assert.match(control.container.textContent ?? "", /Answer B/);
+});
+
+test("Task 2 mounted 401 403 and 404 clear review authority fail closed", async () => {
+  for (const [status, expected] of [
+    [401, /session is no longer authenticated/i],
+    [403, /not authorized/i],
+    [404, /unavailable/i]
+  ] as const) {
+    const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
+    try {
+      control.setFetchHandler(async () => new Response("{}", { status }));
+      await clickButton(control, "Refresh review data");
+      assert.equal(control.container.querySelector("article"), null);
+      assert.doesNotMatch(control.container.textContent ?? "", /Approve/);
+      assert.match(control.container.textContent ?? "", expected);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 paired read gives packet authentication failure precedence over a transient run failure", async (t) => {
+  const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
+  t.after(() => control.cleanup());
+  control.setFetchHandler(async (input) => {
+    if (String(input).endsWith("/answer-packet")) return new Response("{}", { status: 401 });
+    return new Response("{}", { status: 503 });
+  });
+
+  await clickButton(control, "Refresh review data");
+  assert.equal(control.container.querySelector("article"), null);
+  assert.match(control.container.textContent ?? "", /session is no longer authenticated/i);
+});
+
+test("Task 2 paired authority reads clear on fulfilled auth or not-found even when the sibling rejects", async () => {
+  const cases = [
+    ["run", 401, /session is no longer authenticated/i],
+    ["packet", 401, /session is no longer authenticated/i],
+    ["run", 403, /not authorized/i],
+    ["packet", 403, /not authorized/i],
+    ["run", 404, /unavailable/i],
+    ["packet", 404, /unavailable/i]
+  ] as const;
+  for (const [authorizedEndpoint, status, notice] of cases) {
+    const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
+    try {
+      control.setFetchHandler(async (input) => {
+        const isPacket = String(input).endsWith("/answer-packet");
+        if ((authorizedEndpoint === "packet") === isPacket) return new Response("{}", { status });
+        throw new Error("network sibling rejected");
+      });
+      await clickButton(control, "Refresh review data");
+      assert.equal(control.container.querySelector("article"), null, `${authorizedEndpoint}/${status}`);
+      assert.match(control.container.textContent ?? "", notice, `${authorizedEndpoint}/${status}`);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 409 conflict keeps its bounded warning after committed paired recovery", async (t) => {
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : validPacket());
+    if (url === answerReviewPath()) return new Response("{}", { status: 409 });
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.match(control.container.textContent ?? "", /Review authority changed\. Refreshing current review data\./);
+  assert.doesNotMatch(control.container.textContent ?? "", /Answer approved/);
+});
+
+test("Task 2 mounted 429 500 503 and network failures preserve context but fail closed", async () => {
+  for (const failure of [
+    async () => new Response("{}", { status: 429 }),
+    async () => new Response("{}", { status: 500 }),
+    async () => new Response("{}", { status: 503 }),
+    async () => { throw new Error("network"); }
+  ]) {
+    const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
+    try {
+      control.setFetchHandler(failure);
+      await clickButton(control, "Refresh review data");
+      assert.match(control.container.textContent ?? "", /Portfolio URL/);
+      assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 mounted invalid json and invalid 2xx review responses fail closed", async () => {
+  const invalids: Array<(input: RequestInfo | URL) => Promise<Response>> = [
+    async (input) => String(input) === answerReviewPath()
+      ? { ok: true, status: 200, json: async () => { throw new Error("json"); } } as unknown as Response
+      : String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse(),
+    async (input) => String(input) === answerReviewPath()
+      ? new Response(JSON.stringify(answerReviewResponse({ runId: OTHER_RUN_ID })), { status: 200 })
+      : String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse(),
+    async (input) => String(input) === answerReviewPath()
+      ? new Response(JSON.stringify(answerReviewResponse({ id: "wrong-answer" })), { status: 200 })
+      : String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse(),
+    async (input) => String(input) === answerReviewPath()
+      ? new Response(JSON.stringify(answerReviewResponse({ status: "REJECTED" })), { status: 200 })
+      : String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse(),
+    async (input) => String(input) === answerReviewPath()
+      ? new Response(JSON.stringify({ answer: { bad: true } }), { status: 200 })
+      : String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse()
+  ];
+  for (const handler of invalids) {
+    const control = await mountControl(handler);
+    try {
+      await clickReviewButton(control, "Approve", "Portfolio URL");
+      assert.doesNotMatch(control.container.textContent ?? "", /Answer approved/);
+      assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 mounted approve and reject never call or serialize review authority through the binding", async () => {
+  for (const [action, status] of [["Approve", "APPROVED"], ["Reject", "REJECTED"]] as const) {
+    const bindingCalls: B1Command[] = [];
+    const confirmed = validPacket();
+    confirmed.answers[0] = { ...confirmed.answers[0], status, reviewedByUser: true, reviewedAt: "2026-08-30T00:00:00.000Z" };
+    let packetReads = 0;
+    const control = await mountControl(async (input) => {
+      if (String(input).endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? validPacket() : confirmed);
+      if (String(input).includes("/review")) return new Response(JSON.stringify(answerReviewResponse({ status })), { status: 200 });
+      return runResponse();
+    });
+    try {
+      control.setBinding(async (command) => { bindingCalls.push(command); return { state: "TARGET_OPEN", runId: RUN_ID }; });
+      await clickReviewButton(control, action, "Portfolio URL");
+      assert.match(control.container.textContent ?? "", status === "APPROVED" ? /Answer approved\./ : /Answer rejected\./);
+      const serialized = JSON.stringify(bindingCalls);
+      assert.deepEqual(bindingCalls, []);
+      for (const privateValue of ["answer-scalar", "https://example.com", "a".repeat(64), "APPROVED", "REJECTED", answerReviewPath()]) {
+        assert.equal(serialized.includes(privateValue), false);
+      }
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 2 mounted valid and rejected mutation settlements after unmount have no follow-on effects", async () => {
+  for (const settle of [
+    (post: Deferred<Response>) => post.resolve(new Response(JSON.stringify(answerReviewResponse()), { status: 200 })),
+    (post: Deferred<Response>) => post.reject(new Error("network"))
+  ]) {
+    const post = deferred<Response>();
+    const bindingCalls: B1Command[] = [];
+    const control = await mountControl(async (input) => {
+      if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
+      if (String(input) === answerReviewPath()) return post.promise;
+      return runResponse();
+    });
+    try {
+      control.setBinding(async (command) => { bindingCalls.push(command); return { state: "TARGET_OPEN", runId: RUN_ID }; });
+      await clickReviewButton(control, "Approve", "Portfolio URL");
+      const before = control.fetchCalls.length;
+      await control.unmount();
+      settle(post);
+      await flushComponentWork();
+      assert.equal(control.fetchCalls.length, before);
+      assert.deepEqual(bindingCalls, []);
+    } finally {
+      await control.cleanup();
+    }
+  }
 });
