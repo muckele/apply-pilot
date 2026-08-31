@@ -1,6 +1,6 @@
 # Human-Submit Fill and Review Design
 
-Status: Human-approved architecture, awaiting implementation planning
+Status: Corrected architecture, awaiting final human approval; implementation planning is not authorized
 
 Date: 2026-08-30
 
@@ -55,7 +55,8 @@ The following decisions are normative:
 - Persist only closed safe field results.
 - Stop safely on policy, currentness, target, event, or write failure.
 - End every acquired non-cancelled attempt in `READY_FOR_USER_SUBMISSION`.
-- Require an exact user attestation before completion.
+- Preserve truthful manual completion when the user does not acquire Fill, including after a zero-eligible result.
+- Require an exact user attestation before completion from either eligible manual-completion state.
 
 ### Non-goals
 
@@ -176,6 +177,9 @@ The fill-related graph is:
 ```text
 READY
   -> FILLING
+     only when fillAttemptId === null and every fill gate passes
+  -> COMPLETED_BY_USER
+     exact authenticated user attestation only
 
 FILLING
   -> READY_FOR_USER_SUBMISSION
@@ -185,6 +189,7 @@ READY_FOR_USER_SUBMISSION
   -> REVIEW_REQUIRED
      only after material reinspection publishes a new packet
   -> COMPLETED_BY_USER
+     exact authenticated user attestation only
   -> CANCELLED
 
 REVIEW_REQUIRED
@@ -224,6 +229,8 @@ REVIEW_REQUIRED + fillAttemptId !== null
 ```
 
 The post-fill path restores manual review and personal-submission reachability without restoring automated fill. The user completes remaining fields manually and can later attest completion from `READY_FOR_USER_SUBMISSION`.
+
+A reviewed run may also bypass Fill entirely. From `READY`, the user may complete and personally submit the employer form and then use the same exact authenticated completion attestation. This includes zero-eligible runs, deliberate manual bypass, automation disabled after review, and any other safe condition that makes automated fill undesirable. This edge does not acquire Fill, inspect or operate a submit control, infer submission, or require `fillAttemptId`; a never-acquired run validly retains `fillAttemptId === null` through completion.
 
 Once `READY -> FILLING` commits, every completed, partial, failed, or lost attempt ends in `READY_FOR_USER_SUBMISSION` unless cancellation wins. There is no `FILLING -> READY` edge and no general `READY_FOR_USER_SUBMISSION -> READY` edge.
 
@@ -426,6 +433,14 @@ no acquisition audit is created
 the run's one automated fill opportunity remains unconsumed
 ```
 
+The control page presents this closed response:
+
+```text
+No fields can be filled automatically from the current reviewed packet. The user may complete the employer form manually and, after personally submitting it, use Mark personally submitted.
+```
+
+Zero eligibility does not automatically transition the run. The run remains `READY`, and the user may either leave it there or manually complete and personally submit the employer form before using the exact completion attestation.
+
 Minimum fill material contains:
 
 ```text
@@ -461,6 +476,24 @@ GET is strictly read only. It returns only:
 
 GET never returns proposals or employer current values. It may tell an active companion that policy or state no longer permits another field operation.
 
+For a terminal acquired attempt, GET derives—not stores—the safe attempt outcome from verified `ApplicationRun.state`, `ApplicationRun.errorCategory`, the exact `fillAttemptId`, and the exact current-attempt `ApplicationRunStep` set:
+
+```text
+READY_FOR_USER_SUBMISSION + errorCategory === null
+  + every exact-attempt step is terminal and COMPLETED-consistent
+  -> COMPLETED
+
+READY_FOR_USER_SUBMISSION + errorCategory in STOPPED_EARLY_FILL_ERRORS
+  + every exact-attempt step is terminal and stop-pattern-consistent
+  -> STOPPED_EARLY
+
+READY_FOR_USER_SUBMISSION + errorCategory === FILL_STALE
+  + every exact-attempt step is terminal and recovery-consistent
+  -> RECOVERED_AFTER_LOSS
+```
+
+The derivation validates that the persisted step keys are exactly the current attempt set and that their statuses, closed results, and closed errors match the claimed terminal pattern. It never invents an outcome for missing, duplicate, foreign-attempt, nonterminal, or contradictory persistence. In that case GET returns only a closed unavailable/failure status with `FILL_INTERNAL`, never raw values, proposals, exception text, or inconsistent step detail. `FILLING` may be reported as closed in-progress or recovery-required status, but never as a terminal attempt outcome.
+
 GET must not:
 
 - transition run state;
@@ -494,6 +527,22 @@ Normal finalization:
 
 `outcome` is `COMPLETED` or `STOPPED_EARLY`. The request supplies the exact persisted attempt step-key set with closed field results and errors. The server locks the owned run and requires exact route identity, `state === FILLING`, attempt ID, state version, and a live lease.
 
+For `COMPLETED`, every exact-attempt step must be terminal with one of `FILLED`, `PRESERVED_EXISTING`, or `MANUAL`, its status/error fields must match the closed result table, no step may be `FAILED` or `NOT_ATTEMPTED`, and finalization persists `ApplicationRun.errorCategory = null`. For `STOPPED_EARLY`, the request and validated server result identify exactly one attempt-level stopping error from this closed subset:
+
+```text
+STOPPED_EARLY_FILL_ERRORS = {
+  FILL_POLICY_DENIED,
+  FILL_TARGET_TRUST_LOST,
+  FILL_UNEXPECTED_MUTATION,
+  FILL_WRITE_FAILED,
+  FILL_INTERNAL
+}
+```
+
+`FILL_ALREADY_IN_PROGRESS`, `FILL_NO_ELIGIBLE_FIELDS`, and `FILL_REVIEW_REQUIRED` are acquisition/review errors and cannot be persisted as a `STOPPED_EARLY` attempt outcome. `FILL_STALE` is reserved for server-verified expired recovery so that the existing single run-level error field deterministically distinguishes `RECOVERED_AFTER_LOSS`. A normal stale observation either reaches server-verified `RECOVER_EXPIRED` after expiry or uses another exact permitted stopping code appropriate to the actual normal-finalize failure; it does not persist `FILL_STALE` through normal `FINALIZE`.
+
+On `STOPPED_EARLY`, canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results; exactly one stopping step is `FAILED` with the same exact stopping error; and every later untouched step is terminalized as `NOT_ATTEMPTED` with a null step error. All attempt steps are terminal before the transition. The transaction persists the same exact stopping code to `ApplicationRun.errorCategory`. No free-form error or separate outcome storage is allowed.
+
 Expired recovery:
 
 ```json
@@ -514,11 +563,11 @@ fillLeaseExpiresAt !== null
 database time >= fillLeaseExpiresAt
 ```
 
-Only then may the server transition to `READY_FOR_USER_SUBMISSION`, increment state version, clear `fillLeaseExpiresAt`, retain `fillAttemptId`, conservatively terminalize unresolved steps, record `RECOVERED_AFTER_LOSS`, and write the bounded audit. If the lease remains live, `RECOVER_EXPIRED` fails closed without mutation.
+Only then may the server transition to `READY_FOR_USER_SUBMISSION`, increment state version, clear `fillLeaseExpiresAt`, retain `fillAttemptId`, persist `ApplicationRun.errorCategory = FILL_STALE`, conservatively terminalize every unresolved step as `FAILED / FILL_STALE`, derive `RECOVERED_AFTER_LOSS`, and write the bounded audit. If the lease remains live, `RECOVER_EXPIRED` fails closed without mutation.
 
 `FINALIZE` rejects duplicate, missing, extra, or malformed steps. `RECOVER_EXPIRED` accepts no client step assertions. Normal finalization transitions `FILLING -> READY_FOR_USER_SUBMISSION`, increments state version, clears the lease, and retains `fillAttemptId`.
 
-Policy shutdown prevents future field writes but must not prevent safe finalization, because finalization relinquishes rather than grants authority.
+POST acquisition is capability-increasing and always requires the current global and policy gates. `FINALIZE` and `RECOVER_EXPIRED` are authority-reducing safety operations. They must not call or require the capability-increasing gate merely because `APPLICATION_AUTOMATION_ENABLED !== "true"`, `policy.enabled === false`, or `policy.mode` changed. Their owner, route, state, attempt, version, and lease checks remain mandatory; `FINALIZE` still requires a live lease, and `RECOVER_EXPIRED` still requires independent database-time expiry proof. Policy shutdown therefore denies new acquisition and the next employer-field write but cannot strand safe finalization or server-verified expired recovery.
 
 There are no separate authorization, token-consumption, latest-material, or finalize endpoint families.
 
@@ -544,7 +593,7 @@ Never `READY`.
 
 GET may report that the server observes recovery is required, but GET performs no mutation. The authenticated control page or coordinator must then explicitly invoke PATCH with `action: "RECOVER_EXPIRED"`.
 
-PATCH recovery independently proves expiry from database time. It increments state version, clears the lease, retains `fillAttemptId`, records `RECOVERED_AFTER_LOSS`, and writes one safe audit. Unresolved steps become failed/unverified with `FILL_STALE`; the UI tells the user to inspect all employer fields. Recovery never grants another automated fill.
+PATCH recovery independently proves expiry from database time. It increments state version, clears the lease, retains `fillAttemptId`, persists `ApplicationRun.errorCategory = FILL_STALE`, terminalizes unresolved steps as `FAILED / FILL_STALE`, derives `RECOVERED_AFTER_LOSS`, and writes one safe audit. The UI tells the user to inspect all employer fields. Recovery remains available after global disablement, policy disablement, or a mode change because it relinquishes already acquired authority; it never grants another automated fill.
 
 ## 13. Exact handles and production writer boundary
 
@@ -660,7 +709,7 @@ Result mapping uses existing fields:
 | `PRESERVED_EXISTING` | `SKIPPED` | `PRESERVED_EXISTING` | `null` |
 | `MANUAL` | `SKIPPED` | `MANUAL` | `null` |
 | `FAILED` | `FAILED` | `FAILED` | one closed fill error |
-| `NOT_ATTEMPTED` | `SKIPPED` | `NOT_ATTEMPTED` | stopping error or `null` |
+| `NOT_ATTEMPTED` | `SKIPPED` | `NOT_ATTEMPTED` | `null` |
 
 `redactedValueSummary` contains only those closed literals and no free-form text. Steps contain no proposal, current value, selector, raw option value, private question text, evidence, provenance, page detail, or arbitrary exception.
 
@@ -671,6 +720,16 @@ COMPLETED
 STOPPED_EARLY
 RECOVERED_AFTER_LOSS
 ```
+
+No outcome column, result JSON, attempt model, or free-form error is added. Terminal attempt outcome is a validated derivation over existing persistence:
+
+| Derived outcome | `ApplicationRun` terminal state | `ApplicationRun.errorCategory` | Exact current-attempt steps |
+|---|---|---|---|
+| `COMPLETED` | `READY_FOR_USER_SUBMISSION` | `null` | all terminal as `FILLED`, `PRESERVED_EXISTING`, or `MANUAL`; no failed or untouched step |
+| `STOPPED_EARLY` | `READY_FOR_USER_SUBMISSION` | exactly one code in `STOPPED_EARLY_FILL_ERRORS` | terminal ordered prefix, one matching `FAILED` stop, then only `NOT_ATTEMPTED` with null errors |
+| `RECOVERED_AFTER_LOSS` | `READY_FOR_USER_SUBMISSION` | `FILL_STALE` | all terminal; earlier safe terminal results may remain, and every server-unresolved step becomes `FAILED / FILL_STALE`; no other step error |
+
+`ApplicationRun.errorCategory` is the single durable attempt-level discriminator. `FILL_STALE` is exclusive to expired recovery, while the permitted normal stopping subset is closed and excludes acquisition/review errors. GET validates the whole tuple before returning a derived terminal outcome; a contradictory tuple produces closed `FILL_INTERNAL`/outcome-unavailable status instead of a guessed outcome.
 
 Minimal closed errors are:
 
@@ -742,6 +801,7 @@ REVIEW_REQUIRED -> READY_FOR_USER_SUBMISSION
 It does not transition the run to `READY`. The user handles remaining employer fields manually and retains the completion-attestation path:
 
 ```text
+READY -> COMPLETED_BY_USER
 READY_FOR_USER_SUBMISSION -> COMPLETED_BY_USER
 ```
 
@@ -756,6 +816,10 @@ post-fill review resolution:
 
 fill acquisition:
   state === READY && fillAttemptId === null
+
+personal-submission completion:
+  state in { READY, READY_FOR_USER_SUBMISSION }
+  + exact authenticated attestation
 ```
 
 No path in this design clears or replaces `fillAttemptId`.
@@ -780,24 +844,24 @@ The minimum transaction:
 
 1. authenticates the owner;
 2. locks the owned run;
-3. requires `READY_FOR_USER_SUBMISSION`;
+3. requires the state to be exactly `READY` or `READY_FOR_USER_SUBMISSION` and rejects every other state;
 4. requires the exact attestation literal;
 5. transitions to `COMPLETED_BY_USER`;
 6. increments `stateVersion`;
 7. sets `completedAt`;
 8. clears `activeRunKey`;
 9. clears `fillLeaseExpiresAt`;
-10. retains `fillAttemptId`;
+10. retains `fillAttemptId` if one exists; `null` remains valid when Fill was never acquired;
 11. updates the owning `Application` to `APPLIED`;
 12. sets `dateApplied` if absent;
 13. writes one audit;
 14. writes one application timeline event.
 
-It does not update `JobPosting`, create CRM follow-up, create a next action, inspect the employer page, detect confirmation, infer a receipt, or claim Apply Pilot submitted.
+It does not update `JobPosting`, create CRM follow-up, create a next action, inspect the employer page, click or detect a submit control, detect confirmation, infer a receipt, or claim Apply Pilot submitted. The exact literal is a user attestation only. A reviewed `READY` run may therefore be completed after zero eligible fields, a deliberate decision to skip Fill, automation shutdown after review, or another safe manual path, without consuming `fillAttemptId`.
 
 ## 20. Policy and adapter boundary
 
-Fill requires:
+POST fill acquisition and every next employer-field write require current capability:
 
 ```text
 APPLICATION_AUTOMATION_ENABLED === "true"
@@ -811,6 +875,8 @@ finalReviewRequired === true
 
 Empty allowed hosts denies fill. Blocked or prohibited hosts win. `generic-native` is not added to `permittedAdapters`; the generic writer is core behavior, not an ATS adapter.
 
+These capability-increasing gates do not apply to authority-reducing `FINALIZE` or `RECOVER_EXPIRED` merely because the global flag or current policy was shut down after acquisition. Those PATCH actions remain limited by their exact owner/run/attempt/version/lease proofs described above.
+
 Discovery connectors are not form adapters. A future form adapter may implement the typed writer boundary but may not weaken backend review, policy, host, run-state, one-attempt, generation, privacy, occupied-value, lease, or no-submit invariants.
 
 ## 21. Concurrency semantics
@@ -822,10 +888,11 @@ Discovery connectors are not form adapters. A future form adapter may implement 
 - Exact packet replay may finish without changing authority; material publication cannot overlap `FILLING`.
 - Fill and Inspect are mutually exclusive in the coordinator, and backend publication rejects `FILLING`.
 - Cancellation before acquisition prevents it. Cancellation after acquisition prevents future fields at the next authority checkpoint and retains `fillAttemptId`.
-- Policy mutation follows existing lock order. Disablement prevents future fields but not safe finalization.
+- Cancellation from `FILLING` clears or invalidates `fillLeaseExpiresAt` in the serialized cancellation transaction, retains `fillAttemptId`, prevents every later field operation, and ends in terminal `CANCELLED`. It does not require expired recovery and cannot lead to refill.
+- Policy mutation follows existing lock order. Disablement or mode change prevents new acquisition and the next field write but not safe `FINALIZE` or independently verified `RECOVER_EXPIRED`.
 - Browser loss may cause the lease to expire. Read-only GET reports recovery required, and exact `RECOVER_EXPIRED` PATCH performs the transition to `READY_FOR_USER_SUBMISSION` while retaining `fillAttemptId`.
 - Finalize and cancel have one serialized winner; neither can restore fill eligibility.
-- Material reinspection and completion have one serialized winner.
+- Material reinspection and completion have one serialized winner; completion accepts only exact `READY` or `READY_FOR_USER_SUBMISSION` under the run lock.
 
 An operation already begun under live authority may finish. Cancellation, policy shutdown, or lease expiry prevents subsequent field operations at the next checkpoint.
 
@@ -836,6 +903,7 @@ An operation already begun under live authority may finish. Cancellation, policy
 - An expired lease cannot renew or return the run to `READY`.
 - GET fill-attempt is read only and cannot reconcile expiry or mutate any persisted state.
 - Expired recovery requires an explicit `RECOVER_EXPIRED` PATCH and independent database-time proof.
+- Global or policy shutdown denies acquisition and the next employer write but cannot deny authority-reducing `FINALIZE` or independently proven `RECOVER_EXPIRED`.
 - Exact replay cannot restore fill eligibility.
 - Post-fill material reinspection and fresh review return to `READY_FOR_USER_SUBMISSION`, preserving both completion reachability and the permanent one-fill fence.
 - Zero eligible fields cannot consume the one-fill opportunity because eligibility is checked before attempt ID, lease, state, steps, or audit mutation.
@@ -846,7 +914,9 @@ An operation already begun under live authority may finish. Cancellation, policy
 - Origin isolation and control-page-only binding prevent employer JavaScript from obtaining owner-session request authority.
 - The run lock and permanent attempt fence prevent concurrent and sequential second fills.
 - Fill and Inspect cannot overlap.
-- Completion requires exact user attestation.
+- Completion from either `READY` or `READY_FOR_USER_SUBMISSION` requires the same exact authenticated user attestation; this preserves truthful manual completion without granting submit authority.
+- Terminal attempt outcome is derived only from the verified run state, the closed run-level error, and the exact terminal current-attempt step set; contradictory persistence yields only a closed safe failure.
+- Cancellation from `FILLING` retains the permanent attempt fence, invalidates the lease, prevents later writes, and requires neither recovery nor refill.
 - Apply Pilot has no submission command, scope, state, endpoint, or writer method.
 
 Employer JavaScript can observe its own DOM and may react to input events. The host allowlist, bounded control matrix, exact handles, one-operation windows, stop behavior, and human review limit that residual risk. The design does not claim to prevent arbitrary employer-page reactions.
@@ -922,7 +992,7 @@ Likely modify:
 
 Execution-token files and `APPLICATION_READ` semantics remain read-only.
 
-RED cases include every policy/review/version/hash gate, `fillAttemptId === null`, simultaneous starts, zero eligible fields returning `FILL_NO_ELIGIBLE_FIELDS` without any attempt/lease/state/step/audit mutation, lost-response behavior, strictly read-only GET, live-lease rejection of `RECOVER_EXPIRED`, database-time expired recovery through PATCH, exact FINALIZE step sets, policy-disable finalization, pre-fill review resolution to `READY`, post-fill review resolution to `READY_FOR_USER_SUBMISSION`, replay/material state behavior, and privacy-safe persistence.
+RED cases include every policy/review/version/hash gate, `fillAttemptId === null`, simultaneous starts, zero eligible fields returning `FILL_NO_ELIGIBLE_FIELDS` without any attempt/lease/state/step/audit mutation, lost-response behavior, strictly read-only GET, exact existing-field derivation of all three attempt outcomes, closed failure for contradictory persistence, live-lease rejection of `RECOVER_EXPIRED`, database-time expired recovery through PATCH, exact FINALIZE step sets, `COMPLETED` with null run error, the exact permitted `STOPPED_EARLY` subset with deterministic `NOT_ATTEMPTED` remainder, acquisition-error rejection as an attempt stop, `FILL_STALE` reserved for recovered loss, policy/global-disable finalization and recovery, pre-fill review resolution to `READY`, post-fill review resolution to `READY_FOR_USER_SUBMISSION`, cancellation lease invalidation, replay/material state behavior, and privacy-safe persistence.
 
 Completion requires migration, unit, route, and real PostgreSQL race suites.
 
@@ -952,7 +1022,7 @@ Goal: present closed results and add exact human completion attestation.
 
 Likely create the completion route, completion service, and tests. Likely modify contracts, state machine, control UI, presentation model, and concurrency tests.
 
-RED cases cover safe result rendering, recovery-required status without GET mutation, explicit recovery action, no value disclosure, strict attestation, exact state/ownership, duplicate completion, post-fill material reinspection and fresh review returning to `READY_FOR_USER_SUBMISSION`, subsequent completion reachability, material-reinspection race, Application update, one audit/event, and absence of unrelated downstream mutations.
+RED cases cover safe result rendering, recovery-required status without GET mutation, explicit recovery action, no value disclosure, strict attestation, exact ownership, acceptance from exactly `READY` or `READY_FOR_USER_SUBMISSION`, rejection from every other state, zero-eligible and deliberate manual-bypass completion with `fillAttemptId === null`, duplicate completion, post-fill material reinspection and fresh review returning to `READY_FOR_USER_SUBMISSION`, subsequent completion reachability, material-reinspection race, Application update, one audit/event, and absence of unrelated downstream mutations.
 
 Completion requires unit, route, component, and PostgreSQL success.
 
@@ -962,7 +1032,7 @@ Goal: prove the complete Human-Submit workflow and document only verified behavi
 
 Likely create integrated Chromium and PostgreSQL tests. Likely update `README.md`, `docs/CONTROLLED_APPLICATION_AUTOMATION.md`, `docs/APPLICATION_BROWSER_COMPANION.md`, and browser fixtures.
 
-RED cases cover review-before-fill, one automated attempt, zero-eligible non-consumption, occupied preservation, applicant-event invalidation, read-only recovery status, explicit PATCH crash recovery, exact replay, post-fill material reinspection and fresh review returning to `READY_FOR_USER_SUBMISSION` without fill restoration, human attestation, no submission path, privacy, and the lock-race matrix.
+RED cases cover review-before-fill, one automated attempt, zero-eligible non-consumption followed by manual submission and exact attestation from `READY`, optional manual bypass without attempt consumption, occupied preservation, applicant-event invalidation, read-only recovery status, explicit PATCH crash recovery after policy/global shutdown, safe finalization after shutdown, deterministic derivation of `COMPLETED`, `STOPPED_EARLY`, and `RECOVERED_AFTER_LOSS`, contradictory-persistence closed failure, cancellation lease cleanup, exact replay, post-fill material reinspection and fresh review returning to `READY_FOR_USER_SUBMISSION` without fill restoration, human attestation, no submission path, privacy, and the lock-race matrix.
 
 Completion requires unit, browser, PostgreSQL, typecheck, lint, build, and diff-check success.
 
@@ -1006,6 +1076,8 @@ The implemented feature is acceptable only when all of the following are true:
 - Fill requires a positive, current, completely reviewed packet.
 - Fill acquisition requires `state === READY && fillAttemptId === null`.
 - Fill acquisition with zero eligible approved spike-supported fields fails with `FILL_NO_ELIGIBLE_FIELDS` before assigning an attempt ID or making any persistent acquisition change.
+- Zero eligibility leaves the run in `READY`; after personally submitting manually, the user can reach `COMPLETED_BY_USER` through the exact attestation.
+- A reviewed `READY` run can deliberately bypass Fill and use the same exact attestation after personal submission while `fillAttemptId` remains null.
 - `fillAttemptId` is assigned once and never cleared or replaced.
 - The same run can never receive another automated fill.
 - Exact replay does not change `READY_FOR_USER_SUBMISSION`.
@@ -1013,17 +1085,21 @@ The implemented feature is acceptable only when all of the following are true:
 - Post-fill material reinspection and fresh review with `fillAttemptId !== null` return to `READY_FOR_USER_SUBMISSION`.
 - Post-fill fresh review preserves the later `COMPLETED_BY_USER` attestation path without restoring automated fill eligibility.
 - GET fill-attempt is strictly read only.
+- GET deterministically derives `COMPLETED`, `STOPPED_EARLY`, or `RECOVERED_AFTER_LOSS` from verified existing run/error/step persistence and returns only a closed failure when that persistence is contradictory.
 - All expired-lease state, step, lease, outcome, and audit mutations occur only through `PATCH action: RECOVER_EXPIRED` after server-side expiry proof.
+- New acquisition and the next employer write require live global/policy capability, while safe `FINALIZE` and server-verified `RECOVER_EXPIRED` remain available after capability shutdown.
 - Only spike-approved control families are writable.
 - Occupied values and selections are never overwritten.
 - Raw employer current values never cross page evaluation.
 - Unexpected events, mismatch, detachment, and target loss stop safely.
 - Expired `FILLING` recovers only to `READY_FOR_USER_SUBMISSION`.
 - Steps contain only closed safe outcomes and errors.
-- Completion requires the exact user attestation.
+- Normal `COMPLETED` persists a null run error; normal `STOPPED_EARLY` persists exactly one permitted stopping error and terminalizes untouched remainder as `NOT_ATTEMPTED`; recovered loss persists `FILL_STALE` and terminalizes unresolved steps as `FAILED / FILL_STALE`.
+- Cancellation from `FILLING` retains `fillAttemptId`, invalidates the lease, prevents later writes, and remains terminal without recovery.
+- Completion from exactly `READY` or `READY_FOR_USER_SUBMISSION` requires the exact user attestation.
 - No Apply Pilot submit path exists.
 - All seven increments' test gates pass.
 
 ## 28. Spec consistency statement
 
-This specification contains one and only one automated fill opportunity per `ApplicationRun`. No state transition, reinspection result, review resolution, lease recovery, UI action, or backend route clears or replaces a previously assigned `fillAttemptId`. Pre-fill review resolves to `READY` only when `fillAttemptId === null`. Post-fill material reinspection and fresh review resolve back to `READY_FOR_USER_SUBMISSION` when `fillAttemptId !== null`, preserving manual completion and personal-submission attestation without creating a second fill path. GET fill-attempt is read only, expired recovery mutates only through `PATCH action: RECOVER_EXPIRED`, and zero eligible fields cause no persistent acquisition change. Remaining employer fields are completed manually by the user.
+This specification contains one and only one automated fill opportunity per `ApplicationRun`. No state transition, reinspection result, review resolution, lease recovery, cancellation, UI action, or backend route clears or replaces a previously assigned `fillAttemptId`. Pre-fill review resolves to `READY` only when `fillAttemptId === null`. Post-fill material reinspection and fresh review resolve back to `READY_FOR_USER_SUBMISSION` when `fillAttemptId !== null`, preserving manual completion and personal-submission attestation without creating a second fill path. A reviewed `READY` run—including a zero-eligible or deliberate manual-bypass run—may reach `COMPLETED_BY_USER` only through the same exact authenticated personal-submission attestation and may validly retain `fillAttemptId === null`. GET fill-attempt is strictly read only and derives terminal outcome from verified existing run/error/step persistence; contradictory persistence produces only closed failure. Expired recovery mutates only through `PATCH action: RECOVER_EXPIRED` after database-time proof. Capability shutdown denies acquisition and the next employer write but not authority-reducing `FINALIZE` or verified recovery. Zero eligible fields cause no persistent acquisition change. Remaining employer fields are completed manually by the user, and Apply Pilot never submits.
