@@ -14,10 +14,22 @@ import {
   derivePacketFreshness,
   dispositionMessage,
   inspectionPresentation,
+  buildAnswerReviewRequest,
+  buildResolveReviewRequest,
+  isAnswerReviewEligible,
+  isAnswerReviewPostconditionCurrent,
+  isResolveReviewEligible,
+  isResolveReviewPostconditionCurrent,
   parseAnswerPacketResponse,
+  parseAnswerReviewResponse,
+  parseApplicationRunReviewResponse,
   presentProposal,
+  REVIEW_REASON_LABELS,
   readinessMessage,
   shouldOfferRetryConnection,
+  type AnswerReviewMutationSnapshot,
+  type ResolveReviewMutationSnapshot,
+  type ReviewRunAuthority,
   type AnswerPacket,
   type PacketFreshness
 } from "@/lib/application-browser/control-presentation";
@@ -342,6 +354,289 @@ function currentFreshnessInput(overrides: Record<string, unknown> = {}) {
     ...overrides
   };
 }
+
+const PLAN_REVIEW_REASONS = [
+  "unknown_requirement_ids",
+  "unknown_evidence_ids",
+  "exaggerated_evidence_removed",
+  "invented_numeric_claims",
+  "planner_confidence_below_threshold",
+  "evidence_gaps_present"
+] as const;
+
+function validRunAuthority(overrides: Record<string, unknown> = {}) {
+  return {
+    id: RUN_ID,
+    state: "REVIEW_REQUIRED",
+    stateVersion: 7,
+    reviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
+    applicationId: "application-extra",
+    applyHost: "jobs.example.com",
+    ...overrides
+  };
+}
+
+function answerReviewResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    answer: {
+      id: "answer-scalar",
+      runId: RUN_ID,
+      status: "APPROVED",
+      reviewedByUser: true,
+      reviewedAt: "2026-08-29T20:30:00.000Z",
+      sensitive: false,
+      valueRedacted: false,
+      ...overrides
+    }
+  };
+}
+
+test("answer review eligibility is exactly pending proposable", () => {
+  const cases = [
+    ["PENDING", "PROPOSABLE", true],
+    ["PENDING", "MANUAL_ONLY", false],
+    ["PENDING", "EXCLUDED", false],
+    ["PENDING", "UNSUPPORTED", false],
+    ["APPROVED", "PROPOSABLE", false],
+    ["REJECTED", "PROPOSABLE", false]
+  ] as const;
+  for (const [status, disposition, expected] of cases) {
+    assert.equal(isAnswerReviewEligible({ status, disposition }), expected, `${status}/${disposition}`);
+  }
+});
+
+test("answer review request builders use only exact encoded route and body fields", () => {
+  const approve = buildAnswerReviewRequest({
+    runId: "run/sentinel",
+    answerId: "answer/sentinel",
+    answerPacketVersion: 3,
+    status: "APPROVED",
+    proposal: "proposal-sentinel",
+    question: "question-sentinel"
+  } as never);
+  const reject = buildAnswerReviewRequest({
+    runId: RUN_ID,
+    answerId: "answer-scalar",
+    answerPacketVersion: 3,
+    status: "REJECTED"
+  });
+  assert.equal(approve.url, "/api/application-runs/run%2Fsentinel/answers/answer%2Fsentinel/review");
+  assert.equal(approve.init.method, "POST");
+  assert.deepEqual(approve.init.headers, { "Content-Type": "application/json" });
+  assert.equal(approve.init.cache, "no-store");
+  assert.deepEqual(JSON.parse(approve.init.body), { status: "APPROVED", answerPacketVersion: 3 });
+  assert.deepEqual(JSON.parse(reject.init.body), { status: "REJECTED", answerPacketVersion: 3 });
+  assert.equal(JSON.stringify([approve, reject]).includes("proposal-sentinel"), false);
+  assert.equal(JSON.stringify([approve, reject]).includes("question-sentinel"), false);
+});
+
+test("run review parser projects strict current authority and preserves canonical reasons", () => {
+  const parsed = parseApplicationRunReviewResponse({ run: validRunAuthority() }, RUN_ID);
+  assert.deepEqual(parsed, {
+    id: RUN_ID,
+    state: "REVIEW_REQUIRED",
+    stateVersion: 7,
+    reviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"]
+  });
+  for (const value of [
+    null,
+    [],
+    { run: validRunAuthority({ id: OTHER_RUN_ID }) },
+    { run: validRunAuthority({ state: "NOT_A_STATE" }) },
+    { run: validRunAuthority({ stateVersion: -1 }) },
+    { run: validRunAuthority({ stateVersion: 1.5 }) },
+    { run: validRunAuthority({ stateVersion: Number.MAX_SAFE_INTEGER + 1 }) },
+    { run: validRunAuthority({ reviewReasons: ["unknown_requirement_ids", "unknown_requirement_ids"] }) },
+    { run: validRunAuthority({ reviewReasons: ["unknown_requirement_ids", "not-a-reason"] }) },
+    { run: validRunAuthority({ reviewReasons: ["evidence_gaps_present", "unknown_requirement_ids"] }) },
+    { run: validRunAuthority({ reviewReasons: "not-an-array" }) },
+    { run: validRunAuthority(), unexpected: true },
+    { unexpected: true }
+  ]) {
+    assert.throws(() => parseApplicationRunReviewResponse(value, RUN_ID));
+  }
+  const source = validRunAuthority({ reviewReasons: ["unknown_requirement_ids"] });
+  const projected = parseApplicationRunReviewResponse({ run: source }, RUN_ID);
+  assert.equal("applicationId" in projected, false);
+  assert.equal("applyHost" in projected, false);
+});
+
+test("review reason labels contain exactly the six canonical strings in server order", () => {
+  assert.deepEqual(Object.keys(REVIEW_REASON_LABELS), PLAN_REVIEW_REASONS);
+  assert.deepEqual(REVIEW_REASON_LABELS, {
+    unknown_requirement_ids: "Some job requirements could not be matched exactly.",
+    unknown_evidence_ids: "Some supporting evidence references could not be matched exactly.",
+    exaggerated_evidence_removed: "Unsupported or exaggerated evidence was removed.",
+    invented_numeric_claims: "Unsupported numeric claims were detected and removed.",
+    planner_confidence_below_threshold: "Application-plan confidence is below the required threshold.",
+    evidence_gaps_present: "Some application requirements still have evidence gaps."
+  });
+  const parsed = parseApplicationRunReviewResponse(
+    { run: validRunAuthority({ reviewReasons: ["planner_confidence_below_threshold", "evidence_gaps_present"] }) },
+    RUN_ID
+  );
+  assert.deepEqual(parsed.reviewReasons, ["planner_confidence_below_threshold", "evidence_gaps_present"]);
+  assert.equal("unknown_reason" in REVIEW_REASON_LABELS, false);
+});
+
+test("answer review response parser accepts only the exact reviewed answer DTO", () => {
+  assert.doesNotThrow(() => parseAnswerReviewResponse(answerReviewResponse(), {
+    runId: RUN_ID,
+    answerId: "answer-scalar",
+    status: "APPROVED"
+  }));
+  for (const value of [
+    answerReviewResponse({ runId: OTHER_RUN_ID }),
+    answerReviewResponse({ id: "other-answer" }),
+    answerReviewResponse({ status: "REJECTED" }),
+    answerReviewResponse({ reviewedByUser: false }),
+    answerReviewResponse({ reviewedAt: null }),
+    answerReviewResponse({ reviewedAt: "not-a-date" }),
+    { ...answerReviewResponse(), extra: true },
+    { answer: { ...answerReviewResponse().answer, extra: true } },
+    { answer: "malformed" },
+    null
+  ]) {
+    assert.throws(() => parseAnswerReviewResponse(value, {
+      runId: RUN_ID,
+      answerId: "answer-scalar",
+      status: "APPROVED"
+    }));
+  }
+});
+
+test("resolve review eligibility requires complete trusted review-required authority", () => {
+  const packet = {
+    ...validPacket(),
+    reviewedAt: null,
+    summary: { ...validPacket().summary, readyForRunResolution: true }
+  };
+  const run = validRunAuthority();
+  const complete = { run: run as ReviewRunAuthority, packet, trusted: true };
+  assert.equal(isResolveReviewEligible(complete), true);
+  const applicationRunStates = [
+    "DRAFT",
+    "PREPARING",
+    "READY",
+    "FILLING",
+    "REVIEW_REQUIRED",
+    "READY_FOR_USER_SUBMISSION",
+    "COMPLETED_BY_USER",
+    "BLOCKED",
+    "FAILED",
+    "CANCELLED"
+  ] as const;
+  for (const state of applicationRunStates) {
+    if (state === "REVIEW_REQUIRED") continue;
+    assert.equal(
+      isResolveReviewEligible({
+        ...complete,
+        run: { ...run, state } as ReviewRunAuthority
+      }),
+      false,
+      `state=${state}`
+    );
+  }
+  const cases = [
+    { ...complete, trusted: false },
+    { ...complete, run: null },
+    { ...complete, packet: null },
+    { ...complete, packet: { ...packet, reviewedAt: "2026-08-29T20:30:00.000Z" } },
+    { ...complete, packet: { ...packet, summary: { ...packet.summary, readyForRunResolution: false } } }
+  ];
+  for (const value of cases) assert.equal(isResolveReviewEligible(value), false);
+});
+
+test("resolve review request contains exact ordered authority fields and no packet content", () => {
+  const run = validRunAuthority({ reviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"] }) as ReviewRunAuthority;
+  const packet = validPacket();
+  const request = buildResolveReviewRequest({ runId: RUN_ID, run, packet });
+  assert.equal(request.url, `/api/application-runs/${encodeURIComponent(RUN_ID)}/resolve-review`);
+  assert.equal(request.init.method, "POST");
+  assert.equal(request.init.cache, "no-store");
+  assert.deepEqual(JSON.parse(request.init.body), {
+    stateVersion: 7,
+    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
+    answerPacketVersion: 3,
+    packetHash: "a".repeat(64)
+  });
+  assert.equal(JSON.stringify(request).includes("Portfolio URL"), false);
+  assert.equal(JSON.stringify(request).includes("https://example.com"), false);
+  assert.equal(JSON.stringify(request).includes("answer-scalar"), false);
+});
+
+test("answer postcondition confirms only the exact current reviewed answer", () => {
+  const snapshot: AnswerReviewMutationSnapshot = {
+    answerId: "answer-scalar",
+    requestedStatus: "APPROVED",
+    answerPacketVersion: 3
+  };
+  const packet = validPacket();
+  packet.answers[0] = { ...packet.answers[0], status: "APPROVED", reviewedByUser: true, reviewedAt: "2026-08-29T20:30:00.000Z" };
+  const complete = { phase: "loaded" as const, unverified: false, packet, snapshot };
+  assert.equal(isAnswerReviewPostconditionCurrent(complete), true);
+  const failures = [
+    { ...complete, phase: "loading" as const },
+    { ...complete, unverified: true },
+    { ...complete, packet: null },
+    { ...complete, packet: { ...packet, answerPacketVersion: 4 } },
+    { ...complete, packet: { ...packet, answers: packet.answers.slice(1) } },
+    { ...complete, packet: { ...packet, answers: [{ ...packet.answers[0], status: "REJECTED" }] as never } },
+    { ...complete, packet: { ...packet, answers: [{ ...packet.answers[0], reviewedByUser: false }] } },
+    { ...complete, packet: { ...packet, answers: [{ ...packet.answers[0], reviewedAt: null }] } }
+  ];
+  for (const value of failures) assert.equal(isAnswerReviewPostconditionCurrent(value), false);
+});
+
+test("resolve postcondition confirms only ready current authority with matching packet", () => {
+  const snapshot: ResolveReviewMutationSnapshot = {
+    stateVersion: 7,
+    answerPacketVersion: 3,
+    packetHash: "a".repeat(64),
+    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"]
+  };
+  const complete = {
+    phase: "loaded" as const,
+    unverified: false,
+    run: { ...validRunAuthority({ state: "READY" }) } as ReviewRunAuthority,
+    packet: validPacket(),
+    snapshot
+  };
+  assert.equal(isResolveReviewPostconditionCurrent(complete), true);
+  const applicationRunStates = [
+    "DRAFT",
+    "PREPARING",
+    "READY",
+    "FILLING",
+    "REVIEW_REQUIRED",
+    "READY_FOR_USER_SUBMISSION",
+    "COMPLETED_BY_USER",
+    "BLOCKED",
+    "FAILED",
+    "CANCELLED"
+  ] as const;
+  for (const state of applicationRunStates) {
+    if (state === "READY") continue;
+    assert.equal(
+      isResolveReviewPostconditionCurrent({
+        ...complete,
+        run: { ...complete.run, state } as ReviewRunAuthority
+      }),
+      false,
+      `state=${state}`
+    );
+  }
+  const failures = [
+    { ...complete, phase: "loading" as const },
+    { ...complete, unverified: true },
+    { ...complete, run: null },
+    { ...complete, packet: null },
+    { ...complete, packet: { ...complete.packet, answerPacketVersion: 4 } },
+    { ...complete, packet: { ...complete.packet, packetHash: "b".repeat(64) } },
+    { ...complete, packet: { ...complete.packet, reviewedAt: null } }
+  ];
+  for (const value of failures) assert.equal(isResolveReviewPostconditionCurrent(value), false);
+});
 
 test("command authorization covers every workflow state and uses the exact frozen command names", () => {
   for (const state of workflowStates) {

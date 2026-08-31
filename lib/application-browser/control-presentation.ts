@@ -11,6 +11,8 @@ import type {
   ApplicationAnswerDispositionReason,
   ApplicationQuestionClassification
 } from "@/lib/application-runs/question-classification";
+import { PLAN_REVIEW_REASONS, type PlanReviewReason } from "@/lib/application-runs/review-reasons";
+import type { ApplicationRunState } from "@prisma/client";
 import type {
   B1Status,
   B1WorkflowState,
@@ -29,6 +31,50 @@ export type PacketFreshness = "absent" | "current" | "stale" | "unverified";
 export type AnswerPacket = PublicApplicationRunAnswerPacket;
 export type AnswerPacketAnswer = PublicApplicationRunAnswerPacketAnswer;
 
+export type ReviewRunAuthority = Readonly<{
+  id: string;
+  state: ApplicationRunState;
+  stateVersion: number;
+  reviewReasons: readonly PlanReviewReason[];
+}>;
+
+export const REVIEW_REASON_LABELS: Record<PlanReviewReason, string> = {
+  unknown_requirement_ids: "Some job requirements could not be matched exactly.",
+  unknown_evidence_ids: "Some supporting evidence references could not be matched exactly.",
+  exaggerated_evidence_removed: "Unsupported or exaggerated evidence was removed.",
+  invented_numeric_claims: "Unsupported numeric claims were detected and removed.",
+  planner_confidence_below_threshold: "Application-plan confidence is below the required threshold.",
+  evidence_gaps_present: "Some application requirements still have evidence gaps."
+};
+
+export type PendingReviewMutation =
+  | Readonly<{ type: "ANSWER"; answerId: string; status: "APPROVED" | "REJECTED" }>
+  | Readonly<{ type: "RESOLVE" }>
+  | null;
+
+export type AnswerReviewMutationSnapshot = Readonly<{
+  answerId: string;
+  requestedStatus: "APPROVED" | "REJECTED";
+  answerPacketVersion: number;
+}>;
+
+export type ResolveReviewMutationSnapshot = Readonly<{
+  stateVersion: number;
+  answerPacketVersion: number;
+  packetHash: string;
+  acknowledgedReviewReasons: readonly PlanReviewReason[];
+}>;
+
+export type SameOriginReviewRequest = Readonly<{
+  url: string;
+  init: Readonly<{
+    method: "POST";
+    headers: Readonly<{ "Content-Type": "application/json" }>;
+    cache: "no-store";
+    body: string;
+  }>;
+}>;
+
 type CommandAvailability = Record<Exclude<PendingBrowserCommand, null>, boolean>;
 
 const WORKFLOW_STATES = [
@@ -40,6 +86,19 @@ const WORKFLOW_STATES = [
   "ERROR",
   "CLOSED"
 ] as const satisfies readonly B1WorkflowState[];
+
+const APPLICATION_RUN_STATES = [
+  "DRAFT",
+  "PREPARING",
+  "READY",
+  "FILLING",
+  "REVIEW_REQUIRED",
+  "READY_FOR_USER_SUBMISSION",
+  "COMPLETED_BY_USER",
+  "BLOCKED",
+  "FAILED",
+  "CANCELLED"
+] as const satisfies readonly ApplicationRunState[];
 
 const RECOVERABLE_CODES = [
   "FORM_INSPECTION_IN_PROGRESS",
@@ -252,6 +311,55 @@ const packetResponseSchema = z
   })
   .strict();
 
+const reviewReasonsSchema = z
+  .array(z.enum(PLAN_REVIEW_REASONS))
+  .superRefine((reasons, context) => {
+    if (new Set(reasons).size !== reasons.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Review reasons must not contain duplicates."
+      });
+    }
+    for (let index = 1; index < reasons.length; index += 1) {
+      if (PLAN_REVIEW_REASONS.indexOf(reasons[index - 1]) >= PLAN_REVIEW_REASONS.indexOf(reasons[index])) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Review reasons must preserve canonical order."
+        });
+        break;
+      }
+    }
+  });
+
+const runAuthoritySchema = z
+  .object({
+    id: boundedText,
+    state: z.enum(APPLICATION_RUN_STATES),
+    stateVersion: nonnegativeSafeInteger,
+    reviewReasons: reviewReasonsSchema
+  })
+  .strip();
+
+const applicationRunReviewResponseSchema = z
+  .object({ run: runAuthoritySchema })
+  .strict();
+
+const answerReviewResponseSchema = z
+  .object({
+    answer: z
+      .object({
+        id: boundedText,
+        runId: boundedText,
+        status: z.enum(["APPROVED", "REJECTED"]),
+        reviewedByUser: z.literal(true),
+        reviewedAt: isoDateTime,
+        sensitive: z.boolean(),
+        valueRedacted: z.boolean()
+      })
+      .strict()
+  })
+  .strict();
+
 const RECOVERABLE_MESSAGES: Record<BrowserInspectionRecoverableCode, string> = {
   FORM_INSPECTION_IN_PROGRESS:
     "An inspection is already running. Wait for it to finish, then refresh status.",
@@ -427,6 +535,136 @@ export function parseAnswerPacketResponse(value: unknown, expectedRunId: string)
   const parsed = packetResponseSchema.parse(value);
   if (parsed.runId !== expectedRunId) throw new Error("Answer packet run mismatch.");
   return parsed as { runId: string; current: AnswerPacket | null };
+}
+
+export function isAnswerReviewEligible(
+  answer: Pick<AnswerPacketAnswer, "status" | "disposition">
+): boolean {
+  return answer.status === "PENDING" && answer.disposition === "PROPOSABLE";
+}
+
+export function isResolveReviewEligible(input: {
+  run: ReviewRunAuthority | null;
+  packet: AnswerPacket | null;
+  trusted: boolean;
+}): boolean {
+  return (
+    input.trusted &&
+    input.run?.state === "REVIEW_REQUIRED" &&
+    input.packet !== null &&
+    input.packet.reviewedAt === null &&
+    input.packet.summary.readyForRunResolution === true
+  );
+}
+
+export function isAnswerReviewPostconditionCurrent(input: {
+  phase: "idle" | "loading" | "loaded" | "error";
+  unverified: boolean;
+  packet: AnswerPacket | null;
+  snapshot: AnswerReviewMutationSnapshot;
+}): boolean {
+  if (
+    input.phase !== "loaded" ||
+    input.unverified ||
+    input.packet === null ||
+    input.packet.answerPacketVersion !== input.snapshot.answerPacketVersion
+  ) {
+    return false;
+  }
+
+  const answer = input.packet.answers.find((entry) => entry.id === input.snapshot.answerId);
+  return (
+    answer?.status === input.snapshot.requestedStatus &&
+    answer.reviewedByUser === true &&
+    answer.reviewedAt !== null
+  );
+}
+
+export function isResolveReviewPostconditionCurrent(input: {
+  phase: "idle" | "loading" | "loaded" | "error";
+  unverified: boolean;
+  run: ReviewRunAuthority | null;
+  packet: AnswerPacket | null;
+  snapshot: ResolveReviewMutationSnapshot;
+}): boolean {
+  return (
+    input.phase === "loaded" &&
+    !input.unverified &&
+    input.run?.state === "READY" &&
+    input.packet !== null &&
+    input.packet.answerPacketVersion === input.snapshot.answerPacketVersion &&
+    input.packet.packetHash === input.snapshot.packetHash &&
+    input.packet.reviewedAt !== null
+  );
+}
+
+export function parseApplicationRunReviewResponse(
+  value: unknown,
+  expectedRunId: string
+): ReviewRunAuthority {
+  const parsed = applicationRunReviewResponseSchema.parse(value);
+  if (parsed.run.id !== expectedRunId) throw new Error("Application run review response run mismatch.");
+  return {
+    id: parsed.run.id,
+    state: parsed.run.state,
+    stateVersion: parsed.run.stateVersion,
+    reviewReasons: [...parsed.run.reviewReasons]
+  };
+}
+
+export function buildAnswerReviewRequest(input: {
+  runId: string;
+  answerId: string;
+  answerPacketVersion: number;
+  status: "APPROVED" | "REJECTED";
+}): SameOriginReviewRequest {
+  return {
+    url: `/api/application-runs/${encodeURIComponent(input.runId)}/answers/${encodeURIComponent(input.answerId)}/review`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        status: input.status,
+        answerPacketVersion: input.answerPacketVersion
+      })
+    }
+  };
+}
+
+export function parseAnswerReviewResponse(
+  value: unknown,
+  expected: {
+    runId: string;
+    answerId: string;
+    status: "APPROVED" | "REJECTED";
+  }
+): void {
+  const parsed = answerReviewResponseSchema.parse(value).answer;
+  if (parsed.runId !== expected.runId) throw new Error("Answer review response run mismatch.");
+  if (parsed.id !== expected.answerId) throw new Error("Answer review response answer mismatch.");
+  if (parsed.status !== expected.status) throw new Error("Answer review response status mismatch.");
+}
+
+export function buildResolveReviewRequest(input: {
+  runId: string;
+  run: ReviewRunAuthority;
+  packet: AnswerPacket;
+}): SameOriginReviewRequest {
+  return {
+    url: `/api/application-runs/${encodeURIComponent(input.runId)}/resolve-review`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        stateVersion: input.run.stateVersion,
+        acknowledgedReviewReasons: [...input.run.reviewReasons],
+        answerPacketVersion: input.packet.answerPacketVersion,
+        packetHash: input.packet.packetHash
+      })
+    }
+  };
 }
 
 export function derivePacketFreshness(input: {
