@@ -484,7 +484,8 @@ READY_FOR_USER_SUBMISSION + errorCategory === null
   -> COMPLETED
 
 READY_FOR_USER_SUBMISSION + errorCategory in STOPPED_EARLY_FILL_ERRORS
-  + every exact-attempt step is terminal and stop-pattern-consistent
+  + every exact-attempt step is terminal and matches either
+    the PRE-FIELD STOP pattern or the IN-FIELD STOP pattern
   -> STOPPED_EARLY
 
 READY_FOR_USER_SUBMISSION + errorCategory === FILL_STALE
@@ -541,7 +542,13 @@ STOPPED_EARLY_FILL_ERRORS = {
 
 `FILL_ALREADY_IN_PROGRESS`, `FILL_NO_ELIGIBLE_FIELDS`, and `FILL_REVIEW_REQUIRED` are acquisition/review errors and cannot be persisted as a `STOPPED_EARLY` attempt outcome. `FILL_STALE` is reserved for server-verified expired recovery so that the existing single run-level error field deterministically distinguishes `RECOVERED_AFTER_LOSS`. A normal stale observation either reaches server-verified `RECOVER_EXPIRED` after expiry or uses another exact permitted stopping code appropriate to the actual normal-finalize failure; it does not persist `FILL_STALE` through normal `FINALIZE`.
 
-On `STOPPED_EARLY`, canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results; exactly one stopping step is `FAILED` with the same exact stopping error; and every later untouched step is terminalized as `NOT_ATTEMPTED` with a null step error. All attempt steps are terminal before the transition. The transaction persists the same exact stopping code to `ApplicationRun.errorCategory`. No free-form error or separate outcome storage is allowed.
+`STOPPED_EARLY` has exactly two valid deterministic step patterns. The writer/coordinator selects the pattern from its known operation phase, not from the error name alone; the same permitted error, including `FILL_TARGET_TRUST_LOST` or `FILL_INTERNAL`, can occur on either side of the field-start boundary.
+
+**PRE-FIELD STOP** applies when the stopping condition is definitively known before the next field operation begins. Canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results, followed only by `NOT_ATTEMPTED` steps with null step errors. No `FAILED` field is required or permitted for the stop because no remaining field operation began. Examples include policy denial, target/trust loss at the pre-field trust checkpoint, or an internal failure between field operations.
+
+**IN-FIELD STOP** applies after a field operation has begun but cannot complete or be verified safely. Canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results; exactly one current stopping step is `FAILED` with the exact stopping error; and every later untouched step is `NOT_ATTEMPTED` with a null step error. Examples include unexpected mutation, write failure, target/trust loss during the active operation, or an internal failure during the active operation.
+
+For either pattern, all attempt steps are terminal before the transition, and the transaction persists exactly one attempt-level stopping code to `ApplicationRun.errorCategory`. A normal finalization uses `NOT_ATTEMPTED` only when the coordinator knows that field never began and uses `FAILED` only when the field operation began but did not complete or verify safely. No free-form error or separate outcome storage is allowed.
 
 Expired recovery:
 
@@ -711,6 +718,8 @@ Result mapping uses existing fields:
 | `FAILED` | `FAILED` | `FAILED` | one closed fill error |
 | `NOT_ATTEMPTED` | `SKIPPED` | `NOT_ATTEMPTED` | `null` |
 
+`NOT_ATTEMPTED` is reserved exclusively for a field the coordinator knows never began. In normal `FINALIZE`, `FAILED` is used only for the current field whose operation began but could not complete or verify safely. The separate `RECOVER_EXPIRED` rule remains conservative: `FAILED / FILL_STALE` marks a server-unresolved step after authority loss as unverified and does not assert whether its field operation began.
+
 `redactedValueSummary` contains only those closed literals and no free-form text. Steps contain no proposal, current value, selector, raw option value, private question text, evidence, provenance, page detail, or arbitrary exception.
 
 Attempt outcomes are:
@@ -726,10 +735,10 @@ No outcome column, result JSON, attempt model, or free-form error is added. Term
 | Derived outcome | `ApplicationRun` terminal state | `ApplicationRun.errorCategory` | Exact current-attempt steps |
 |---|---|---|---|
 | `COMPLETED` | `READY_FOR_USER_SUBMISSION` | `null` | all terminal as `FILLED`, `PRESERVED_EXISTING`, or `MANUAL`; no failed or untouched step |
-| `STOPPED_EARLY` | `READY_FOR_USER_SUBMISSION` | exactly one code in `STOPPED_EARLY_FILL_ERRORS` | terminal ordered prefix, one matching `FAILED` stop, then only `NOT_ATTEMPTED` with null errors |
+| `STOPPED_EARLY` | `READY_FOR_USER_SUBMISSION` | exactly one code in `STOPPED_EARLY_FILL_ERRORS` | either a safe terminal prefix followed only by `NOT_ATTEMPTED` with null errors (pre-field), or that prefix followed by one matching `FAILED` stop and then only `NOT_ATTEMPTED` with null errors (in-field) |
 | `RECOVERED_AFTER_LOSS` | `READY_FOR_USER_SUBMISSION` | `FILL_STALE` | all terminal; earlier safe terminal results may remain, and every server-unresolved step becomes `FAILED / FILL_STALE`; no other step error |
 
-`ApplicationRun.errorCategory` is the single durable attempt-level discriminator. `FILL_STALE` is exclusive to expired recovery, while the permitted normal stopping subset is closed and excludes acquisition/review errors. GET validates the whole tuple before returning a derived terminal outcome; a contradictory tuple produces closed `FILL_INTERNAL`/outcome-unavailable status instead of a guessed outcome.
+`ApplicationRun.errorCategory` is the single durable attempt-level discriminator. `FILL_STALE` is exclusive to expired recovery, while the permitted normal stopping subset is closed and excludes acquisition/review errors. Field-attempt timing is represented by the validated step shape, not inferred from the error code. GET validates the whole tuple against either valid `STOPPED_EARLY` pattern before returning a derived terminal outcome; mixed or contradictory shapes produce closed `FILL_INTERNAL`/outcome-unavailable status instead of a guessed outcome.
 
 Minimal closed errors are:
 
@@ -992,7 +1001,7 @@ Likely modify:
 
 Execution-token files and `APPLICATION_READ` semantics remain read-only.
 
-RED cases include every policy/review/version/hash gate, `fillAttemptId === null`, simultaneous starts, zero eligible fields returning `FILL_NO_ELIGIBLE_FIELDS` without any attempt/lease/state/step/audit mutation, lost-response behavior, strictly read-only GET, exact existing-field derivation of all three attempt outcomes, closed failure for contradictory persistence, live-lease rejection of `RECOVER_EXPIRED`, database-time expired recovery through PATCH, exact FINALIZE step sets, `COMPLETED` with null run error, the exact permitted `STOPPED_EARLY` subset with deterministic `NOT_ATTEMPTED` remainder, acquisition-error rejection as an attempt stop, `FILL_STALE` reserved for recovered loss, policy/global-disable finalization and recovery, pre-fill review resolution to `READY`, post-fill review resolution to `READY_FOR_USER_SUBMISSION`, cancellation lease invalidation, replay/material state behavior, and privacy-safe persistence.
+RED cases include every policy/review/version/hash gate, `fillAttemptId === null`, simultaneous starts, zero eligible fields returning `FILL_NO_ELIGIBLE_FIELDS` without any attempt/lease/state/step/audit mutation, lost-response behavior, strictly read-only GET, exact existing-field derivation of all three attempt outcomes, closed failure for contradictory persistence, live-lease rejection of `RECOVER_EXPIRED`, database-time expired recovery through PATCH, exact FINALIZE step sets, `COMPLETED` with null run error, the exact permitted `STOPPED_EARLY` subset, pre-field policy denial with no false `FAILED` field, pre-field target/trust failure with every untouched remainder `NOT_ATTEMPTED`, in-field write failure with exactly one `FAILED` stopping step, in-field unexpected mutation with exactly one `FAILED` stopping step, GET derivation from both valid stop shapes, fail-closed mixed/contradictory stop shapes, acquisition-error rejection as an attempt stop, `FILL_STALE` reserved for recovered loss, policy/global-disable finalization and recovery, pre-fill review resolution to `READY`, post-fill review resolution to `READY_FOR_USER_SUBMISSION`, cancellation lease invalidation, replay/material state behavior, and privacy-safe persistence.
 
 Completion requires migration, unit, route, and real PostgreSQL race suites.
 
@@ -1032,7 +1041,7 @@ Goal: prove the complete Human-Submit workflow and document only verified behavi
 
 Likely create integrated Chromium and PostgreSQL tests. Likely update `README.md`, `docs/CONTROLLED_APPLICATION_AUTOMATION.md`, `docs/APPLICATION_BROWSER_COMPANION.md`, and browser fixtures.
 
-RED cases cover review-before-fill, one automated attempt, zero-eligible non-consumption followed by manual submission and exact attestation from `READY`, optional manual bypass without attempt consumption, occupied preservation, applicant-event invalidation, read-only recovery status, explicit PATCH crash recovery after policy/global shutdown, safe finalization after shutdown, deterministic derivation of `COMPLETED`, `STOPPED_EARLY`, and `RECOVERED_AFTER_LOSS`, contradictory-persistence closed failure, cancellation lease cleanup, exact replay, post-fill material reinspection and fresh review returning to `READY_FOR_USER_SUBMISSION` without fill restoration, human attestation, no submission path, privacy, and the lock-race matrix.
+RED cases cover review-before-fill, one automated attempt, zero-eligible non-consumption followed by manual submission and exact attestation from `READY`, optional manual bypass without attempt consumption, occupied preservation, applicant-event invalidation, read-only recovery status, explicit PATCH crash recovery after policy/global shutdown, safe finalization after shutdown, deterministic derivation of `COMPLETED`, both valid `STOPPED_EARLY` shapes, and `RECOVERED_AFTER_LOSS`, pre-field policy and trust stops without false failed fields, in-field write and unexpected-mutation stops with exactly one failed field, mixed/contradictory stop-shape closed failure, cancellation lease cleanup, exact replay, post-fill material reinspection and fresh review returning to `READY_FOR_USER_SUBMISSION` without fill restoration, human attestation, no submission path, privacy, and the lock-race matrix.
 
 Completion requires unit, browser, PostgreSQL, typecheck, lint, build, and diff-check success.
 
@@ -1094,7 +1103,7 @@ The implemented feature is acceptable only when all of the following are true:
 - Unexpected events, mismatch, detachment, and target loss stop safely.
 - Expired `FILLING` recovers only to `READY_FOR_USER_SUBMISSION`.
 - Steps contain only closed safe outcomes and errors.
-- Normal `COMPLETED` persists a null run error; normal `STOPPED_EARLY` persists exactly one permitted stopping error and terminalizes untouched remainder as `NOT_ATTEMPTED`; recovered loss persists `FILL_STALE` and terminalizes unresolved steps as `FAILED / FILL_STALE`.
+- Normal `COMPLETED` persists a null run error; normal `STOPPED_EARLY` persists exactly one permitted run-level stopping error and uses either the deterministic pre-field shape with no false `FAILED` field or the deterministic in-field shape with exactly one matching `FAILED` field; every known untouched remainder is `NOT_ATTEMPTED` with a null step error; recovered loss persists `FILL_STALE` and terminalizes unresolved steps as `FAILED / FILL_STALE`.
 - Cancellation from `FILLING` retains `fillAttemptId`, invalidates the lease, prevents later writes, and remains terminal without recovery.
 - Completion from exactly `READY` or `READY_FOR_USER_SUBMISSION` requires the exact user attestation.
 - No Apply Pilot submit path exists.
@@ -1102,4 +1111,4 @@ The implemented feature is acceptable only when all of the following are true:
 
 ## 28. Spec consistency statement
 
-This specification contains one and only one automated fill opportunity per `ApplicationRun`. No state transition, reinspection result, review resolution, lease recovery, cancellation, UI action, or backend route clears or replaces a previously assigned `fillAttemptId`. Pre-fill review resolves to `READY` only when `fillAttemptId === null`. Post-fill material reinspection and fresh review resolve back to `READY_FOR_USER_SUBMISSION` when `fillAttemptId !== null`, preserving manual completion and personal-submission attestation without creating a second fill path. A reviewed `READY` run—including a zero-eligible or deliberate manual-bypass run—may reach `COMPLETED_BY_USER` only through the same exact authenticated personal-submission attestation and may validly retain `fillAttemptId === null`. GET fill-attempt is strictly read only and derives terminal outcome from verified existing run/error/step persistence; contradictory persistence produces only closed failure. Expired recovery mutates only through `PATCH action: RECOVER_EXPIRED` after database-time proof. Capability shutdown denies acquisition and the next employer write but not authority-reducing `FINALIZE` or verified recovery. Zero eligible fields cause no persistent acquisition change. Remaining employer fields are completed manually by the user, and Apply Pilot never submits.
+This specification contains one and only one automated fill opportunity per `ApplicationRun`. No state transition, reinspection result, review resolution, lease recovery, cancellation, UI action, or backend route clears or replaces a previously assigned `fillAttemptId`. Pre-fill review resolves to `READY` only when `fillAttemptId === null`. Post-fill material reinspection and fresh review resolve back to `READY_FOR_USER_SUBMISSION` when `fillAttemptId !== null`, preserving manual completion and personal-submission attestation without creating a second fill path. A reviewed `READY` run—including a zero-eligible or deliberate manual-bypass run—may reach `COMPLETED_BY_USER` only through the same exact authenticated personal-submission attestation and may validly retain `fillAttemptId === null`. GET fill-attempt is strictly read only and derives terminal outcome from verified existing run/error/step persistence; a normal `STOPPED_EARLY` shape records no failed field before field start and exactly one failed field after an in-field stop, while mixed or contradictory persistence produces only closed failure. Expired recovery mutates only through `PATCH action: RECOVER_EXPIRED` after database-time proof. Capability shutdown denies acquisition and the next employer write but not authority-reducing `FINALIZE` or verified recovery. Zero eligible fields cause no persistent acquisition change. Remaining employer fields are completed manually by the user, and Apply Pilot never submits.
