@@ -19,7 +19,7 @@ any employer-write capability.
 ## Global Constraints
 
 - Implement Increment 1 only: expose `Approve`, `Reject`, and `Resolve review` on the authenticated Apply Pilot browser-control page.
-- The frozen design baseline is `bae9a8036c5f3250c54b556dcb649c697658853e` on `feature/form-inspection-answer-packet`; the approved design SHA-256 is `78b1042e2aafa541188505761cfaa9ca488ff7fa0d5d99c61d9ded7311bb7409`. Implementation must start from the exact committed-plan SHA `2e50af33cb939286da5f7354e1e66ecebb570b53`.
+- The frozen design baseline is `bae9a8036c5f3250c54b556dcb649c697658853e` on `feature/form-inspection-answer-packet`; the approved design SHA-256 is `78b1042e2aafa541188505761cfaa9ca488ff7fa0d5d99c61d9ded7311bb7409`. The plan never hardcodes its own commit as the implementation base: the human-authorized execution prompt must supply the concrete exact `EXPECTED_INCREMENT_1_PLAN_SHA`, and the executor must verify and capture it under the “Execution Start Checkpoint” before any edit.
 - Review authority remains server-side. The UI may offer actions, but only the existing authenticated routes may approve, reject, or resolve review.
 - Render answer mutation controls only when `answer.status === "PENDING" && answer.disposition === "PROPOSABLE"`.
 - Never render answer mutation controls for `MANUAL_ONLY`, `EXCLUDED`, `UNSUPPORTED`, `APPROVED`, or `REJECTED` answers.
@@ -113,9 +113,22 @@ export const REVIEW_REASON_LABELS: Record<PlanReviewReason, string> = {
 };
 
 export type PendingReviewMutation =
-  | { type: "ANSWER"; answerId: string; status: "APPROVED" | "REJECTED" }
-  | { type: "RESOLVE" }
+  | Readonly<{ type: "ANSWER"; answerId: string; status: "APPROVED" | "REJECTED" }>
+  | Readonly<{ type: "RESOLVE" }>
   | null;
+
+export type AnswerReviewMutationSnapshot = Readonly<{
+  answerId: string;
+  requestedStatus: "APPROVED" | "REJECTED";
+  answerPacketVersion: number;
+}>;
+
+export type ResolveReviewMutationSnapshot = Readonly<{
+  stateVersion: number;
+  answerPacketVersion: number;
+  packetHash: string;
+  acknowledgedReviewReasons: readonly PlanReviewReason[];
+}>;
 
 export type SameOriginReviewRequest = Readonly<{
   url: string;
@@ -135,6 +148,21 @@ export function isResolveReviewEligible(input: {
   run: ReviewRunAuthority | null;
   packet: AnswerPacket | null;
   trusted: boolean;
+}): boolean;
+
+export function isAnswerReviewPostconditionCurrent(input: {
+  phase: "idle" | "loading" | "loaded" | "error";
+  unverified: boolean;
+  packet: AnswerPacket | null;
+  snapshot: AnswerReviewMutationSnapshot;
+}): boolean;
+
+export function isResolveReviewPostconditionCurrent(input: {
+  phase: "idle" | "loading" | "loaded" | "error";
+  unverified: boolean;
+  run: ReviewRunAuthority | null;
+  packet: AnswerPacket | null;
+  snapshot: ResolveReviewMutationSnapshot;
 }): boolean;
 
 export function parseApplicationRunReviewResponse(
@@ -183,6 +211,8 @@ JSON.stringify({
 
 Neither builder accepts a proposal, question, packet answer collection, browser command, or binding callback. `buildResolveReviewRequest` snapshots the ordered reasons with a new array so later object mutation cannot alter the serialized authority.
 
+The postcondition predicates are pure and deliberately separate “the current authority is trusted” from “the current authority still confirms this action.” `isAnswerReviewPostconditionCurrent` returns true only when `phase === "loaded"`, `unverified === false`, the packet is non-null with the snapshot `answerPacketVersion`, and the exact snapshot answer exists with `status === requestedStatus`, `reviewedByUser === true`, and non-null `reviewedAt`. `isResolveReviewPostconditionCurrent` returns true only when `phase === "loaded"`, `unverified === false`, run and packet are non-null, packet version/hash equal the snapshot, packet `reviewedAt` is non-null, and run state is `READY`. The resolve snapshot retains the exact pre-POST `stateVersion` and cloned ordered `acknowledgedReviewReasons` used in the request even though those pre-transition values are not expected to equal the post-transition run.
+
 The component uses one review state object so a run from one read cycle cannot be paired in React state with a packet from another completed cycle:
 
 ```ts
@@ -215,11 +245,21 @@ async function fetchReviewAuthority(
 
 `fetchReviewAuthority(expectedGeneration?: number | null)` starts both same-origin GETs with one abort signal, parses both responses, checks both identities against the immutable `runId`, and commits `{ run, packet }` once only after both reads pass. Every awaited boundary rechecks generation and sequence before any effect. Generation inactivity takes precedence and returns `INACTIVE`; otherwise, an active invocation whose sequence is no longer current returns `SUPERSEDED`. An automatic packet/review refresh may supersede a mutation-triggered refresh; the older call returns `SUPERSEDED`, and its mutation caller must not publish stale success. Separate endpoints can race with server mutations, so the UI treats the resulting values as a request snapshot while the POST routes retain the final exact-version/hash authority and return `409` on any mismatch.
 
+**MUTATION SUCCESS COPY ONLY AFTER:**
+
+1. **COMMITTED AUTHORITATIVE REFRESH**
+2. **AND THE FRESH CURRENT AUTHORITY CONFIRMS THE EXACT MUTATION POSTCONDITION**
+
+A valid POST response alone is insufficient. `COMMITTED` alone is insufficient. The current server-authoritative run and packet are always what the UI renders, even when they no longer confirm action-specific success.
+
 ## Failure and Lifecycle Contract
 
 | Outcome | Local data | Controls | Follow-on behavior | Notice |
 |---|---|---|---|---|
-| Valid mutation response and refresh returns `COMMITTED` | Replace run and packet atomically | Recomputed from refreshed values | None beyond the one refresh | Success only after committed authoritative refresh |
+| Valid answer mutation response, refresh returns `COMMITTED`, and the fresh authority confirms the answer snapshot | Replace run and packet atomically | Recomputed from refreshed values | Release the mutation lock after postcondition handling | Bounded answer success |
+| Valid resolve response, refresh returns `COMMITTED`, and the fresh authority confirms the resolve snapshot | Replace run and packet atomically | Recomputed from refreshed values | Release the mutation lock after postcondition handling | Bounded resolve success |
+| Refresh returns `COMMITTED`, but the fresh answer authority does not confirm the mutation snapshot | Keep the newly committed run/packet trusted | Recomputed from current authority | Release the mutation lock after warning handling | `Review data changed after the action. Review the current packet before continuing.` |
+| Refresh returns `COMMITTED`, but the fresh resolve authority does not confirm the mutation snapshot | Keep the newly committed run/packet trusted | Recomputed from current authority | Release the mutation lock after warning handling | `Review authority changed after the action. Review the current run and packet before continuing.` |
 | Valid mutation response and refresh returns `FAILED` | Apply the documented active read-failure state | All review mutations inert until trusted data is loaded | No mutation success; user follows the read-failure recovery | Authority-read failure notice only |
 | Valid mutation response and refresh returns `SUPERSEDED` | Only the newer read may affect local data | Determined only by the newer read | No stale mutation success | None from the superseded mutation flow |
 | Valid mutation response and refresh returns `INACTIVE` | No state or ref update | Component is inactive/gone | No success, notice, or follow-on effect | None |
@@ -234,6 +274,40 @@ async function fetchReviewAuthority(
 
 `reviewLoad.unverified` is distinct from the browser companion freshness label. A successful owned packet GET may be review-authoritative even before a companion status is accepted; a failed inspection publication or uncertain review mutation marks that review data unverified until the next successful run+packet read.
 
+### Global review-mutation lock lifecycle
+
+The component owns exactly one shared lock state/ref and one active mutation-controller ref:
+
+```ts
+const [pendingReviewMutation, setPendingReviewMutation] =
+  useState<PendingReviewMutation>(null);
+const pendingReviewMutationRef = useRef<PendingReviewMutation>(null);
+const mutationAbortControllerRef = useRef<AbortController | null>(null);
+```
+
+Every answer or resolve dispatch creates one immutable local `mutation: Exclude<PendingReviewMutation, null>`, then synchronously acquires the global lock before the POST:
+
+```ts
+pendingReviewMutationRef.current = mutation;
+setPendingReviewMutation(mutation);
+```
+
+The exact same object identity remains in the ref through the mutation POST, response parsing, any required `409` authoritative refresh, the post-success authoritative refresh, and final `COMMITTED`/`FAILED`/`SUPERSEDED`/`INACTIVE` handling. No second review mutation may start while the ref is non-null. Every dispatched mutation owns one generation-safe `finally` release:
+
+```ts
+finally {
+  if (
+    activeComponentGenerationRef.current === expectedGeneration &&
+    pendingReviewMutationRef.current === mutation
+  ) {
+    pendingReviewMutationRef.current = null;
+    setPendingReviewMutation(null);
+  }
+}
+```
+
+The identity check is mandatory even though serialization prevents a second mutation in one active generation; a stale settlement must never clear a lock owned by another component generation. Component cleanup first invalidates the active generation, then synchronously assigns `pendingReviewMutationRef.current = null`, then aborts and clears the active mutation-controller ref, and performs no React state update after invalidation. Therefore cleanup, rather than a late `finally`, releases the ref after unmount; the generation check prevents late `setPendingReviewMutation(null)`.
+
 ## Task 1: Pure Review Authority, Eligibility, Request, and Response Contracts
 
 **Files:**
@@ -242,7 +316,7 @@ async function fetchReviewAuthority(
 
 **Interfaces:**
 - Consumes: existing `AnswerPacket`, `AnswerPacketAnswer`, `packetResponseSchema`, `PLAN_REVIEW_REASONS`, and Prisma `ApplicationRunState` as a type.
-- Produces: `ReviewRunAuthority`, `REVIEW_REASON_LABELS`, `PendingReviewMutation`, `SameOriginReviewRequest`, `isAnswerReviewEligible`, `isResolveReviewEligible`, `parseApplicationRunReviewResponse`, `buildAnswerReviewRequest`, `parseAnswerReviewResponse`, and `buildResolveReviewRequest` with the signatures in “Planned Interfaces.”
+- Produces: `ReviewRunAuthority`, `REVIEW_REASON_LABELS`, immutable `PendingReviewMutation`, `AnswerReviewMutationSnapshot`, `ResolveReviewMutationSnapshot`, `SameOriginReviewRequest`, `isAnswerReviewEligible`, `isResolveReviewEligible`, `isAnswerReviewPostconditionCurrent`, `isResolveReviewPostconditionCurrent`, `parseApplicationRunReviewResponse`, `buildAnswerReviewRequest`, `parseAnswerReviewResponse`, and `buildResolveReviewRequest` with the signatures in “Planned Interfaces.”
 
 - [ ] **Step 1: Add RED pure tests for answer eligibility and exact review request construction.**
 
@@ -264,6 +338,8 @@ async function fetchReviewAuthority(
 - [ ] **Step 2: Add RED pure tests for run authority, review-reason labels, mutation responses, resolve readiness, and exact resolve bodies.**
 
   Test a valid `{ run }` response projecting only the expected run ID, known state, safe nonnegative `stateVersion`, and ordered `PLAN_REVIEW_REASONS`. Include unrelated legitimate `ApplicationRunDto` fields inside `run` and assert they are accepted but excluded from the returned projection. Reject a wrong run ID, unknown state, negative/fractional/unsafe version, duplicate reason, unknown reason, noncanonical reason order, missing run, malformed top-level value, and every unexpected top-level key. Test all six `PLAN_REVIEW_REASONS` against `REVIEW_REASON_LABELS`: every identifier maps to exactly its specified non-empty label, the mapping has no missing or extra keys, an unknown identifier cannot be presented, and mapping the server-owned `reviewReasons` array preserves its original order. Test answer-response rejection for wrong run ID, wrong answer ID, wrong status, `reviewedByUser !== true`, null/malformed review time, malformed JSON values passed to the parser, and extra top-level/answer keys. Test resolve eligibility as false until all of: trusted data, `run.state === "REVIEW_REQUIRED"`, non-null positive-version packet, `packet.reviewedAt === null`, and `readyForRunResolution === true`; test exact ordered body and absence of proposal/answer data.
+
+  Add table-driven pure postcondition tests using the exact signatures in “Planned Interfaces.” For answers, require loaded/trusted state, the same packet version, exact answer ID, requested status, `reviewedByUser === true`, and non-null `reviewedAt`; make each missing/mismatched condition independently false. For resolve, require loaded/trusted state, non-null run/packet, the same packet version/hash, non-null packet `reviewedAt`, and `run.state === "READY"`; make each missing/mismatched condition independently false. Include changed packet version/hash and every other run state as false without marking the supplied current authority untrusted.
 
   ```ts
   assert.deepEqual(JSON.parse(resolve.init.body), {
@@ -292,7 +368,7 @@ async function fetchReviewAuthority(
 
   Use a closed list of all current `ApplicationRunState` values and `z.enum(PLAN_REVIEW_REASONS)`. Refine `reviewReasons` so each reason is unique and its index in `PLAN_REVIEW_REASONS` strictly increases. Define the top-level response as `z.object({ run: runAuthoritySchema }).strict()`. Define `runAuthoritySchema` with the minimum required authority fields `id`, `state`, `stateVersion`, and `reviewReasons`, followed explicitly by `.strip()`: legitimate unrelated `ApplicationRunDto` fields are accepted and stripped, while the returned value is only the narrow authority projection. Check the parsed ID against `expectedRunId` and clone `reviewReasons`. Reuse this same parser for the run GET and successful resolve POST. Define the answer mutation response as strict `{ answer: { id, runId, status, reviewedByUser, reviewedAt, sensitive, valueRedacted } }` and compare its identity/status to the request snapshot. Build request objects from scalar inputs only. Return resolve eligibility false for already reviewed packets and every state other than `REVIEW_REQUIRED`.
 
-  Add the one closed presentation mapping exactly as declared in “Planned Interfaces.” It contains only the six `PlanReviewReason` identifiers and these exact strings; the component renders `run.reviewReasons.map((reason) => REVIEW_REASON_LABELS[reason])`, so display order remains server-owned and unknown identifiers cannot pass the run parser. Do not add fallback text or additional reason identifiers.
+  Add the one closed presentation mapping exactly as declared in “Planned Interfaces.” It contains only the six `PlanReviewReason` identifiers and these exact strings; the component renders `run.reviewReasons.map((reason) => REVIEW_REASON_LABELS[reason])`, so display order remains server-owned and unknown identifiers cannot pass the run parser. Do not add fallback text or additional reason identifiers. Implement both postcondition predicates as pure boolean projections over their exact inputs; they do not mutate `ReviewLoad`, manufacture authority, or decide notices.
 
   ```ts
   export function isAnswerReviewEligible(
@@ -312,6 +388,43 @@ async function fetchReviewAuthority(
       input.packet.reviewedAt === null &&
       input.packet.summary.readyForRunResolution;
   }
+
+  export function isAnswerReviewPostconditionCurrent(input: {
+    phase: "idle" | "loading" | "loaded" | "error";
+    unverified: boolean;
+    packet: AnswerPacket | null;
+    snapshot: AnswerReviewMutationSnapshot;
+  }): boolean {
+    if (
+      input.phase !== "loaded" ||
+      input.unverified ||
+      input.packet === null ||
+      input.packet.answerPacketVersion !== input.snapshot.answerPacketVersion
+    ) return false;
+
+    const answer = input.packet.answers.find(
+      (entry) => entry.id === input.snapshot.answerId
+    );
+    return answer?.status === input.snapshot.requestedStatus &&
+      answer.reviewedByUser === true &&
+      answer.reviewedAt !== null;
+  }
+
+  export function isResolveReviewPostconditionCurrent(input: {
+    phase: "idle" | "loading" | "loaded" | "error";
+    unverified: boolean;
+    run: ReviewRunAuthority | null;
+    packet: AnswerPacket | null;
+    snapshot: ResolveReviewMutationSnapshot;
+  }): boolean {
+    return input.phase === "loaded" &&
+      !input.unverified &&
+      input.run?.state === "READY" &&
+      input.packet !== null &&
+      input.packet.answerPacketVersion === input.snapshot.answerPacketVersion &&
+      input.packet.packetHash === input.snapshot.packetHash &&
+      input.packet.reviewedAt !== null;
+  }
   ```
 
 - [ ] **Step 5: Run the focused test and verify GREEN.**
@@ -322,7 +435,7 @@ async function fetchReviewAuthority(
   node --import tsx --test tests/application-browser-control-presentation.test.ts
   ```
 
-  Expected: PASS, including the new eligibility, exact reason-label mapping/order, request-body, precise run-parser projection, response-parser, and resolve-contract cases.
+  Expected: PASS, including the new eligibility, exact reason-label mapping/order, request-body, precise run-parser projection, response-parser, answer/resolve postcondition predicates, and resolve-contract cases.
 
 - [ ] **Step 6: Run neighboring contract regressions.**
 
@@ -359,8 +472,8 @@ async function fetchReviewAuthority(
 - Test: `tests/application-browser-control-presentation.test.ts:41-188,228-324,961-1185`
 
 **Interfaces:**
-- Consumes: `ReviewRunAuthority`, `PendingReviewMutation`, `isAnswerReviewEligible`, `buildAnswerReviewRequest`, `parseAnswerReviewResponse`, and existing `parseAnswerPacketResponse` from Task 1.
-- Produces: component-local `ReviewLoad`, `ReviewAuthorityRefreshResult`, `fetchReviewAuthority(expectedGeneration?: number | null): Promise<ReviewAuthorityRefreshResult>`, `invalidateReviewAuthority(...)`, and `reviewAnswer(answer, status)` behavior; no new exported production API.
+- Consumes: `ReviewRunAuthority`, immutable `PendingReviewMutation`, `AnswerReviewMutationSnapshot`, `isAnswerReviewEligible`, `isAnswerReviewPostconditionCurrent`, `buildAnswerReviewRequest`, `parseAnswerReviewResponse`, and existing `parseAnswerPacketResponse` from Task 1.
+- Produces: component-local `ReviewLoad`, `ReviewAuthorityRefreshResult`, `fetchReviewAuthority(expectedGeneration?: number | null): Promise<ReviewAuthorityRefreshResult>`, `invalidateReviewAuthority(...)`, `pendingReviewMutation`/`pendingReviewMutationRef`, `mutationAbortControllerRef`, and `reviewAnswer(answer, status)` behavior with the exact lock lifecycle above; no new exported production API.
 
 - [ ] **Step 1: Upgrade the mounted harness and add RED visibility/request tests.**
 
@@ -380,18 +493,24 @@ async function fetchReviewAuthority(
 
   Use route-aware queued/deferred fetch responses to cover all of the following:
 
-  1. A valid answer-review response followed by a refresh returning `COMMITTED` triggers exactly one new run GET and one new packet GET; only the committed refreshed authority changes the displayed status/counts and produces the success notice.
-  2. A valid answer-review response followed by a current refresh failure returns `FAILED`, applies the documented authority failure state, and produces no mutation success notice.
-  3. A valid answer-review response whose refresh is overtaken by a newer automatic or manual authority read returns `SUPERSEDED`; only the newer read may commit, and the mutation flow produces no stale success notice.
-  4. A valid answer-review response whose refresh becomes inactive through unmount/generation invalidation returns `INACTIVE` and produces no state/ref update, success notice, or follow-on behavior.
-  5. Prove live stale-action safety with one primary mounted sequence: (A) render current answer A and its enabled action; (B) begin an authority replacement/refetch and hold both new reads while old content remains visible; (C) while held, assert `reviewLoad` is loading/unverified, the old visible action is disabled/inert, and activation creates zero POSTs; (D) complete the read with a new packet version and answer B identity; (E) assert answer A's action is gone, only answer B's current action dispatches, and its request contains B's answer ID and the new packet version.
-  6. Exercise the `currentAnswer !== answer` dispatch guard directly at the mounted harness's existing deferred React commit boundary: after the authority ref has advanced to answer B but while the old answer A render is still live, activate A's still-connected action and assert zero POSTs. Do not remove a node or use a detached DOM event as proof, and do not add a production abstraction solely for this test.
-  7. `409` marks old review data untrusted before starting one run+packet refresh; a held refresh reuses the live pending-replacement proof above, and a successful replacement removes the old answer action.
-  8. `401`, `403`, and `404` clear run/packet review authority and render the bounded corresponding notice.
-  9. `429`, representative `500` and `503`, and a network rejection preserve the displayed packet text but mark it unverified and disable all review mutations without changing displayed answer status.
-  10. A `200` whose `json()` rejects, wrong-run answer DTO, wrong-answer DTO, wrong-status DTO, or strict-parser-invalid DTO produces no success notice, no local status mutation, and inert review data.
-  11. Unmount before a valid or rejected answer mutation settles; settlement performs no state update and adds no run GET, packet GET, resolve POST, recovery action, notice, or binding invocation.
-  12. Install a binding spy, complete approve and reject flows, and assert it receives zero commands. Serialize all binding inputs and assert absence of the answer ID, proposal sentinel, packet hash, `APPROVED`, `REJECTED`, and review request URL.
+  1. A valid approve response followed by `COMMITTED` refresh of the same packet/answer as `APPROVED`, with `reviewedByUser === true` and non-null `reviewedAt`, triggers exactly one new run GET and packet GET; only that confirmed fresh postcondition produces approve success.
+  2. A valid reject response followed by `COMMITTED` refresh of the same packet/answer as `REJECTED`, with `reviewedByUser === true` and non-null `reviewedAt`, produces reject success.
+  3. A valid answer response followed by `COMMITTED` refresh with a new packet version keeps the new current authority trusted but produces no stale action success; show a `WARNING` notice with text exactly `Review data changed after the action. Review the current packet before continuing.`
+  4. A valid answer response followed by `COMMITTED` refresh of the same packet with the answer missing, status mismatched, `reviewedByUser !== true`, or null `reviewedAt` keeps current authority trusted but produces the same bounded changed-data warning and no action success.
+  5. A valid answer-review response followed by a current refresh failure returns `FAILED`, applies the documented authority failure state, produces no mutation success, and releases the mutation lock only after failure handling; authority remains inert independently of the released lock.
+  6. A valid answer-review response whose refresh is overtaken by a newer automatic or manual authority read returns `SUPERSEDED`; only the newer read may commit, the old mutation produces no stale success, and its identity-matched lock releases after result handling so only newer authority controls eligibility.
+  7. A valid answer-review response whose refresh becomes inactive through unmount/generation invalidation returns `INACTIVE` and produces no state/ref update, success notice, or follow-on behavior; cleanup clears the lock ref synchronously and aborts the controller without `setState`.
+  8. A pending approve synchronously disables every answer and resolve action; a second review mutation produces zero POSTs.
+  9. After approve plus confirmed `COMMITTED` postcondition handling, the mutation lock releases and newly authoritative eligible controls can dispatch again.
+  10. After an approve/reject POST failure, the lock releases in `finally`; the separately applied authority state alone determines whether actions remain disabled.
+  11. A `409` holds the mutation lock throughout its authoritative refresh, permits no second mutation during that refresh, and releases only after the complete conflict flow finishes.
+  12. Prove live stale-action safety with one primary mounted sequence: (A) render current answer A and its enabled action; (B) begin an authority replacement/refetch and hold both new reads while old content remains visible; (C) while held, assert `reviewLoad` is loading/unverified, the old visible action is disabled/inert, and activation creates zero POSTs; (D) complete the read with a new packet version and answer B identity; (E) assert answer A's action is gone, only answer B's current action dispatches, and its request contains B's answer ID and the new packet version.
+  13. Exercise the `currentAnswer !== answer` dispatch guard directly at the mounted harness's existing deferred React commit boundary: after the authority ref has advanced to answer B but while the old answer A render is still live, activate A's still-connected action and assert zero POSTs. Do not remove a node or use a detached DOM event as proof, and do not add a production abstraction solely for this test.
+  14. `401`, `403`, and `404` clear run/packet review authority and render the bounded corresponding notice.
+  15. `429`, representative `500` and `503`, and a network rejection preserve the displayed packet text but mark it unverified and disable all review mutations without changing displayed answer status.
+  16. A `200` whose `json()` rejects, wrong-run answer DTO, wrong-answer DTO, wrong-status DTO, or strict-parser-invalid DTO produces no success notice, no local status mutation, and inert review data.
+  17. Unmount before a valid or rejected answer mutation settles; cleanup invalidates generation first, clears `pendingReviewMutationRef` synchronously, aborts the active mutation controller, and settlement performs no `setState`, run GET, packet GET, resolve POST, recovery action, notice, or binding invocation.
+  18. Install a binding spy, complete approve and reject flows, and assert it receives zero commands. Serialize all binding inputs and assert absence of the answer ID, proposal sentinel, packet hash, `APPROVED`, `REJECTED`, and review request URL.
 
   Use React-captured `console.error` assertions only if React emits an actual post-unmount update warning in this test environment; the primary proof is the absence of every follow-on effect above.
 
@@ -413,7 +532,7 @@ async function fetchReviewAuthority(
 
 - [ ] **Step 5: Implement globally serialized answer mutations without optimistic authority.**
 
-  Add `pendingReviewMutation` state plus a synchronously maintained `pendingReviewMutationRef` so two clicks in one React turn cannot dispatch twice. Add a mutation abort controller and abort it during component cleanup. At dispatch, reread `reviewLoadRef.current`, require loaded/non-unverified data, require the captured answer object to be the same current packet member, and rerun `isAnswerReviewEligible`. Snapshot the exact scalar request fields before `fetch`.
+  Add `pendingReviewMutation` state plus a synchronously maintained `pendingReviewMutationRef` so two clicks in one React turn cannot dispatch twice. At dispatch, reread `reviewLoadRef.current`, require loaded/non-unverified data, require the captured answer object to be the same current packet member, and rerun `isAnswerReviewEligible`. Before `fetch`, create one immutable mutation identity and exact authoritative postcondition snapshot, then synchronously acquire the lock:
 
   ```ts
   const current = reviewLoadRef.current;
@@ -422,12 +541,56 @@ async function fetchReviewAuthority(
     pendingReviewMutationRef.current !== null ||
     current.phase !== "loaded" ||
     current.unverified ||
+    current.packet === null ||
     currentAnswer !== answer ||
     !isAnswerReviewEligible(currentAnswer)
   ) return;
+
+  const expectedGeneration = activeComponentGenerationRef.current;
+  if (expectedGeneration === null) return;
+
+  const mutation: Exclude<PendingReviewMutation, null> = {
+    type: "ANSWER",
+    answerId: currentAnswer.id,
+    status
+  };
+  const snapshot: AnswerReviewMutationSnapshot = {
+    answerId: currentAnswer.id,
+    requestedStatus: status,
+    answerPacketVersion: current.packet.answerPacketVersion
+  };
+
+  pendingReviewMutationRef.current = mutation;
+  setPendingReviewMutation(mutation);
   ```
 
-  After the POST, verify the component generation before parsing or changing refs. A schema-valid, identity-valid POST response is only a refresh trigger, never sufficient authority for success copy. Await `fetchReviewAuthority(expectedGeneration)` and branch on its exact result: publish success only for `outcome === "COMMITTED"`; for `FAILED`, publish no mutation success and retain the authority-read failure state/notice already applied by the refresh; for `SUPERSEDED`, publish no stale success because only the newer read owns authority; for `INACTIVE`, do nothing. On `409`, mark current review data unverified and begin one combined refresh. On every other failure, apply the table exactly. The answer objects and summary remain unchanged until a valid combined read replaces them.
+  Create and retain the mutation controller exactly before entering `try/finally`:
+
+  ```ts
+  const controller = new AbortController();
+  mutationAbortControllerRef.current = controller;
+  ```
+
+  Wrap the entire mutation flow in `try/finally`. The same `mutation` identity holds the global lock through the POST, response parsing, any `409` refresh, the post-success refresh, and final refresh-result/postcondition notice handling. After the POST, verify generation before parsing or changing refs. A schema-valid, identity-valid response is only a refresh trigger. Await `fetchReviewAuthority(expectedGeneration)`: `FAILED` preserves the read failure state and shows no mutation success; `SUPERSEDED` shows no stale success; `INACTIVE` does nothing. For `COMMITTED`, reread `reviewLoadRef.current` and call `isAnswerReviewPostconditionCurrent` with its phase/unverified/packet and the immutable snapshot. Show bounded approve/reject success only if the predicate returns true. If it returns false, preserve the newly committed authority as trusted and show a `WARNING` notice with text exactly `Review data changed after the action. Review the current packet before continuing.` without marking it unverified. On `409`, mark current review data unverified and await one combined refresh while retaining the lock. On every other failure, apply the table exactly. The answer objects and summary remain unchanged until a valid combined read replaces them.
+
+  In `finally`, release only this mutation's lock in the still-active generation:
+
+  ```ts
+  finally {
+    if (
+      activeComponentGenerationRef.current === expectedGeneration &&
+      pendingReviewMutationRef.current === mutation
+    ) {
+      pendingReviewMutationRef.current = null;
+      setPendingReviewMutation(null);
+    }
+    if (mutationAbortControllerRef.current === controller) {
+      mutationAbortControllerRef.current = null;
+    }
+  }
+  ```
+
+  Component cleanup must invalidate the component generation first, synchronously set `pendingReviewMutationRef.current = null`, abort `mutationAbortControllerRef.current`, set that controller ref to null, and perform no React state update. The controller identity check in `finally` ensures a stale flow cannot clear newer ownership.
 
 - [ ] **Step 6: Render bounded answer controls and accessible notices.**
 
@@ -443,7 +606,7 @@ async function fetchReviewAuthority(
   node --import tsx --test tests/application-browser-control-presentation.test.ts
   ```
 
-  Expected: PASS for all pure and mounted tests, including exact requests, authoritative refresh, stale inertness, auth/transient/malformed failure handling, duplicate suppression, packet replacement, unmount safety, and no binding review data.
+  Expected: PASS for all pure and mounted tests, including exact requests, action-specific postcondition confirmation, changed-authority warnings, deterministic lock acquisition/release/cleanup, authoritative refresh, stale inertness, auth/transient/malformed failure handling, duplicate suppression, packet replacement, unmount safety, and no binding review data.
 
 - [ ] **Step 8: Run neighboring browser-control regressions.**
 
@@ -485,7 +648,7 @@ async function fetchReviewAuthority(
 - Verify read-only: `tests/application-run-answer-packet-service.test.ts:597-700`
 
 **Interfaces:**
-- Consumes: `REVIEW_REASON_LABELS`, `isResolveReviewEligible`, `buildResolveReviewRequest`, `parseApplicationRunReviewResponse`, the Task 2 `ReviewLoad`, `ReviewAuthorityRefreshResult`, `fetchReviewAuthority`, mutation lock/ref, generation checks, and invalidation behavior.
+- Consumes: `REVIEW_REASON_LABELS`, immutable `PendingReviewMutation`, `ResolveReviewMutationSnapshot`, `isResolveReviewEligible`, `isResolveReviewPostconditionCurrent`, `buildResolveReviewRequest`, `parseApplicationRunReviewResponse`, the Task 2 `ReviewLoad`, `ReviewAuthorityRefreshResult`, `fetchReviewAuthority`, `pendingReviewMutationRef`, `mutationAbortControllerRef`, generation checks, and invalidation behavior.
 - Produces: `resolveReview()` component behavior and the final review-resolution UI; no new exported production API.
 
 - [ ] **Step 1: Add RED resolve visibility, exact-request, and success-refresh tests.**
@@ -497,18 +660,22 @@ async function fetchReviewAuthority(
   - with trusted `REVIEW_REQUIRED` run authority and ready packet, clicking sends exactly one POST to `/api/application-runs/${RUN_ID}/resolve-review` with exact `stateVersion`, ordered `acknowledgedReviewReasons`, `answerPacketVersion`, and `packetHash`;
   - the body has no answer ID, proposal, questions, packet answers, binding name, or browser command;
   - duplicate clicks and an answer click while resolve is pending produce exactly one mutation request;
-  - a valid resolve response triggers exactly one combined run+packet refresh; only a refresh returning `COMMITTED` may use the refreshed run state and packet `reviewedAt` to remove resolution availability and produce the success notice;
+  - a valid resolve response triggers exactly one combined run+packet refresh; only `COMMITTED` fresh authority with the same packet version/hash, non-null packet `reviewedAt`, and run state `READY` produces resolve success;
+  - `COMMITTED` with a changed packet version/hash keeps the current authority trusted, suppresses stale resolve success, and shows a `WARNING` notice with text exactly `Review authority changed after the action. Review the current run and packet before continuing.`;
+  - `COMMITTED` with the same packet but run still `REVIEW_REQUIRED` or in any state other than `READY` keeps the current authority trusted, suppresses current-state success, and shows the same bounded authority-changed warning;
   - resolve refresh results follow the same exact four-way contract as answer review: `FAILED`, `SUPERSEDED`, and `INACTIVE` produce no resolve success copy, and only the active/current read may apply its documented state.
 
 - [ ] **Step 2: Add RED stale/failure/unmount/packet-replacement resolve tests.**
 
   Add mounted cases proving:
 
-  - a `409` resolve response never changes the displayed run to `READY`, marks old authority inert, and begins one refresh;
+  - a `409` resolve response never changes the displayed run to `READY`, marks old authority inert, holds the global mutation lock throughout one authoritative refresh, permits no second answer/resolve POST during that refresh, and releases only after the flow finishes;
   - `401`, `403`, `404`, `429`, `5xx`, network rejection, invalid JSON, a wrong-run `{ run }`, an unknown run state, invalid version/reasons, and strict-parser-invalid response follow the same failure table as answer review;
+  - every resolve POST failure releases the identity-matched lock in `finally`, while the independently applied authority state determines subsequent eligibility;
+  - resolve plus `FAILED` refresh releases the lock after result handling while failed authority remains inert; resolve plus `SUPERSEDED` releases the old mutation lock so only newer current authority controls eligibility;
   - a stale resolve response never fabricates `reviewedAt` or success copy;
   - while a packet/run replacement is held pending, the old resolve authority may remain visible for context but its still-connected button is disabled/inert and sends no POST; after replacement, only the current version/hash/state/reasons can dispatch;
-  - valid and rejected resolve settlements after unmount produce no state, notice, follow-on GET, answer POST, second resolve POST, or binding call;
+  - valid and rejected resolve settlements after unmount observe cleanup that invalidated generation first, synchronously cleared the pending ref, and aborted the mutation controller; they produce no `setState`, notice, follow-on GET, answer POST, second resolve POST, or binding call;
   - a binding spy receives zero commands across a successful resolve flow, and serialized binding inputs omit the exact resolve body and packet hash.
 
 - [ ] **Step 3: Run the focused test and verify RED.**
@@ -534,7 +701,66 @@ async function fetchReviewAuthority(
 
   Unknown identifiers cannot pass `parseApplicationRunReviewResponse` and therefore have no display fallback. When the reason array is empty, render `No planner review reasons require acknowledgment.`
 
-  Add `resolveReview()` using the same pending ref, generation snapshot, abort controller, response-status mapping, parser, and combined refresh as `reviewAnswer`. Before dispatch, reread `reviewLoadRef.current`, require `isResolveReviewEligible(...)`, and build from those exact current objects. The active label is `Resolving…`; all answer and resolve controls are disabled for the duration. A valid response is only a trigger for the combined authoritative refresh and never directly updates displayed run state. Await the refresh result and apply the same branch exactly: success copy only for `COMMITTED`; no success for `FAILED` or `SUPERSEDED`; no state/ref/notice/follow-on effect for `INACTIVE`.
+  Add `resolveReview()` through the shared global lock. Before dispatch, reread `reviewLoadRef.current`, require loaded/trusted `isResolveReviewEligible(...)` authority and a non-null active generation, and construct from those exact objects:
+
+  ```ts
+  const current = reviewLoadRef.current;
+  const expectedGeneration = activeComponentGenerationRef.current;
+  if (
+    pendingReviewMutationRef.current !== null ||
+    expectedGeneration === null ||
+    current.phase !== "loaded" ||
+    current.unverified ||
+    current.run === null ||
+    current.packet === null ||
+    !isResolveReviewEligible({
+      run: current.run,
+      packet: current.packet,
+      trusted: true
+    })
+  ) return;
+
+  const mutation: Exclude<PendingReviewMutation, null> = {
+    type: "RESOLVE"
+  };
+  const snapshot: ResolveReviewMutationSnapshot = {
+    stateVersion: current.run.stateVersion,
+    answerPacketVersion: current.packet.answerPacketVersion,
+    packetHash: current.packet.packetHash,
+    acknowledgedReviewReasons: [...current.run.reviewReasons]
+  };
+
+  pendingReviewMutationRef.current = mutation;
+  setPendingReviewMutation(mutation);
+  ```
+
+  Create and retain one mutation controller exactly:
+
+  ```ts
+  const controller = new AbortController();
+  mutationAbortControllerRef.current = controller;
+  ```
+
+  Keep this exact `mutation` identity locked through POST, parsing, any `409` refresh, the post-success refresh, and final result/postcondition handling. The active label is `Resolving…`; all answer and resolve controls remain disabled throughout. A valid response is only a trigger for the combined authoritative refresh and never directly updates displayed run state. `FAILED` produces no success and retains the read-failure state; `SUPERSEDED` produces no stale success; `INACTIVE` does nothing. After `COMMITTED`, reread `reviewLoadRef.current` and call `isResolveReviewPostconditionCurrent` with phase/unverified/run/packet plus the immutable snapshot. Show resolve success only when it returns true. If false, keep the freshly committed current authority trusted and show a `WARNING` notice with text exactly `Review authority changed after the action. Review the current run and packet before continuing.` Do not anticipate the later Increment 3 post-fill resolution edge.
+
+  Wrap the entire resolve flow in `try/finally` and release only the exact mutation in the exact active generation:
+
+  ```ts
+  finally {
+    if (
+      activeComponentGenerationRef.current === expectedGeneration &&
+      pendingReviewMutationRef.current === mutation
+    ) {
+      pendingReviewMutationRef.current = null;
+      setPendingReviewMutation(null);
+    }
+    if (mutationAbortControllerRef.current === controller) {
+      mutationAbortControllerRef.current = null;
+    }
+  }
+  ```
+
+  Unmount cleanup follows the same exact order defined in the lifecycle contract: invalidate generation, synchronously clear the pending ref, abort and clear the controller ref, and make no React state update.
 
 - [ ] **Step 5: Render resolve availability and bounded copy.**
 
@@ -548,7 +774,7 @@ async function fetchReviewAuthority(
   node --import tsx --test tests/application-browser-control-presentation.test.ts
   ```
 
-  Expected: PASS for every Required RED Test Matrix group plus the repository-derived run-state, reviewed-packet, noncanonical-reason, exact reason-label, committed-refresh-result, and live pending-replacement cases.
+  Expected: PASS for every Required RED Test Matrix group plus the repository-derived run-state, reviewed-packet, noncanonical-reason, exact reason-label, committed-refresh-result, action-specific postcondition, global-lock lifecycle, and live pending-replacement cases.
 
 - [ ] **Step 7: Run read-only backend regression proof.**
 
@@ -589,10 +815,14 @@ async function fetchReviewAuthority(
   Run:
 
   ```bash
-  git diff --name-only 2e50af33cb939286da5f7354e1e66ecebb570b53
+  test -n "${EXPECTED_INCREMENT_1_PLAN_SHA:-}"
+  test -n "${IMPLEMENTATION_BASE_SHA:-}"
+  test "$IMPLEMENTATION_BASE_SHA" = "$EXPECTED_INCREMENT_1_PLAN_SHA"
+
+  git diff --name-only "$IMPLEMENTATION_BASE_SHA"
 
   git diff \
-    2e50af33cb939286da5f7354e1e66ecebb570b53 \
+    "$IMPLEMENTATION_BASE_SHA" \
     -- \
     components/application-browser-control.tsx \
     lib/application-browser/control-presentation.ts \
@@ -608,7 +838,7 @@ async function fetchReviewAuthority(
   tests/application-browser-control-presentation.test.ts
   ```
 
-  The review confirms every HTTP review action remains outside the binding. The ripgrep command exits `1` with no matches.
+  If `IMPLEMENTATION_BASE_SHA` is empty, unavailable, or differs from the exact externally authorized `EXPECTED_INCREMENT_1_PLAN_SHA`, STOP rather than running the scope proof against a guessed revision. The review confirms every HTTP review action remains outside the binding. The ripgrep command exits `1` with no matches.
 
 - [ ] **Step 11: Commit Task 3.**
 
@@ -629,7 +859,7 @@ async function fetchReviewAuthority(
 | 6 | Rejected proposable answer | 1/2 | Shows neither mutation button |
 | 7 | Approve request | 1/2 | Exact run/answer/version and `{ status: "APPROVED", answerPacketVersion }`; no proposal |
 | 8 | Reject request | 1/2 | Exact run/answer/version and `{ status: "REJECTED", answerPacketVersion }`; no proposal |
-| 9 | Answer review with committed refresh | 2 | `COMMITTED` is returned; refreshed data changes UI and only then is success copy shown |
+| 9 | Answer review with confirmed committed refresh | 1/2 | `COMMITTED` plus same packet/answer/status/user-review metadata confirms the immutable snapshot before success copy |
 | 10 | Stale answer review | 2 | Old packet becomes inert before held automatic refresh settles |
 | 11 | `401`/`403`/`404` | 2/3 | Clear review authority and show bounded fail-closed copy |
 | 12 | `429`/`5xx`/network | 2/3 | Preserve display for context, create no authority, disable mutation until refresh |
@@ -640,7 +870,7 @@ async function fetchReviewAuthority(
 | 17 | Live pending authority replacement | 2/3 | Old content may remain visible while loading/unverified, but its still-connected actions are disabled/inert; after commit only the new answer/version/hash can dispatch |
 | 18 | Resolve before readiness | 1/3 | Visible but disabled until trusted server-presented readiness and run state agree |
 | 19 | Resolve request | 1/3 | Exact state version, ordered reasons, packet version, and packet hash only |
-| 20 | Resolve with committed refresh | 3 | Starts combined refresh; only `COMMITTED` refreshed authority removes availability and permits success copy |
+| 20 | Resolve with confirmed committed refresh | 1/3 | `COMMITTED` plus same packet version/hash, non-null `reviewedAt`, and run `READY` confirms the snapshot before success copy |
 | 21 | Stale resolve | 3 | Does not fabricate `READY`, `reviewedAt`, or success copy |
 | 22 | Binding privacy | 2/3 | Binding receives no review command/data across approve, reject, or resolve |
 | 23 | Reviewed packet cannot resolve twice | 1/3 | Non-null packet `reviewedAt` keeps resolve disabled even if summary is malformedly claimed ready |
@@ -655,24 +885,56 @@ async function fetchReviewAuthority(
 | 32 | Run parser strip projection | 1 | Required authority fields validate; legitimate unrelated inner DTO fields are accepted then excluded from the projection |
 | 33 | Run parser strict top level | 1 | Any unexpected key beside top-level `run` is rejected |
 | 34 | Automatic refresh supersession | 2/3 | Automatic packet/review refresh shares the read sequence and suppresses success from an older mutation-triggered refresh |
+| 35 | Pending approve lock | 2 | Synchronous acquisition disables every answer/resolve action and prevents a second mutation POST |
+| 36 | Lock release after confirmed answer success | 2 | After `COMMITTED` plus matching answer postcondition handling, the exact lock releases and newly eligible authoritative controls can dispatch |
+| 37 | Lock release after answer POST failure | 2 | Identity/generation `finally` releases; independently applied authority state controls whether actions remain disabled |
+| 38 | Lock release after `FAILED` refresh | 2 | Lock releases only after result handling; authority remains inert because the read failed |
+| 39 | Lock release after `SUPERSEDED` refresh | 2 | Old mutation lock releases after result handling; only newer authority determines subsequent eligibility |
+| 40 | Lock retention through `409` recovery | 2/3 | No second mutation during authoritative recovery; release occurs only after the conflict flow finishes |
+| 41 | Resolve lock lifecycle | 3 | Resolve uses the same immutable acquisition, full-flow retention, identity/generation release, and subsequent eligibility behavior |
+| 42 | Unmount lock cleanup | 2/3 | Generation invalidates first, pending ref clears synchronously, controller aborts/clears, and late settlement performs no `setState` |
+| 43 | Approve postcondition match | 1/2 | Same packet/version and exact answer `APPROVED`, user-reviewed, and timestamped permits bounded approve success |
+| 44 | Reject postcondition match | 1/2 | Same packet/version and exact answer `REJECTED`, user-reviewed, and timestamped permits bounded reject success |
+| 45 | Answer postcondition new packet | 1/2 | New trusted packet remains rendered; stale action success is suppressed and exact changed-data warning is shown |
+| 46 | Answer postcondition missing/mismatched answer | 1/2 | Trusted same-version authority remains current; missing answer or mismatched review fields suppresses success and shows exact warning |
+| 47 | Resolve postcondition match | 1/3 | Same packet version/hash, non-null packet `reviewedAt`, and run `READY` permits bounded resolve success |
+| 48 | Resolve postcondition changed packet | 1/3 | Changed version/hash remains trusted current authority; stale resolve success is suppressed and exact authority-changed warning is shown |
+| 49 | Resolve postcondition state mismatch | 1/3 | Run still `REVIEW_REQUIRED` or any non-`READY` state remains trusted but cannot produce current-state resolve success |
 
 ## Commit Strategy
 
 1. `Add review UI request contracts`
    - Exact files: `lib/application-browser/control-presentation.ts`, `tests/application-browser-control-presentation.test.ts`
-   - Deliverable: pure eligibility, strict parser, and exact request contracts; independently covered by the focused control-presentation test and neighboring contract tests.
+   - Deliverable: pure eligibility, strict parser, exact request contracts, immutable mutation snapshot types, and pure answer/resolve postcondition predicates; independently covered by the focused control-presentation test and neighboring contract tests.
 2. `Expose server-authoritative answer review`
    - Exact files: `components/application-browser-control.tsx`, `lib/application-browser/control-presentation.ts`, `tests/application-browser-control-presentation.test.ts`
-   - Deliverable: combined authority reads, approve/reject reachability, global duplicate suppression, authoritative refresh, failure handling, replacement safety, unmount safety, and binding privacy.
+   - Deliverable: combined authority reads, approve/reject reachability, global duplicate suppression with deterministic lock release/cleanup, authoritative refresh plus answer postcondition confirmation, failure handling, replacement safety, unmount safety, and binding privacy.
 3. `Expose review resolution on browser control`
    - Exact files: `components/application-browser-control.tsx`, `lib/application-browser/control-presentation.ts`, `tests/application-browser-control-presentation.test.ts`
-   - Deliverable: exact resolve request, readiness gating, ordered reason presentation, stale/failure safety, final regression proof, and no-fill/no-submit evidence.
+   - Deliverable: exact resolve request, readiness gating, ordered reason presentation, shared lock lifecycle, resolve postcondition confirmation, stale/failure safety, final regression proof, and no-fill/no-submit evidence.
 
 Each commit is independently testable and contains no backend, Prisma, binding, coordinator, companion, employer-write, fill, or submit implementation.
 
 ## Execution Start Checkpoint
 
-Before Task 1 or any implementation edit, verify that implementation starts from exact SHA `2e50af33cb939286da5f7354e1e66ecebb570b53`. If it does not, STOP before editing and require a separately human-reviewed rebase/replan. Use only that explicit SHA as the implementation base in the final scope proof.
+Before Task 1 or any implementation edit, the human-authorized execution prompt must provide one concrete exact SHA named `EXPECTED_INCREMENT_1_PLAN_SHA`. It is the final approved, pushed, CI-verified Increment 1 plan baseline. The executor must bind that verbatim prompt-supplied value to the same-named shell variable without transforming or inferring it. If execution authorization omits it, STOP; never infer it from ancestry, a prior review message, local history, or a relative revision.
+
+Fetch the remote, then require all of the following before editing: local `HEAD` equals `EXPECTED_INCREMENT_1_PLAN_SHA`; `origin/feature/form-inspection-answer-packet` equals the same exact SHA; worktree clean; staging empty; untracked none. If either SHA or any cleanliness condition differs, STOP. After those checks and still before Task 1 edits, capture the implementation baseline exactly:
+
+```bash
+test -n "${EXPECTED_INCREMENT_1_PLAN_SHA:-}"
+git fetch origin
+test "$(git rev-parse HEAD)" = "$EXPECTED_INCREMENT_1_PLAN_SHA"
+test "$(git rev-parse origin/feature/form-inspection-answer-packet)" = "$EXPECTED_INCREMENT_1_PLAN_SHA"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+test -z "$(git diff --cached --name-only)"
+
+IMPLEMENTATION_BASE_SHA="$(git rev-parse HEAD)"
+printf '%s\n' "$IMPLEMENTATION_BASE_SHA"
+test "$IMPLEMENTATION_BASE_SHA" = "$EXPECTED_INCREMENT_1_PLAN_SHA"
+```
+
+Retain both the externally supplied `EXPECTED_INCREMENT_1_PLAN_SHA` and captured `IMPLEMENTATION_BASE_SHA` verbatim in the execution context through the final Task 3 scope proof; do not recompute either from the later implementation `HEAD`, write either into a repository file, or replace either with a guessed commit. If either becomes empty or unavailable, STOP.
 
 ## Completion Gate
 
@@ -682,10 +944,12 @@ Increment 1 is complete only when all of the following are true:
 - Answer mutation controls exist only for `PENDING + PROPOSABLE`.
 - Resolve review is reachable with exact current `stateVersion`, ordered `acknowledgedReviewReasons`, `answerPacketVersion`, and `packetHash`.
 - Readiness only enables the UI; the server retains final review-resolution authority.
-- Every schema-valid mutation response is only a refresh trigger. The UI presents success only when the awaited authoritative run+packet refresh returns `outcome === "COMMITTED"`; `FAILED`, `SUPERSEDED`, and `INACTIVE` never present mutation success.
+- Every schema-valid mutation response is only a refresh trigger. Mutation success copy requires both `outcome === "COMMITTED"` and the appropriate pure predicate confirming the exact immutable mutation snapshot against `reviewLoadRef.current`; `FAILED`, `SUPERSEDED`, `INACTIVE`, and `COMMITTED` with a mismatched postcondition never present action-specific success.
 - The refresh result contract is deterministic at every exit: `COMMITTED` means the active/current read committed both parsed authorities to state and ref; `FAILED` means the active/current read applied its documented failure state; `SUPERSEDED` means a newer authority-read sequence owns all effects; `INACTIVE` means generation invalidation permits no state/ref/notice/follow-on effect.
+- A `COMMITTED` current authority that no longer confirms the action remains trusted and rendered. Answer mismatch shows exactly `Review data changed after the action. Review the current packet before continuing.`; resolve mismatch shows exactly `Review authority changed after the action. Review the current run and packet before continuing.` Neither mismatch marks current authority unverified.
 - Stale/conflict, auth/ownership/not-found, rate-limit, transient, network, malformed, and wrong-identity outcomes fail closed.
-- Duplicate actions are suppressed across the entire review mutation surface.
+- Duplicate actions are suppressed across the entire review mutation surface. One immutable mutation identity synchronously acquires the global lock and retains it through POST, parsing, `409` recovery, post-success refresh, and final result/postcondition handling.
+- Every dispatched mutation has one identity- and generation-checked `finally` release. Normal success/failure cannot strand `pendingReviewMutation`; cleanup invalidates generation first, clears the pending ref synchronously, aborts/clears the controller, and performs no React state update.
 - Late/unmounted responses are inert and cannot start a refresh, resolve, recovery, notice, or binding call.
 - Packet replacement invalidates all old answer actions and resolve snapshots.
 - Live actions displayed during a held authority replacement are disabled/inert, and after replacement only the new answer identity and packet version can dispatch.
@@ -703,6 +967,7 @@ Increment 1 is complete only when all of the following are true:
 - `npm run lint` passes.
 - `npm run build` passes.
 - `git diff --check` is clean.
+- Execution authorization supplies exact `EXPECTED_INCREMENT_1_PLAN_SHA`; before Task 1, local and remote equal it and the clean starting SHA is captured once as `IMPLEMENTATION_BASE_SHA`. Final scope is measured only from that retained value, never a hardcoded plan commit or ancestry guess.
 - Final implementation diff contains only `components/application-browser-control.tsx`, `lib/application-browser/control-presentation.ts`, and `tests/application-browser-control-presentation.test.ts` unless a separately reviewed backend precondition gap is proven before execution.
 
 The PostgreSQL concurrency harness is intentionally excluded from the Increment 1 execution gate. The exact-SHA baseline already passed it, and this plan changes no database schema, transaction, lock order, service, API route, packet verification, state transition, or concurrency-sensitive backend code.
@@ -715,17 +980,19 @@ The PostgreSQL concurrency harness is intentionally excluded from the Increment 
 | `PENDING + PROPOSABLE` only | Task 1 predicate and Task 2 six-state render matrix |
 | Exact approve/reject requests without proposal | Task 1 builders and Task 2 captured-fetch assertions |
 | Exact resolve authority from current reads | Existing run/packet GET findings, Task 1 builder, Task 3 mounted request |
-| Server-authoritative refresh | Task 2 deterministic four-outcome loader and both mutation success suites; success copy only after `COMMITTED` |
+| Server-authoritative refresh | Task 2 deterministic four-outcome loader plus answer/resolve postcondition predicates; success copy requires `COMMITTED` and exact fresh confirmation |
 | Stale/conflict safety | Failure table and Tasks 2/3 held-refresh tests |
 | Auth/ownership/not-found safety | Failure table and Tasks 2/3 status matrix |
 | Rate-limit/transient safety | Failure table and Tasks 2/3 status/network matrix |
 | Malformed/wrong-run safety | Task 1 parsers and Tasks 2/3 mounted response cases |
-| Duplicate suppression | Global pending ref and Tasks 2/3 double-action cases |
-| Unmount/late settlement | Generation/abort rules and Tasks 2/3 deferred settlements |
+| Duplicate suppression and release | Immutable global pending identity, generation/identity `finally`, `409` lock retention, and Tasks 2/3 reacquisition cases |
+| Unmount/late settlement | Generation-first cleanup, synchronous lock-ref clear, controller abort, and Tasks 2/3 deferred settlements with no late `setState` |
 | Packet replacement | Atomic `ReviewLoad`, live pending-replacement test, and direct still-connected current-object dispatch-guard test |
 | Resolve availability | Task 1 predicate and Task 3 readiness/state/reviewedAt matrix |
 | Review-reason presentation | Task 1 exact six-entry pure mapping tests and Task 3 server-order rendering |
 | Run parser precision | Task 1 strict top-level, `.strip()` inner projection, identity, invalid state/reason, and legitimate-extra-field tests |
+| Action-specific success | Task 1 pure postcondition predicates and Tasks 2/3 matching-versus-changed current-authority mounted cases |
+| Exact execution baseline | Externally supplied `EXPECTED_INCREMENT_1_PLAN_SHA`, one-time `IMPLEMENTATION_BASE_SHA` capture, and Task 3 variable-based final scope proof |
 | Binding privacy | Read-only binding types plus mounted spies in Tasks 2/3 |
 | Accessibility/copy | Task 2 action labels/live notices and Task 3 described readiness/reasons |
 | No fill/no submit | Global constraints, read-only paths, final source scan, completion gate |
@@ -734,9 +1001,11 @@ The PostgreSQL concurrency harness is intentionally excluded from the Increment 
 
 - **Spec coverage:** Every Increment 1 requirement in frozen design sections 8, 17 privacy boundary, 23 no-submit invariant, 24 Increment 1, and 27 acceptance criteria maps to a task and test above. Later-increment executable work is absent.
 - **Placeholder scan:** Clean. Every implementation step names exact behavior, interfaces, commands, expected red/green outcome, file scope, and commit.
-- **Refresh-result consistency:** `fetchReviewAuthority(expectedGeneration?: number | null): Promise<ReviewAuthorityRefreshResult>` and the exact `COMMITTED | FAILED | SUPERSEDED | INACTIVE` outcomes are used consistently in Planned Interfaces, Tasks 2/3, the failure table, RED matrix, and completion gate. No valid POST alone authorizes success, and automatic refresh supersession cannot create stale success copy.
-- **Type/interface consistency:** The same `ReviewRunAuthority`, `REVIEW_REASON_LABELS`, `PendingReviewMutation`, `SameOriginReviewRequest`, parser, predicate, and builder names/signatures are used in all tasks and tests. Request property names exactly match the current server schemas.
-- **Exact implementation base:** Final scope commands compare against `2e50af33cb939286da5f7354e1e66ecebb570b53`; no relative-revision scope base remains. A different implementation start SHA requires a separately reviewed rebase/replan before editing.
+- **Refresh-result consistency:** `fetchReviewAuthority(expectedGeneration?: number | null): Promise<ReviewAuthorityRefreshResult>` and the exact `COMMITTED | FAILED | SUPERSEDED | INACTIVE` outcomes remain consistent in Planned Interfaces, Tasks 2/3, the failure table, RED matrix, and completion gate. A valid POST and `COMMITTED` read are necessary but not sufficient for action-specific success; automatic refresh supersession cannot create stale success copy.
+- **Postcondition consistency:** `AnswerReviewMutationSnapshot`, `ResolveReviewMutationSnapshot`, `isAnswerReviewPostconditionCurrent`, and `isResolveReviewPostconditionCurrent` have one exact definition across Tasks 1–3. Concurrent current-authority replacement preserves trusted new data but suppresses stale approve/reject/resolve success with the exact bounded warning.
+- **Mutation-lock lifecycle:** Every answer/resolve mutation synchronously acquires with one immutable identity, holds through every POST/read/result path, and releases through the exact generation/identity-checked `finally`. Cleanup invalidates generation, clears the ref, aborts/clears the controller, and cannot issue a late `setState`; no normal failure strands the lock.
+- **Type/interface consistency:** The same `ReviewRunAuthority`, `REVIEW_REASON_LABELS`, immutable `PendingReviewMutation`, mutation snapshot types, `SameOriginReviewRequest`, parser, predicate, and builder names/signatures are used in all tasks and tests. Request property names exactly match current server schemas.
+- **Exact implementation base:** No repository plan commit is a permanent base. The human-authorized prompt supplies concrete `EXPECTED_INCREMENT_1_PLAN_SHA`; local and remote must equal it before edits; the executor captures it once as `IMPLEMENTATION_BASE_SHA`; final scope uses only that retained value. Missing or mismatched values stop execution rather than triggering inference.
 - **Live stale-action proof:** Primary replacement coverage holds old content visibly inert during a pending authority read, then proves only the new answer identity/version dispatches. The current-object guard is exercised at a still-connected React commit boundary; no detached-node event is planned.
 - **Review-reason copy:** The pure mapping contains exactly the six approved strings, has no unknown fallback, and preserves the server-owned reason order.
 - **Run-parser precision:** Top-level response shape is strict; minimum inner authority fields are validated and unrelated legitimate run DTO fields are explicitly stripped from the returned projection. The same parser covers run GET and resolve POST.
