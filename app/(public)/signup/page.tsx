@@ -9,11 +9,11 @@ import { isEmailAllowedForAuth } from "@/lib/auth-access";
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Sign in — Apply Pilot",
-  description: "Continue your job search with Apply Pilot using your Google account."
+  title: "Sign up — Apply Pilot",
+  description: "Create your Apply Pilot account with Google and start a more focused job search."
 };
 
-export default async function LoginPage() {
+export default async function SignupPage() {
   const session = await auth();
   const sessionEmailAllowed = session?.user ? isEmailAllowedForAuth(session.user.email) : false;
 
@@ -30,14 +30,14 @@ export default async function LoginPage() {
 
   return (
     <PublicAuthPage
-      mode="login"
+      mode="signup"
       authState={authState}
       googleAction={googleConfigured ? <GoogleSignInButton variant="public" /> : undefined}
       deniedAction={
         <form
           action={async () => {
             "use server";
-            await signOut({ redirectTo: "/login" });
+            await signOut({ redirectTo: "/signup" });
           }}
         >
           <button className="public-button public-button-secondary public-denied-button">
