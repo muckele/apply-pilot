@@ -504,10 +504,28 @@ GET is strictly read only. It returns only:
 - lease deadline;
 - whether the lease is live;
 - whether the server observes that expired recovery is required;
+- `fieldOperationAllowed`, a safe Boolean stating whether one new employer-field operation may begin at the current authenticated authority checkpoint;
 - closed step results;
 - closed attempt outcome and error information.
 
 GET never returns proposals or employer current values. It may tell an active companion that policy or state no longer permits another field operation.
+
+`fieldOperationAllowed` is read only and is true only when all of the following are true:
+
+```text
+APPLICATION_AUTOMATION_ENABLED === "true"
+current policy.enabled === true
+current policy.mode === FILL_AND_REVIEW
+canonical run host is allowed
+canonical run host is not blocked or prohibited
+current policy.sensitiveAnswerPolicy === EXCLUDE
+current policy.finalReviewRequired === true
+run.state === FILLING
+current fillAttemptId is non-null
+the Fill lease is live according to actual PostgreSQL database time
+```
+
+The future coordinator additionally compares the returned `fillAttemptId` and `stateVersion` with the attempt material it already holds, separately proves current browser target and generation authority, and performs this authenticated status check immediately before each new field operation. `fieldOperationAllowed` returns or reissues no proposal, employer current value, selector, DOM data, or packet content; mints no token; grants no submission authority; authorizes no second Fill attempt, CAPTCHA bypass, or employer submit; and does not replace the coordinator's browser-currentness proofs.
 
 For a terminal acquired attempt, GET derives—not stores—the safe attempt outcome from verified `ApplicationRun.state`, `ApplicationRun.errorCategory`, the exact `fillAttemptId`, and the exact current-attempt `ApplicationRunStep` set:
 
@@ -527,6 +545,22 @@ READY_FOR_USER_SUBMISSION + errorCategory === FILL_STALE
 ```
 
 The derivation validates that the persisted step keys are exactly the current attempt set and that their statuses, closed results, and closed errors match the claimed terminal pattern. It never invents an outcome for missing, duplicate, foreign-attempt, nonterminal, or contradictory persistence. In that case GET returns only a closed unavailable/failure status with `FILL_INTERNAL`, never raw values, proposals, exception text, or inconsistent step detail. `FILLING` may be reported as closed in-progress or recovery-required status, but never as a terminal attempt outcome.
+
+`CANCELLED` is a terminal `ApplicationRun` lifecycle state, not a derived Fill attempt outcome. For `state === CANCELLED`, GET returns this exact conservative status:
+
+```text
+state = CANCELLED
+fillAttemptId = retained historical ID if one was assigned, otherwise null
+fillLeaseExpiresAt = null
+leaseLive = false
+expiredRecoveryRequired = false
+fieldOperationAllowed = false
+outcome = null
+errorCode = null
+steps = []
+```
+
+GET does not reinterpret `CANCELLED` as `COMPLETED`, `STOPPED_EARLY`, `RECOVERED_AFTER_LOSS`, or `FILL_INTERNAL` merely because historical attempt steps exist or remain unresolved. Cancellation invents no `FAILED` or `NOT_ATTEMPTED` field facts, the permanent `fillAttemptId` fence remains retained if it was assigned, and GET remains strictly read only.
 
 GET must not:
 
@@ -549,6 +583,7 @@ Normal finalization:
   "fillAttemptId": "exact-attempt-id",
   "expectedStateVersion": 12,
   "outcome": "COMPLETED",
+  "errorCode": null,
   "steps": [
     {
       "stepKey": "fill:exact-attempt-id:normalized-field-key",
@@ -559,9 +594,9 @@ Normal finalization:
 }
 ```
 
-`outcome` is `COMPLETED` or `STOPPED_EARLY`. The request supplies the exact persisted attempt step-key set with closed field results and errors. The server locks the owned run and requires exact route identity, `state === FILLING`, attempt ID, state version, and a live lease.
+`outcome` is `COMPLETED` or `STOPPED_EARLY`. For `COMPLETED`, the top-level `errorCode` must be null. For `STOPPED_EARLY`, the top-level `errorCode` must be exactly one code from `STOPPED_EARLY_FILL_ERRORS`. The request supplies the exact persisted attempt step-key set with closed field results and errors. The server locks the owned run and requires exact route identity, `state === FILLING`, attempt ID, state version, and a live lease.
 
-For `COMPLETED`, every exact-attempt step must be terminal with one of `FILLED`, `PRESERVED_EXISTING`, or `MANUAL`, its status/error fields must match the closed result table, no step may be `FAILED` or `NOT_ATTEMPTED`, and finalization persists `ApplicationRun.errorCategory = null`. For `STOPPED_EARLY`, the request and validated server result identify exactly one attempt-level stopping error from this closed subset:
+For `COMPLETED`, every exact-attempt step must be terminal with one of `FILLED`, `PRESERVED_EXISTING`, or `MANUAL`, its status/error fields must match the closed result table, no step may be `FAILED` or `NOT_ATTEMPTED`, and finalization persists `ApplicationRun.errorCategory = null`. For `STOPPED_EARLY`, the request's top-level `errorCode` and the validated server result must identify exactly the same attempt-level stopping error from this closed subset:
 
 ```text
 STOPPED_EARLY_FILL_ERRORS = {
@@ -579,7 +614,7 @@ STOPPED_EARLY_FILL_ERRORS = {
 
 **PRE-FIELD STOP** applies when the stopping condition is definitively known before the next field operation begins. Canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results, followed only by `NOT_ATTEMPTED` steps with null step errors. No `FAILED` field is required or permitted for the stop because no remaining field operation began. Examples include policy denial, target/trust loss at the pre-field trust checkpoint, or an internal failure between field operations.
 
-**IN-FIELD STOP** applies after a field operation has begun but cannot complete or be verified safely. Canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results; exactly one current stopping step is `FAILED` with the exact stopping error; and every later untouched step is `NOT_ATTEMPTED` with a null step error. Examples include unexpected mutation, write failure, target/trust loss during the active operation, or an internal failure during the active operation.
+**IN-FIELD STOP** applies after a field operation has begun but cannot complete or be verified safely. Canonical step order contains zero or more preceding `FILLED`, `PRESERVED_EXISTING`, or `MANUAL` results; exactly one current stopping step is `FAILED` with the exact same closed error as the top-level `errorCode`; and every later untouched step is `NOT_ATTEMPTED` with a null step error. Examples include unexpected mutation, write failure, target/trust loss during the active operation, or an internal failure during the active operation.
 
 For either pattern, all attempt steps are terminal before the transition, and the transaction persists exactly one attempt-level stopping code to `ApplicationRun.errorCategory`. A normal finalization uses `NOT_ATTEMPTED` only when the coordinator knows that field never began and uses `FAILED` only when the field operation began but did not complete or verify safely. No free-form error or separate outcome storage is allowed.
 
@@ -619,7 +654,35 @@ The fill lease is exactly ten minutes:
 FILL_LEASE_MS = 600_000
 ```
 
-It is computed from database time and cannot be renewed. No background sweeper is added.
+It is computed from actual PostgreSQL database wall-clock time at the authority decision point and cannot be renewed. The implementation authority source is `clock_timestamp()`. No background sweeper is added.
+
+Lease start, live-lease evaluation, and lease-expiry recovery evaluation use the actual PostgreSQL database time observed after the relevant lock:
+
+```text
+acquisition:
+  policy lock
+  -> run lock
+  -> authority/currentness/eligibility verification
+  -> clock_timestamp()
+  -> lease deadline = databaseNow + 600_000 ms
+  -> mutation
+
+normal FINALIZE:
+  run lock
+  -> clock_timestamp()
+  -> require actual databaseNow < fillLeaseExpiresAt
+
+RECOVER_EXPIRED:
+  run lock
+  -> clock_timestamp()
+  -> require actual databaseNow >= fillLeaseExpiresAt
+
+GET:
+  clock_timestamp() supplies the live/expired status calculation
+  while GET remains strictly read only
+```
+
+`CURRENT_TIMESTAMP`, `transaction_timestamp()`, and `now()` report transaction-time semantics and are not lease-authority clocks. JavaScript `new Date()` is also not the authority source for these lease decisions.
 
 Before every field, the coordinator checks the known deadline and confirms that current authenticated status still identifies the exact run, `FILLING` state, state version, attempt ID, live lease, and effective permission. An operation that already began under live authority may finish; expiry, cancellation, or policy shutdown prevents the next field from starting.
 
