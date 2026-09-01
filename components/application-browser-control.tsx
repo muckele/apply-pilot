@@ -8,14 +8,18 @@ import {
   bindingRejectionPlan,
   browserCommandAvailability,
   buildAnswerReviewRequest,
+  buildResolveReviewRequest,
   derivePacketFreshness,
   dispositionMessage,
   isAnswerReviewEligible,
   isAnswerReviewPostconditionCurrent,
+  isResolveReviewEligible,
+  isResolveReviewPostconditionCurrent,
   parseApplicationRunReviewResponse,
   parseAnswerPacketResponse,
   parseAnswerReviewResponse,
   presentProposal,
+  REVIEW_REASON_LABELS,
   readinessMessage,
   shouldOfferRetryConnection,
   type AnswerReviewMutationSnapshot,
@@ -24,7 +28,8 @@ import {
   type ControlConnection,
   type PacketFreshness,
   type PendingReviewMutation,
-  type PendingBrowserCommand
+  type PendingBrowserCommand,
+  type ResolveReviewMutationSnapshot
 } from "@/lib/application-browser/control-presentation";
 import {
   APPLICATION_BROWSER_BINDING_NAME,
@@ -462,6 +467,108 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     }
   }, [fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
 
+  const resolveReview = useCallback(async () => {
+    const current = reviewLoadRef.current;
+    const expectedGeneration = activeComponentGenerationRef.current;
+    if (
+      pendingReviewMutationRef.current !== null ||
+      expectedGeneration === null ||
+      current.phase !== "loaded" ||
+      current.unverified ||
+      current.run === null ||
+      current.packet === null ||
+      !isResolveReviewEligible({ run: current.run, packet: current.packet, trusted: true })
+    ) return;
+
+    const mutation: Exclude<PendingReviewMutation, null> = { type: "RESOLVE" };
+    const snapshot: ResolveReviewMutationSnapshot = {
+      stateVersion: current.run.stateVersion,
+      answerPacketVersion: current.packet.answerPacketVersion,
+      packetHash: current.packet.packetHash,
+      acknowledgedReviewReasons: [...current.run.reviewReasons]
+    };
+    pendingReviewMutationRef.current = mutation;
+    setPendingReviewMutation(mutation);
+    const controller = new AbortController();
+    mutationAbortControllerRef.current = controller;
+    const active = () => activeComponentGenerationRef.current === expectedGeneration;
+    const markUnverified = (notice: CommandNotice, clear = false) => {
+      if (!active()) return;
+      invalidateReviewAuthority();
+      updateReviewLoad((loaded) => clear
+        ? { phase: "error", run: null, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        : { ...loaded, phase: "error", unverified: true, notice }
+      );
+    };
+    try {
+      const request = buildResolveReviewRequest({ runId, run: current.run, packet: current.packet });
+      const response = await fetch(request.url, { ...request.init, signal: controller.signal });
+      if (!active()) return;
+      if (response.status === 409) {
+        const conflictNotice: CommandNotice = {
+          tone: "WARNING",
+          text: "Review authority changed. Refreshing current review data."
+        };
+        markUnverified(conflictNotice);
+        const recovery = await fetchReviewAuthority(expectedGeneration);
+        if (active() && recovery.outcome === "COMMITTED") {
+          updateReviewLoad((loaded) => ({ ...loaded, notice: conflictNotice }));
+        }
+        return;
+      }
+      if (!response.ok) {
+        if (response.status === 401) markUnverified({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to resolve review." }, true);
+        else if (response.status === 403) markUnverified({ tone: "ERROR", text: "You are not authorized to resolve review for this application run." }, true);
+        else if (response.status === 404) markUnverified({ tone: "ERROR", text: "This application run is unavailable for review resolution." }, true);
+        else if (response.status === 429) markUnverified({ tone: "WARNING", text: "Review actions are temporarily limited. Wait before refreshing review data." });
+        else markUnverified({ tone: "ERROR", text: "The review action outcome is unverified. Refresh review data before another action." });
+        return;
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
+        return;
+      }
+      if (!active()) return;
+      try {
+        parseApplicationRunReviewResponse(value, runId);
+      } catch {
+        markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
+        return;
+      }
+      const refreshResult = await fetchReviewAuthority(expectedGeneration);
+      if (!active() || refreshResult.outcome !== "COMMITTED") return;
+      const refreshed = reviewLoadRef.current;
+      if (isResolveReviewPostconditionCurrent({
+        phase: refreshed.phase,
+        unverified: refreshed.unverified,
+        run: refreshed.run,
+        packet: refreshed.packet,
+        snapshot
+      })) {
+        updateReviewLoad((loaded) => ({ ...loaded, notice: { tone: "SUCCESS", text: "Review resolved." } }));
+      } else {
+        updateReviewLoad((loaded) => ({
+          ...loaded,
+          notice: {
+            tone: "WARNING",
+            text: "Review authority changed after the action. Review the current run and packet before continuing."
+          }
+        }));
+      }
+    } catch {
+      if (active()) markUnverified({ tone: "ERROR", text: "The review action outcome is unverified. Refresh review data before another action." });
+    } finally {
+      if (activeComponentGenerationRef.current === expectedGeneration && pendingReviewMutationRef.current === mutation) {
+        pendingReviewMutationRef.current = null;
+        setPendingReviewMutation(null);
+      }
+      if (mutationAbortControllerRef.current === controller) mutationAbortControllerRef.current = null;
+    }
+  }, [fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
+
   useEffect(() => {
     const generation = componentGenerationRef.current + 1;
     componentGenerationRef.current = generation;
@@ -491,6 +598,11 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     formInvalidatedSinceVerifiedSuccess
   }), [controlConnection, formInvalidatedSinceVerifiedSuccess, lastAcceptedInspection, reviewLoad, status.state]);
   const freshnessStatus = freshnessCopy(freshness);
+  const resolveReviewEligible = isResolveReviewEligible({
+    run: reviewLoad.run,
+    packet: reviewLoad.packet,
+    trusted: reviewLoad.phase === "loaded" && !reviewLoad.unverified
+  });
 
   return (
     <div className="space-y-5 p-5">
@@ -541,7 +653,27 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
                 ["Manual required", reviewLoad.packet.summary.manualRequiredCount]
               ].map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-1 font-medium text-slate-900">{value}</dd></div>)}
             </dl>
-            <p className="mt-4 text-sm text-slate-700">{readinessMessage(reviewLoad.packet.summary.readyForRunResolution)}</p>
+            <p id="review-readiness" className="mt-4 text-sm text-slate-700">{readinessMessage(reviewLoad.packet.summary.readyForRunResolution)}</p>
+            {reviewLoad.run ? <div id="review-reasons" className="mt-4 border-t border-slate-200 pt-4">
+              <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                <div><dt className="text-xs text-slate-500">Run state</dt><dd className="mt-1 font-medium text-slate-900">{reviewLoad.run.state}</dd></div>
+                <div><dt className="text-xs text-slate-500">State version</dt><dd className="mt-1 font-medium text-slate-900">{reviewLoad.run.stateVersion}</dd></div>
+              </dl>
+              <h4 className="mt-4 text-xs font-semibold uppercase text-slate-500">Review reasons</h4>
+              {reviewLoad.run.reviewReasons.length === 0
+                ? <p className="mt-2 text-sm text-slate-700">No planner review reasons require acknowledgment.</p>
+                : <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-700">{reviewLoad.run.reviewReasons.map((reason) => <li key={reason}>{REVIEW_REASON_LABELS[reason]}</li>)}</ol>}
+            </div> : null}
+            <div className="mt-4">
+              <PrimaryButton
+                type="button"
+                aria-describedby="review-readiness review-reasons"
+                disabled={!resolveReviewEligible || pendingReviewMutation !== null}
+                onClick={() => void resolveReview()}
+              >
+                {pendingReviewMutation?.type === "RESOLVE" ? "Resolving…" : "Resolve review"}
+              </PrimaryButton>
+            </div>
           </div>
 
           <div className="space-y-4">

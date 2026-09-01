@@ -95,6 +95,10 @@ function answerReviewPath(answerId = "answer-scalar"): string {
   return `/api/application-runs/${encodeURIComponent(RUN_ID)}/answers/${encodeURIComponent(answerId)}/review`;
 }
 
+function resolveReviewPath(): string {
+  return `/api/application-runs/${encodeURIComponent(RUN_ID)}/resolve-review`;
+}
+
 function defaultReviewFetchHandler(input: RequestInfo | URL): Promise<Response> {
   const url = String(input);
   if (url === `/api/application-runs/${RUN_ID}`) return Promise.resolve(runResponse());
@@ -222,6 +226,10 @@ function reviewButton(container: HTMLElement, action: "Approve" | "Reject", ques
   return button;
 }
 
+function resolveReviewButton(container: HTMLElement): HTMLButtonElement {
+  return buttonNamed(container, "Resolve review");
+}
+
 type ReviewLoadRefProbe = {
   phase: string;
   unverified: boolean;
@@ -300,6 +308,13 @@ async function waitForTrustedReviewLoadRef(button: HTMLButtonElement): Promise<{
 async function clickButton(control: MountedControl, name: string): Promise<void> {
   await act(async () => {
     buttonNamed(control.container, name).click();
+  });
+  await flushComponentWork();
+}
+
+async function clickResolveReview(control: MountedControl): Promise<void> {
+  await act(async () => {
+    resolveReviewButton(control.container).click();
   });
   await flushComponentWork();
 }
@@ -2415,5 +2430,459 @@ test("Task 2 mounted valid and rejected mutation settlements after unmount have 
     } finally {
       await control.cleanup();
     }
+  }
+});
+
+function readyReviewPacket(overrides: Partial<AnswerPacket> = {}): AnswerPacket {
+  const packet = validPacket();
+  return {
+    ...packet,
+    reviewedAt: null,
+    summary: { ...packet.summary, readyForRunResolution: true },
+    ...overrides
+  };
+}
+
+test("Task 3 mounted Resolve review remains visible but enables only current trusted unreviewed REVIEW_REQUIRED authority", async () => {
+  const cases: Array<[string, ReturnType<typeof validRunAuthority>, AnswerPacket, boolean]> = [
+    ["not ready", validRunAuthority(), validPacket(), false],
+    ["not review required", validRunAuthority({ state: "READY" }), readyReviewPacket(), false],
+    ["already reviewed", validRunAuthority(), readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" }), false],
+    ["complete", validRunAuthority(), readyReviewPacket(), true]
+  ];
+  for (const [name, run, packet, enabled] of cases) {
+    const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run));
+    try {
+      const button = resolveReviewButton(control.container);
+      assert.equal(button.disabled, !enabled, name);
+      if (enabled) {
+        assert.equal(button.type, "button");
+        assert.equal(button.getAttribute("aria-describedby"), "review-readiness review-reasons");
+        assert.ok(control.container.querySelector("#review-readiness"));
+        assert.ok(control.container.querySelector("#review-reasons"));
+      }
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 3 mounted resolve reason presentation preserves server order and exact labels including empty copy", async () => {
+  const ordered = [...PLAN_REVIEW_REASONS];
+  const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse(validRunAuthority({ reviewReasons: ordered })));
+  try {
+    const text = control.container.textContent ?? "";
+    let prior = -1;
+    for (const reason of ordered) {
+      const position = text.indexOf(REVIEW_REASON_LABELS[reason]);
+      assert.ok(position > prior, reason);
+      prior = position;
+    }
+    assert.match(text, /Run state/);
+    assert.match(text, /State version/);
+  } finally {
+    await control.cleanup();
+  }
+
+  const empty = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse(validRunAuthority({ reviewReasons: [] })));
+  try {
+    assert.match(empty.container.textContent ?? "", /No planner review reasons require acknowledgment\./);
+  } finally {
+    await empty.cleanup();
+  }
+});
+
+test("Task 3 mounted resolve posts only exact current run and packet authority and shares the global lock", async (t) => {
+  const post = deferred<Response>();
+  const packet = readyReviewPacket();
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return post.promise;
+    if (url.endsWith("/answer-packet")) return packetResponse(packet);
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickResolveReview(control);
+  assert.equal(buttonNamed(control.container, "Resolving…").disabled, true);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
+  assert.equal(buttonNamed(control.container, "Refresh review data").disabled, true);
+  await act(async () => {
+    buttonNamed(control.container, "Resolving…").click();
+  });
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 1);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 0);
+  const request = control.fetchCalls.find((call) => String(call.input) === resolveReviewPath());
+  assert.ok(request);
+  assert.equal(request.init?.method, "POST");
+  assert.equal(request.init?.cache, "no-store");
+  assert.deepEqual(JSON.parse(String(request.init?.body)), {
+    stateVersion: 7,
+    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
+    answerPacketVersion: 3,
+    packetHash: "a".repeat(64)
+  });
+  const body = String(request.init?.body);
+  for (const forbidden of ["answer-scalar", "Portfolio URL", "https://example.com", "answers", APPLICATION_BROWSER_BINDING_NAME]) {
+    assert.equal(body.includes(forbidden), false, forbidden);
+  }
+  post.resolve(new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 }));
+});
+
+test("Task 3 mounted resolve success waits for paired refresh and only confirms READY plus reviewed matching packet", async (t) => {
+  const refreshPacket = deferred<Response>();
+  const refreshed = readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" });
+  let packetReads = 0;
+  let runReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(readyReviewPacket()) : refreshPacket.promise;
+    return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ state: "READY" }));
+  });
+  t.after(() => control.cleanup());
+
+  await clickResolveReview(control);
+  assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
+  assert.match(control.container.textContent ?? "", /Run stateREVIEW_REQUIRED/);
+  assert.match(control.container.textContent ?? "", /Review timeNot acknowledged/);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
+  refreshPacket.resolve(packetResponse(refreshed));
+  await flushComponentWork();
+  assert.match(control.container.textContent ?? "", /Review resolved\./);
+});
+
+test("Task 3 mounted committed resolve mismatch renders trusted authority and exact bounded warning", async () => {
+  const matchingReviewedPacket = readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" });
+  const cases = [
+    ["changed packet version", readyReviewPacket({ answerPacketVersion: 4, reviewedAt: "2026-08-30T00:00:00.000Z" }), "READY"],
+    ["changed packet hash", readyReviewPacket({ packetHash: "b".repeat(64), reviewedAt: "2026-08-30T00:00:00.000Z" }), "READY"],
+    ...(["DRAFT", "PREPARING", "FILLING", "REVIEW_REQUIRED", "READY_FOR_USER_SUBMISSION", "COMPLETED_BY_USER", "BLOCKED", "FAILED", "CANCELLED"] as const)
+      .map((state) => [`non-ready ${state}`, matchingReviewedPacket, state] as const)
+  ] as const;
+  for (const [name, packet, state] of cases) {
+    let packetReads = 0;
+    let runReads = 0;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+      if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? readyReviewPacket() : packet);
+      return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ state }));
+    });
+    try {
+      await clickResolveReview(control);
+      assert.match(control.container.textContent ?? "", /Review authority changed after the action\. Review the current run and packet before continuing\./);
+      assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
+      assert.equal(buttonNamed(control.container, "Refresh review data").disabled, false, name);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 3 mounted resolve failure, conflict recovery, replacement, and unmount all fail closed", async () => {
+  for (const failure of [401, 403, 404, 429, 500, 503]) {
+    const control = await mountControl(async (input) => {
+      if (String(input) === resolveReviewPath()) return new Response("{}", { status: failure });
+      return String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse();
+    });
+    try {
+      await clickResolveReview(control);
+      assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
+      if (failure === 401 || failure === 403 || failure === 404) {
+        assert.equal((control.container.textContent ?? "").includes("Resolve review"), false);
+      } else {
+        assert.equal(resolveReviewButton(control.container).disabled, true);
+      }
+    } finally {
+      await control.cleanup();
+    }
+  }
+
+  const recovery = deferred<Response>();
+  let packetReads = 0;
+  const conflict = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return new Response("{}", { status: 409 });
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(readyReviewPacket()) : recovery.promise;
+    return runResponse();
+  });
+  try {
+    await clickResolveReview(conflict);
+    assert.equal(buttonNamed(conflict.container, "Resolving…").disabled, true);
+    await clickReviewButton(conflict, "Approve", "Portfolio URL");
+    assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 1, "no duplicate resolve POST");
+    assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 0);
+    assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2, "one paired recovery run GET");
+    assert.equal(conflict.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2, "one paired recovery packet GET");
+    assert.match(conflict.container.textContent ?? "", /Run stateREVIEW_REQUIRED/);
+    assert.doesNotMatch(conflict.container.textContent ?? "", /Run stateREADY/);
+    recovery.resolve(packetResponse(readyReviewPacket()));
+    await flushComponentWork();
+    assert.doesNotMatch(conflict.container.textContent ?? "", /Review resolved\./);
+    assert.equal(resolveReviewButton(conflict.container).disabled, false, "lock releases after the one recovery settles");
+  } finally {
+    await conflict.cleanup();
+  }
+
+  const post = deferred<Response>();
+  const unmounted = await mountControl(async (input) => {
+    if (String(input) === resolveReviewPath()) return post.promise;
+    return String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse();
+  });
+  try {
+    await clickResolveReview(unmounted);
+    const before = unmounted.fetchCalls.length;
+    await unmounted.unmount();
+    post.resolve(new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 }));
+    await flushComponentWork();
+    assert.equal(unmounted.fetchCalls.length, before);
+  } finally {
+    await unmounted.cleanup();
+  }
+});
+
+test("Task 3 mounted resolve never invokes or serializes review authority through the binding", async (t) => {
+  const bindingCalls: B1Command[] = [];
+  let packetReads = 0;
+  let runReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+    if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? readyReviewPacket() : readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" }));
+    return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ state: "READY" }));
+  });
+  t.after(() => control.cleanup());
+  control.setBinding(async (command) => { bindingCalls.push(command); return { state: "TARGET_OPEN", runId: RUN_ID }; });
+
+  await clickResolveReview(control);
+  assert.match(control.container.textContent ?? "", /Review resolved\./);
+  assert.deepEqual(bindingCalls, []);
+  const serialized = JSON.stringify(bindingCalls);
+  for (const privateValue of [resolveReviewPath(), "a".repeat(64), "unknown_requirement_ids", "answerPacketVersion"]) {
+    assert.equal(serialized.includes(privateValue), false, privateValue);
+  }
+});
+
+test("Task 3 mounted resolve disables for unverified/loading/answer-pending authority and enables the exact trusted case", async (t) => {
+  const packet = readyReviewPacket();
+  const heldRefresh = deferred<Response>();
+  let packetReads = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(packet) : heldRefresh.promise;
+    if (url === answerReviewPath()) return deferred<Response>().promise;
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  assert.equal(resolveReviewButton(control.container).disabled, false, "trusted REVIEW_REQUIRED packet");
+  await clickButton(control, "Refresh review data");
+  assert.equal(resolveReviewButton(control.container).disabled, true, "authority loading");
+  heldRefresh.resolve(packetResponse(packet));
+  await flushComponentWork();
+  assert.equal(resolveReviewButton(control.container).disabled, false, "refreshed authority");
+
+  control.setFetchHandler(async (input) => String(input).endsWith("/answer-packet") ? new Response("{}", { status: 500 }) : runResponse());
+  await clickButton(control, "Refresh review data");
+  assert.equal(resolveReviewButton(control.container).disabled, true, "unverified authority");
+});
+
+test("Task 3 mounted pending answer and pending resolve disable every review action without dispatching disabled controls", async (t) => {
+  const answerPost = deferred<Response>();
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === answerReviewPath()) return answerPost.promise;
+    if (url.endsWith("/answer-packet")) return packetResponse(readyReviewPacket());
+    return runResponse();
+  });
+  t.after(() => control.cleanup());
+
+  await clickReviewButton(control, "Approve", "Portfolio URL");
+  assert.equal(resolveReviewButton(control.container).disabled, true, "answer pending");
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true, "all answer actions pending");
+  assert.equal(buttonNamed(control.container, "Refresh review data").disabled, true, "refresh pending");
+  answerPost.reject(new Error("network"));
+  await flushComponentWork();
+});
+
+test("Task 3 mounted invalid and rejected resolve responses fail closed and release the lock after handling", async () => {
+  const invalidResponses: Array<[string, (input: RequestInfo | URL) => Promise<Response>]> = [
+    ["network", async (input) => { if (String(input) === resolveReviewPath()) throw new Error("network"); return String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse(); }],
+    ["invalid json", async (input) => String(input) === resolveReviewPath() ? { ok: true, status: 200, json: async () => { throw new Error("json"); } } as unknown as Response : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()],
+    ["wrong run", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority({ id: OTHER_RUN_ID, state: "READY" }) }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()],
+    ["unknown state", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority({ state: "NOT_A_STATE" }) }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()],
+    ["invalid state version", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority({ stateVersion: -1 }) }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()],
+    ["duplicate reasons", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority({ reviewReasons: ["unknown_requirement_ids", "unknown_requirement_ids"] }) }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()],
+    ["unknown reason", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority({ reviewReasons: ["not-a-reason"] }) }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()],
+    ["strict extra field", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority(), extra: true }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()]
+  ];
+  for (const [name, handler] of invalidResponses) {
+    const control = await mountControl(handler);
+    try {
+      await clickResolveReview(control);
+      assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./, name);
+      assert.equal(resolveReviewButton(control.container).disabled, true, name);
+      control.setFetchHandler(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse());
+      await clickButton(control, "Refresh review data");
+      assert.equal(resolveReviewButton(control.container).disabled, false, `${name} releases lock after failure handling`);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 3 mounted resolve refresh FAILED and SUPERSEDED never publish stale success", async (t) => {
+  let packetReads = 0;
+  const failed = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(readyReviewPacket()) : new Response("{}", { status: 503 });
+    return runResponse();
+  });
+  try {
+    await clickResolveReview(failed);
+    assert.doesNotMatch(failed.container.textContent ?? "", /Review resolved\./);
+    assert.equal(resolveReviewButton(failed.container).disabled, true);
+    failed.setFetchHandler(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse());
+    await clickButton(failed, "Refresh review data");
+    assert.equal(resolveReviewButton(failed.container).disabled, false, "FAILED refresh releases the lock after authority failure");
+  } finally {
+    await failed.cleanup();
+  }
+
+  const oldRun = deferred<Response>();
+  const oldPacket = deferred<Response>();
+  let runReads = 0;
+  let supersededPacketReads = 0;
+  const superseded = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+    if (url.endsWith("/answer-packet")) {
+      supersededPacketReads += 1;
+      if (supersededPacketReads === 1) return packetResponse(readyReviewPacket());
+      if (supersededPacketReads === 2) return oldPacket.promise;
+      return packetResponse(readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" }));
+    }
+    runReads += 1;
+    if (runReads === 1) return runResponse();
+    if (runReads === 2) return oldRun.promise;
+    return runResponse(validRunAuthority({ state: "READY" }));
+  });
+  t.after(() => superseded.cleanup());
+  superseded.setBinding(async () => ({
+    state: "TARGET_OPEN",
+    runId: RUN_ID,
+    inspection: { outcome: "SUCCEEDED", replayed: false, inspectionVersion: 9, answerPacketVersion: 9, reinspectionRequired: false }
+  }));
+  await clickResolveReview(superseded);
+  await clickButton(superseded, "Refresh status");
+  oldRun.resolve(runResponse());
+  oldPacket.resolve(packetResponse(readyReviewPacket()));
+  await flushComponentWork();
+  assert.doesNotMatch(superseded.container.textContent ?? "", /Review resolved\./);
+});
+
+test("Task 3 mounted held authority replacement makes the old resolve authority inert and dispatches only the replacement snapshot", async (t) => {
+  const replacementPacket = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  const newPacket = readyReviewPacket({ answerPacketVersion: 4, packetHash: "b".repeat(64) });
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(readyReviewPacket()) : replacementPacket.promise;
+    return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ stateVersion: 8, reviewReasons: ["unknown_evidence_ids", "evidence_gaps_present"] }));
+  });
+  t.after(() => control.cleanup());
+  await clickButton(control, "Refresh review data");
+  assert.equal(resolveReviewButton(control.container).disabled, true, "old authority is inert while replacement is pending");
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 0);
+  replacementPacket.resolve(packetResponse(newPacket));
+  await flushComponentWork();
+  assert.equal(resolveReviewButton(control.container).disabled, false);
+  await clickResolveReview(control);
+  const request = control.fetchCalls.find((call) => String(call.input) === resolveReviewPath());
+  assert.ok(request);
+  assert.deepEqual(JSON.parse(String(request.init?.body)), {
+    stateVersion: 8,
+    acknowledgedReviewReasons: ["unknown_evidence_ids", "evidence_gaps_present"],
+    answerPacketVersion: 4,
+    packetHash: "b".repeat(64)
+  });
+});
+
+test("Task 3 mounted valid and rejected resolve settlements after unmount produce no follow-on effects", async () => {
+  for (const settle of [
+    (post: Deferred<Response>) => post.resolve(new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 })),
+    (post: Deferred<Response>) => post.reject(new Error("network"))
+  ]) {
+    const post = deferred<Response>();
+    const bindingCalls: B1Command[] = [];
+    const postSignalRef: { current: AbortSignal | null } = { current: null };
+    const control = await mountControl(async (input, init) => {
+      if (String(input) === resolveReviewPath()) {
+        postSignalRef.current = init?.signal ?? null;
+        return post.promise;
+      }
+      return String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse();
+    });
+    try {
+      control.setBinding(async (command) => { bindingCalls.push(command); return { state: "TARGET_OPEN", runId: RUN_ID }; });
+      await clickResolveReview(control);
+      assert.ok(postSignalRef.current);
+      const postSignal = postSignalRef.current as AbortSignal;
+      assert.equal(postSignal.aborted, false);
+      const before = control.fetchCalls.length;
+      await control.unmount();
+      assert.equal(postSignal.aborted, true);
+      settle(post);
+      await flushComponentWork();
+      assert.equal(control.fetchCalls.length, before);
+      assert.deepEqual(bindingCalls, []);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("Task 3 mounted post-success refresh becomes INACTIVE on unmount without a success or follow-on effect", async () => {
+  const refreshRun = deferred<Response>();
+  const refreshPacket = deferred<Response>();
+  const bindingCalls: B1Command[] = [];
+  const mutationSignalRef: { current: AbortSignal | null } = { current: null };
+  let runReads = 0;
+  let packetReads = 0;
+  const control = await mountControl(async (input, init) => {
+    const url = String(input);
+    if (url === resolveReviewPath()) {
+      mutationSignalRef.current = init?.signal ?? null;
+      return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
+    }
+    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(readyReviewPacket()) : refreshPacket.promise;
+    return runReads++ === 0 ? runResponse() : refreshRun.promise;
+  });
+  try {
+    control.setBinding(async (command) => { bindingCalls.push(command); return { state: "TARGET_OPEN", runId: RUN_ID }; });
+    await clickResolveReview(control);
+    assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
+    assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
+    assert.match(control.container.textContent ?? "", /Run stateREVIEW_REQUIRED/);
+    assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
+    assert.ok(mutationSignalRef.current);
+    const mutationSignal = mutationSignalRef.current as AbortSignal;
+    await control.unmount();
+    assert.equal(mutationSignal.aborted, true);
+    const before = control.fetchCalls.length;
+    refreshRun.resolve(runResponse(validRunAuthority({ state: "READY" })));
+    refreshPacket.resolve(packetResponse(readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" })));
+    await flushComponentWork();
+    assert.equal(control.fetchCalls.length, before);
+    assert.deepEqual(bindingCalls, []);
+  } finally {
+    await control.cleanup();
   }
 });
