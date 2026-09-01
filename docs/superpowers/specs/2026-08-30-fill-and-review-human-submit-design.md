@@ -1,10 +1,16 @@
 # Human-Submit Fill and Review Design
 
-Status: Corrected architecture, awaiting final human approval; implementation planning is not authorized
+Status: Increment 1 complete and frozen; Increment 2 DOM-write evidence complete and human-approved; Increment 3 not implemented
 
 Date: 2026-08-30
 
-Repository checkpoint: `574627c73e9a6fec0a470e0e82f0fa470214fc60` (`Present browser inspection answer packets`)
+Increment 1 green baseline: `aa493f0483204d491fb0d10f3787a6edadb08c55`
+
+`INCREMENT_1_GREEN_BASELINE_SHA = aa493f0483204d491fb0d10f3787a6edadb08c55`
+
+`DOM_WRITE_SPIKE_STATUS = COMPLETE_AND_HUMAN_APPROVED`
+
+Production implementation planning may proceed only from the frozen evidence decisions in [the DOM-write spike evidence decision record](./2026-09-01-dom-write-spike-evidence-decision.md). No production writer, Increment 3 backend, fill-attempt resource, Prisma change, or `FILL_AND_REVIEW` runtime behavior is implemented by this documentation freeze.
 
 ## 1. Purpose
 
@@ -23,6 +29,7 @@ The following decisions are normative:
 - `DEDICATED FILL ATTEMPT MODEL REQUIRED: NO`
 - `REVIEW AUTHORITY IMMUTABLE AFTER READY: YES`
 - `DOM-WRITE SPIKE REQUIRED: YES`
+- `DOM_WRITE_SPIKE_STATUS: COMPLETE_AND_HUMAN_APPROVED`
 - `ONE AUTOMATED FILL ATTEMPT PER RUN`
 - Default automation mode: `PREPARE_ONLY`
 - New opt-in automation mode: `FILL_AND_REVIEW`
@@ -39,6 +46,8 @@ The following decisions are normative:
 - There is no direct refill.
 - There is no indirect refill.
 - After `fillAttemptId` has ever been assigned, the same `ApplicationRun` can never acquire another automated fill attempt.
+- Exact authenticated completion attestation is accepted from `READY` or `READY_FOR_USER_SUBMISSION`, and from no other state.
+- A reviewed `READY` run may bypass Fill without assigning `fillAttemptId` and may complete only after the user personally submits and provides the exact attestation.
 
 `APPLICATION_FILL` remains in the execution-scope enum but stays dormant and unissuable. A future delegated worker architecture may reconsider that scope, but the authenticated owner-session companion does not need a token minted and consumed by the same authority.
 
@@ -230,7 +239,7 @@ REVIEW_REQUIRED + fillAttemptId !== null
 
 The post-fill path restores manual review and personal-submission reachability without restoring automated fill. The user completes remaining fields manually and can later attest completion from `READY_FOR_USER_SUBMISSION`.
 
-A reviewed run may also bypass Fill entirely. From `READY`, the user may complete and personally submit the employer form and then use the same exact authenticated completion attestation. This includes zero-eligible runs, deliberate manual bypass, automation disabled after review, and any other safe condition that makes automated fill undesirable. This edge does not acquire Fill, inspect or operate a submit control, infer submission, or require `fillAttemptId`; a never-acquired run validly retains `fillAttemptId === null` through completion.
+A reviewed run may also bypass Fill entirely. From `READY`, the user may complete and personally submit the employer form and then use the same exact authenticated completion attestation. This includes zero-eligible runs, deliberate manual bypass, automation disabled after review, and any other safe condition that makes automated fill undesirable. This edge does not assign `fillAttemptId`, assign a fill lease, acquire Fill, inspect submission as authority, inspect or operate a submit control, infer employer submission, or perform an employer submit action; a never-acquired run validly retains `fillAttemptId === null` through completion.
 
 Once `READY -> FILLING` commits, every completed, partial, failed, or lost attempt ends in `READY_FOR_USER_SUBMISSION` unless cancellation wins. There is no `FILLING -> READY` edge and no general `READY_FOR_USER_SUBMISSION -> READY` edge.
 
@@ -276,13 +285,19 @@ answer.disposition === PROPOSABLE
 
 The UI treats server responses as authoritative, refreshes the packet after mutation, fails closed on stale or malformed responses, and disables duplicate in-flight actions. No review authority, packet content, answer ID, or proposal enters the browser binding. No employer write exists in this increment.
 
-## 9. Mandatory DOM-write spike
+## 9. Completed DOM-write evidence
 
 `DOM-WRITE SPIKE REQUIRED: YES`
 
-The spike is throwaway evidence work outside the repository in a `mktemp` directory under `/private/tmp`. It uses installed Playwright and React. No spike file is committed, and the spike performs no application API mutation or submit action.
+The required spike and bounded checkbox truth-table supplement are complete and human-approved as experimental evidence:
 
-Required fixtures:
+`DOM_WRITE_SPIKE_STATUS = COMPLETE_AND_HUMAN_APPROVED`
+
+The immutable evidence remains outside the repository. The repository records only the approved conclusions and artifact hashes in [the candidate-specific evidence decision record](./2026-09-01-dom-write-spike-evidence-decision.md). No raw evidence is copied into the repository, and no production writer exists yet.
+
+The spike was throwaway evidence work outside the repository in guarded `mktemp` directories under `/private/tmp`. It used installed Playwright and React. No spike file was committed, and the spike performed no application API mutation or submit action.
+
+The evidence fixtures covered:
 
 - plain HTML text input;
 - React-controlled text input;
@@ -324,10 +339,12 @@ native checked setter + bounded input/change events
 Boolean checkbox:
 
 ```text
-check()/uncheck()
+check() only for unchecked + proposed true
 versus
-native checked setter + bounded input/change events
+native checked=true setter + bounded input/change events
 ```
+
+`uncheck()` and native `checked=false` against a pre-existing checked checkbox were not authorized for investigation or production.
 
 The spike measures:
 
@@ -344,23 +361,39 @@ The spike measures:
 
 A control family is approved only if its strategy preserves occupied values, keeps framework state and DOM aligned after rerender, identifies normalization/rejection as mismatch, supports a bounded owned-mutation window, detects unrelated activity and detachment, produces no submit/navigation action, and exports no raw current value.
 
-Evidence from one family cannot authorize another. A failing family is deferred. Production writer mechanics remain undecided until the spike is complete.
+Evidence from one family cannot authorize another. The frozen candidate decisions are family-specific. Production implementation is still absent and must preserve every existing safety boundary.
 
 ## 10. Lean control matrix
 
-Candidate after family-specific spike evidence:
+Human-approved, frozen candidate matrix:
 
-- `TEXT`
-- `EMAIL`
-- `TEL`
-- `URL`
-- `TEXTAREA`
-- `SELECT_ONE`
+| Control family | Selected production candidate |
+|---|---|
+| `TEXT` | `NATIVE_VALUE_INPUT` |
+| `EMAIL` | `NATIVE_VALUE_INPUT` |
+| `TEL` | `NATIVE_VALUE_INPUT` |
+| `URL` | `NATIVE_VALUE_INPUT` |
+| `TEXTAREA` | `NATIVE_VALUE_INPUT` |
+| `SELECT_ONE` | `NATIVE_OPTION_INPUT_CHANGE` |
+| `RADIO_GROUP` | `PLAYWRIGHT_CHECK` |
+| `CHECKBOX_BOOLEAN` | `PLAYWRIGHT_CHECK` |
 
-Conditional on family-specific evidence:
+For `CHECKBOX_BOOLEAN`, the frozen production-shaped truth table is:
 
-- `RADIO_GROUP`
-- `CHECKBOX_BOOLEAN`
+| Current state | Proposal | Classification | Authorized operation |
+|---|---|---|---|
+| unchecked | true | `EMPTY` | one Playwright checked-to-true operation may be attempted |
+| unchecked | false | `ALREADY_EQUAL` | zero writes |
+| checked | true | `ALREADY_EQUAL` | zero writes |
+| checked | false | `OCCUPIED_DIFFERENT` | zero writes |
+
+`CHECKED_TO_FALSE_NOT_AUTHORIZED`
+
+Production code MUST NOT call `uncheck()` or perform native `checked=false` against a pre-existing checked checkbox. Future checked-to-false automation requires a separate human-reviewed evidence decision.
+
+`NATIVE_CHECKED_INPUT_CHANGE` is rejected for `RADIO_GROUP` and `CHECKBOX_BOOLEAN`. Its deterministic failures include `FRAMEWORK_DOM_DIVERGENCE`, `DETACHMENT_NOT_DETECTED`, and `EVENT_TARGET_MISMATCH`.
+
+The immutable original summary contains coarse family-level `FAIL` lines that aggregate the rejected native candidate with the passing Playwright candidate. Those aggregate lines do not reverse the selected `PLAYWRIGHT_CHECK` decisions; the external artifact remains unchanged, and the candidate-specific reconciliation is recorded in the evidence decision record.
 
 Deferred:
 
@@ -369,14 +402,14 @@ Deferred:
 - `SELECT_MANY`
 - `CHECKBOX_GROUP`
 - `FILE_UPLOAD`
-- `DOCUMENT_REFERENCE` upload
+- `DOCUMENT_REFERENCE upload`
 - custom widgets
 - contenteditable
 - rich text
 - multi-step navigation
 - ATS-specific controls
 
-Weak radio or Boolean-checkbox evidence defers those controls without delaying text/select support.
+The evidence authorizes no expansion beyond the selected matrix. Deferred families remain unrepresentable as eligible material.
 
 ## 11. Fill-attempt resource
 
@@ -422,7 +455,7 @@ POST accepts a strict body containing the expected run state version. In one tra
 
 Any failure before acquisition leaves the run in `READY`, with `fillAttemptId === null` and no steps. Once assigned, `fillAttemptId` is retained permanently and is never overwritten by a later attempt.
 
-If no approved spike-supported field is eligible, POST fails with the closed error `FILL_NO_ELIGIBLE_FIELDS` before assigning an attempt ID or lease, changing state, creating steps, or writing an acquisition audit. Specifically:
+If no approved spike-supported field is eligible, POST fails with the closed error `FILL_NO_ELIGIBLE_FIELDS` before `fillAttemptId` assignment, lease assignment, state transition, step creation, or acquisition audit. Specifically:
 
 ```text
 run.state remains READY
@@ -439,7 +472,7 @@ The control page presents this closed response:
 No fields can be filled automatically from the current reviewed packet. The user may complete the employer form manually and, after personally submitting it, use Mark personally submitted.
 ```
 
-Zero eligibility does not automatically transition the run. The run remains `READY`, and the user may either leave it there or manually complete and personally submit the employer form before using the exact completion attestation.
+Zero eligibility does not automatically transition the run. The run remains `READY`, `fillAttemptId` remains null, `fillLeaseExpiresAt` remains null, and the one automated-fill opportunity is not consumed. The user may either leave the run there or manually complete and personally submit the employer form before using the exact `USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE` attestation from `READY`.
 
 Minimum fill material contains:
 
@@ -655,7 +688,7 @@ INVALID
 DETACHED
 ```
 
-Text-like controls ask only whether the current value is empty. Any nonempty value is preserved. Post-write comparison uses the approved proposal inside page evaluation and returns only a closed match result. Any real `SELECT_ONE` or radio selection is occupied. Boolean checkbox behavior uses only checked state, the approved Boolean, and the applicant-event fence.
+Text-like controls ask only whether the current value is empty. Any nonempty value is preserved. Post-write comparison uses the approved proposal inside page evaluation and returns only a closed match result. Any real `SELECT_ONE` or radio selection is occupied. Boolean checkbox behavior uses only checked state, the approved Boolean, the frozen truth-table classification, and the applicant-event fence. Checked-to-false automation is not authorized.
 
 No raw current value may cross through:
 
@@ -954,13 +987,19 @@ NO submission detection as authority
 USER PERSONALLY SUBMITS.
 ```
 
-There is no `SUBMITTING` state, `SUBMITTED` state, Enter-key submit path, generic click primitive, submit backend route, or automatic completion from employer DOM/network behavior. A submit observer is not a security guarantee and is omitted unless the spike demonstrates a narrowly bounded defense-in-depth benefit.
+There is no `SUBMITTING` state, `SUBMITTED` state, Enter-key submit path, generic click primitive, submit backend route, or automatic completion from employer DOM/network behavior. A submit observer is not a security guarantee, is omitted, and is not authorized by the frozen evidence.
 
 ## 24. Implementation increments
 
 Implementation is test-first and proceeds in this exact order.
 
 ### Increment 1: Review UI reachability — 10–14 hours
+
+Status: **COMPLETE AND FROZEN**
+
+`INCREMENT_1_GREEN_BASELINE_SHA = aa493f0483204d491fb0d10f3787a6edadb08c55`
+
+Increment 1 includes the review UI request contracts, server-authoritative Approve and Reject, and server-authoritative Resolve Review. It is complete and frozen and is not reopened by this evidence decision.
 
 Goal: expose Approve, Reject, and Resolve review on the authenticated control page using existing backend routes. No binding review content and no employer write.
 
@@ -976,13 +1015,19 @@ Completion requires unit/UI/type/lint success with no employer-write implementat
 
 ### Increment 2: Throwaway DOM-write spike — 10–16 hours
 
+Status: **COMPLETE AND HUMAN-APPROVED**
+
+`DOM_WRITE_SPIKE_STATUS = COMPLETE_AND_HUMAN_APPROVED`
+
 Goal: obtain family-specific evidence outside the repository.
 
 The spike uses only a fresh directory created by `mktemp -d` under `/private/tmp`. Repository paths remain read-only. RED assertions cover controlled rerender, normalization, occupied preservation, bounded events, unrelated activity, detachment, side effects, and closed outputs.
 
-Completion requires a family evidence matrix and an unchanged repository.
+Completion is recorded in [the DOM-write spike evidence decision record](./2026-09-01-dom-write-spike-evidence-decision.md), including the immutable artifact hashes and frozen candidate-specific matrix.
 
 ### Increment 3: Lean policy/state/schema/fill-attempt backend — 28–42 hours
+
+Status: **NOT IMPLEMENTED**
 
 Goal: add the minimal migration, permanent one-attempt fence, fill resource, read-only status, explicit PATCH recovery, conditional review-resolution state edges, and material reinspection behavior.
 
@@ -1064,16 +1109,23 @@ Likely range: **110–138 hours**
 
 Contingency ceiling: **150 hours**
 
-The largest uncertainty is the DOM-write spike, especially framework-controlled rerender, handle detachment, and event behavior.
+The DOM-write spike uncertainty is resolved by the frozen evidence decision. The estimates above remain the original planning estimates; no estimate implies Increment 3 or later work has started.
 
 The estimate excludes ATS adapters, file upload, custom widgets, contenteditable, multi-step navigation, cross-browser support, post-MVP telemetry, employer login, and automated submission.
 
 ## 26. Remaining human decisions
 
-Exactly two implementation-time human decisions remain:
+Exactly one implementation-time human decision remains:
 
 1. Select the exact canonical employer hosts for the first allowlisted rollout.
-2. If both radio/checkbox strategies pass, decide whether exact-control Playwright click semantics are acceptable; otherwise defer those families.
+
+The DOM-write candidate decision is closed:
+
+```text
+RADIO_GROUP -> PLAYWRIGHT_CHECK
+CHECKBOX_BOOLEAN -> PLAYWRIGHT_CHECK
+CHECKED_TO_FALSE_NOT_AUTHORIZED
+```
 
 No additional architecture question is introduced by this specification.
 
@@ -1098,6 +1150,8 @@ The implemented feature is acceptable only when all of the following are true:
 - All expired-lease state, step, lease, outcome, and audit mutations occur only through `PATCH action: RECOVER_EXPIRED` after server-side expiry proof.
 - New acquisition and the next employer write require live global/policy capability, while safe `FINALIZE` and server-verified `RECOVER_EXPIRED` remain available after capability shutdown.
 - Only spike-approved control families are writable.
+- `RADIO_GROUP` and `CHECKBOX_BOOLEAN` use only the selected `PLAYWRIGHT_CHECK` candidate; the native checked-setter candidate is rejected for both families.
+- Checked-to-false checkbox automation is not authorized; production code does not call `uncheck()` or perform native `checked=false` against a pre-existing checked checkbox.
 - Occupied values and selections are never overwritten.
 - Raw employer current values never cross page evaluation.
 - Unexpected events, mismatch, detachment, and target loss stop safely.
