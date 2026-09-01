@@ -5,7 +5,15 @@ import type {
 } from "@prisma/client";
 import { z } from "zod";
 
-import { MAX_FUTURE_OBSERVED_URL_CODE_POINTS } from "@/lib/application-runs/form-inspection";
+import {
+  FILL_ERROR_CODES,
+  FILL_STEP_RESULTS,
+  STOPPED_EARLY_FILL_ERRORS
+} from "@/lib/application-runs/fill-attempt-domain";
+import {
+  MAX_FIELDS_TOTAL,
+  MAX_FUTURE_OBSERVED_URL_CODE_POINTS
+} from "@/lib/application-runs/form-inspection";
 import { applicationAutomationPolicyPatchSchema } from "@/lib/application-runs/policy";
 import { PLAN_REVIEW_REASONS } from "@/lib/application-runs/review-reasons";
 
@@ -46,6 +54,97 @@ export const createApplicationRunBodySchema = z
 export const strictEmptyBodySchema = z.object({}).strict();
 
 const nonnegativeSafeVersionSchema = z.number().int().safe().nonnegative();
+
+export const acquireApplicationRunFillAttemptBodySchema = z
+  .object({
+    expectedStateVersion: nonnegativeSafeVersionSchema
+  })
+  .strict();
+
+const fillAttemptIdSchema = z.string().uuid();
+const fillStepKeySchema = z
+  .string()
+  .min(1)
+  .max(160)
+  .superRefine((value, context) => {
+    const [prefix, attemptId, normalizedFieldKey, ...rest] = value.split(":");
+    if (
+      prefix !== "fill" ||
+      rest.length > 0 ||
+      !fillAttemptIdSchema.safeParse(attemptId).success ||
+      !/^[a-f0-9]{64}$/.test(normalizedFieldKey ?? "")
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Fill step keys must bind one UUID attempt to one canonical field key."
+      });
+    }
+  });
+
+const fillFinalizationStepSchema = z
+  .object({
+    stepKey: fillStepKeySchema,
+    result: z.enum(FILL_STEP_RESULTS),
+    errorCode: z.enum(FILL_ERROR_CODES).nullable()
+  })
+  .strict();
+
+const finalizeApplicationRunFillAttemptBodySchema = z
+  .object({
+    action: z.literal("FINALIZE"),
+    fillAttemptId: fillAttemptIdSchema,
+    expectedStateVersion: nonnegativeSafeVersionSchema,
+    outcome: z.enum(["COMPLETED", "STOPPED_EARLY"]),
+    errorCode: z.enum(STOPPED_EARLY_FILL_ERRORS).nullable(),
+    steps: z.array(fillFinalizationStepSchema).min(1).max(MAX_FIELDS_TOTAL)
+  })
+  .strict();
+
+const recoverExpiredApplicationRunFillAttemptBodySchema = z
+  .object({
+    action: z.literal("RECOVER_EXPIRED"),
+    fillAttemptId: fillAttemptIdSchema,
+    expectedStateVersion: nonnegativeSafeVersionSchema
+  })
+  .strict();
+
+export const applicationRunFillAttemptPatchBodySchema = z
+  .discriminatedUnion("action", [
+    finalizeApplicationRunFillAttemptBodySchema,
+    recoverExpiredApplicationRunFillAttemptBodySchema
+  ])
+  .superRefine((value, context) => {
+    if (value.action !== "FINALIZE") return;
+    if (
+      (value.outcome === "COMPLETED" && value.errorCode !== null) ||
+      (value.outcome === "STOPPED_EARLY" && value.errorCode === null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["errorCode"],
+        message: "Fill finalization outcome and error must agree."
+      });
+    }
+
+    const stepKeys = value.steps.map((step) => step.stepKey);
+    if (new Set(stepKeys).size !== stepKeys.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steps"],
+        message: "Fill finalization step keys must not contain duplicates."
+      });
+    }
+    const expectedPrefix = `fill:${value.fillAttemptId}:`;
+    value.steps.forEach((step, index) => {
+      if (!step.stepKey.startsWith(expectedPrefix)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["steps", index, "stepKey"],
+          message: "Fill finalization steps must belong to the asserted attempt."
+        });
+      }
+    });
+  });
 
 export const publishApplicationRunFormInspectionBodySchema = z
   .object({
@@ -121,6 +220,12 @@ export const applicationRunDocumentExportBodySchema = z
 export const automationPolicyPatchContract = applicationAutomationPolicyPatchSchema;
 
 export type CreateApplicationRunBody = z.infer<typeof createApplicationRunBodySchema>;
+export type AcquireApplicationRunFillAttemptBody = z.infer<
+  typeof acquireApplicationRunFillAttemptBodySchema
+>;
+export type ApplicationRunFillAttemptPatchBody = z.infer<
+  typeof applicationRunFillAttemptPatchBodySchema
+>;
 export type PublishApplicationRunFormInspectionBody = z.infer<
   typeof publishApplicationRunFormInspectionBodySchema
 >;

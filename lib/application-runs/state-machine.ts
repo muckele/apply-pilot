@@ -1,22 +1,27 @@
 import { ApplicationRunState } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
+import {
+  FillAttemptDomainError,
+  isStoppedEarlyFillError,
+  type StoppedEarlyFillError
+} from "@/lib/application-runs/fill-attempt-domain";
 
-// The complete approved transition map for this milestone. Anything not listed here is
-// invalid by construction (fail closed). FILLING, READY_FOR_USER_SUBMISSION, and
-// COMPLETED_BY_USER exist in the Prisma enum for forward compatibility but have no
-// inbound edges — no executable path may enter them in this milestone. There is no
-// SUBMITTING or SUBMITTED state anywhere in this system.
+// The complete approved transition map. Anything not listed here is invalid by
+// construction (fail closed). Fill and human-completion edges are represented in one
+// central authority, but this module creates no executable Fill service, route, browser
+// command, arbitrary-state mutation API, or completion path. There is no SUBMITTING or
+// SUBMITTED state anywhere in this system.
 export const ALLOWED_RUN_TRANSITIONS: Record<ApplicationRunState, readonly ApplicationRunState[]> = {
   DRAFT: ["PREPARING", "BLOCKED", "CANCELLED"],
   PREPARING: ["READY", "REVIEW_REQUIRED", "BLOCKED", "FAILED", "CANCELLED"],
-  READY: ["REVIEW_REQUIRED", "CANCELLED"],
-  REVIEW_REQUIRED: ["READY", "CANCELLED"],
+  READY: ["REVIEW_REQUIRED", "FILLING", "COMPLETED_BY_USER", "CANCELLED"],
+  REVIEW_REQUIRED: ["READY", "READY_FOR_USER_SUBMISSION", "CANCELLED"],
   // BLOCKED -> BLOCKED is a gate re-evaluation that refreshes blockingReason, not a no-op.
   BLOCKED: ["PREPARING", "BLOCKED", "CANCELLED"],
   FAILED: ["PREPARING", "BLOCKED", "CANCELLED"],
-  FILLING: [],
-  READY_FOR_USER_SUBMISSION: [],
+  FILLING: ["READY_FOR_USER_SUBMISSION", "CANCELLED"],
+  READY_FOR_USER_SUBMISSION: ["REVIEW_REQUIRED", "COMPLETED_BY_USER", "CANCELLED"],
   COMPLETED_BY_USER: [],
   CANCELLED: []
 };
@@ -55,7 +60,47 @@ export function buildCancelRunData(now: Date) {
     cancelledAt: now,
     activeRunKey: null,
     prepareAttemptId: null,
-    prepareLeaseExpiresAt: null
+    prepareLeaseExpiresAt: null,
+    fillLeaseExpiresAt: null
+  };
+}
+
+// These builders consume caller-supplied authority facts only. They do not generate
+// attempt IDs, read a clock/database, or decide whether acquisition/finalization is
+// authorized. Future services must call assertRunTransition around their mutations.
+export function buildAcquireRunFillData(input: {
+  fillAttemptId: string;
+  fillLeaseExpiresAt: Date;
+}) {
+  return {
+    state: "FILLING" as ApplicationRunState,
+    stateVersion: { increment: 1 },
+    fillAttemptId: input.fillAttemptId,
+    fillLeaseExpiresAt: input.fillLeaseExpiresAt,
+    errorCategory: null
+  };
+}
+
+export function buildFinalizeRunFillData(input: {
+  errorCategory: StoppedEarlyFillError | null;
+}) {
+  if (input.errorCategory !== null && !isStoppedEarlyFillError(input.errorCategory)) {
+    throw new FillAttemptDomainError();
+  }
+  return {
+    state: "READY_FOR_USER_SUBMISSION" as ApplicationRunState,
+    stateVersion: { increment: 1 },
+    fillLeaseExpiresAt: null,
+    errorCategory: input.errorCategory
+  };
+}
+
+export function buildRecoverExpiredRunFillData() {
+  return {
+    state: "READY_FOR_USER_SUBMISSION" as ApplicationRunState,
+    stateVersion: { increment: 1 },
+    fillLeaseExpiresAt: null,
+    errorCategory: "FILL_STALE" as const
   };
 }
 
@@ -64,10 +109,13 @@ export function buildCancelRunData(now: Date) {
 // advances the already-approved REVIEW_REQUIRED -> READY transition fence.
 export function buildResolveRunReviewData(
   now: Date,
-  input: { acknowledgePlannerReview: boolean }
+  input: { acknowledgePlannerReview: boolean; fillAttemptId?: string | null }
 ) {
   return {
-    state: "READY" as ApplicationRunState,
+    // Commit 5 must pass the locked persisted fillAttemptId before any post-fill
+    // review-resolution path becomes executable. Omission preserves the currently
+    // reachable pre-fill service behavior while Commit 2 remains independently safe.
+    state: (input.fillAttemptId == null ? "READY" : "READY_FOR_USER_SUBMISSION") as ApplicationRunState,
     stateVersion: { increment: 1 },
     ...(input.acknowledgePlannerReview ? { reviewAcknowledgedAt: now } : {})
   };

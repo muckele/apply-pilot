@@ -16,6 +16,9 @@ const CUID = "clz8w7m9a0000qwer1234tyui";
 const ANSWER_CUID = "clz8w7m9a0001qwer1234tyui";
 const TOKEN_CUID = "clz8w7m9a0002qwer1234tyui";
 const PACKET_HASH = "a".repeat(64);
+const FILL_ATTEMPT_ID = "550e8400-e29b-41d4-a716-446655440000";
+const FILL_FIELD_KEY = "b".repeat(64);
+const FILL_STEP_KEY = `fill:${FILL_ATTEMPT_ID}:${FILL_FIELD_KEY}`;
 
 type RuntimeSchema = {
   parse(value: unknown): unknown;
@@ -255,5 +258,113 @@ test("answer-packet rebuild accepts only the three required safe version counter
     "runId"
   ]) {
     assert.equal(schema.safeParse({ ...valid, [field]: "smuggled" }).success, false, field);
+  }
+});
+
+test("fill acquisition accepts only one required nonnegative safe state version", () => {
+  const schema = contractSchema("acquireApplicationRunFillAttemptBodySchema");
+  assert.deepEqual(schema.parse({ expectedStateVersion: 0 }), { expectedStateVersion: 0 });
+  assert.deepEqual(schema.parse({ expectedStateVersion: Number.MAX_SAFE_INTEGER }), {
+    expectedStateVersion: Number.MAX_SAFE_INTEGER
+  });
+
+  for (const expectedStateVersion of [undefined, -1, 1.5, "1", Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+    const candidate: Record<string, unknown> = { expectedStateVersion };
+    if (expectedStateVersion === undefined) delete candidate.expectedStateVersion;
+    assert.equal(schema.safeParse(candidate).success, false, String(expectedStateVersion));
+  }
+
+  for (const field of [
+    "runId",
+    "userId",
+    "host",
+    "policy",
+    "proposal",
+    "token",
+    "scope",
+    "fillAttemptId",
+    "state",
+    "submit"
+  ]) {
+    assert.equal(schema.safeParse({ expectedStateVersion: 0, [field]: "smuggled" }).success, false, field);
+  }
+});
+
+test("fill FINALIZE and RECOVER_EXPIRED requests form one strict closed action contract", () => {
+  const schema = contractSchema("applicationRunFillAttemptPatchBodySchema");
+  const completed = {
+    action: "FINALIZE",
+    fillAttemptId: FILL_ATTEMPT_ID,
+    expectedStateVersion: 12,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{ stepKey: FILL_STEP_KEY, result: "FILLED", errorCode: null }]
+  } as const;
+  assert.deepEqual(schema.parse(completed), completed);
+
+  for (const errorCode of [
+    "FILL_POLICY_DENIED",
+    "FILL_TARGET_TRUST_LOST",
+    "FILL_UNEXPECTED_MUTATION",
+    "FILL_WRITE_FAILED",
+    "FILL_INTERNAL"
+  ]) {
+    const stopped = {
+      ...completed,
+      outcome: "STOPPED_EARLY",
+      errorCode,
+      steps: [{ stepKey: FILL_STEP_KEY, result: "FAILED", errorCode }]
+    };
+    assert.equal(schema.safeParse(stopped).success, true, errorCode);
+  }
+
+  const recovery = {
+    action: "RECOVER_EXPIRED",
+    fillAttemptId: FILL_ATTEMPT_ID,
+    expectedStateVersion: 12
+  } as const;
+  assert.deepEqual(schema.parse(recovery), recovery);
+
+  for (const invalid of [
+    { ...completed, fillAttemptId: "attempt-1" },
+    { ...completed, expectedStateVersion: -1 },
+    { ...completed, expectedStateVersion: 1.5 },
+    { ...completed, expectedStateVersion: "12" },
+    { ...completed, expectedStateVersion: Number.NaN },
+    { ...completed, expectedStateVersion: Number.POSITIVE_INFINITY },
+    { ...completed, expectedStateVersion: Number.MAX_SAFE_INTEGER + 1 },
+    { ...completed, outcome: "UNKNOWN" },
+    { ...completed, outcome: "COMPLETED", errorCode: "FILL_WRITE_FAILED" },
+    { ...completed, outcome: "STOPPED_EARLY", errorCode: null },
+    { ...completed, outcome: "STOPPED_EARLY", errorCode: "FILL_REVIEW_REQUIRED" },
+    { ...completed, outcome: "STOPPED_EARLY", errorCode: "FILL_ALREADY_IN_PROGRESS" },
+    { ...completed, outcome: "STOPPED_EARLY", errorCode: "FILL_NO_ELIGIBLE_FIELDS" },
+    { ...completed, outcome: "STOPPED_EARLY", errorCode: "FILL_STALE" },
+    { ...completed, steps: [{ stepKey: FILL_STEP_KEY, result: "UNKNOWN", errorCode: null }] },
+    { ...completed, steps: [{ stepKey: FILL_STEP_KEY, result: "FAILED", errorCode: "FREE_FORM" }] },
+    { ...completed, steps: [{ stepKey: "unbounded-or-foreign", result: "FILLED", errorCode: null }] },
+    { ...completed, steps: [] },
+    { ...completed, steps: Array.from({ length: 201 }, (_, index) => ({
+      stepKey: `fill:${FILL_ATTEMPT_ID}:${index.toString(16).padStart(64, "0")}`,
+      result: "FILLED",
+      errorCode: null
+    })) },
+    { ...completed, steps: [completed.steps[0], completed.steps[0]] },
+    { ...completed, unknownField: true },
+    { ...completed, steps: [{ ...completed.steps[0], selector: "#secret" }] },
+    { ...recovery, steps: completed.steps },
+    { ...recovery, outcome: "RECOVERED_AFTER_LOSS" },
+    { ...recovery, errorCode: "FILL_STALE" },
+    { ...recovery, proposal: { kind: "SCALAR", value: "secret" } },
+    { ...recovery, token: "secret" },
+    { ...recovery, renew: true },
+    { ...recovery, submit: true },
+    { ...recovery, completionAttestation: "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE" },
+    { action: "COMPLETE", fillAttemptId: FILL_ATTEMPT_ID, expectedStateVersion: 12 },
+    { action: "RETRY", fillAttemptId: FILL_ATTEMPT_ID, expectedStateVersion: 12 },
+    { action: "RENEW", fillAttemptId: FILL_ATTEMPT_ID, expectedStateVersion: 12 },
+    { action: "SUBMIT", fillAttemptId: FILL_ATTEMPT_ID, expectedStateVersion: 12 }
+  ]) {
+    assert.equal(schema.safeParse(invalid).success, false, JSON.stringify(invalid));
   }
 });

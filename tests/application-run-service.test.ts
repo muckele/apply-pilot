@@ -58,6 +58,8 @@ type FakeRun = ApplicationRunDto & {
   activeRunKey: string | null;
   applyUrlSnapshot: string;
   prepareAttemptId: string | null;
+  fillAttemptId: string | null;
+  fillLeaseExpiresAt: Date | null;
   policySnapshot: unknown;
   applicationPlanSnapshot: unknown;
   firstPreparingAt: Date | null;
@@ -186,6 +188,8 @@ function fakeRun(overrides: Partial<FakeRun> = {}): FakeRun {
     activeRunKey: APPLICATION_ID,
     applyUrlSnapshot: "https://jobs.example.com/apply/123",
     prepareAttemptId: null,
+    fillAttemptId: null,
+    fillLeaseExpiresAt: null,
     policySnapshot: null,
     applicationPlanSnapshot: null,
     firstPreparingAt: null,
@@ -1256,17 +1260,24 @@ test("cancellation accepts every state already authorized by the state machine a
     "READY",
     "REVIEW_REQUIRED",
     "BLOCKED",
-    "FAILED"
+    "FAILED",
+    "FILLING",
+    "READY_FOR_USER_SUBMISSION"
   ];
   for (const state of cancellable) {
     const database = new FakeApplicationRunDatabase();
     const firstPreparingAt = new Date("2026-08-19T12:00:00.000Z");
+    const fillAttemptId = ["FILLING", "READY_FOR_USER_SUBMISSION"].includes(state)
+      ? "550e8400-e29b-41d4-a716-446655440000"
+      : null;
     database.runs.push(fakeRun({
       state,
       stateVersion: 4,
       firstPreparingAt,
       prepareAttemptId: state === "PREPARING" ? "attempt-sensitive" : null,
       prepareLeaseExpiresAt: state === "PREPARING" ? new Date(NOW.getTime() + 60_000) : null,
+      fillAttemptId,
+      fillLeaseExpiresAt: state === "FILLING" ? new Date(NOW.getTime() + 60_000) : null,
       policySnapshot: { provenance: "preserve" },
       applicationPlanSnapshot: { evidence: "preserve" }
     }));
@@ -1279,6 +1290,8 @@ test("cancellation accepts every state already authorized by the state machine a
     assert.equal(stored.activeRunKey, null, state);
     assert.equal(stored.prepareAttemptId, null, state);
     assert.equal(stored.prepareLeaseExpiresAt, null, state);
+    assert.equal(stored.fillAttemptId, fillAttemptId, state);
+    assert.equal(stored.fillLeaseExpiresAt, null, state);
     assert.deepEqual(stored.firstPreparingAt, firstPreparingAt, state);
     assert.deepEqual(stored.policySnapshot, { provenance: "preserve" }, state);
     assert.deepEqual(stored.applicationPlanSnapshot, { evidence: "preserve" }, state);
@@ -1286,8 +1299,8 @@ test("cancellation accepts every state already authorized by the state machine a
   }
 });
 
-test("cancellation rejects terminal/future states and is not idempotently repeatable", async () => {
-  for (const state of ["FILLING", "READY_FOR_USER_SUBMISSION", "COMPLETED_BY_USER", "CANCELLED"] as const) {
+test("cancellation rejects terminal states and is not idempotently repeatable", async () => {
+  for (const state of ["COMPLETED_BY_USER", "CANCELLED"] as const) {
     const database = new FakeApplicationRunDatabase();
     database.runs.push(fakeRun({ state }));
     await assert.rejects(
