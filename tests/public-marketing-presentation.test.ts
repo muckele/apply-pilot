@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
 
 import HomePage from "@/app/(public)/page";
+import { WorkflowSection } from "@/components/landing/workflow-section";
 
 function renderHomePage() {
   const page = (HomePage as unknown as () => React.ReactElement)();
@@ -26,6 +28,15 @@ test("the root route presents the approved landing message and conversion paths"
   assert.match(html, /Prepare/);
   assert.match(html, /Review/);
   assert.match(html, /You submit/);
+});
+
+test("the workflow ends at the applicant-owned submit stage", () => {
+  const html = renderToStaticMarkup(React.createElement(WorkflowSection));
+  const text = renderedText(html);
+
+  assert.match(text, /You submit/);
+  assert.doesNotMatch(text, /You apply/);
+  assert.match(text, /personally submit/);
 });
 
 test("every public header anchor resolves to a rendered landing section", () => {

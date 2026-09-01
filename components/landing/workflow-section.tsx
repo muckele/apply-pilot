@@ -26,7 +26,7 @@ const stages = [
     visual: "review"
   },
   {
-    title: "You apply",
+    title: "You submit",
     copy: "Use controlled browser assistance, then personally submit.",
     icon: UserRound,
     visual: "browser"
