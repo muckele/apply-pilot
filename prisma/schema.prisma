@@ -123,6 +123,7 @@ enum ConsentStatus {
 
 enum AutomationMode {
   PREPARE_ONLY
+  FILL_AND_REVIEW
 }
 
 enum SensitiveAnswerPolicy {
@@ -919,6 +920,8 @@ model ApplicationRun {
   currentAnswerPacketVersion     Int                 @default(0)
   prepareAttemptId               String?
   prepareLeaseExpiresAt          DateTime?
+  fillAttemptId                  String?
+  fillLeaseExpiresAt             DateTime?
   firstPreparingAt               DateTime?
   applyUrlSnapshot               String
   applyHost                      String

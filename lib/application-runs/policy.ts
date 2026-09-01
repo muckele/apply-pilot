@@ -65,7 +65,7 @@ const scoreSchema = z.number().int().min(0).max(100);
 export const applicationAutomationPolicyPatchSchema = z
   .object({
     enabled: z.boolean().optional(),
-    mode: z.literal("PREPARE_ONLY").optional(),
+    mode: z.enum(["PREPARE_ONLY", "FILL_AND_REVIEW"]).optional(),
     minimumFitScore: scoreSchema.optional(),
     minimumConfidenceScore: scoreSchema.optional(),
     dailyApplicationCap: z.number().int().min(0).max(25).optional(),

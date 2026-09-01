@@ -65,6 +65,32 @@ test("policy defaults mirror the Prisma schema fail-closed values", () => {
   });
 });
 
+test("policy mode accepts only the two exact closed literals without enabling automation", () => {
+  assert.deepEqual(parseAutomationPolicyPatch({ mode: "PREPARE_ONLY" }), { mode: "PREPARE_ONLY" });
+  assert.deepEqual(parseAutomationPolicyPatch({ mode: "FILL_AND_REVIEW" }), { mode: "FILL_AND_REVIEW" });
+  assert.equal(AUTOMATION_POLICY_DEFAULTS.mode, "PREPARE_ONLY");
+  assert.equal(AUTOMATION_POLICY_DEFAULTS.enabled, false);
+  assert.deepEqual(AUTOMATION_POLICY_DEFAULTS.allowedHosts, []);
+  assert.deepEqual(AUTOMATION_POLICY_DEFAULTS.permittedAdapters, []);
+
+  for (const mode of [
+    "fill_and_review",
+    "Fill_AND_REVIEW",
+    "FILL-AND-REVIEW",
+    " FILL_AND_REVIEW",
+    "FILL_AND_REVIEW ",
+    "TRUE",
+    "UNKNOWN"
+  ]) {
+    assert.throws(
+      () => applicationAutomationPolicyPatchSchema.parse({ mode }),
+      `expected exact mode validation to reject ${JSON.stringify(mode)}`
+    );
+  }
+
+  assert.throws(() => applicationAutomationPolicyPatchSchema.parse({ mode: "PREPARE_ONLY", unknownField: true }));
+});
+
 test("policy validation accepts approved values and canonicalizes hosts", () => {
   const patch = parseAutomationPolicyPatch({
     enabled: true,
@@ -92,7 +118,6 @@ test("policy validation rejects invalid score, cap, mode, sensitive policy, and 
     { dailyApplicationCap: -1 },
     { dailyApplicationCap: 26 },
     { dailyApplicationCap: 2.5 },
-    { mode: "FILL_AND_REVIEW" },
     { sensitiveAnswerPolicy: "ALLOW" },
     { finalReviewRequired: false },
     { unknownField: true }
