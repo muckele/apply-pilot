@@ -19,14 +19,23 @@ import {
   deriveTerminalFillAttemptOutcome,
   FILL_ERROR_CODES,
   FILL_LEASE_MS,
+  FILL_STEP_RESULTS,
   projectVerifiedFillCandidates,
+  reconcileFillFinalization,
+  STOPPED_EARLY_FILL_ERRORS,
   type FillErrorCode,
   type FillStepResult,
   type VerifiedFillCandidate
 } from "@/lib/application-runs/fill-attempt-domain";
+import { MAX_FIELDS_TOTAL } from "@/lib/application-runs/form-inspection";
 import { isHostAllowedForExecution, parseExecutionTargetUrl } from "@/lib/application-runs/host-policy";
 import { isApplicationAutomationEnabled, type AutomationEnv } from "@/lib/application-runs/policy";
-import { assertRunTransition, buildAcquireRunFillData } from "@/lib/application-runs/state-machine";
+import {
+  assertRunTransition,
+  buildAcquireRunFillData,
+  buildFinalizeRunFillData,
+  buildRecoverExpiredRunFillData
+} from "@/lib/application-runs/state-machine";
 import { prisma } from "@/lib/prisma";
 
 const serviceUserIdSchema = z.string().trim().min(1).max(128);
@@ -38,6 +47,69 @@ const acquireInputSchema = z.object({
 }).strict();
 const statusInputSchema = z.object({ userId: serviceUserIdSchema, runId: serviceRunIdSchema }).strict();
 const attemptIdSchema = z.string().uuid();
+const nonnegativeSafeVersionSchema = z.number().int().safe().nonnegative();
+const fillStepKeySchema = z.string().min(1).max(160).superRefine((value, context) => {
+  const [prefix, attemptId, normalizedFieldKey, ...rest] = value.split(":");
+  if (
+    prefix !== "fill" ||
+    rest.length > 0 ||
+    !attemptIdSchema.safeParse(attemptId).success ||
+    !/^[a-f0-9]{64}$/.test(normalizedFieldKey ?? "")
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Fill step keys must bind one UUID attempt to one canonical field key."
+    });
+  }
+});
+const finalizeInputSchema = z.object({
+  userId: serviceUserIdSchema,
+  runId: serviceRunIdSchema,
+  fillAttemptId: attemptIdSchema,
+  expectedStateVersion: nonnegativeSafeVersionSchema,
+  outcome: z.enum(["COMPLETED", "STOPPED_EARLY"]),
+  errorCode: z.enum(STOPPED_EARLY_FILL_ERRORS).nullable(),
+  steps: z.array(z.object({
+    stepKey: fillStepKeySchema,
+    result: z.enum(FILL_STEP_RESULTS),
+    errorCode: z.enum(FILL_ERROR_CODES).nullable()
+  }).strict()).min(1).max(MAX_FIELDS_TOTAL)
+}).strict().superRefine((value, context) => {
+  if (
+    (value.outcome === "COMPLETED" && value.errorCode !== null) ||
+    (value.outcome === "STOPPED_EARLY" && value.errorCode === null)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["errorCode"],
+      message: "Fill finalization outcome and error must agree."
+    });
+  }
+  const stepKeys = value.steps.map((step) => step.stepKey);
+  if (new Set(stepKeys).size !== stepKeys.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["steps"],
+      message: "Fill finalization step keys must not contain duplicates."
+    });
+  }
+  const expectedPrefix = `fill:${value.fillAttemptId}:`;
+  value.steps.forEach((step, index) => {
+    if (!step.stepKey.startsWith(expectedPrefix)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steps", index, "stepKey"],
+        message: "Fill finalization steps must belong to the asserted attempt."
+      });
+    }
+  });
+});
+const recoverInputSchema = z.object({
+  userId: serviceUserIdSchema,
+  runId: serviceRunIdSchema,
+  fillAttemptId: attemptIdSchema,
+  expectedStateVersion: nonnegativeSafeVersionSchema
+}).strict();
 const FIELD_KEY_PATTERN = /^[a-f0-9]{64}$/;
 const CLOSED_FILL_ERRORS = new Set<string>(FILL_ERROR_CODES);
 
@@ -80,6 +152,8 @@ type StoredFillStep = {
   redactedValueSummary: string | null;
   errorCategory: string | null;
   artifactReference: string | null;
+  startedAt: Date | null;
+  completedAt: Date | null;
 };
 
 function fillError(code: FillErrorCode, status: number, message: string): PublicApiError {
@@ -370,6 +444,145 @@ function validTerminalSteps(fillAttemptId: string, steps: readonly StoredFillSte
   });
 }
 
+async function lockAttemptSteps(
+  tx: ApplicationRunAnswerPacketTransaction,
+  input: { userId: string; runId: string; fillAttemptId: string }
+): Promise<StoredFillStep[]> {
+  return tx.$queryRaw<StoredFillStep[]>`
+    SELECT
+      "stepKey", "sequence", "action", "semanticFieldKey", "adapter", "status",
+      "attemptNumber", "redactedValueSummary", "errorCategory", "artifactReference",
+      "startedAt", "completedAt"
+    FROM "ApplicationRunStep"
+    WHERE "runId" = ${input.runId}
+      AND "userId" = ${input.userId}
+      AND "stepKey" LIKE ${`fill:${input.fillAttemptId}:%`}
+    ORDER BY "sequence" ASC
+    FOR UPDATE
+  `;
+}
+
+function isOptionalFiniteDate(value: unknown): value is Date | null {
+  return value === null || (value instanceof Date && Number.isFinite(value.getTime()));
+}
+
+function assertActiveMutationFence(
+  run: FillRun,
+  input: { fillAttemptId: string; expectedStateVersion: number }
+): Date {
+  if (run.state !== "FILLING") throw fillStale();
+  if (!attemptIdSchema.safeParse(run.fillAttemptId).success) throw fillInternal();
+  if (run.fillAttemptId !== input.fillAttemptId || run.stateVersion !== input.expectedStateVersion) {
+    throw fillStale();
+  }
+  if (
+    !(run.fillLeaseExpiresAt instanceof Date) ||
+    !Number.isFinite(run.fillLeaseExpiresAt.getTime())
+  ) {
+    throw fillInternal();
+  }
+  return run.fillLeaseExpiresAt;
+}
+
+function assertUnfinalizedSteps(fillAttemptId: string, steps: readonly StoredFillStep[]): void {
+  if (
+    !validTerminalSteps(fillAttemptId, steps) ||
+    steps.some((step) =>
+      step.status !== "PENDING" ||
+      step.redactedValueSummary !== null ||
+      step.errorCategory !== null ||
+      step.completedAt !== null ||
+      !isOptionalFiniteDate(step.startedAt)
+    )
+  ) {
+    throw fillInternal();
+  }
+}
+
+type ProjectedRecoveryStep = {
+  source: StoredFillStep;
+  status: "SUCCEEDED" | "SKIPPED" | "FAILED";
+  redactedValueSummary: FillStepResult;
+  errorCategory: FillErrorCode | null;
+  recovered: boolean;
+};
+
+function projectRecoverySteps(
+  fillAttemptId: string,
+  steps: readonly StoredFillStep[]
+): ProjectedRecoveryStep[] {
+  if (!validTerminalSteps(fillAttemptId, steps)) throw fillInternal();
+  let unresolvedStarted = false;
+  return steps.map((step): ProjectedRecoveryStep => {
+    if (!isOptionalFiniteDate(step.startedAt)) throw fillInternal();
+    const safeTerminal =
+      ((step.status === "SUCCEEDED" && step.redactedValueSummary === "FILLED") ||
+        (step.status === "SKIPPED" &&
+          (step.redactedValueSummary === "PRESERVED_EXISTING" ||
+            step.redactedValueSummary === "MANUAL"))) &&
+      step.errorCategory === null &&
+      step.completedAt instanceof Date &&
+      Number.isFinite(step.completedAt.getTime());
+    if (safeTerminal) {
+      if (unresolvedStarted) throw fillInternal();
+      return {
+        source: step,
+        status: step.status as "SUCCEEDED" | "SKIPPED",
+        redactedValueSummary: step.redactedValueSummary as FillStepResult,
+        errorCategory: null,
+        recovered: false
+      };
+    }
+
+    const unresolved =
+      (step.status === "PENDING" || step.status === "RUNNING") &&
+      step.redactedValueSummary === null &&
+      step.errorCategory === null &&
+      step.completedAt === null;
+    if (!unresolved) throw fillInternal();
+    unresolvedStarted = true;
+    return {
+      source: step,
+      status: "FAILED",
+      redactedValueSummary: "FAILED",
+      errorCategory: "FILL_STALE",
+      recovered: true
+    };
+  });
+}
+
+function terminalStatus(input: {
+  run: FillRun;
+  outcome: "COMPLETED" | "STOPPED_EARLY" | "RECOVERED_AFTER_LOSS";
+  errorCode: FillErrorCode | null;
+  steps: readonly { stepKey: string; result: FillStepResult; errorCode: FillErrorCode | null }[];
+}) {
+  return {
+    state: "READY_FOR_USER_SUBMISSION" as const,
+    stateVersion: input.run.stateVersion + 1,
+    fillAttemptId: input.run.fillAttemptId as string,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: input.outcome,
+    errorCode: input.errorCode,
+    steps: input.steps
+  };
+}
+
+function resultCounts(steps: readonly { result: FillStepResult }[]): Record<FillStepResult, number> {
+  const counts: Record<FillStepResult, number> = {
+    FILLED: 0,
+    PRESERVED_EXISTING: 0,
+    MANUAL: 0,
+    FAILED: 0,
+    NOT_ATTEMPTED: 0
+  };
+  for (const step of steps) counts[step.result] += 1;
+  return counts;
+}
+
 function baseStatus(run: FillRun) {
   return {
     state: run.state,
@@ -630,10 +843,240 @@ export function createApplicationRunFillAttemptService(
     }
   }
 
-  return { acquireFillAttempt, getFillAttemptStatus };
+  async function finalizeFillAttempt(input: unknown) {
+    try {
+      const parsed = finalizeInputSchema.parse(input);
+      return await prismaClient.$transaction(async (untypedTx) => {
+        const tx = untypedTx as ApplicationRunAnswerPacketTransaction;
+        const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
+        const leaseExpiresAt = assertActiveMutationFence(run, parsed);
+        const databaseNow = await readDatabaseClock(tx);
+        if (databaseNow.getTime() >= leaseExpiresAt.getTime()) throw fillStale();
+
+        const persistedSteps = await lockAttemptSteps(tx, parsed);
+        assertUnfinalizedSteps(parsed.fillAttemptId, persistedSteps);
+        const reconciled = reconcileFillFinalization({
+          fillAttemptId: parsed.fillAttemptId,
+          persistedSteps: persistedSteps.map((step) => ({
+            fillAttemptId: parsed.fillAttemptId,
+            stepKey: step.stepKey
+          })),
+          assertion: {
+            fillAttemptId: parsed.fillAttemptId,
+            outcome: parsed.outcome,
+            errorCode: parsed.errorCode,
+            steps: parsed.steps
+          }
+        });
+
+        try {
+          assertTransition("FILLING", "READY_FOR_USER_SUBMISSION");
+        } catch {
+          throw fillInternal();
+        }
+
+        for (let index = 0; index < reconciled.steps.length; index += 1) {
+          const source = persistedSteps[index];
+          const terminal = reconciled.steps[index];
+          const update = await tx.applicationRunStep.updateMany({
+            where: {
+              runId: run.id,
+              userId: parsed.userId,
+              stepKey: source.stepKey,
+              sequence: source.sequence,
+              action: "FILL_FIELD",
+              attemptNumber: 1,
+              semanticFieldKey: null,
+              adapter: null,
+              artifactReference: null,
+              status: "PENDING",
+              redactedValueSummary: null,
+              errorCategory: null,
+              startedAt: source.startedAt,
+              completedAt: null
+            },
+            data: {
+              status: terminal.status,
+              redactedValueSummary: terminal.redactedValueSummary,
+              errorCategory: terminal.errorCategory,
+              completedAt: databaseNow
+            }
+          });
+          if (update.count !== 1) throw fillInternal();
+        }
+
+        const runUpdate = await tx.applicationRun.updateMany({
+          where: {
+            id: run.id,
+            userId: parsed.userId,
+            state: "FILLING",
+            stateVersion: parsed.expectedStateVersion,
+            fillAttemptId: parsed.fillAttemptId,
+            fillLeaseExpiresAt: leaseExpiresAt
+          },
+          data: buildFinalizeRunFillData({ errorCategory: reconciled.errorCategory })
+        });
+        if (runUpdate.count !== 1) throw fillInternal();
+
+        const responseSteps = reconciled.steps.map((step) => ({
+          stepKey: step.stepKey,
+          result: step.redactedValueSummary,
+          errorCode: step.errorCategory
+        }));
+        await tx.auditLog.create({
+          data: {
+            userId: parsed.userId,
+            action: "application-run-fill-attempt.finalize",
+            resource: "ApplicationRun",
+            resourceId: run.id,
+            metadata: {
+              runId: run.id,
+              fillAttemptId: parsed.fillAttemptId,
+              previousStateVersion: run.stateVersion,
+              nextStateVersion: run.stateVersion + 1,
+              outcome: reconciled.outcome,
+              errorCode: reconciled.errorCategory,
+              resultCounts: resultCounts(responseSteps),
+              completedAt: databaseNow.toISOString()
+            } as Prisma.InputJsonValue
+          }
+        });
+
+        return terminalStatus({
+          run,
+          outcome: reconciled.outcome,
+          errorCode: reconciled.errorCategory,
+          steps: responseSteps
+        });
+      });
+    } catch (error) {
+      sanitizeFillFailure(error);
+    }
+  }
+
+  async function recoverExpiredFillAttempt(input: unknown) {
+    try {
+      const parsed = recoverInputSchema.parse(input);
+      return await prismaClient.$transaction(async (untypedTx) => {
+        const tx = untypedTx as ApplicationRunAnswerPacketTransaction;
+        const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
+        const leaseExpiresAt = assertActiveMutationFence(run, parsed);
+        const databaseNow = await readDatabaseClock(tx);
+        if (databaseNow.getTime() < leaseExpiresAt.getTime()) throw alreadyInProgress();
+
+        const persistedSteps = await lockAttemptSteps(tx, parsed);
+        const projected = projectRecoverySteps(parsed.fillAttemptId, persistedSteps);
+        const canonicalStepKeys = projected.map((step) => step.source.stepKey);
+        const derived = deriveTerminalFillAttemptOutcome({
+          state: "READY_FOR_USER_SUBMISSION",
+          fillAttemptId: parsed.fillAttemptId,
+          errorCategory: "FILL_STALE",
+          canonicalStepKeys,
+          steps: projected.map((step) => ({
+            stepKey: step.source.stepKey,
+            status: step.status,
+            redactedValueSummary: step.redactedValueSummary,
+            errorCategory: step.errorCategory
+          }))
+        });
+        if (derived.outcome !== "RECOVERED_AFTER_LOSS" || derived.errorCode !== "FILL_STALE") {
+          throw fillInternal();
+        }
+
+        try {
+          assertTransition("FILLING", "READY_FOR_USER_SUBMISSION");
+        } catch {
+          throw fillInternal();
+        }
+
+        for (const step of projected) {
+          if (!step.recovered) continue;
+          const unresolvedStatus = step.source.status;
+          if (unresolvedStatus !== "PENDING" && unresolvedStatus !== "RUNNING") {
+            throw fillInternal();
+          }
+          const update = await tx.applicationRunStep.updateMany({
+            where: {
+              runId: run.id,
+              userId: parsed.userId,
+              stepKey: step.source.stepKey,
+              sequence: step.source.sequence,
+              action: "FILL_FIELD",
+              attemptNumber: 1,
+              semanticFieldKey: null,
+              adapter: null,
+              artifactReference: null,
+              status: unresolvedStatus,
+              redactedValueSummary: null,
+              errorCategory: null,
+              startedAt: step.source.startedAt,
+              completedAt: null
+            },
+            data: {
+              status: "FAILED",
+              redactedValueSummary: "FAILED",
+              errorCategory: "FILL_STALE",
+              completedAt: databaseNow
+            }
+          });
+          if (update.count !== 1) throw fillInternal();
+        }
+
+        const runUpdate = await tx.applicationRun.updateMany({
+          where: {
+            id: run.id,
+            userId: parsed.userId,
+            state: "FILLING",
+            stateVersion: parsed.expectedStateVersion,
+            fillAttemptId: parsed.fillAttemptId,
+            fillLeaseExpiresAt: leaseExpiresAt
+          },
+          data: buildRecoverExpiredRunFillData()
+        });
+        if (runUpdate.count !== 1) throw fillInternal();
+
+        const recoveredFailedCount = projected.filter((step) => step.recovered).length;
+        await tx.auditLog.create({
+          data: {
+            userId: parsed.userId,
+            action: "application-run-fill-attempt.recover",
+            resource: "ApplicationRun",
+            resourceId: run.id,
+            metadata: {
+              runId: run.id,
+              fillAttemptId: parsed.fillAttemptId,
+              previousStateVersion: run.stateVersion,
+              nextStateVersion: run.stateVersion + 1,
+              errorCode: "FILL_STALE",
+              preservedSafeCount: projected.length - recoveredFailedCount,
+              recoveredFailedCount,
+              recoveredAt: databaseNow.toISOString()
+            } as Prisma.InputJsonValue
+          }
+        });
+
+        return terminalStatus({
+          run,
+          outcome: "RECOVERED_AFTER_LOSS",
+          errorCode: "FILL_STALE",
+          steps: projected.map((step) => ({
+            stepKey: step.source.stepKey,
+            result: step.redactedValueSummary,
+            errorCode: step.errorCategory
+          }))
+        });
+      });
+    } catch (error) {
+      sanitizeFillFailure(error);
+    }
+  }
+
+  return { acquireFillAttempt, getFillAttemptStatus, finalizeFillAttempt, recoverExpiredFillAttempt };
 }
 
 const defaultApplicationRunFillAttemptService = createApplicationRunFillAttemptService();
 
 export const acquireFillAttempt = defaultApplicationRunFillAttemptService.acquireFillAttempt;
 export const getFillAttemptStatus = defaultApplicationRunFillAttemptService.getFillAttemptStatus;
+export const finalizeFillAttempt = defaultApplicationRunFillAttemptService.finalizeFillAttempt;
+export const recoverExpiredFillAttempt = defaultApplicationRunFillAttemptService.recoverExpiredFillAttempt;

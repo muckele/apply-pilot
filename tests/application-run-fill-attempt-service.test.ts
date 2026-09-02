@@ -18,6 +18,8 @@ const PACKET_ID = "clw0000000000000000000004";
 const INSPECTION_ID = "clw0000000000000000000005";
 const ATTEMPT_ID = "550e8400-e29b-41d4-a716-446655440000";
 const FIELD_KEY = "1".repeat(64);
+const SECOND_FIELD_KEY = "a".repeat(64);
+const THIRD_FIELD_KEY = "b".repeat(64);
 const FIELD_FINGERPRINT = "2".repeat(64);
 const FORM_FINGERPRINT = "3".repeat(64);
 const PACKET_HASH = "4".repeat(64);
@@ -75,6 +77,65 @@ function createRun(overrides: Record<string, unknown> = {}) {
     coverLetterContentHash: null,
     application: { id: APPLICATION_ID, userId: USER_ID, jobPostingId: JOB_ID },
     jobPosting: { id: JOB_ID, userId: USER_ID },
+    ...overrides
+  };
+}
+
+function createFillingRun(overrides: Record<string, unknown> = {}) {
+  return createRun({
+    state: "FILLING",
+    fillAttemptId: ATTEMPT_ID,
+    fillLeaseExpiresAt: new Date(DB_NOW.getTime() + 60_000),
+    ...overrides
+  });
+}
+
+function createAttemptStep(
+  normalizedFieldKey: string,
+  sequence: number,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    stepKey: `fill:${ATTEMPT_ID}:${normalizedFieldKey}`,
+    sequence,
+    action: "FILL_FIELD",
+    semanticFieldKey: null,
+    adapter: null,
+    status: "PENDING",
+    attemptNumber: 1,
+    redactedValueSummary: null,
+    errorCategory: null,
+    artifactReference: null,
+    startedAt: null,
+    completedAt: null,
+    ...overrides
+  };
+}
+
+function completedFinalizationInput(
+  steps: Array<{ stepKey: string; result: string; errorCode: string | null }> = [
+    { stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`, result: "FILLED", errorCode: null }
+  ],
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    userId: USER_ID,
+    runId: RUN_ID,
+    fillAttemptId: ATTEMPT_ID,
+    expectedStateVersion: 7,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps,
+    ...overrides
+  };
+}
+
+function recoveryInput(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: USER_ID,
+    runId: RUN_ID,
+    fillAttemptId: ATTEMPT_ID,
+    expectedStateVersion: 7,
     ...overrides
   };
 }
@@ -252,6 +313,9 @@ function createFakeState(options: {
   verified?: VerifiedCurrentAnswerPacket | null;
   dbNow?: Date;
   terminalSteps?: Array<Record<string, unknown>>;
+  policyReadThrows?: boolean;
+  stepUpdateCounts?: number[];
+  runUpdateCount?: number;
 } = {}) {
   const state = {
     policy: options.policy === undefined ? createPolicy() : options.policy,
@@ -259,6 +323,9 @@ function createFakeState(options: {
     verified: options.verified === undefined ? createVerifiedPacket() : options.verified,
     dbNow: options.dbNow ?? DB_NOW,
     terminalSteps: options.terminalSteps ?? [],
+    policyReadThrows: options.policyReadThrows ?? false,
+    stepUpdateCounts: [...(options.stepUpdateCounts ?? [])],
+    runUpdateCount: options.runUpdateCount,
     operations: [] as string[],
     transactionOptions: [] as unknown[],
     writes: [] as Array<{ model: string; method: string; args: unknown }>,
@@ -273,6 +340,10 @@ function createFakeState(options: {
         state.operations.push("lock-policy");
         return state.policy ? [{ id: state.policy.id }] : [];
       }
+      if (sql.includes("ApplicationRunStep") && sql.includes("FOR UPDATE")) {
+        state.operations.push("lock-steps");
+        return state.terminalSteps;
+      }
       if (sql.includes("ApplicationRun") && sql.includes("FOR UPDATE")) {
         state.operations.push("lock-run");
         return state.run.userId === USER_ID ? [{ id: state.run.id }] : [];
@@ -286,6 +357,7 @@ function createFakeState(options: {
     applicationAutomationPolicy: {
       findUnique: async () => {
         state.operations.push("read-policy");
+        if (state.policyReadThrows) throw new Error("policy access forbidden");
         return state.policy;
       },
       create: writeTrap("applicationAutomationPolicy", "create"),
@@ -295,20 +367,39 @@ function createFakeState(options: {
     applicationRun: {
       findFirst: async () => {
         state.operations.push("read-run");
-        return state.run;
+        return {
+          ...state.run,
+          application: { ...state.run.application },
+          jobPosting: { ...state.run.jobPosting }
+        };
       },
-      updateMany: async (args: { data: Record<string, unknown> }) => {
+      updateMany: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         state.operations.push("write-run");
         state.writes.push({ model: "applicationRun", method: "updateMany", args });
-        if (state.run.state !== "READY" || state.run.fillAttemptId !== null) return { count: 0 };
-        state.run = {
-          ...state.run,
-          state: "FILLING",
+        if (state.runUpdateCount !== undefined) return { count: state.runUpdateCount };
+        if (args.where.state === "READY") {
+          if (state.run.state !== "READY" || state.run.fillAttemptId !== null) return { count: 0 };
+          Object.assign(state.run, {
+            state: "FILLING",
+            stateVersion: state.run.stateVersion + 1,
+            fillAttemptId: String(args.data.fillAttemptId),
+            fillLeaseExpiresAt: args.data.fillLeaseExpiresAt as Date,
+            errorCategory: null
+          });
+          return { count: 1 };
+        }
+        if (
+          state.run.state !== "FILLING" ||
+          state.run.stateVersion !== args.where.stateVersion ||
+          state.run.fillAttemptId !== args.where.fillAttemptId ||
+          state.run.fillLeaseExpiresAt?.getTime() !== (args.where.fillLeaseExpiresAt as Date)?.getTime()
+        ) return { count: 0 };
+        Object.assign(state.run, {
+          state: String(args.data.state),
           stateVersion: state.run.stateVersion + 1,
-          fillAttemptId: String(args.data.fillAttemptId),
-          fillLeaseExpiresAt: args.data.fillLeaseExpiresAt as Date,
-          errorCategory: null
-        };
+          fillLeaseExpiresAt: args.data.fillLeaseExpiresAt as Date | null,
+          errorCategory: args.data.errorCategory as string | null
+        });
         return { count: 1 };
       },
       create: writeTrap("applicationRun", "create"),
@@ -325,7 +416,16 @@ function createFakeState(options: {
         state.operations.push("read-steps");
         return state.terminalSteps;
       },
-      updateMany: writeTrap("applicationRunStep", "updateMany")
+      updateMany: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+        state.operations.push("write-step");
+        state.writes.push({ model: "applicationRunStep", method: "updateMany", args });
+        const forcedCount = state.stepUpdateCounts.shift();
+        if (forcedCount !== undefined && forcedCount !== 1) return { count: forcedCount };
+        const index = state.terminalSteps.findIndex((step) => step.stepKey === args.where.stepKey);
+        if (index < 0) return { count: 0 };
+        state.terminalSteps[index] = { ...state.terminalSteps[index], ...args.data };
+        return { count: 1 };
+      }
     },
     auditLog: {
       create: async (args: { data: Record<string, unknown> }) => {
@@ -347,7 +447,17 @@ function createFakeState(options: {
   const prismaClient = {
     $transaction: async (callback: (value: typeof tx) => Promise<unknown>, optionsArg?: unknown) => {
       state.transactionOptions.push(optionsArg);
-      return callback(tx);
+      const runSnapshot = { ...state.run };
+      const stepsSnapshot = state.terminalSteps.map((step) => ({ ...step }));
+      const auditLength = state.audits.length;
+      try {
+        return await callback(tx);
+      } catch (error) {
+        Object.assign(state.run, runSnapshot);
+        state.terminalSteps.splice(0, state.terminalSteps.length, ...stepsSnapshot);
+        state.audits.splice(auditLength);
+        throw error;
+      }
     }
   };
   return { ...state, tx, prismaClient };
@@ -887,4 +997,622 @@ test("GET derives closed terminal status and suppresses contradictory persistenc
   assert.equal(result.outcome, null);
   assert.equal(result.errorCode, "FILL_INTERNAL");
   assert.deepEqual(result.steps, []);
+});
+
+test("factory exposes exactly the four approved Fill operations", () => {
+  const state = createFakeState();
+  assert.deepEqual(Object.keys(serviceFor(state)).sort(), [
+    "acquireFillAttempt",
+    "finalizeFillAttempt",
+    "getFillAttemptStatus",
+    "recoverExpiredFillAttempt"
+  ]);
+});
+
+test("FINALIZE COMPLETED locks run, clock, and exact steps then persists a privacy-safe terminal result", async () => {
+  const steps = [
+    createAttemptStep(FIELD_KEY, 0),
+    createAttemptStep(SECOND_FIELD_KEY, 1),
+    createAttemptStep(THIRD_FIELD_KEY, 2)
+  ];
+  const state = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: new Date(DB_NOW.getTime() + 1) }),
+    terminalSteps: steps,
+    policyReadThrows: true
+  });
+  const result = await serviceFor(state, {
+    env: { APPLICATION_AUTOMATION_ENABLED: "false" },
+    assertTransition: (from: string, to: string) => {
+      state.operations.push("transition");
+      assert.deepEqual([from, to], ["FILLING", "READY_FOR_USER_SUBMISSION"]);
+    }
+  }).finalizeFillAttempt(completedFinalizationInput([
+    { stepKey: steps[0].stepKey, result: "FILLED", errorCode: null },
+    { stepKey: steps[1].stepKey, result: "PRESERVED_EXISTING", errorCode: null },
+    { stepKey: steps[2].stepKey, result: "MANUAL", errorCode: null }
+  ]));
+
+  assert.deepEqual(state.operations, [
+    "lock-run", "read-run", "clock", "lock-steps", "transition",
+    "write-step", "write-step", "write-step", "write-run", "write-audit"
+  ]);
+  assert.deepEqual(result, {
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 8,
+    fillAttemptId: ATTEMPT_ID,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [
+      { stepKey: steps[0].stepKey, result: "FILLED", errorCode: null },
+      { stepKey: steps[1].stepKey, result: "PRESERVED_EXISTING", errorCode: null },
+      { stepKey: steps[2].stepKey, result: "MANUAL", errorCode: null }
+    ]
+  });
+  assert.deepEqual(state.terminalSteps.map((step) => ({
+    status: step.status,
+    result: step.redactedValueSummary,
+    error: step.errorCategory,
+    completedAt: step.completedAt
+  })), [
+    { status: "SUCCEEDED", result: "FILLED", error: null, completedAt: DB_NOW },
+    { status: "SKIPPED", result: "PRESERVED_EXISTING", error: null, completedAt: DB_NOW },
+    { status: "SKIPPED", result: "MANUAL", error: null, completedAt: DB_NOW }
+  ]);
+  assert.equal(state.run.fillAttemptId, ATTEMPT_ID);
+  assert.equal(state.run.fillLeaseExpiresAt, null);
+  assert.equal(state.audits.length, 1);
+  assert.equal(state.audits[0].action, "application-run-fill-attempt.finalize");
+  assert.deepEqual(Object.keys(state.audits[0].metadata as object).sort(), [
+    "completedAt", "errorCode", "fillAttemptId", "nextStateVersion", "outcome",
+    "previousStateVersion", "resultCounts", "runId"
+  ]);
+  assert.equal(state.operations.includes("read-policy"), false);
+  assert.equal(JSON.stringify({ result, audit: state.audits[0] }).includes("Reviewed exact value"), false);
+  const finalizedStepWrites = state.writes.filter((write) => write.model === "applicationRunStep");
+  assert.deepEqual(finalizedStepWrites.map((write) => write.args), [
+    ["SUCCEEDED", "FILLED"],
+    ["SKIPPED", "PRESERVED_EXISTING"],
+    ["SKIPPED", "MANUAL"]
+  ].map(([status, redactedValueSummary], index) => ({
+    where: {
+      runId: RUN_ID,
+      userId: USER_ID,
+      stepKey: steps[index].stepKey,
+      sequence: index,
+      action: "FILL_FIELD",
+      attemptNumber: 1,
+      semanticFieldKey: null,
+      adapter: null,
+      artifactReference: null,
+      status: "PENDING",
+      redactedValueSummary: null,
+      errorCategory: null,
+      startedAt: null,
+      completedAt: null
+    },
+    data: {
+      status,
+      redactedValueSummary,
+      errorCategory: null,
+      completedAt: DB_NOW
+    }
+  })));
+  const finalizedRunWrite = state.writes.find((write) => write.model === "applicationRun");
+  assert.deepEqual(finalizedRunWrite?.args, {
+    where: {
+      id: RUN_ID,
+      userId: USER_ID,
+      state: "FILLING",
+      stateVersion: 7,
+      fillAttemptId: ATTEMPT_ID,
+      fillLeaseExpiresAt: new Date(DB_NOW.getTime() + 1)
+    },
+    data: {
+      state: "READY_FOR_USER_SUBMISSION",
+      stateVersion: { increment: 1 },
+      fillLeaseExpiresAt: null,
+      errorCategory: null
+    }
+  });
+  assert.equal(Object.hasOwn((finalizedRunWrite?.args as { data: object }).data, "fillAttemptId"), false);
+});
+
+test("FINALIZE STOPPED_EARLY preserves the pre-field pattern without inventing a FAILED step", async () => {
+  const steps = [
+    createAttemptStep(FIELD_KEY, 0),
+    createAttemptStep(SECOND_FIELD_KEY, 1),
+    createAttemptStep(THIRD_FIELD_KEY, 2)
+  ];
+  const state = createFakeState({ run: createFillingRun(), terminalSteps: steps });
+  const result = await serviceFor(state).finalizeFillAttempt(completedFinalizationInput([
+    { stepKey: steps[0].stepKey, result: "MANUAL", errorCode: null },
+    { stepKey: steps[1].stepKey, result: "NOT_ATTEMPTED", errorCode: null },
+    { stepKey: steps[2].stepKey, result: "NOT_ATTEMPTED", errorCode: null }
+  ], { outcome: "STOPPED_EARLY", errorCode: "FILL_POLICY_DENIED" }));
+  assert.equal(result.outcome, "STOPPED_EARLY");
+  assert.equal(result.errorCode, "FILL_POLICY_DENIED");
+  assert.deepEqual(result.steps.map((step: { result: string }) => step.result), [
+    "MANUAL", "NOT_ATTEMPTED", "NOT_ATTEMPTED"
+  ]);
+  assert.equal(result.steps.some((step: { result: string }) => step.result === "FAILED"), false);
+  assert.deepEqual(state.terminalSteps.map((step) => step.status), ["SKIPPED", "SKIPPED", "SKIPPED"]);
+});
+
+test("FINALIZE STOPPED_EARLY accepts exactly one matching in-field failure followed by an untouched tail", async () => {
+  const steps = [
+    createAttemptStep(FIELD_KEY, 0, { startedAt: new Date(DB_NOW.getTime() - 100) }),
+    createAttemptStep(SECOND_FIELD_KEY, 1, { startedAt: new Date(DB_NOW.getTime() - 50) }),
+    createAttemptStep(THIRD_FIELD_KEY, 2)
+  ];
+  const state = createFakeState({ run: createFillingRun(), terminalSteps: steps });
+  const result = await serviceFor(state).finalizeFillAttempt(completedFinalizationInput([
+    { stepKey: steps[0].stepKey, result: "FILLED", errorCode: null },
+    { stepKey: steps[1].stepKey, result: "FAILED", errorCode: "FILL_WRITE_FAILED" },
+    { stepKey: steps[2].stepKey, result: "NOT_ATTEMPTED", errorCode: null }
+  ], { outcome: "STOPPED_EARLY", errorCode: "FILL_WRITE_FAILED" }));
+  assert.deepEqual(result.steps.map((step: { result: string; errorCode: string | null }) => [step.result, step.errorCode]), [
+    ["FILLED", null], ["FAILED", "FILL_WRITE_FAILED"], ["NOT_ATTEMPTED", null]
+  ]);
+  assert.equal((state.terminalSteps[1].startedAt as Date).getTime(), DB_NOW.getTime() - 50);
+  assert.equal(state.run.errorCategory, "FILL_WRITE_FAILED");
+});
+
+test("FINALIZE rejects forbidden or mismatched stopped errors without mutation", async () => {
+  const step = createAttemptStep(FIELD_KEY, 0);
+  for (const errorCode of [
+    "FILL_REVIEW_REQUIRED", "FILL_ALREADY_IN_PROGRESS", "FILL_NO_ELIGIBLE_FIELDS", "FILL_STALE"
+  ]) {
+    const state = createFakeState({ run: createFillingRun(), terminalSteps: [{ ...step }] });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput([
+        { stepKey: step.stepKey, result: "FAILED", errorCode }
+      ], { outcome: "STOPPED_EARLY", errorCode })),
+      (error) => assertFillError(error, "FILL_INTERNAL", 500)
+    );
+    assert.equal(state.writes.length, 0);
+  }
+
+  const state = createFakeState({ run: createFillingRun(), terminalSteps: [{ ...step }] });
+  await assert.rejects(
+    serviceFor(state).finalizeFillAttempt(completedFinalizationInput([
+      { stepKey: step.stepKey, result: "FAILED", errorCode: "FILL_WRITE_FAILED" }
+    ], { outcome: "STOPPED_EARLY", errorCode: "FILL_INTERNAL" })),
+    (error) => assertFillError(error, "FILL_INTERNAL", 500)
+  );
+  assert.equal(state.writes.length, 0);
+});
+
+test("FINALIZE enforces the active attempt fence and the strict live-lease boundary", async () => {
+  const scenarios = [
+    { label: "wrong state", run: createFillingRun({ state: "READY_FOR_USER_SUBMISSION" }), code: "FILL_STALE" },
+    { label: "wrong attempt", run: createFillingRun({ fillAttemptId: "550e8400-e29b-41d4-a716-446655440001" }), code: "FILL_STALE" },
+    { label: "stale version", run: createFillingRun({ stateVersion: 8 }), code: "FILL_STALE" },
+    { label: "null attempt corruption", run: createFillingRun({ fillAttemptId: null }), code: "FILL_INTERNAL" },
+    { label: "invalid attempt corruption", run: createFillingRun({ fillAttemptId: "corrupt" }), code: "FILL_INTERNAL" },
+    { label: "missing lease", run: createFillingRun({ fillLeaseExpiresAt: null }), code: "FILL_INTERNAL" },
+    { label: "invalid lease", run: createFillingRun({ fillLeaseExpiresAt: new Date(Number.NaN) }), code: "FILL_INTERNAL" },
+    { label: "expired by one millisecond", run: createFillingRun({ fillLeaseExpiresAt: new Date(DB_NOW.getTime() - 1) }), code: "FILL_STALE" },
+    { label: "equal expiry", run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }), code: "FILL_STALE" }
+  ];
+  for (const scenario of scenarios) {
+    const state = createFakeState({ run: scenario.run, terminalSteps: [createAttemptStep(FIELD_KEY, 0)] });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput()),
+      (error) => assertFillError(error, scenario.code),
+      scenario.label
+    );
+    assert.equal(state.writes.length, 0, scenario.label);
+    assert.equal(state.audits.length, 0, scenario.label);
+  }
+
+  const live = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: new Date(DB_NOW.getTime() + 1) }),
+    terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+  });
+  assert.equal((await serviceFor(live).finalizeFillAttempt(completedFinalizationInput())).outcome, "COMPLETED");
+});
+
+test("FINALIZE rejects non-exact client coverage and malformed persisted step identity", async () => {
+  const first = createAttemptStep(FIELD_KEY, 0);
+  const second = createAttemptStep(SECOND_FIELD_KEY, 1);
+  const baseAssertions = [
+    { stepKey: first.stepKey, result: "FILLED", errorCode: null },
+    { stepKey: second.stepKey, result: "MANUAL", errorCode: null }
+  ];
+  const clientCases = [
+    { label: "duplicate", assertions: [baseAssertions[0], baseAssertions[0]] },
+    { label: "missing", assertions: [baseAssertions[0]] },
+    { label: "extra", assertions: [...baseAssertions, { stepKey: `fill:${ATTEMPT_ID}:${THIRD_FIELD_KEY}`, result: "MANUAL", errorCode: null }] },
+    { label: "foreign", assertions: [{ ...baseAssertions[0], stepKey: `fill:550e8400-e29b-41d4-a716-446655440001:${FIELD_KEY}` }, baseAssertions[1]] },
+    { label: "wrong order", assertions: [baseAssertions[1], baseAssertions[0]] }
+  ];
+  for (const scenario of clientCases) {
+    const state = createFakeState({ run: createFillingRun(), terminalSteps: [{ ...first }, { ...second }] });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput(scenario.assertions)),
+      (error) => assertFillError(error, "FILL_INTERNAL"),
+      scenario.label
+    );
+    assert.equal(state.writes.length, 0, scenario.label);
+  }
+
+  const persistedCases = [
+    { label: "duplicate sequence", steps: [{ ...first }, { ...second, sequence: 0 }] },
+    { label: "sequence gap", steps: [{ ...first }, { ...second, sequence: 2 }] },
+    { label: "foreign prefix", steps: [{ ...first, stepKey: `fill:550e8400-e29b-41d4-a716-446655440001:${FIELD_KEY}` }, { ...second }] },
+    { label: "wrong action", steps: [{ ...first, action: "PREPARE" }, { ...second }] },
+    { label: "wrong attempt number", steps: [{ ...first, attemptNumber: 2 }, { ...second }] },
+    { label: "semantic identity", steps: [{ ...first, semanticFieldKey: "private.field" }, { ...second }] },
+    { label: "adapter identity", steps: [{ ...first, adapter: "secret-adapter" }, { ...second }] },
+    { label: "artifact identity", steps: [{ ...first, artifactReference: "secret-artifact" }, { ...second }] }
+  ];
+  for (const scenario of persistedCases) {
+    const state = createFakeState({ run: createFillingRun(), terminalSteps: scenario.steps });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput(baseAssertions)),
+      (error) => assertFillError(error, "FILL_INTERNAL"),
+      scenario.label
+    );
+    assert.equal(state.writes.length, 0, scenario.label);
+  }
+});
+
+test("FINALIZE rejects contradictory current persistence and central transition denial before writes", async () => {
+  for (const step of [
+    createAttemptStep(FIELD_KEY, 0, { status: "SUCCEEDED", redactedValueSummary: "FILLED", completedAt: DB_NOW }),
+    createAttemptStep(FIELD_KEY, 0, { status: "RUNNING" }),
+    createAttemptStep(FIELD_KEY, 0, { errorCategory: "FILL_INTERNAL" }),
+    createAttemptStep(FIELD_KEY, 0, { completedAt: DB_NOW })
+  ]) {
+    const state = createFakeState({ run: createFillingRun(), terminalSteps: [step] });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput()),
+      (error) => assertFillError(error, "FILL_INTERNAL")
+    );
+    assert.equal(state.writes.length, 0);
+  }
+
+  const denied = createFakeState({ run: createFillingRun(), terminalSteps: [createAttemptStep(FIELD_KEY, 0)] });
+  await assert.rejects(
+    serviceFor(denied, { assertTransition: () => { throw new Error("denied"); } })
+      .finalizeFillAttempt(completedFinalizationInput()),
+    (error) => assertFillError(error, "FILL_INTERNAL")
+  );
+  assert.equal(denied.writes.length, 0);
+  assert.equal(denied.audits.length, 0);
+});
+
+test("FINALIZE guarded step or run loss rolls back every attempted mutation", async () => {
+  const twoSteps = [createAttemptStep(FIELD_KEY, 0), createAttemptStep(SECOND_FIELD_KEY, 1)];
+  const assertions = twoSteps.map((step) => ({ stepKey: step.stepKey, result: "FILLED", errorCode: null }));
+  for (const options of [{ stepUpdateCounts: [1, 0] }, { runUpdateCount: 0 }]) {
+    const state = createFakeState({ run: createFillingRun(), terminalSteps: twoSteps.map((step) => ({ ...step })), ...options });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput(assertions)),
+      (error) => assertFillError(error, "FILL_INTERNAL")
+    );
+    assert.equal(state.run.state, "FILLING");
+    assert.deepEqual(state.terminalSteps.map((step) => step.status), ["PENDING", "PENDING"]);
+    assert.equal(state.audits.length, 0);
+  }
+});
+
+test("FINALIZE and RECOVER inputs are strict, bounded, and sanitized", async () => {
+  const state = createFakeState({ run: createFillingRun(), terminalSteps: [createAttemptStep(FIELD_KEY, 0)] });
+  const service = serviceFor(state);
+  for (const request of [
+    service.finalizeFillAttempt({ ...completedFinalizationInput(), extra: true }),
+    service.finalizeFillAttempt({ ...completedFinalizationInput(), expectedStateVersion: -1 }),
+    service.finalizeFillAttempt({ ...completedFinalizationInput(), fillAttemptId: "not-a-uuid" }),
+    service.finalizeFillAttempt({ ...completedFinalizationInput(), steps: [] }),
+    service.finalizeFillAttempt({
+      ...completedFinalizationInput(),
+      steps: Array.from({ length: 201 }, () => ({
+        stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`,
+        result: "FILLED",
+        errorCode: null
+      }))
+    }),
+    service.recoverExpiredFillAttempt({ ...recoveryInput(), steps: [] }),
+    service.recoverExpiredFillAttempt({ ...recoveryInput(), expectedStateVersion: Number.MAX_SAFE_INTEGER + 1 })
+  ]) {
+    await assert.rejects(request, (error) => assertFillError(error, "FILL_INTERNAL", 500));
+  }
+  assert.equal(state.transactionOptions.length, 0);
+});
+
+test("FINALIZE rejects malformed, duplicate, and foreign attempt step keys before a transaction", async () => {
+  const canonical = {
+    stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`,
+    result: "FILLED",
+    errorCode: null
+  };
+  const cases = [
+    {
+      label: "malformed shape",
+      steps: [{ ...canonical, stepKey: "arbitrary-client-step-key" }]
+    },
+    {
+      label: "malformed canonical field key",
+      steps: [{ ...canonical, stepKey: `fill:${ATTEMPT_ID}:${"A".repeat(64)}` }]
+    },
+    {
+      label: "duplicate keys",
+      steps: [canonical, { ...canonical }]
+    },
+    {
+      label: "foreign attempt prefix",
+      steps: [{
+        ...canonical,
+        stepKey: `fill:550e8400-e29b-41d4-a716-446655440001:${FIELD_KEY}`
+      }]
+    }
+  ];
+
+  for (const scenario of cases) {
+    const state = createFakeState({
+      run: createFillingRun(),
+      terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+    });
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput(scenario.steps)),
+      (error) => assertFillError(error, "FILL_INTERNAL", 500),
+      scenario.label
+    );
+    assert.equal(state.transactionOptions.length, 0, scenario.label);
+    assert.deepEqual(state.operations, [], scenario.label);
+    assert.equal(state.writes.length, 0, scenario.label);
+  }
+});
+
+test("RECOVER equality success preserves safe prefix and conservatively fails unresolved tail", async () => {
+  const completedAt = new Date(DB_NOW.getTime() - 200);
+  const startedAt = new Date(DB_NOW.getTime() - 100);
+  const steps = [
+    createAttemptStep(FIELD_KEY, 0, {
+      status: "SUCCEEDED", redactedValueSummary: "FILLED", completedAt
+    }),
+    createAttemptStep(SECOND_FIELD_KEY, 1, {
+      status: "SKIPPED", redactedValueSummary: "PRESERVED_EXISTING", completedAt
+    }),
+    createAttemptStep(THIRD_FIELD_KEY, 2, {
+      status: "SKIPPED", redactedValueSummary: "MANUAL", completedAt
+    }),
+    createAttemptStep("c".repeat(64), 3, { status: "RUNNING", startedAt }),
+    createAttemptStep("d".repeat(64), 4)
+  ];
+  const state = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+    terminalSteps: steps,
+    policyReadThrows: true
+  });
+  const result = await serviceFor(state, {
+    env: { APPLICATION_AUTOMATION_ENABLED: "false" },
+    assertTransition: (from: string, to: string) => {
+      state.operations.push("transition");
+      assert.deepEqual([from, to], ["FILLING", "READY_FOR_USER_SUBMISSION"]);
+    }
+  }).recoverExpiredFillAttempt(recoveryInput());
+
+  assert.deepEqual(state.operations, [
+    "lock-run", "read-run", "clock", "lock-steps", "transition",
+    "write-step", "write-step", "write-run", "write-audit"
+  ]);
+  assert.deepEqual(result, {
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 8,
+    fillAttemptId: ATTEMPT_ID,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: "RECOVERED_AFTER_LOSS",
+    errorCode: "FILL_STALE",
+    steps: [
+      { stepKey: steps[0].stepKey, result: "FILLED", errorCode: null },
+      { stepKey: steps[1].stepKey, result: "PRESERVED_EXISTING", errorCode: null },
+      { stepKey: steps[2].stepKey, result: "MANUAL", errorCode: null },
+      { stepKey: steps[3].stepKey, result: "FAILED", errorCode: "FILL_STALE" },
+      { stepKey: steps[4].stepKey, result: "FAILED", errorCode: "FILL_STALE" }
+    ]
+  });
+  assert.equal(state.terminalSteps[0].completedAt, completedAt);
+  assert.equal(state.terminalSteps[1].completedAt, completedAt);
+  assert.equal(state.terminalSteps[2].completedAt, completedAt);
+  assert.equal(state.terminalSteps[3].startedAt, startedAt);
+  assert.equal(state.terminalSteps[3].completedAt, DB_NOW);
+  assert.equal(state.terminalSteps[4].startedAt, null);
+  assert.equal(state.run.fillAttemptId, ATTEMPT_ID);
+  assert.equal(state.run.errorCategory, "FILL_STALE");
+  assert.equal(state.audits.length, 1);
+  assert.equal(state.audits[0].action, "application-run-fill-attempt.recover");
+  assert.deepEqual(Object.keys(state.audits[0].metadata as object).sort(), [
+    "errorCode", "fillAttemptId", "nextStateVersion", "preservedSafeCount",
+    "previousStateVersion", "recoveredAt", "recoveredFailedCount", "runId"
+  ]);
+  assert.equal(state.operations.includes("read-policy"), false);
+  assert.equal(JSON.stringify({ result, audit: state.audits[0] }).includes("secret"), false);
+  const recoveryStepWrites = state.writes.filter((write) => write.model === "applicationRunStep");
+  assert.deepEqual(recoveryStepWrites.map((write) => write.args), [
+    {
+      where: {
+        runId: RUN_ID,
+        userId: USER_ID,
+        stepKey: steps[3].stepKey,
+        sequence: 3,
+        action: "FILL_FIELD",
+        attemptNumber: 1,
+        semanticFieldKey: null,
+        adapter: null,
+        artifactReference: null,
+        status: "RUNNING",
+        redactedValueSummary: null,
+        errorCategory: null,
+        startedAt,
+        completedAt: null
+      },
+      data: {
+        status: "FAILED",
+        redactedValueSummary: "FAILED",
+        errorCategory: "FILL_STALE",
+        completedAt: DB_NOW
+      }
+    },
+    {
+      where: {
+        runId: RUN_ID,
+        userId: USER_ID,
+        stepKey: steps[4].stepKey,
+        sequence: 4,
+        action: "FILL_FIELD",
+        attemptNumber: 1,
+        semanticFieldKey: null,
+        adapter: null,
+        artifactReference: null,
+        status: "PENDING",
+        redactedValueSummary: null,
+        errorCategory: null,
+        startedAt: null,
+        completedAt: null
+      },
+      data: {
+        status: "FAILED",
+        redactedValueSummary: "FAILED",
+        errorCategory: "FILL_STALE",
+        completedAt: DB_NOW
+      }
+    }
+  ]);
+  const recoveryRunWrite = state.writes.find((write) => write.model === "applicationRun");
+  assert.deepEqual(recoveryRunWrite?.args, {
+    where: {
+      id: RUN_ID,
+      userId: USER_ID,
+      state: "FILLING",
+      stateVersion: 7,
+      fillAttemptId: ATTEMPT_ID,
+      fillLeaseExpiresAt: DB_NOW
+    },
+    data: {
+      state: "READY_FOR_USER_SUBMISSION",
+      stateVersion: { increment: 1 },
+      fillLeaseExpiresAt: null,
+      errorCategory: "FILL_STALE"
+    }
+  });
+  assert.equal(Object.hasOwn((recoveryRunWrite?.args as { data: object }).data, "fillAttemptId"), false);
+});
+
+test("RECOVER rejects a live lease at one millisecond and accepts equality", async () => {
+  const live = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: new Date(DB_NOW.getTime() + 1) }),
+    terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+  });
+  await assert.rejects(
+    serviceFor(live).recoverExpiredFillAttempt(recoveryInput()),
+    (error) => assertFillError(error, "FILL_ALREADY_IN_PROGRESS", 409)
+  );
+  assert.equal(live.writes.length, 0);
+
+  const equal = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+    terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+  });
+  assert.equal((await serviceFor(equal).recoverExpiredFillAttempt(recoveryInput())).outcome, "RECOVERED_AFTER_LOSS");
+});
+
+test("RECOVER enforces state, attempt, version, lease, and exact persisted step identity fences", async () => {
+  const fenceCases = [
+    { label: "wrong state", run: createFillingRun({ state: "READY_FOR_USER_SUBMISSION", fillLeaseExpiresAt: null }), code: "FILL_STALE" },
+    { label: "wrong attempt", run: createFillingRun({ fillAttemptId: "550e8400-e29b-41d4-a716-446655440001", fillLeaseExpiresAt: DB_NOW }), code: "FILL_STALE" },
+    { label: "stale version", run: createFillingRun({ stateVersion: 8, fillLeaseExpiresAt: DB_NOW }), code: "FILL_STALE" },
+    { label: "null attempt", run: createFillingRun({ fillAttemptId: null, fillLeaseExpiresAt: DB_NOW }), code: "FILL_INTERNAL" },
+    { label: "invalid attempt", run: createFillingRun({ fillAttemptId: "corrupt", fillLeaseExpiresAt: DB_NOW }), code: "FILL_INTERNAL" },
+    { label: "missing lease", run: createFillingRun({ fillLeaseExpiresAt: null }), code: "FILL_INTERNAL" },
+    { label: "invalid lease", run: createFillingRun({ fillLeaseExpiresAt: new Date(Number.NaN) }), code: "FILL_INTERNAL" }
+  ];
+  for (const scenario of fenceCases) {
+    const state = createFakeState({ run: scenario.run, terminalSteps: [createAttemptStep(FIELD_KEY, 0)] });
+    await assert.rejects(
+      serviceFor(state).recoverExpiredFillAttempt(recoveryInput()),
+      (error) => assertFillError(error, scenario.code),
+      scenario.label
+    );
+    assert.equal(state.writes.length, 0, scenario.label);
+  }
+
+  for (const step of [
+    createAttemptStep(FIELD_KEY, 1),
+    createAttemptStep(FIELD_KEY, 0, { action: "PREPARE" }),
+    createAttemptStep(FIELD_KEY, 0, { stepKey: `fill:550e8400-e29b-41d4-a716-446655440001:${FIELD_KEY}` }),
+    createAttemptStep(FIELD_KEY, 0, { semanticFieldKey: "private.field" })
+  ]) {
+    const state = createFakeState({
+      run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+      terminalSteps: [step]
+    });
+    await assert.rejects(
+      serviceFor(state).recoverExpiredFillAttempt(recoveryInput()),
+      (error) => assertFillError(error, "FILL_INTERNAL")
+    );
+    assert.equal(state.writes.length, 0);
+  }
+});
+
+test("RECOVER rejects contradictory persistence and terminal-only projections", async () => {
+  const safe = createAttemptStep(FIELD_KEY, 0, {
+    status: "SUCCEEDED", redactedValueSummary: "FILLED", completedAt: new Date(DB_NOW.getTime() - 10)
+  });
+  const contradictoryCases = [
+    [createAttemptStep(FIELD_KEY, 0, { status: "FAILED", redactedValueSummary: "FAILED", errorCategory: "FILL_WRITE_FAILED", completedAt: DB_NOW })],
+    [createAttemptStep(FIELD_KEY, 0, { status: "SKIPPED", redactedValueSummary: "NOT_ATTEMPTED", completedAt: DB_NOW })],
+    [createAttemptStep(FIELD_KEY, 0, { completedAt: DB_NOW })],
+    [createAttemptStep(FIELD_KEY, 0), createAttemptStep(SECOND_FIELD_KEY, 1, { status: "SUCCEEDED", redactedValueSummary: "FILLED", completedAt: DB_NOW })],
+    [{ ...safe }]
+  ];
+  for (const terminalSteps of contradictoryCases) {
+    const state = createFakeState({
+      run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+      terminalSteps
+    });
+    await assert.rejects(
+      serviceFor(state).recoverExpiredFillAttempt(recoveryInput()),
+      (error) => assertFillError(error, "FILL_INTERNAL")
+    );
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.audits.length, 0);
+  }
+});
+
+test("RECOVER transition denial and guarded mutation loss roll back without audit", async () => {
+  const denied = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+    terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+  });
+  await assert.rejects(
+    serviceFor(denied, { assertTransition: () => { throw new Error("denied"); } })
+      .recoverExpiredFillAttempt(recoveryInput()),
+    (error) => assertFillError(error, "FILL_INTERNAL")
+  );
+  assert.equal(denied.writes.length, 0);
+  assert.equal(denied.audits.length, 0);
+
+  for (const options of [{ stepUpdateCounts: [0] }, { runUpdateCount: 0 }]) {
+    const state = createFakeState({
+      run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+      terminalSteps: [createAttemptStep(FIELD_KEY, 0)],
+      ...options
+    });
+    await assert.rejects(
+      serviceFor(state).recoverExpiredFillAttempt(recoveryInput()),
+      (error) => assertFillError(error, "FILL_INTERNAL")
+    );
+    assert.equal(state.run.state, "FILLING");
+    assert.equal(state.terminalSteps[0].status, "PENDING");
+    assert.equal(state.audits.length, 0);
+  }
 });
