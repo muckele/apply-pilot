@@ -479,6 +479,44 @@ test("acquisition exact global gate fails before a transaction", async () => {
   }
 });
 
+test("acquisition rejects stale expected state version before packet verification or Fill mutation", async () => {
+  const state = createFakeState();
+  let verifierCalls = 0;
+  let transitionCalls = 0;
+  let generatedAttemptIds = 0;
+
+  await assert.rejects(
+    serviceFor(state, {
+      loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async () => {
+        verifierCalls += 1;
+        return state.verified;
+      },
+      assertTransition: () => {
+        transitionCalls += 1;
+      },
+      attemptIdGenerator: () => {
+        generatedAttemptIds += 1;
+        return ATTEMPT_ID;
+      }
+    }).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 6 }),
+    (error) => assertFillError(error, "FILL_STALE", 409)
+  );
+
+  assert.deepEqual(state.operations, ["lock-policy", "read-policy", "lock-run", "read-run"]);
+  assert.equal(verifierCalls, 0);
+  assert.equal(transitionCalls, 0);
+  assert.equal(generatedAttemptIds, 0);
+  assert.equal(state.operations.includes("clock"), false);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.stepRows.length, 0);
+  assert.equal(state.audits.length, 0);
+  assert.equal(state.writes.some((write) => write.model === "applicationEvent"), false);
+  assert.equal(state.run.state, "READY");
+  assert.equal(state.run.stateVersion, 7);
+  assert.equal(state.run.fillAttemptId, null);
+  assert.equal(state.run.fillLeaseExpiresAt, null);
+});
+
 test("zero eligible leaves the permanent attempt opportunity untouched before UUID, clock, or writes", async () => {
   const state = createFakeState({ verified: createVerifiedPacket({ fieldType: "NUMBER" }) });
   let generated = 0;
