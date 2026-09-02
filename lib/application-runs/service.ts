@@ -83,6 +83,8 @@ const APPLICATION_RUN_LIFECYCLE_SELECT = {
   ...APPLICATION_RUN_OPERATIONAL_SELECT,
   userId: true,
   prepareAttemptId: true,
+  fillAttemptId: true,
+  fillLeaseExpiresAt: true,
   firstPreparingAt: true,
   currentFormInspectionVersion: true,
   currentAnswerPacketVersion: true,
@@ -140,6 +142,7 @@ export type ApplicationRunServiceDependencies = {
   clock?: () => Date;
   loadVerifiedCurrentAnswerPacketForLockedRunInTransaction?:
     typeof loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
+  assertTransition?: typeof assertRunTransition;
 };
 
 function validateUserId(userId: unknown): asserts userId is string {
@@ -319,6 +322,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
   const loadVerifiedCurrentPacket =
     dependencies.loadVerifiedCurrentAnswerPacketForLockedRunInTransaction ??
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
+  const assertTransition = dependencies.assertTransition ?? assertRunTransition;
 
   async function readAutomationPolicy(userId: string): Promise<AutomationPolicyDto> {
     validateUserId(userId);
@@ -697,7 +701,13 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           code: "RUN_INVALID_STATE"
         });
       }
-      assertRunTransition(run.state, "READY");
+      if (run.fillLeaseExpiresAt !== null) {
+        throw new PublicApiError("This application run has contradictory Fill state.", 409, {
+          code: "RUN_INVALID_STATE"
+        });
+      }
+      const targetState = run.fillAttemptId === null ? "READY" : "READY_FOR_USER_SUBMISSION";
+      assertTransition(run.state, targetState);
       if (run.stateVersion !== acknowledgment.stateVersion) {
         throw new PublicApiError("The application run review has changed. Refresh and try again.", 409, {
           code: "RUN_REVIEW_STALE"
@@ -795,9 +805,14 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           state: "REVIEW_REQUIRED",
           stateVersion: acknowledgment.stateVersion,
           currentFormInspectionVersion: run.currentFormInspectionVersion,
-          currentAnswerPacketVersion: run.currentAnswerPacketVersion
+          currentAnswerPacketVersion: run.currentAnswerPacketVersion,
+          fillAttemptId: run.fillAttemptId,
+          fillLeaseExpiresAt: null
         },
-        data: buildResolveRunReviewData(now, { acknowledgePlannerReview })
+        data: buildResolveRunReviewData(now, {
+          acknowledgePlannerReview,
+          fillAttemptId: run.fillAttemptId
+        })
       });
       if (updated.count !== 1) {
         throw new PublicApiError("The application run review has changed. Refresh and try again.", 409, {
@@ -814,6 +829,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
             runId: run.id,
             reviewReasons: acknowledgment.acknowledgedReviewReasons,
             answerPacketVersion: acknowledgment.answerPacketVersion,
+            ...(targetState === "READY_FOR_USER_SUBMISSION" ? { nextState: targetState } : {}),
             previousStateVersion: run.stateVersion,
             nextStateVersion: run.stateVersion + 1,
             acknowledgedAt: now.toISOString()
@@ -829,6 +845,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           metadata: {
             runId: run.id,
             reviewReasons: acknowledgment.acknowledgedReviewReasons,
+            ...(targetState === "READY_FOR_USER_SUBMISSION" ? { nextState: targetState } : {}),
             previousStateVersion: run.stateVersion,
             nextStateVersion: run.stateVersion + 1
           }

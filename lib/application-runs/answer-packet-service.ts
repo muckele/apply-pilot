@@ -42,6 +42,7 @@ import {
 } from "@/lib/application-runs/host-policy";
 import { assertAutomationCapability, type AutomationEnv } from "@/lib/application-runs/policy";
 import { CLASSIFIER_VERSION, classifyApplicationQuestion } from "@/lib/application-runs/question-classification";
+import { assertRunTransition } from "@/lib/application-runs/state-machine";
 import { prisma } from "@/lib/prisma";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -100,6 +101,8 @@ export type LockedAnswerPacketRun = {
   resumeContentHash: string | null;
   coverLetterVersionId: string | null;
   coverLetterContentHash: string | null;
+  fillAttemptId: string | null;
+  fillLeaseExpiresAt: Date | null;
   application: { id: string; userId: string; jobPostingId: string };
   jobPosting: { id: string; userId: string };
 };
@@ -198,6 +201,7 @@ export type ApplicationRunAnswerPacketServiceDependencies = {
   prismaClient?: Pick<typeof prisma, "$transaction">;
   env?: AutomationEnv;
   clock?: () => Date;
+  assertTransition?: typeof assertRunTransition;
 };
 
 type OwnerSafeAnswer = {
@@ -453,7 +457,14 @@ async function readOwnedRun(
 }
 
 function assertOperationalRun(run: LockedAnswerPacketRun, expectedStateVersion: number): void {
-  if (run.state !== "READY" && run.state !== "REVIEW_REQUIRED") throw invalidState();
+  if (
+    run.state !== "READY" &&
+    run.state !== "REVIEW_REQUIRED" &&
+    run.state !== "READY_FOR_USER_SUBMISSION"
+  ) throw invalidState();
+  if (run.fillLeaseExpiresAt !== null) throw invalidState();
+  if (run.state === "READY" && run.fillAttemptId !== null) throw invalidState();
+  if (run.state === "READY_FOR_USER_SUBMISSION" && run.fillAttemptId === null) throw invalidState();
   if (run.stateVersion !== expectedStateVersion) throw staleLifecycle();
 }
 
@@ -1187,7 +1198,8 @@ async function persistMaterialPacket(
   if (inserted.count !== answerData.length) throw packetInvalid();
 
   const resultState = "REVIEW_REQUIRED" as const;
-  const resultStateVersion = input.run.state === "READY" ? input.run.stateVersion + 1 : input.run.stateVersion;
+  const changesState = input.run.state !== "REVIEW_REQUIRED";
+  const resultStateVersion = changesState ? input.run.stateVersion + 1 : input.run.stateVersion;
   const runUpdate = await tx.applicationRun.updateMany({
     where: {
       id: input.run.id,
@@ -1195,12 +1207,14 @@ async function persistMaterialPacket(
       state: input.run.state,
       stateVersion: input.run.stateVersion,
       currentFormInspectionVersion: input.run.currentFormInspectionVersion,
-      currentAnswerPacketVersion: input.run.currentAnswerPacketVersion
+      currentAnswerPacketVersion: input.run.currentAnswerPacketVersion,
+      fillAttemptId: input.run.fillAttemptId,
+      fillLeaseExpiresAt: null
     },
     data: {
       currentFormInspectionVersion: inspection.version,
       currentAnswerPacketVersion: packetVersion,
-      ...(input.run.state === "READY"
+      ...(changesState
         ? { state: "REVIEW_REQUIRED" as const, stateVersion: { increment: 1 } }
         : {})
     }
@@ -1296,6 +1310,7 @@ export function createApplicationRunAnswerPacketService(
   const prismaClient = dependencies.prismaClient ?? prisma;
   const env = dependencies.env ?? process.env;
   const clock = dependencies.clock ?? (() => new Date());
+  const assertTransition = dependencies.assertTransition ?? assertRunTransition;
 
   async function publishFormInspectionAndAnswerPacket(input: unknown): Promise<MaterialResult> {
     const parsed = publicationInputSchema.parse(input);
@@ -1356,6 +1371,9 @@ export function createApplicationRunAnswerPacketService(
         parsed.expectedAnswerPacketVersion !== run.currentAnswerPacketVersion
       ) {
         throw staleLifecycle();
+      }
+      if (run.state !== "REVIEW_REQUIRED") {
+        assertTransition(run.state, "REVIEW_REQUIRED");
       }
       return persistMaterialPacket(tx, {
         userId: parsed.userId,
@@ -1424,6 +1442,9 @@ export function createApplicationRunAnswerPacketService(
         parsed.expectedAnswerPacketVersion !== run.currentAnswerPacketVersion
       ) {
         throw staleLifecycle();
+      }
+      if (run.state !== "REVIEW_REQUIRED") {
+        assertTransition(run.state, "REVIEW_REQUIRED");
       }
       return persistMaterialPacket(tx, {
         userId: parsed.userId,

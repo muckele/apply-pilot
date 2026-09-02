@@ -15,6 +15,7 @@ import {
   APPLICATION_AUTOMATION_POLICY_VALUE_KEYS,
   changedAutomationPolicyFields,
   createApplicationRunService,
+  type ApplicationRunServiceDependencies,
   type ApplicationRunServicePrismaClient
 } from "@/lib/application-runs/service";
 import { AUTOMATION_POLICY_DEFAULTS } from "@/lib/application-runs/policy";
@@ -672,13 +673,18 @@ class FakeApplicationRunDatabase {
   }
 }
 
-function serviceFor(database: FakeApplicationRunDatabase, enabled = false) {
+function serviceFor(
+  database: FakeApplicationRunDatabase,
+  enabled = false,
+  overrides: Partial<ApplicationRunServiceDependencies> = {}
+) {
   return createApplicationRunService({
     prismaClient: database.client,
     env: enabled ? { APPLICATION_AUTOMATION_ENABLED: "true" } : {},
     clock: () => new Date(NOW),
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async (tx) =>
-      database.loadVerifiedCurrentPacket(tx)
+      database.loadVerifiedCurrentPacket(tx),
+    ...overrides
   });
 }
 
@@ -1631,6 +1637,88 @@ test("packet review resolution uses one database timestamp and permits manual-re
   assert.ok(database.operations.indexOf("packet.updateMany") < database.operations.indexOf("run.updateMany"));
   assert.equal(database.tokens[0].revokedAt, null);
   assert.equal(database.operations.includes("token.updateMany"), false);
+});
+
+test("post-fill packet review resolves to user submission readiness without erasing fill provenance", async () => {
+  const fillAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const database = packetReviewDatabase({
+    run: {
+      fillAttemptId,
+      fillLeaseExpiresAt: null,
+      errorCategory: "FILL_STOPPED_EARLY"
+    }
+  });
+
+  const result = await serviceFor(database).resolveApplicationRunReview({
+    userId: USER_ID,
+    runId: RUN_ID,
+    stateVersion: 4,
+    acknowledgedReviewReasons: [],
+    answerPacketVersion: 3,
+    packetHash: PACKET_HASH
+  });
+
+  assert.equal(result.state, "READY_FOR_USER_SUBMISSION");
+  assert.equal(result.stateVersion, 5);
+  assert.equal(database.runs[0].state, "READY_FOR_USER_SUBMISSION");
+  assert.equal(database.runs[0].fillAttemptId, fillAttemptId);
+  assert.equal(database.runs[0].fillLeaseExpiresAt, null);
+  assert.equal(database.runs[0].errorCategory, "FILL_STOPPED_EARLY");
+  assert.deepEqual(database.packets[0].reviewedAt, NOW);
+  assert.equal(database.audits.length, 1);
+  assert.equal(database.audits[0].metadata.nextState, "READY_FOR_USER_SUBMISSION");
+  assert.equal(database.events.length, 1);
+  assert.equal(nested(database.events[0], "metadata").nextState, "READY_FOR_USER_SUBMISSION");
+});
+
+test("post-fill review rejects contradictory lease state and transition denial without mutation", async () => {
+  const fillAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const contradictory = packetReviewDatabase({
+    run: { fillAttemptId, fillLeaseExpiresAt: new Date(NOW.getTime() + 60_000) }
+  });
+  const contradictoryBefore = structuredClone({
+    run: contradictory.runs[0],
+    packet: contradictory.packets[0]
+  });
+  await assert.rejects(
+    serviceFor(contradictory).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 3,
+      packetHash: PACKET_HASH
+    }),
+    (error) => assertPublicError(error, 409, "RUN_INVALID_STATE")
+  );
+  assert.deepEqual(contradictory.runs[0], contradictoryBefore.run);
+  assert.deepEqual(contradictory.packets[0], contradictoryBefore.packet);
+  assert.equal(contradictory.audits.length, 0);
+  assert.equal(contradictory.events.length, 0);
+
+  const denied = packetReviewDatabase({ run: { fillAttemptId, fillLeaseExpiresAt: null } });
+  const deniedBefore = structuredClone({ run: denied.runs[0], packet: denied.packets[0] });
+  await assert.rejects(
+    serviceFor(denied, false, {
+      assertTransition: (from, to) => {
+        assert.equal(from, "REVIEW_REQUIRED");
+        assert.equal(to, "READY_FOR_USER_SUBMISSION");
+        throw new Error("transition denied");
+      }
+    }).resolveApplicationRunReview({
+      userId: USER_ID,
+      runId: RUN_ID,
+      stateVersion: 4,
+      acknowledgedReviewReasons: [],
+      answerPacketVersion: 3,
+      packetHash: PACKET_HASH
+    }),
+    /transition denied/
+  );
+  assert.deepEqual(denied.runs[0], deniedBefore.run);
+  assert.deepEqual(denied.packets[0], deniedBefore.packet);
+  assert.equal(denied.audits.length, 0);
+  assert.equal(denied.events.length, 0);
 });
 
 test("packet review resolution preserves existing planner acknowledgment and does not fabricate one", async () => {

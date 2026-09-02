@@ -79,6 +79,8 @@ type FakeRun = FakeRow & {
   resumeContentHash: string | null;
   coverLetterVersionId: string | null;
   coverLetterContentHash: string | null;
+  fillAttemptId: string | null;
+  fillLeaseExpiresAt: Date | null;
   application: { id: string; userId: string; jobPostingId: string };
   jobPosting: { id: string; userId: string };
 };
@@ -166,6 +168,8 @@ class FakeAnswerPacketDatabase {
         resumeContentHash: null,
         coverLetterVersionId: null,
         coverLetterContentHash: null,
+        fillAttemptId: null,
+        fillLeaseExpiresAt: null,
         application: { id: APPLICATION_ID, userId: USER_ID, jobPostingId: JOB_ID },
         jobPosting: { id: JOB_ID, userId: USER_ID }
       },
@@ -276,6 +280,8 @@ class FakeAnswerPacketDatabase {
             stateVersion: number;
             currentFormInspectionVersion: number;
             currentAnswerPacketVersion: number;
+            fillAttemptId?: string | null;
+            fillLeaseExpiresAt?: Date | null;
           };
           data: {
             currentFormInspectionVersion: number;
@@ -291,7 +297,9 @@ class FakeAnswerPacketDatabase {
             state.run.state === where.state &&
             state.run.stateVersion === where.stateVersion &&
             state.run.currentFormInspectionVersion === where.currentFormInspectionVersion &&
-            state.run.currentAnswerPacketVersion === where.currentAnswerPacketVersion;
+            state.run.currentAnswerPacketVersion === where.currentAnswerPacketVersion &&
+            (where.fillAttemptId === undefined || state.run.fillAttemptId === where.fillAttemptId) &&
+            (where.fillLeaseExpiresAt === undefined || state.run.fillLeaseExpiresAt === where.fillLeaseExpiresAt);
           if (!matches) return { count: 0 };
           state.run.currentFormInspectionVersion = data.currentFormInspectionVersion;
           state.run.currentAnswerPacketVersion = data.currentAnswerPacketVersion;
@@ -407,11 +415,16 @@ class FakeAnswerPacketDatabase {
   };
 }
 
-function service(database: FakeAnswerPacketDatabase, env = { APPLICATION_AUTOMATION_ENABLED: "true" }) {
+function service(
+  database: FakeAnswerPacketDatabase,
+  env = { APPLICATION_AUTOMATION_ENABLED: "true" },
+  assertTransition?: ApplicationRunAnswerPacketServiceDependencies["assertTransition"]
+) {
   return createApplicationRunAnswerPacketService({
     prismaClient: database.client as NonNullable<ApplicationRunAnswerPacketServiceDependencies["prismaClient"]>,
     env,
-    clock: () => new Date(NOW)
+    clock: () => new Date(NOW),
+    assertTransition
   });
 }
 
@@ -796,6 +809,146 @@ test("exact rebuild replays before artifact-counter fences, while rebuild gates 
         expectedFormInspectionVersion: 1, expectedAnswerPacketVersion: 1 }),
       (error: unknown) => assertPublicErrorCode(error, code, label)
     );
+  }
+});
+
+test("post-fill exact rebuild is a no-op in READY_FOR_USER_SUBMISSION", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  await packetService.publishFormInspectionAndAnswerPacket(publicationInput());
+  database.state.run.state = "READY_FOR_USER_SUBMISSION";
+  database.state.run.stateVersion = 6;
+  database.state.run.fillAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  database.state.run.fillLeaseExpiresAt = null;
+  const before = cloneState(database.state);
+
+  const replay = await packetService.rebuildCurrentAnswerPacket({
+    userId: USER_ID,
+    runId: RUN_ID,
+    expectedStateVersion: 6,
+    expectedFormInspectionVersion: 0,
+    expectedAnswerPacketVersion: 0
+  });
+
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.state, "READY_FOR_USER_SUBMISSION");
+  assert.equal(replay.stateVersion, 6);
+  assert.deepEqual(database.state, before);
+});
+
+test("post-fill material publication creates fresh inspection and packet review authority", async () => {
+  const fillAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  await packetService.publishFormInspectionAndAnswerPacket(publicationInput());
+  database.state.run.state = "READY_FOR_USER_SUBMISSION";
+  database.state.run.stateVersion = 6;
+  database.state.run.fillAttemptId = fillAttemptId;
+  database.state.run.fillLeaseExpiresAt = null;
+  database.state.run.errorCategory = "FILL_STOPPED_EARLY";
+
+  const published = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    expectedStateVersion: 6,
+    expectedFormInspectionVersion: 1,
+    expectedAnswerPacketVersion: 1,
+    inspectionReport: report([field({ question: "Portfolio website" })])
+  }));
+
+  assert.equal(published.replayed, false);
+  assert.equal(published.state, "REVIEW_REQUIRED");
+  assert.equal(published.stateVersion, 7);
+  assert.equal(published.inspectionVersion, 2);
+  assert.equal(published.packetVersion, 2);
+  assert.equal(database.state.inspections.length, 2);
+  assert.equal(database.state.packets.length, 2);
+  assert.equal(database.state.packets[1].reviewedAt, null);
+  assert.equal(database.state.run.fillAttemptId, fillAttemptId);
+  assert.equal(database.state.run.fillLeaseExpiresAt, null);
+  assert.equal(database.state.run.errorCategory, "FILL_STOPPED_EARLY");
+});
+
+test("post-fill material rebuild returns to review and retains immutable fill provenance", async () => {
+  const fillAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  await packetService.publishFormInspectionAndAnswerPacket(publicationInput());
+  database.state.run.state = "READY_FOR_USER_SUBMISSION";
+  database.state.run.stateVersion = 6;
+  database.state.run.fillAttemptId = fillAttemptId;
+  database.state.run.fillLeaseExpiresAt = null;
+  database.state.run.errorCategory = "FILL_STOPPED_EARLY";
+  database.state.vault[0].answer = "https://www.linkedin.com/in/post-fill-material";
+  database.state.vault[0].updatedAt = new Date("2026-08-25T10:00:00.000Z");
+
+  const rebuilt = await packetService.rebuildCurrentAnswerPacket({
+    userId: USER_ID,
+    runId: RUN_ID,
+    expectedStateVersion: 6,
+    expectedFormInspectionVersion: 1,
+    expectedAnswerPacketVersion: 1
+  });
+
+  assert.equal(rebuilt.replayed, false);
+  assert.equal(rebuilt.state, "REVIEW_REQUIRED");
+  assert.equal(rebuilt.stateVersion, 7);
+  assert.equal(database.state.run.state, "REVIEW_REQUIRED");
+  assert.equal(database.state.run.stateVersion, 7);
+  assert.equal(database.state.run.fillAttemptId, fillAttemptId);
+  assert.equal(database.state.run.fillLeaseExpiresAt, null);
+  assert.equal(database.state.run.errorCategory, "FILL_STOPPED_EARLY");
+  assert.equal(database.state.inspections.length, 1);
+  assert.equal(database.state.packets.length, 2);
+  const auditMetadata = database.state.audits.at(-1)?.metadata as Record<string, unknown>;
+  assert.equal(auditMetadata.resultState, "REVIEW_REQUIRED");
+});
+
+test("post-fill material publication rolls back completely when central transition authority rejects it", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  await packetService.publishFormInspectionAndAnswerPacket(publicationInput());
+  database.state.run.state = "READY_FOR_USER_SUBMISSION";
+  database.state.run.stateVersion = 6;
+  database.state.run.fillAttemptId = "550e8400-e29b-41d4-a716-446655440000";
+  database.state.run.fillLeaseExpiresAt = null;
+  const before = cloneState(database.state);
+
+  await assert.rejects(
+    service(
+      database,
+      { APPLICATION_AUTOMATION_ENABLED: "true" },
+      (from, to) => {
+        assert.equal(from, "READY_FOR_USER_SUBMISSION");
+        assert.equal(to, "REVIEW_REQUIRED");
+        throw new Error("transition denied");
+      }
+    ).publishFormInspectionAndAnswerPacket(publicationInput({
+      expectedStateVersion: 6,
+      expectedFormInspectionVersion: 1,
+      expectedAnswerPacketVersion: 1,
+      inspectionReport: report([field({ question: "Portfolio website" })])
+    })),
+    /transition denied/
+  );
+  assert.deepEqual(database.state, before);
+});
+
+test("FILLING and contradictory post-fill state are denied before publication writes", async () => {
+  for (const [label, state, fillAttemptId, fillLeaseExpiresAt] of [
+    ["filling", "FILLING", "550e8400-e29b-41d4-a716-446655440000", new Date(NOW.getTime() + 60_000)],
+    ["missing attempt", "READY_FOR_USER_SUBMISSION", null, null],
+    ["live lease", "READY_FOR_USER_SUBMISSION", "550e8400-e29b-41d4-a716-446655440000", new Date(NOW.getTime() + 60_000)]
+  ] as const) {
+    const database = new FakeAnswerPacketDatabase();
+    database.state.run.state = state;
+    database.state.run.fillAttemptId = fillAttemptId;
+    database.state.run.fillLeaseExpiresAt = fillLeaseExpiresAt;
+    const before = cloneState(database.state);
+
+    await assert.rejects(
+      service(database).publishFormInspectionAndAnswerPacket(publicationInput()),
+      (error: unknown) => assertPublicErrorCode(error, "RUN_INVALID_STATE", label)
+    );
+    assert.deepEqual(database.state, before, label);
   }
 });
 
