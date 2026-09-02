@@ -6,6 +6,7 @@ import { NextRequest } from "next/server";
 import * as routeModule from "@/app/api/application-runs/[id]/fill-attempt/route";
 import { createApplicationRunFillAttemptRouteHandlers } from "@/app/api/application-runs/[id]/fill-attempt/route";
 import { PublicApiError } from "@/lib/api-errors";
+import { createApplicationRunFillAttemptService } from "@/lib/application-runs/fill-attempt";
 import { UnauthorizedError } from "@/lib/user-context";
 
 const USER_ID = "user-1";
@@ -126,7 +127,19 @@ test("PATCH explicitly dispatches exact FINALIZE and RECOVER_EXPIRED inputs", as
   assert.equal(finalized.status, 200);
   assert.equal(finalized.headers.get("Cache-Control"), "no-store");
   assert.deepEqual(await finalized.json(), { operation: "finalize" });
-  assert.deepEqual(calls.at(-1), ["finalize", { userId: USER_ID, runId: RUN_ID, ...finalization }]);
+  const finalizeCall = calls.at(-1);
+  assert.ok(Array.isArray(finalizeCall));
+  assert.equal(finalizeCall[0], "finalize");
+  assert.deepEqual(finalizeCall[1], {
+    userId: USER_ID,
+    runId: RUN_ID,
+    fillAttemptId: FILL_ATTEMPT_ID,
+    expectedStateVersion: 8,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: null }]
+  });
+  assert.equal("action" in (finalizeCall[1] as object), false);
 
   const recovered = await handlers.PATCH(request("PATCH", {
     action: "RECOVER_EXPIRED",
@@ -148,6 +161,39 @@ test("PATCH explicitly dispatches exact FINALIZE and RECOVER_EXPIRED inputs", as
     ["rate", `application-runs:fill-attempt:mutate:${USER_ID}`, 30, 60_000],
     ["rate", `application-runs:fill-attempt:mutate:${USER_ID}`, 30, 60_000]
   ]);
+});
+
+test("PATCH FINALIZE omits its routing discriminator before the real strict Fill-service boundary", async () => {
+  let transactionCalls = 0;
+  const realFinalizeService = createApplicationRunFillAttemptService({
+    prismaClient: {
+      $transaction: async () => {
+        transactionCalls += 1;
+        throw new PublicApiError("The application run changed before Fill acquisition completed.", 409, {
+          code: "FILL_STALE"
+        });
+      }
+    } as never
+  });
+  const handlers = createApplicationRunFillAttemptRouteHandlers(dependencies({
+    finalizeFillAttempt: realFinalizeService.finalizeFillAttempt
+  }));
+
+  const response = await handlers.PATCH(request("PATCH", {
+    action: "FINALIZE",
+    fillAttemptId: FILL_ATTEMPT_ID,
+    expectedStateVersion: 8,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: null }]
+  }), context());
+
+  assert.equal(transactionCalls, 1);
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), {
+    error: "The application run changed before Fill acquisition completed.",
+    code: "FILL_STALE"
+  });
 });
 
 test("authentication, path, and strict Zod failures are no-store and never call Fill services", async () => {

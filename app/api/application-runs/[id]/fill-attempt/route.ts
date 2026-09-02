@@ -71,7 +71,15 @@ export function createApplicationRunFillAttemptRouteHandlers(
         const body = applicationRunFillAttemptPatchBodySchema.parse(await request.json());
         await dependencies.checkRateLimit(`application-runs:fill-attempt:mutate:${userId}`, 30, 60_000);
         const result = body.action === "FINALIZE"
-          ? await dependencies.finalizeFillAttempt({ userId, runId, ...body })
+          ? await dependencies.finalizeFillAttempt({
+              userId,
+              runId,
+              fillAttemptId: body.fillAttemptId,
+              expectedStateVersion: body.expectedStateVersion,
+              outcome: body.outcome,
+              errorCode: body.errorCode,
+              steps: body.steps
+            })
           : await dependencies.recoverExpiredFillAttempt({
               userId,
               runId,
