@@ -534,12 +534,20 @@ function projectRecoverySteps(
       };
     }
 
-    const unresolved =
-      (step.status === "PENDING" || step.status === "RUNNING") &&
+    const unresolvedPending =
+      step.status === "PENDING" &&
+      step.startedAt === null &&
       step.redactedValueSummary === null &&
       step.errorCategory === null &&
       step.completedAt === null;
-    if (!unresolved) throw fillInternal();
+    const unresolvedRunning =
+      step.status === "RUNNING" &&
+      step.startedAt instanceof Date &&
+      Number.isFinite(step.startedAt.getTime()) &&
+      step.redactedValueSummary === null &&
+      step.errorCategory === null &&
+      step.completedAt === null;
+    if (!unresolvedPending && !unresolvedRunning) throw fillInternal();
     unresolvedStarted = true;
     return {
       source: step,
@@ -846,6 +854,20 @@ export function createApplicationRunFillAttemptService(
   async function finalizeFillAttempt(input: unknown) {
     try {
       const parsed = finalizeInputSchema.parse(input);
+      const assertion = {
+        fillAttemptId: parsed.fillAttemptId,
+        outcome: parsed.outcome,
+        errorCode: parsed.errorCode,
+        steps: parsed.steps
+      };
+      reconcileFillFinalization({
+        fillAttemptId: parsed.fillAttemptId,
+        persistedSteps: parsed.steps.map((step) => ({
+          fillAttemptId: parsed.fillAttemptId,
+          stepKey: step.stepKey
+        })),
+        assertion
+      });
       return await prismaClient.$transaction(async (untypedTx) => {
         const tx = untypedTx as ApplicationRunAnswerPacketTransaction;
         const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
@@ -861,12 +883,7 @@ export function createApplicationRunFillAttemptService(
             fillAttemptId: parsed.fillAttemptId,
             stepKey: step.stepKey
           })),
-          assertion: {
-            fillAttemptId: parsed.fillAttemptId,
-            outcome: parsed.outcome,
-            errorCode: parsed.errorCode,
-            steps: parsed.steps
-          }
+          assertion
         });
 
         try {

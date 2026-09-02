@@ -30,6 +30,7 @@ const REVIEW_REASONS = ["evidence_gaps_present"] as const;
 const FILLING_STATE_VERSION = 17;
 const FIRST_FIELD_KEY = "a".repeat(64);
 const SECOND_FIELD_KEY = "b".repeat(64);
+const RECOVERY_RUNNING_STARTED_AT = new Date("2026-09-01T00:00:00.000Z");
 
 type FillingFixture = {
   userId: string;
@@ -112,7 +113,8 @@ async function createFillingFixture(
   observer: PostgresTestActor,
   label: string,
   leaseOffsetMs: number,
-  syntheticUserIds: string[]
+  syntheticUserIds: string[],
+  runningStartedAt: Date | null = null
 ): Promise<FillingFixture> {
   const user = await createSyntheticTestUser(observer, label);
   syntheticUserIds.push(user.id);
@@ -181,12 +183,12 @@ async function createFillingFixture(
       action: "FILL_FIELD",
       semanticFieldKey: null,
       adapter: null,
-      status: "PENDING",
+      status: sequence === 1 && runningStartedAt !== null ? "RUNNING" : "PENDING",
       attemptNumber: 1,
       redactedValueSummary: null,
       errorCategory: null,
       artifactReference: null,
-      startedAt: null,
+      startedAt: sequence === 1 ? runningStartedAt : null,
       completedAt: null
     }))
   });
@@ -489,7 +491,24 @@ test("Recovery crosses database-clock expiry while queued on the run lock", {
     actors.push(recoverer);
     assertDistinctActorSessions(actors);
 
-    const fixture = await createFillingFixture(observer, "recover-expiry", 3_000, syntheticUserIds);
+    const fixture = await createFillingFixture(
+      observer,
+      "recover-expiry",
+      3_000,
+      syntheticUserIds,
+      RECOVERY_RUNNING_STARTED_AT
+    );
+    const seededSteps = await observer.client.applicationRunStep.findMany({
+      where: { runId: fixture.runId, userId: fixture.userId },
+      orderBy: { sequence: "asc" }
+    });
+    assert.deepEqual(seededSteps.map((step) => ({
+      status: step.status,
+      startedAt: step.startedAt
+    })), [
+      { status: "PENDING", startedAt: null },
+      { status: "RUNNING", startedAt: RECOVERY_RUNNING_STARTED_AT }
+    ]);
     const runLock = holdRunLock(blocker, fixture, "recover expiry");
     releaseRunLock = runLock.release;
     operations.push(runLock.operation);
@@ -561,14 +580,24 @@ test("Recovery crosses database-clock expiry while queued on the run lock", {
       redactedValueSummary: step.redactedValueSummary,
       errorCategory: step.errorCategory,
       startedAt: step.startedAt
-    })), fixture.stepKeys.map((stepKey, sequence) => ({
-      stepKey,
-      sequence,
-      status: "FAILED",
-      redactedValueSummary: "FAILED",
-      errorCategory: "FILL_STALE",
-      startedAt: null
-    })));
+    })), [
+      {
+        stepKey: fixture.stepKeys[0],
+        sequence: 0,
+        status: "FAILED",
+        redactedValueSummary: "FAILED",
+        errorCategory: "FILL_STALE",
+        startedAt: null
+      },
+      {
+        stepKey: fixture.stepKeys[1],
+        sequence: 1,
+        status: "FAILED",
+        redactedValueSummary: "FAILED",
+        errorCategory: "FILL_STALE",
+        startedAt: RECOVERY_RUNNING_STARTED_AT
+      }
+    ]);
     assert.ok(persisted.steps.every((step) => step.completedAt instanceof Date));
     assert.deepEqual(persisted.auditCounts, { total: 1, finalize: 0, recover: 1 });
     context.diagnostic(

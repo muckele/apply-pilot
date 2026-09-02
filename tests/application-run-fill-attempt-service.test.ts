@@ -1369,6 +1369,70 @@ test("FINALIZE rejects malformed, duplicate, and foreign attempt step keys befor
   }
 });
 
+test("FINALIZE rejects invalid completed step semantics before a transaction", async () => {
+  const state = createFakeState({
+    run: createFillingRun(),
+    terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+  });
+
+  await assert.rejects(
+    serviceFor(state).finalizeFillAttempt(completedFinalizationInput([{
+      stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`,
+      result: "FILLED",
+      errorCode: "FILL_INTERNAL"
+    }])),
+    (error) => assertFillError(error, "FILL_INTERNAL", 500)
+  );
+  assert.equal(state.transactionOptions.length, 0);
+  assert.deepEqual(state.operations, []);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.audits.length, 0);
+});
+
+test("FINALIZE rejects a mismatched stopped error before a transaction", async () => {
+  const state = createFakeState({
+    run: createFillingRun(),
+    terminalSteps: [createAttemptStep(FIELD_KEY, 0)]
+  });
+
+  await assert.rejects(
+    serviceFor(state).finalizeFillAttempt(completedFinalizationInput([{
+      stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`,
+      result: "FAILED",
+      errorCode: "FILL_WRITE_FAILED"
+    }], { outcome: "STOPPED_EARLY", errorCode: "FILL_INTERNAL" })),
+    (error) => assertFillError(error, "FILL_INTERNAL", 500)
+  );
+  assert.equal(state.transactionOptions.length, 0);
+  assert.deepEqual(state.operations, []);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.audits.length, 0);
+});
+
+test("FINALIZE rejects success after a stopped tail before a transaction", async () => {
+  const state = createFakeState({
+    run: createFillingRun(),
+    terminalSteps: [
+      createAttemptStep(FIELD_KEY, 0),
+      createAttemptStep(SECOND_FIELD_KEY, 1),
+      createAttemptStep(THIRD_FIELD_KEY, 2)
+    ]
+  });
+
+  await assert.rejects(
+    serviceFor(state).finalizeFillAttempt(completedFinalizationInput([
+      { stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`, result: "FILLED", errorCode: null },
+      { stepKey: `fill:${ATTEMPT_ID}:${SECOND_FIELD_KEY}`, result: "FAILED", errorCode: "FILL_INTERNAL" },
+      { stepKey: `fill:${ATTEMPT_ID}:${THIRD_FIELD_KEY}`, result: "FILLED", errorCode: null }
+    ], { outcome: "STOPPED_EARLY", errorCode: "FILL_INTERNAL" })),
+    (error) => assertFillError(error, "FILL_INTERNAL", 500)
+  );
+  assert.equal(state.transactionOptions.length, 0);
+  assert.deepEqual(state.operations, []);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.audits.length, 0);
+});
+
 test("RECOVER equality success preserves safe prefix and conservatively fails unresolved tail", async () => {
   const completedAt = new Date(DB_NOW.getTime() - 200);
   const startedAt = new Date(DB_NOW.getTime() - 100);
@@ -1586,6 +1650,51 @@ test("RECOVER rejects contradictory persistence and terminal-only projections", 
     assert.equal(state.writes.length, 0);
     assert.equal(state.audits.length, 0);
   }
+});
+
+test("RECOVER rejects PENDING persistence with a startedAt timestamp without mutation", async () => {
+  const startedAt = new Date(DB_NOW.getTime() - 100);
+  const step = createAttemptStep(FIELD_KEY, 0, { startedAt });
+  const state = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+    terminalSteps: [step]
+  });
+
+  await assert.rejects(
+    serviceFor(state).recoverExpiredFillAttempt(recoveryInput()),
+    (error) => assertFillError(error, "FILL_INTERNAL", 500)
+  );
+  assert.equal(state.run.state, "FILLING");
+  assert.equal(state.run.stateVersion, 7);
+  assert.equal(state.run.fillAttemptId, ATTEMPT_ID);
+  assert.equal(state.run.fillLeaseExpiresAt, DB_NOW);
+  assert.equal(state.terminalSteps[0].status, "PENDING");
+  assert.equal(state.terminalSteps[0].startedAt, startedAt);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.audits.length, 0);
+  assert.equal(state.writes.some((write) => write.model === "applicationEvent"), false);
+});
+
+test("RECOVER rejects RUNNING persistence without startedAt without mutation", async () => {
+  const step = createAttemptStep(FIELD_KEY, 0, { status: "RUNNING" });
+  const state = createFakeState({
+    run: createFillingRun({ fillLeaseExpiresAt: DB_NOW }),
+    terminalSteps: [step]
+  });
+
+  await assert.rejects(
+    serviceFor(state).recoverExpiredFillAttempt(recoveryInput()),
+    (error) => assertFillError(error, "FILL_INTERNAL", 500)
+  );
+  assert.equal(state.run.state, "FILLING");
+  assert.equal(state.run.stateVersion, 7);
+  assert.equal(state.run.fillAttemptId, ATTEMPT_ID);
+  assert.equal(state.run.fillLeaseExpiresAt, DB_NOW);
+  assert.equal(state.terminalSteps[0].status, "RUNNING");
+  assert.equal(state.terminalSteps[0].startedAt, null);
+  assert.equal(state.writes.length, 0);
+  assert.equal(state.audits.length, 0);
+  assert.equal(state.writes.some((write) => write.model === "applicationEvent"), false);
 });
 
 test("RECOVER transition denial and guarded mutation loss roll back without audit", async () => {
