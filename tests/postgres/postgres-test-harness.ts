@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isProxy } from "node:util/types";
 
 import { Prisma, PrismaClient } from "@prisma/client";
 
@@ -17,6 +18,7 @@ export const POSTGRES_TEST_IDLE_TRANSACTION_TIMEOUT = "15s";
 const ALLOWED_PROTOCOLS = new Set(["postgres:", "postgresql:"]);
 const ALLOWED_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 const EXPECTED_ISOLATION = "read committed";
+const REPEATABLE_READ_ISOLATION = "repeatable read";
 const ACTOR_APPLICATION_PREFIX = "apply-pilot-c5-";
 const POLL_INTERVAL_MS = 25;
 
@@ -294,7 +296,11 @@ function poisonActor(state: ActorRuntimeState, phase: string): never {
   throw state.poisonedError;
 }
 
-function sessionIdentityMatches(state: ActorRuntimeState, identity: SessionIdentityRow): boolean {
+function sessionIdentityMatches(
+  state: ActorRuntimeState,
+  identity: SessionIdentityRow,
+  expectedIsolation = EXPECTED_ISOLATION
+): boolean {
   let serverMajorVersion: number;
   try {
     serverMajorVersion = parseServerMajorVersion(identity.serverVersionNum);
@@ -305,7 +311,7 @@ function sessionIdentityMatches(state: ActorRuntimeState, identity: SessionIdent
     identity.backendPid === state.backendPid &&
     identity.applicationName === state.applicationName &&
     identity.databaseName === POSTGRES_TEST_DATABASE_NAME &&
-    identity.isolation === EXPECTED_ISOLATION &&
+    identity.isolation === expectedIsolation &&
     serverMajorVersion === POSTGRES_TEST_MAJOR_VERSION &&
     identity.lockTimeout === POSTGRES_TEST_LOCK_TIMEOUT &&
     identity.statementTimeout === POSTGRES_TEST_STATEMENT_TIMEOUT &&
@@ -316,7 +322,8 @@ function sessionIdentityMatches(state: ActorRuntimeState, identity: SessionIdent
 async function verifyActorRuntimeState(
   state: ActorRuntimeState,
   phase: string,
-  client: SessionIdentityClient = state.baseClient
+  client: SessionIdentityClient = state.baseClient,
+  expectedIsolation = EXPECTED_ISOLATION
 ): Promise<void> {
   throwIfActorPoisoned(state);
   let identity: SessionIdentityRow;
@@ -325,7 +332,7 @@ async function verifyActorRuntimeState(
   } catch {
     poisonActor(state, phase);
   }
-  if (!sessionIdentityMatches(state, identity)) poisonActor(state, phase);
+  if (!sessionIdentityMatches(state, identity, expectedIsolation)) poisonActor(state, phase);
 }
 
 export async function createPostgresTestActor(
@@ -598,6 +605,10 @@ export type HookedPrismaClient = {
   assertExpectedHooksReached: () => void;
 };
 
+export type HookedPrismaClientOptions = Readonly<{
+  requiredInteractiveTransactionIsolationLevel?: Prisma.TransactionIsolationLevel;
+}>;
+
 async function executeWithActorInvariant<T>(
   state: ActorRuntimeState,
   operationLabel: string,
@@ -640,6 +651,7 @@ type ControlledPrismaClientMetadata = {
   nativeClient: PrismaClient;
   state: ActorRuntimeState;
   transactionCheckpoint?: TransactionCheckpoint;
+  requiredInteractiveTransactionIsolationLevel?: Prisma.TransactionIsolationLevel;
 };
 
 const controlledPrismaClients = new WeakMap<PrismaClient, ControlledPrismaClientMetadata>();
@@ -651,14 +663,33 @@ function nativePrismaClientForControl(client: PrismaClient): PrismaClient {
 async function configureAndVerifyTransaction(
   state: ActorRuntimeState,
   transaction: Prisma.TransactionClient,
-  phase: string
+  phase: string,
+  expectedIsolation: string
 ): Promise<void> {
   await transaction.$executeRawUnsafe(`SET LOCAL lock_timeout = '${POSTGRES_TEST_LOCK_TIMEOUT}'`);
   await transaction.$executeRawUnsafe(`SET LOCAL statement_timeout = '${POSTGRES_TEST_STATEMENT_TIMEOUT}'`);
   await transaction.$executeRawUnsafe(
     `SET LOCAL idle_in_transaction_session_timeout = '${POSTGRES_TEST_IDLE_TRANSACTION_TIMEOUT}'`
   );
-  await verifyActorRuntimeState(state, phase, transaction as SessionIdentityClient);
+  await verifyActorRuntimeState(state, phase, transaction as SessionIdentityClient, expectedIsolation);
+}
+
+function postgresIsolationForRequiredLevel(level: Prisma.TransactionIsolationLevel | undefined): string {
+  if (level === undefined) return EXPECTED_ISOLATION;
+  if (level === Prisma.TransactionIsolationLevel.RepeatableRead) return REPEATABLE_READ_ISOLATION;
+  throw new Error("PostgreSQL test hooked clients support only RepeatableRead as required isolation.");
+}
+
+function validatedInteractiveTransactionOptions(options: unknown): Record<string, unknown> | undefined {
+  if (options === undefined) return undefined;
+  if (!isObject(options) || isProxy(options)) {
+    throw new Error("PostgreSQL test interactive transaction options must be a plain non-proxy object.");
+  }
+  const prototype = Object.getPrototypeOf(options);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new Error("PostgreSQL test interactive transaction options must be a plain non-proxy object.");
+  }
+  return options;
 }
 
 async function runControlledTransaction(
@@ -667,19 +698,26 @@ async function runControlledTransaction(
   transactionMethod: (...args: unknown[]) => Promise<unknown>,
   operation: unknown,
   options: unknown,
-  transactionCheckpoint?: TransactionCheckpoint
+  transactionCheckpoint?: TransactionCheckpoint,
+  requiredInteractiveTransactionIsolationLevel?: Prisma.TransactionIsolationLevel
 ): Promise<unknown> {
   await verifyActorRuntimeState(state, "before-transaction");
   try {
     let result: unknown;
     if (typeof operation === "function") {
       const callback = operation as (transaction: Prisma.TransactionClient) => Promise<unknown>;
+      const expectedIsolation = postgresIsolationForRequiredLevel(requiredInteractiveTransactionIsolationLevel);
       const wrapped = (transaction: Prisma.TransactionClient) =>
         state.transactionScope.run(true, async () => {
-          await configureAndVerifyTransaction(state, transaction, "transaction-entry");
+          await configureAndVerifyTransaction(state, transaction, "transaction-entry", expectedIsolation);
           await transactionCheckpoint?.();
           const callbackResult = await callback(transaction);
-          await verifyActorRuntimeState(state, "transaction-exit", transaction as SessionIdentityClient);
+          await verifyActorRuntimeState(
+            state,
+            "transaction-exit",
+            transaction as SessionIdentityClient,
+            expectedIsolation
+          );
           return callbackResult;
         });
       result = await Reflect.apply(
@@ -712,12 +750,14 @@ async function runControlledTransaction(
 function createControlledTransactionClient(
   state: ActorRuntimeState,
   client: PrismaClient,
-  transactionCheckpoint?: TransactionCheckpoint
+  transactionCheckpoint?: TransactionCheckpoint,
+  requiredInteractiveTransactionIsolationLevel?: Prisma.TransactionIsolationLevel
 ): PrismaClient {
   const existingControl = controlledPrismaClients.get(client);
   if (
     existingControl?.state === state &&
-    existingControl.transactionCheckpoint === transactionCheckpoint
+    existingControl.transactionCheckpoint === transactionCheckpoint &&
+    existingControl.requiredInteractiveTransactionIsolationLevel === requiredInteractiveTransactionIsolationLevel
   ) {
     return client;
   }
@@ -748,7 +788,9 @@ function createControlledTransactionClient(
             const returnedControl = controlledPrismaClients.get(extendedClient);
             if (
               returnedControl?.state !== state ||
-              returnedControl.transactionCheckpoint !== transactionCheckpoint
+              returnedControl.transactionCheckpoint !== transactionCheckpoint ||
+              returnedControl.requiredInteractiveTransactionIsolationLevel !==
+                requiredInteractiveTransactionIsolationLevel
             ) {
               throw new Error(
                 "A functional Prisma extension must return its controlled client or a controlled client derived from it."
@@ -756,12 +798,35 @@ function createControlledTransactionClient(
             }
             return extendedClient;
           }
-          return createControlledTransactionClient(state, extendedClient, transactionCheckpoint);
+          return createControlledTransactionClient(
+            state,
+            extendedClient,
+            transactionCheckpoint,
+            requiredInteractiveTransactionIsolationLevel
+          );
         };
       }
       if (property === "$transaction") {
         return (operation: unknown, options?: unknown) => {
-          if (isObject(options) && "isolationLevel" in options) {
+          if (typeof operation !== "function" && options !== undefined) {
+            throw new Error(
+              "PostgreSQL test explicit transaction isolation is restricted to interactive transactions."
+            );
+          }
+          const interactiveOptions =
+            typeof operation === "function" ? validatedInteractiveTransactionOptions(options) : undefined;
+          const hasExplicitIsolation =
+            interactiveOptions !== undefined && "isolationLevel" in interactiveOptions;
+          if (typeof operation === "function" && requiredInteractiveTransactionIsolationLevel !== undefined) {
+            if (
+              !hasExplicitIsolation ||
+              interactiveOptions.isolationLevel !== requiredInteractiveTransactionIsolationLevel
+            ) {
+              throw new Error(
+                "PostgreSQL test transactions must explicitly request its configured interactive transaction isolation level."
+              );
+            }
+          } else if (hasExplicitIsolation) {
             throw new Error("PostgreSQL test transactions must inherit the database READ COMMITTED isolation level.");
           }
           return runControlledTransaction(
@@ -770,7 +835,8 @@ function createControlledTransactionClient(
             nativeTransactionMethod,
             operation,
             options,
-            transactionCheckpoint
+            transactionCheckpoint,
+            requiredInteractiveTransactionIsolationLevel
           );
         };
       }
@@ -781,7 +847,8 @@ function createControlledTransactionClient(
   controlledPrismaClients.set(controlledClient, {
     nativeClient,
     state,
-    transactionCheckpoint
+    transactionCheckpoint,
+    requiredInteractiveTransactionIsolationLevel
   });
   return controlledClient;
 }
@@ -802,7 +869,8 @@ function hookOperationForQueryExtension(
 
 export function createHookedPrismaClient(
   actor: PostgresTestActor,
-  hooks: readonly PrismaOperationHook[]
+  hooks: readonly PrismaOperationHook[],
+  options?: HookedPrismaClientOptions
 ): HookedPrismaClient {
   const states: HookState[] = hooks.map((hook) => ({ hook, beforeMatches: 0, afterMatches: 0 }));
 
@@ -844,7 +912,8 @@ export function createHookedPrismaClient(
       const transactionOperation: HookOperation = { kind: "transaction" };
       const matched = await beginOperation(transactionOperation);
       await finishOperation(transactionOperation, matched);
-    }
+    },
+    options?.requiredInteractiveTransactionIsolationLevel
   );
 
   return {

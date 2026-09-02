@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 
-import { Prisma } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
 import {
   POSTGRES_TEST_IDLE_TRANSACTION_TIMEOUT,
@@ -41,7 +41,8 @@ function requireFulfilled(result: OperationResult, actorName: string, phase: str
 }
 
 async function assertIsolationRejectedBeforeCallback(
-  invoke: (callback: () => Promise<void>) => Promise<unknown>
+  invoke: (callback: () => Promise<void>) => Promise<unknown>,
+  expectedMessage = /must inherit the database READ COMMITTED isolation level/
 ): Promise<void> {
   let callbackCount = 0;
   let caught: unknown;
@@ -54,7 +55,14 @@ async function assertIsolationRejectedBeforeCallback(
   }
   assert.equal(callbackCount, 0);
   assert.ok(caught instanceof Error);
-  assert.match(caught.message, /must inherit the database READ COMMITTED isolation level/);
+  assert.match(caught.message, expectedMessage);
+}
+
+async function readActorIsolation(actor: PostgresTestActor): Promise<string | undefined> {
+  const rows = await actor.client.$queryRaw<Array<{ isolation: string }>>(Prisma.sql`
+    SELECT current_setting('transaction_isolation') AS "isolation"
+  `);
+  return rows[0]?.isolation;
 }
 
 async function waitForBackendExit(observer: PostgresTestActor, actor: PostgresTestActor): Promise<void> {
@@ -304,6 +312,551 @@ test("PostgreSQL concurrency harness proves session identity, lock observation, 
         // The bounded disconnect below remains mandatory even when fixture cleanup fails.
       }
     }
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("opted-in hooked clients execute exact verified RepeatableRead transactions", async () => {
+  const actors: PostgresTestActor[] = [];
+  const syntheticUserIds: string[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("repeatable-read-commit");
+    actors.push(actor);
+    const user = await createSyntheticTestUser(actor, "repeatable-read-commit");
+    syntheticUserIds.push(user.id);
+    assert.equal(await readActorIsolation(actor), "read committed");
+
+    let modelBeforeCount = 0;
+    let modelAfterCount = 0;
+    let transactionBeforeCount = 0;
+    let transactionAfterCount = 0;
+    const transactionOptions = Object.freeze({
+      maxWait: 4_321,
+      timeout: 19_876,
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+    });
+    const nativeTransactionDescriptor = Object.getOwnPropertyDescriptor(
+      PrismaClient.prototype,
+      "$transaction"
+    );
+    assert.ok(nativeTransactionDescriptor);
+    assert.equal(typeof nativeTransactionDescriptor.value, "function");
+    const nativeTransactionMethod = nativeTransactionDescriptor.value as (
+      this: PrismaClient,
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    let nativeTransactionCallCount = 0;
+    Object.defineProperty(PrismaClient.prototype, "$transaction", {
+      ...nativeTransactionDescriptor,
+      value: function (this: PrismaClient, ...args: unknown[]) {
+        nativeTransactionCallCount += 1;
+        assert.strictEqual(args[1], transactionOptions);
+        return Reflect.apply(nativeTransactionMethod, this, args);
+      }
+    });
+    const { hooks, derived } = (() => {
+      try {
+        const hooks = createHookedPrismaClient(
+          actor,
+          [
+            {
+              name: "repeatable read user lookup",
+              match: { kind: "model", model: "user", method: "findUnique" },
+              before: () => {
+                modelBeforeCount += 1;
+              },
+              after: () => {
+                modelAfterCount += 1;
+              }
+            },
+            {
+              name: "repeatable read transaction",
+              match: { kind: "transaction" },
+              before: () => {
+                transactionBeforeCount += 1;
+              },
+              after: () => {
+                transactionAfterCount += 1;
+              }
+            }
+          ],
+          {
+            requiredInteractiveTransactionIsolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+          }
+        );
+        return {
+          hooks,
+          derived: hooks.prismaClient.$extends({ name: "repeatable-read-derived" })
+        };
+      } finally {
+        Object.defineProperty(PrismaClient.prototype, "$transaction", nativeTransactionDescriptor);
+      }
+    })();
+    let callbackCount = 0;
+
+    const result = await derived.$transaction(async (transaction) => {
+      callbackCount += 1;
+      const identityRows = await transaction.$queryRaw<
+        Array<{
+          backendPid: number;
+          applicationName: string;
+          databaseName: string;
+          isolation: string;
+          lockTimeout: string;
+          statementTimeout: string;
+          idleTransactionTimeout: string;
+        }>
+      >(Prisma.sql`
+        SELECT
+          pg_backend_pid()::integer AS "backendPid",
+          current_setting('application_name') AS "applicationName",
+          current_database() AS "databaseName",
+          current_setting('transaction_isolation') AS "isolation",
+          current_setting('lock_timeout') AS "lockTimeout",
+          current_setting('statement_timeout') AS "statementTimeout",
+          current_setting('idle_in_transaction_session_timeout') AS "idleTransactionTimeout"
+      `);
+      const found = await transaction.user.findUnique({
+        where: { id: user.id },
+        select: { id: true, name: true }
+      });
+      return { identity: identityRows[0], found };
+    }, transactionOptions);
+
+    assert.equal(callbackCount, 1);
+    assert.deepEqual(result.found, { id: user.id, name: user.name });
+    assert.deepEqual(result.identity, {
+      backendPid: actor.backendPid,
+      applicationName: actor.applicationName,
+      databaseName: "apply_pilot_commit5_test",
+      isolation: "repeatable read",
+      lockTimeout: POSTGRES_TEST_LOCK_TIMEOUT,
+      statementTimeout: POSTGRES_TEST_STATEMENT_TIMEOUT,
+      idleTransactionTimeout: POSTGRES_TEST_IDLE_TRANSACTION_TIMEOUT
+    });
+    assert.equal(nativeTransactionCallCount, 1);
+    assert.equal(modelBeforeCount, 1);
+    assert.equal(modelAfterCount, 1);
+    assert.equal(transactionBeforeCount, 1);
+    assert.equal(transactionAfterCount, 1);
+    hooks.assertExpectedHooksReached();
+    assert.equal(await readActorIsolation(actor), "read committed");
+    await assertActorSessionPinned(actor, "after exact RepeatableRead commit");
+
+    await deleteSyntheticTestUsers(actor, syntheticUserIds);
+    syntheticUserIds.length = 0;
+  } finally {
+    if (actor && syntheticUserIds.length > 0) {
+      try {
+        await deleteSyntheticTestUsers(actor, syntheticUserIds);
+      } catch {
+        // Bounded actor disconnect remains mandatory after a failed RepeatableRead commit regression.
+      }
+    }
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("RepeatableRead opt-in rejects default, missing, mismatched, and batch isolation authority", async () => {
+  const actors: PostgresTestActor[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("repeatable-read-restrictions");
+    actors.push(actor);
+    const defaultDerived = actor.client.$extends({ name: "default-repeatable-read-derived" });
+
+    await assertIsolationRejectedBeforeCallback((callback) =>
+      actor!.client.$transaction(callback, {
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+      })
+    );
+    await assertIsolationRejectedBeforeCallback((callback) =>
+      actor!.client.$transaction(callback, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+      })
+    );
+    await assertIsolationRejectedBeforeCallback((callback) =>
+      defaultDerived.$transaction(callback, {
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+      })
+    );
+
+    const hooks = createHookedPrismaClient(actor, [], {
+      requiredInteractiveTransactionIsolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+    });
+    const requiredIsolationMessage = /must explicitly request its configured interactive transaction isolation level/;
+    await assertIsolationRejectedBeforeCallback(
+      (callback) => hooks.prismaClient.$transaction(callback),
+      requiredIsolationMessage
+    );
+    await assertIsolationRejectedBeforeCallback(
+      (callback) =>
+        hooks.prismaClient.$transaction(callback, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+        }),
+      requiredIsolationMessage
+    );
+
+    const batchOperation = hooks.prismaClient.user.count();
+    assert.throws(
+      () =>
+        hooks.prismaClient.$transaction([batchOperation], {
+          isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+        }),
+      /explicit transaction isolation is restricted to interactive transactions/
+    );
+    await assertActorSessionPinned(actor, "after RepeatableRead usage rejections");
+    assert.equal(await readActorIsolation(actor), "read committed");
+  } finally {
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("default controlled clients reject malformed interactive options before writes", async () => {
+  const actors: PostgresTestActor[] = [];
+  const syntheticUserIds: string[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("default-interactive-option-rejection");
+    actors.push(actor);
+    const callableUser = await createSyntheticTestUser(actor, "interactive-callable-options");
+    const deceptiveUser = await createSyntheticTestUser(actor, "interactive-deceptive-options");
+    const nullUser = await createSyntheticTestUser(actor, "interactive-null-options");
+    const primitiveUser = await createSyntheticTestUser(actor, "interactive-primitive-options");
+    syntheticUserIds.push(callableUser.id, deceptiveUser.id, nullUser.id, primitiveUser.id);
+    const derived = actor.client.$extends({ name: "default-interactive-option-derived" });
+    const callableOptions = Object.assign(() => undefined, {
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+    });
+    let deceptiveIsolationReads = 0;
+    const deceptiveOptions = new Proxy(
+      { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
+      {
+        has(target, property) {
+          return property === "isolationLevel" ? false : Reflect.has(target, property);
+        },
+        get(target, property, receiver) {
+          if (property === "isolationLevel") deceptiveIsolationReads += 1;
+          return Reflect.get(target, property, receiver);
+        }
+      }
+    );
+    const malformedOptions = [callableOptions, deceptiveOptions, null, 17] as const;
+    const clients = [actor.client, derived, actor.client, derived] as const;
+    const users = [callableUser, deceptiveUser, nullUser, primitiveUser] as const;
+    const callbackCounts = [0, 0, 0, 0];
+    const errorMessages: Array<string | null> = [];
+
+    for (let index = 0; index < malformedOptions.length; index += 1) {
+      const client = clients[index] as PrismaClient;
+      try {
+        await client.$transaction(
+          async (transaction) => {
+            callbackCounts[index] += 1;
+            await transaction.user.update({
+              where: { id: users[index].id },
+              data: { name: `malformed interactive options write ${index}` }
+            });
+          },
+          malformedOptions[index] as unknown as {
+            maxWait?: number;
+            timeout?: number;
+            isolationLevel?: Prisma.TransactionIsolationLevel;
+          }
+        );
+        errorMessages.push(null);
+      } catch (error) {
+        errorMessages.push(error instanceof Error ? error.message : "non-error rejection");
+      }
+    }
+
+    const reusableResult = await actor.client.$transaction(async (transaction) =>
+      transaction.user.findMany({
+        where: { id: { in: syntheticUserIds } },
+        orderBy: { id: "asc" },
+        select: { id: true, name: true }
+      })
+    );
+    const expectedUsers = users
+      .map(({ id, name }) => ({ id, name }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const usageError = "PostgreSQL test interactive transaction options must be a plain non-proxy object.";
+
+    assert.deepEqual(callbackCounts, [0, 0, 0, 0]);
+    assert.deepEqual(errorMessages, [usageError, usageError, usageError, usageError]);
+    assert.deepEqual(reusableResult, expectedUsers);
+    assert.equal(deceptiveIsolationReads, 0);
+    assert.equal(await readActorIsolation(actor), "read committed");
+    await assertActorSessionPinned(actor, "after malformed interactive options rejection and reuse");
+
+    await deleteSyntheticTestUsers(actor, syntheticUserIds);
+    syntheticUserIds.length = 0;
+  } finally {
+    if (actor && syntheticUserIds.length > 0) {
+      try {
+        await deleteSyntheticTestUsers(actor, syntheticUserIds);
+      } catch {
+        // Bounded actor disconnect remains mandatory after a failed interactive-options regression.
+      }
+    }
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("default controlled clients preserve plain interactive option identity", async () => {
+  const actors: PostgresTestActor[] = [];
+  const syntheticUserIds: string[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("default-interactive-option-identity");
+    actors.push(actor);
+    const user = await createSyntheticTestUser(actor, "default-interactive-option-identity");
+    syntheticUserIds.push(user.id);
+    const transactionOptions = Object.freeze({ maxWait: 4_123, timeout: 19_321 });
+    const nativeTransactionDescriptor = Object.getOwnPropertyDescriptor(
+      PrismaClient.prototype,
+      "$transaction"
+    );
+    assert.ok(nativeTransactionDescriptor);
+    assert.equal(typeof nativeTransactionDescriptor.value, "function");
+    const nativeTransactionMethod = nativeTransactionDescriptor.value as (
+      this: PrismaClient,
+      ...args: unknown[]
+    ) => Promise<unknown>;
+    let nativeTransactionCallCount = 0;
+    Object.defineProperty(PrismaClient.prototype, "$transaction", {
+      ...nativeTransactionDescriptor,
+      value: function (this: PrismaClient, ...args: unknown[]) {
+        nativeTransactionCallCount += 1;
+        assert.strictEqual(args[1], transactionOptions);
+        return Reflect.apply(nativeTransactionMethod, this, args);
+      }
+    });
+    const hooks = (() => {
+      try {
+        return createHookedPrismaClient(actor, []);
+      } finally {
+        Object.defineProperty(PrismaClient.prototype, "$transaction", nativeTransactionDescriptor);
+      }
+    })();
+
+    const updated = await hooks.prismaClient.$transaction(
+      async (transaction) =>
+        transaction.user.update({
+          where: { id: user.id },
+          data: { name: "plain default options committed" },
+          select: { id: true, name: true }
+        }),
+      transactionOptions
+    );
+
+    assert.deepEqual(updated, { id: user.id, name: "plain default options committed" });
+    assert.equal(nativeTransactionCallCount, 1);
+    assert.equal(await readActorIsolation(actor), "read committed");
+    await assertActorSessionPinned(actor, "after plain default interactive options commit");
+
+    await deleteSyntheticTestUsers(actor, syntheticUserIds);
+    syntheticUserIds.length = 0;
+  } finally {
+    if (actor && syntheticUserIds.length > 0) {
+      try {
+        await deleteSyntheticTestUsers(actor, syntheticUserIds);
+      } catch {
+        // Bounded actor disconnect remains mandatory after a failed plain-options regression.
+      }
+    }
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("controlled batch transactions reject callable and deceptive options before writes", async () => {
+  const actors: PostgresTestActor[] = [];
+  const syntheticUserIds: string[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("batch-option-rejection");
+    actors.push(actor);
+    const callableUser = await createSyntheticTestUser(actor, "batch-callable-options");
+    const deceptiveUser = await createSyntheticTestUser(actor, "batch-deceptive-options");
+    syntheticUserIds.push(callableUser.id, deceptiveUser.id);
+    const hooks = createHookedPrismaClient(actor, [], {
+      requiredInteractiveTransactionIsolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+    });
+    const callableOptions = Object.assign(() => undefined, {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+    });
+    let deceptiveIsolationReads = 0;
+    const deceptiveOptions = new Proxy(
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+      {
+        has(target, property) {
+          return property === "isolationLevel" ? false : Reflect.has(target, property);
+        },
+        get(target, property, receiver) {
+          if (property === "isolationLevel") deceptiveIsolationReads += 1;
+          return Reflect.get(target, property, receiver);
+        }
+      }
+    );
+    const callableWrite = actor.client.user.update({
+      where: { id: callableUser.id },
+      data: { name: "callable batch options must not write" }
+    });
+    const deceptiveWrite = hooks.prismaClient.user.update({
+      where: { id: deceptiveUser.id },
+      data: { name: "deceptive batch options must not write" }
+    });
+    const batchErrors: unknown[] = [];
+
+    try {
+      await actor.client.$transaction(
+        [callableWrite],
+        callableOptions as unknown as { isolationLevel?: Prisma.TransactionIsolationLevel }
+      );
+    } catch (error) {
+      batchErrors.push(error);
+    }
+    try {
+      await hooks.prismaClient.$transaction(
+        [deceptiveWrite],
+        deceptiveOptions as { isolationLevel?: Prisma.TransactionIsolationLevel }
+      );
+    } catch (error) {
+      batchErrors.push(error);
+    }
+
+    const persistedUsers = await actor.client.user.findMany({
+      where: { id: { in: syntheticUserIds } },
+      orderBy: { id: "asc" },
+      select: { id: true, name: true }
+    });
+    const expectedUsers = [callableUser, deceptiveUser]
+      .map(({ id, name }) => ({ id, name }))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    assert.deepEqual(persistedUsers, expectedUsers);
+    assert.equal(batchErrors.length, 2);
+    for (const error of batchErrors) {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /explicit transaction isolation is restricted to interactive transactions/);
+    }
+    assert.equal(deceptiveIsolationReads, 0);
+    await assertActorSessionPinned(actor, "after malformed batch options rejection");
+
+    await deleteSyntheticTestUsers(actor, syntheticUserIds);
+    syntheticUserIds.length = 0;
+  } finally {
+    if (actor && syntheticUserIds.length > 0) {
+      try {
+        await deleteSyntheticTestUsers(actor, syntheticUserIds);
+      } catch {
+        // Bounded actor disconnect remains mandatory after a failed batch-options regression.
+      }
+    }
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("RepeatableRead callback failure rolls back and restores the usable actor session", async () => {
+  const actors: PostgresTestActor[] = [];
+  const syntheticUserIds: string[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("repeatable-read-rollback");
+    actors.push(actor);
+    const user = await createSyntheticTestUser(actor, "repeatable-read-rollback");
+    syntheticUserIds.push(user.id);
+    const sentinel = new Error("repeatable read rollback sentinel");
+    const hooks = createHookedPrismaClient(actor, [], {
+      requiredInteractiveTransactionIsolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+    });
+    let callbackCount = 0;
+    let actualIsolation: string | undefined;
+
+    await assert.rejects(
+      hooks.prismaClient.$transaction(
+        async (transaction) => {
+          callbackCount += 1;
+          const rows = await transaction.$queryRaw<Array<{ isolation: string }>>(Prisma.sql`
+            SELECT current_setting('transaction_isolation') AS "isolation"
+          `);
+          actualIsolation = rows[0]?.isolation;
+          await transaction.user.update({
+            where: { id: user.id },
+            data: { name: "repeatable read write must roll back" }
+          });
+          throw sentinel;
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
+      ),
+      (error: unknown) => error === sentinel
+    );
+    assert.equal(callbackCount, 1);
+    assert.equal(actualIsolation, "repeatable read");
+    assert.equal(await readActorIsolation(actor), "read committed");
+    await assertActorSessionPinned(actor, "after exact RepeatableRead rollback");
+    const rolledBackUser = await actor.client.user.findUnique({
+      where: { id: user.id },
+      select: { name: true }
+    });
+    assert.deepEqual(rolledBackUser, { name: user.name });
+    await deleteSyntheticTestUsers(actor, syntheticUserIds);
+    syntheticUserIds.length = 0;
+  } finally {
+    if (actor && syntheticUserIds.length > 0) {
+      try {
+        await deleteSyntheticTestUsers(actor, syntheticUserIds);
+      } catch {
+        // Bounded actor disconnect remains mandatory after a failed RepeatableRead rollback regression.
+      }
+    }
+    await disconnectPostgresTestActors(actors);
+  }
+});
+
+test("actual RepeatableRead isolation mismatch poisons the actor before the callback", async () => {
+  const actors: PostgresTestActor[] = [];
+  let actor: PostgresTestActor | undefined;
+
+  try {
+    actor = await createPostgresTestActor("repeatable-read-mismatch");
+    actors.push(actor);
+    const hooks = createHookedPrismaClient(actor, [], {
+      requiredInteractiveTransactionIsolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead
+    });
+    let isolationReads = 0;
+    const switchingOptions = {
+      get isolationLevel(): Prisma.TransactionIsolationLevel {
+        isolationReads += 1;
+        return isolationReads === 1
+          ? Prisma.TransactionIsolationLevel.RepeatableRead
+          : Prisma.TransactionIsolationLevel.Serializable;
+      }
+    };
+    let callbackCount = 0;
+    let caught: unknown;
+
+    try {
+      await hooks.prismaClient.$transaction(async () => {
+        callbackCount += 1;
+      }, switchingOptions);
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof PostgresTestActorSessionChangedError);
+    assert.equal(callbackCount, 0);
+    assert.ok(isolationReads >= 2);
+    await assert.rejects(
+      assertActorSessionPinned(actor, "after actual RepeatableRead mismatch"),
+      (error: unknown) => error === caught
+    );
+  } finally {
     await disconnectPostgresTestActors(actors);
   }
 });
