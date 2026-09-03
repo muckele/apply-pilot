@@ -52,13 +52,24 @@ Use Neon PostgreSQL for production.
 
 1. Set `DATABASE_URL` to the pooled Neon connection string.
 2. Set `DIRECT_URL` to the direct Neon connection string.
-3. Run migrations in production with:
+3. For a manual production migration, obtain dedicated `PRODUCTION_DATABASE_URL` and `PRODUCTION_DIRECT_URL` values just in time. Keep them out of repository files and independently verify both endpoint identities.
+4. Check migration state with explicit inline mapping:
 
 ```bash
+DATABASE_URL="$PRODUCTION_DATABASE_URL" \
+DIRECT_URL="$PRODUCTION_DIRECT_URL" \
+npx prisma migrate status
+```
+
+5. Only after explicit human authorization and endpoint verification, apply the forward migration:
+
+```bash
+DATABASE_URL="$PRODUCTION_DATABASE_URL" \
+DIRECT_URL="$PRODUCTION_DIRECT_URL" \
 npx prisma migrate deploy
 ```
 
-Do not use `prisma migrate dev` against production.
+Production and all remote PostgreSQL targets prohibit `prisma migrate reset`, `prisma migrate dev`, `prisma db push`, seed, fixture-reset, and test-reset operations. `TEST_DATABASE_URL` is never production migration authority. Production schema changes use forward-only `prisma migrate deploy` only.
 
 ## Google OAuth
 

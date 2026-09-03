@@ -19,7 +19,7 @@
     "typecheck": "prisma generate && tsc --noEmit",
     "ai:evaluate": "tsx evaluation/ai-provider-evaluation.ts",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate": "tsx scripts/run-local-prisma-migrate.ts",
     "prisma:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {

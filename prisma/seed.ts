@@ -1,12 +1,49 @@
 import { PrismaClient } from "@prisma/client";
 
 import { normalizeText, normalizeUrl } from "../lib/normalize";
-
-const prisma = new PrismaClient();
+import {
+  DatabaseTargetSafetyError,
+  LOCAL_DEVELOPMENT_DATABASE_NAME,
+  assertLoopbackHostResolution,
+  validateLocalDestructiveEnvironment
+} from "../scripts/database-target-safety";
 
 const userId = process.env.DEFAULT_DEMO_USER_ID ?? "demo-user";
+const LIVE_CHECK_TIMEOUT_MS = 10_000;
+let prismaForCleanup: PrismaClient | null = null;
+
+function withTimeout<T>(operation: Promise<T>, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new DatabaseTargetSafetyError(message)), LIVE_CHECK_TIMEOUT_MS);
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
 
 async function main() {
+  const pair = validateLocalDestructiveEnvironment(process.env);
+  await assertLoopbackHostResolution([pair.database, pair.direct]);
+  const prisma = new PrismaClient({ datasources: { db: { url: pair.database.url } } });
+  prismaForCleanup = prisma;
+  await withTimeout(prisma.$connect(), "Local database connection timed out before seed.");
+  const databaseRows = await withTimeout(
+    prisma.$queryRawUnsafe<Array<{ current_database: string }>>("SELECT current_database()"),
+    "Local database identity check timed out before seed."
+  );
+  if (databaseRows[0]?.current_database !== LOCAL_DEVELOPMENT_DATABASE_NAME) {
+    throw new DatabaseTargetSafetyError(
+      `Live local database identity must be exactly ${LOCAL_DEVELOPMENT_DATABASE_NAME}.`
+    );
+  }
+
   await prisma.user.deleteMany({ where: { id: userId } });
 
   await prisma.user.create({
@@ -362,10 +399,14 @@ async function main() {
 main()
   .then(async () => {
     console.log("Seeded JobMatch CRM demo data.");
-    await prisma.$disconnect();
+    await prismaForCleanup?.$disconnect();
   })
-  .catch(async (error) => {
-    console.error(error);
-    await prisma.$disconnect();
+  .catch(async (error: unknown) => {
+    if (error instanceof DatabaseTargetSafetyError) {
+      console.error(`[local-seed] safety check failed: ${error.message}`);
+    } else {
+      console.error("[local-seed] Local database verification or seed execution failed.");
+    }
+    await prismaForCleanup?.$disconnect().catch(() => undefined);
     process.exit(1);
   });

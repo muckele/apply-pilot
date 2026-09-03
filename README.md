@@ -49,11 +49,17 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `.env`, then create and seed the database:
+Create the disposable local PostgreSQL database `apply_pilot_local_dev`, fill in `.env`, then run the guarded local migration and seed commands. Both commands require dedicated local URLs and the exact acknowledgement marker; they do not take mutation authority from generic `DATABASE_URL` or `DIRECT_URL`:
 
 ```bash
 npm run prisma:generate
+APPLY_PILOT_LOCAL_DESTRUCTIVE=1 \
+LOCAL_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/apply_pilot_local_dev?schema=public' \
+LOCAL_DIRECT_URL='postgresql://postgres:postgres@127.0.0.1:5432/apply_pilot_local_dev?schema=public' \
 npm run prisma:migrate
+APPLY_PILOT_LOCAL_DESTRUCTIVE=1 \
+LOCAL_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/apply_pilot_local_dev?schema=public' \
+LOCAL_DIRECT_URL='postgresql://postgres:postgres@127.0.0.1:5432/apply_pilot_local_dev?schema=public' \
 npm run prisma:seed
 npm run dev
 ```
@@ -130,9 +136,9 @@ In production, an empty `AUTH_ALLOWED_EMAILS` blocks sign-in unless `AUTH_ALLOW_
 
 Each user can update their own target profile at `/settings/profile`, export their account data, and delete their account records. Exports intentionally omit encrypted OAuth tokens, sessions, and raw stored file bytes.
 
-## Neon PostgreSQL Setup
+## Neon / Remote PostgreSQL Deployment
 
-Neon works for this app because it is PostgreSQL. In the Neon dashboard, copy your database connection string and set it as `DATABASE_URL` in `.env`.
+Neon works for the deployed app because it is PostgreSQL. Keep remote credentials out of local repository files. Configure the pooled runtime `DATABASE_URL` and direct `DIRECT_URL` in the hosting environment.
 
 Use a URL like this:
 
@@ -141,21 +147,27 @@ DATABASE_URL="postgresql://USER:PASSWORD@HOST.neon.tech/DB?sslmode=require"
 DIRECT_URL="postgresql://USER:PASSWORD@DIRECT_HOST.neon.tech/DB?sslmode=require"
 ```
 
-After saving `.env`, run:
+Never run reset, migrate-dev, db-push, seed, fixtures, or test resets against Neon or any other remote PostgreSQL target. Remote schema changes are forward-only and require explicit human authorization, endpoint identity verification, and dedicated just-in-time variables:
 
 ```bash
-npm run prisma:generate
-npm run prisma:migrate
-npm run prisma:seed
+DATABASE_URL="$PRODUCTION_DATABASE_URL" \
+DIRECT_URL="$PRODUCTION_DIRECT_URL" \
+npx prisma migrate status
+
+DATABASE_URL="$PRODUCTION_DATABASE_URL" \
+DIRECT_URL="$PRODUCTION_DIRECT_URL" \
+npx prisma migrate deploy
 ```
 
-Then restart the dev server:
+See `DEPLOYMENT.md` for the complete guarded production procedure. Local migration development and seeding must use the local-only commands in the setup section above.
+
+Restart the local development server with:
 
 ```bash
 npm run dev -- -H 127.0.0.1 -p 3000
 ```
 
-If Neon gives you both pooled and direct connection strings, use the pooled string for `DATABASE_URL` and the direct/non-pooled string for `DIRECT_URL`. Prisma uses `DIRECT_URL` for migrations and `DATABASE_URL` for normal app runtime.
+If Neon gives you both pooled and direct connection strings, use the pooled string for deployed runtime `DATABASE_URL` and the direct/non-pooled string for explicitly authorized forward migration `DIRECT_URL`. Both URLs are independently authoritative and must be verified together.
 
 ## AI Provider Setup
 
@@ -290,6 +302,8 @@ This is a product control, not legal advice. Confirm applicable law before recor
 npm run dev
 npm run build
 npm run typecheck
+# Guarded local-only commands; require APPLY_PILOT_LOCAL_DESTRUCTIVE=1 and
+# matching LOCAL_DATABASE_URL / LOCAL_DIRECT_URL values.
 npm run prisma:migrate
 npm run prisma:seed
 ```
