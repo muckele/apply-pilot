@@ -1,6 +1,11 @@
 import type { BrowserContext, Page, Request, Route } from "playwright";
 
 import {
+  createProtectedApplicationBrowserSession,
+  type ProtectedApplicationBrowserSession
+} from "@/lib/application-browser/protected-browser-session";
+
+import {
   isHostAllowedForExecution,
   parseExecutionTargetUrl,
   type ExecutionTarget
@@ -485,13 +490,19 @@ export function createSafeBrowserDiagnostic(input: {
 }
 
 type SyntheticFulfill = (request: Request, route: Route) => Promise<void>;
+type ProtectedTargetSession = Pick<
+  ProtectedApplicationBrowserSession,
+  "waitUntilReady" | "close"
+>;
 
 export function createPlaywrightTargetController(input: {
   context: BrowserContext;
   onUnsafe(code: string): void | Promise<void>;
   testOnlyFulfillMainDocument?: SyntheticFulfill;
+  testOnlyCreateProtectedSession?(page: Page): Promise<ProtectedTargetSession>;
 }) {
   let employerPage: Page | null = null;
+  let protectedSession: ProtectedTargetSession | null = null;
   let acceptingEmployerPage = false;
   let closed = false;
   let guardFailure: ApplicationBrowserError | null = null;
@@ -510,6 +521,8 @@ export function createPlaywrightTargetController(input: {
     if (closed) return;
     closed = true;
     input.context.off("page", unexpectedPage);
+    await protectedSession?.close().catch(() => undefined);
+    protectedSession = null;
     await employerPage?.close().catch(() => undefined);
     employerPage = null;
   }
@@ -526,6 +539,16 @@ export function createPlaywrightTargetController(input: {
       if (await created.opener()) {
         await close();
         throw new ApplicationBrowserError("The employer page unexpectedly has an opener.", "TARGET_OPENER_PRESENT");
+      }
+
+      try {
+        protectedSession = await (
+          input.testOnlyCreateProtectedSession?.(created) ??
+          createProtectedApplicationBrowserSession({ page: created })
+        );
+      } catch {
+        await close();
+        throw new ApplicationBrowserError("Protected employer-page session setup failed.", "BROWSER_WORKFLOW_FAILED");
       }
 
       let navigationCount = 0;
@@ -609,6 +632,24 @@ export function createPlaywrightTargetController(input: {
         );
       }
       navigationPhase = "STEADY_TARGET";
+      try {
+        await protectedSession.waitUntilReady();
+      } catch {
+        await close();
+        if (guardFailure) throw guardFailure;
+        throw new ApplicationBrowserError("Protected employer-page session was not ready.", "BROWSER_WORKFLOW_FAILED");
+      }
+      if (guardFailure) {
+        await close();
+        throw guardFailure;
+      }
+      if (!isCanonicalTarget(parseExecutionTargetUrl(created.url()))) {
+        await close();
+        throw new ApplicationBrowserError(
+          "The anonymous employer target could not be reached exactly.",
+          "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED"
+        );
+      }
       return { finalUrl: created.url() };
     },
     page: () => employerPage,

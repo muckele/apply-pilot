@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { BrowserContext, Request, Route } from "playwright";
 
 import {
   ApplicationBrowserCoordinator,
   ApplicationBrowserError,
-  createSafeBrowserDiagnostic
+  createSafeBrowserDiagnostic,
+  createPlaywrightTargetController
 } from "@/lib/application-browser/coordinator";
 import {
   launchApplicationBrowserRuntimeWithLauncherForTest,
@@ -22,6 +24,140 @@ import * as companionModule from "@/scripts/application-browser-companion";
 const RUN_ID = "clz8w7m9a0002qwer1234tyui";
 const APP_ORIGIN = "https://apply.example.com";
 const CONTROL_URL = `${APP_ORIGIN}/application-runs/${RUN_ID}/browser`;
+
+test("protected session setup and readiness fence target open with protected-first cleanup", async () => {
+  for (const mode of ["success", "setup-failure", "readiness-failure"] as const) {
+    const calls: string[] = [];
+    let url = "about:blank";
+    const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+    const frame = { url: () => url };
+    const page = {
+      url: () => url, mainFrame: () => frame, opener: async () => null,
+      on(name: string, fn: (...args: unknown[]) => void) { const set = listeners.get(name) ?? new Set(); set.add(fn); listeners.set(name, set); return page; },
+      off(name: string, fn: (...args: unknown[]) => void) { listeners.get(name)?.delete(fn); return page; },
+      async route() { calls.push("route"); },
+      async goto(target: string) { calls.push("goto"); url = target; for (const fn of listeners.get("domcontentloaded") ?? []) fn(); },
+      async close() { calls.push("page-close"); }
+    };
+    const context = { on() {}, off() {}, newPage: async () => page } as unknown as BrowserContext;
+    const controller = createPlaywrightTargetController({
+      context,
+      onUnsafe() {},
+      async testOnlyCreateProtectedSession(created) {
+        assert.equal(created, page);
+        calls.push("setup");
+        if (mode === "setup-failure") throw new Error("private setup failure");
+        return {
+          async waitUntilReady() {
+            calls.push("ready");
+            assert.equal(url, "https://jobs.example.com/apply");
+            if (mode === "readiness-failure") throw new Error("private readiness failure");
+          },
+          async close() { calls.push("session-close"); }
+        };
+      }
+    });
+    const open = controller.open({ target: { host: "jobs.example.com", url: new URL("https://jobs.example.com/apply") }, policy: { allowedHosts: ["jobs.example.com"], blockedHosts: [] } } as never, () => {});
+    if (mode === "setup-failure") {
+      await assert.rejects(open, (error: unknown) => error instanceof ApplicationBrowserError && !error.message.includes("private"));
+      assert.deepEqual(calls, ["setup", "page-close"]);
+    } else if (mode === "readiness-failure") {
+      await assert.rejects(open, (error: unknown) => error instanceof ApplicationBrowserError && !error.message.includes("private"));
+      assert.deepEqual(calls, ["setup", "route", "goto", "ready", "session-close", "page-close"]);
+    } else {
+      await open;
+      assert.deepEqual(calls, ["setup", "route", "goto", "ready"]);
+      await controller.close();
+      await controller.close();
+      assert.deepEqual(calls, ["setup", "route", "goto", "ready", "session-close", "page-close"]);
+    }
+  }
+});
+
+test("protected readiness cannot retain initial redirect authority for a noncanonical navigation", async () => {
+  const calls: string[] = [];
+  const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+  let url = "about:blank";
+  let routeHandler: ((route: Route, request: Request) => Promise<void>) | null = null;
+  const frame = { url: () => url };
+  const requestFor = (target: string) => ({
+    isNavigationRequest: () => true,
+    resourceType: () => "document",
+    frame: () => frame,
+    url: () => target
+  }) as unknown as Request;
+  const routeFor = (label: string, onContinue: () => void) => ({
+    async continue() { calls.push(`${label}-continue`); onContinue(); },
+    async abort() { calls.push(`${label}-abort`); }
+  }) as unknown as Route;
+  const page = {
+    url: () => url,
+    mainFrame: () => frame,
+    opener: async () => null,
+    on(name: string, fn: (...args: unknown[]) => void) {
+      const set = listeners.get(name) ?? new Set();
+      set.add(fn);
+      listeners.set(name, set);
+      return page;
+    },
+    off(name: string, fn: (...args: unknown[]) => void) {
+      listeners.get(name)?.delete(fn);
+      return page;
+    },
+    async route(_pattern: string, handler: (route: Route, request: Request) => Promise<void>) {
+      routeHandler = handler;
+    },
+    async goto(target: string) {
+      calls.push("goto");
+      assert.ok(routeHandler);
+      await routeHandler(routeFor("initial", () => { url = target; }), requestFor(target));
+    },
+    async close() { calls.push("page-close"); }
+  };
+  const context = { on() {}, off() {}, newPage: async () => page } as unknown as BrowserContext;
+  const controller = createPlaywrightTargetController({
+    context,
+    onUnsafe(code) { calls.push(`unsafe:${code}`); },
+    async testOnlyCreateProtectedSession() {
+      calls.push("setup");
+      return {
+        async waitUntilReady() {
+          calls.push("ready");
+          assert.ok(routeHandler);
+          const drifted = "https://jobs.example.com/noncanonical";
+          await routeHandler(routeFor("drift", () => {
+            url = drifted;
+            for (const listener of listeners.get("framenavigated") ?? []) listener(frame);
+          }), requestFor(drifted));
+        },
+        async close() { calls.push("session-close"); }
+      };
+    }
+  });
+
+  try {
+    await assert.rejects(
+      controller.open({
+        target: { host: "jobs.example.com", url: new URL("https://jobs.example.com/apply") },
+        policy: { allowedHosts: ["jobs.example.com"], blockedHosts: [] }
+      } as never, () => {}),
+      (error: unknown) => error instanceof ApplicationBrowserError &&
+        error.code === "TARGET_NAVIGATION_BLOCKED"
+    );
+  } finally {
+    await controller.close();
+  }
+  assert.deepEqual(calls, [
+    "setup",
+    "goto",
+    "initial-continue",
+    "ready",
+    "unsafe:TARGET_NAVIGATION_BLOCKED",
+    "drift-abort",
+    "session-close",
+    "page-close"
+  ]);
+});
 const UNEXPECTED_B23A_CLIENT_METHODS = {
   async getCurrentAnswerPacket() {
     throw new Error("unexpected answer-packet read");

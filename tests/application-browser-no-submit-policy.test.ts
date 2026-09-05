@@ -1,190 +1,322 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, readFile, readdir } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-const PRODUCTION_PATHS = [
+import {
+  PROTECTED_BROWSER_CAPABILITY_METHODS,
+  protectedBrowserWorldBootstrapSource
+} from "@/lib/application-browser/protected-browser-world";
+
+const REPOSITORY_ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const SESSION_PATH = "lib/application-browser/protected-browser-session.ts";
+const WORLD_PATH = "lib/application-browser/protected-browser-world.ts";
+const PROTECTED_SOURCE_PATHS = [SESSION_PATH, WORLD_PATH] as const;
+type ProtectedSourcePath = (typeof PROTECTED_SOURCE_PATHS)[number];
+
+const BASELINE_MISMATCH_MESSAGE =
+  "Protected browser source changed. Review the protected-source diff before updating the baseline.";
+
+/*
+ * Security model: these hashes deliberately seal the exact, reviewed source
+ * bytes. Accidental drift fails CI, any protected-module change requires an
+ * explicit baseline edit, and that edit is visible during review.
+ *
+ * This is not semantic analysis of arbitrary JavaScript, protection against a
+ * developer intentionally changing both source and hash, or a substitute for
+ * code review.
+ *
+ * Baseline update rule: change a digest only when its protected module changes,
+ * the protected diff receives focused security review, the behavioral
+ * protected-session/browser tests are green, and the baseline update is
+ * included in that reviewed change. Manual editing is intentional friction.
+ */
+const SEALED_SOURCE_SHA256: Readonly<Record<ProtectedSourcePath, string>> = {
+  [SESSION_PATH]: "723fd0c48d18b46fb4b97fe14b4e46dceccc2cb0b665ef739a1e31dd036ccc39",
+  [WORLD_PATH]: "c0134dc427848335d7df7e8689bc95bf8d2b74e834e504001e751f10b86997e3"
+};
+
+const EXPECTED_CAPABILITY_METHODS = [
+  "handshake",
+  "extract",
+  "verifyCandidate",
+  "disposeCandidate",
+  "snapshot",
+  "waitForChange",
+  "dispose"
+] as const;
+
+const EXPECTED_PROTECTED_SESSION_METHODS = [
+  "waitUntilReady",
+  "extractApplicationForm",
+  "verifyCandidate",
+  "snapshot",
+  "waitForChange",
+  "subscribe",
+  "close"
+] as const;
+
+const REMOVED_WRITER_PATHS = [
   "lib/application-browser/form-fill-dom.ts",
   "lib/application-browser/form-fill-writer.ts"
 ] as const;
 
-function constantString(node: ts.Node): string | null {
-  if (ts.isStringLiteralLike(node)) return node.text;
-  if (ts.isParenthesizedExpression(node)) return constantString(node.expression);
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = constantString(node.left);
-    const right = constantString(node.right);
-    return left === null || right === null ? null : left + right;
+const REMOVED_WRITER_AUTHORITY_NAMES = [
+  "form-fill-dom",
+  "form-fill-writer",
+  "FormFillPreWriteClassification",
+  "FormFillPostWriteVerification",
+  "FormFillNativeWriteResult",
+  "TextLikeFieldType",
+  "ApplicationFormFieldWriteInput",
+  "ApplicationFormFieldWriteResult",
+  "trustedFormFillDomInit",
+  "installTrustedFormFillDomCapability",
+  "capabilityKeyForHandles",
+  "graphHandles",
+  "authorizeTrustedFormFillHandles",
+  "classifyTextLikeControl",
+  "writeNativeValueInput",
+  "verifyTextLikeControl",
+  "classifySelectOneControl",
+  "writeNativeOptionInputChange",
+  "verifySelectOneControl",
+  "classifyRadioGroup",
+  "verifyRadioGroup",
+  "classifyCheckboxBoolean",
+  "verifyCheckboxBoolean",
+  "writeApplicationFormField",
+  "registerTrustedFormFillGeneration",
+  "armTrustedFormFillOperation"
+] as const;
+
+const PROHIBITED_EXPERIMENTAL_LITERALS = ["runImmediately", "uniqueContextId"] as const;
+const EXCLUDED_SOURCE_DIRECTORIES = new Set([
+  ".git",
+  ".next",
+  ".superpowers",
+  "docs",
+  "evaluation-results",
+  "node_modules",
+  "output",
+  "tests"
+]);
+
+type SourceFixture = Readonly<{ path: string; source: string }>;
+
+function repositoryPath(path: string): string {
+  return join(REPOSITORY_ROOT, path);
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function assertSealedSource(path: ProtectedSourcePath, bytes: Uint8Array): void {
+  const actual = sha256(bytes);
+  assert.equal(
+    actual,
+    SEALED_SOURCE_SHA256[path],
+    BASELINE_MISMATCH_MESSAGE + "\nFile: " + path +
+      "\nExpected SHA-256: " + SEALED_SOURCE_SHA256[path] +
+      "\nActual SHA-256: " + actual
+  );
+}
+
+function oneByteChanged(bytes: Uint8Array): Uint8Array {
+  assert.ok(bytes.byteLength > 0, "protected source fixture must not be empty");
+  const changed = Buffer.from(bytes);
+  changed[0] ^= 1;
+  return changed;
+}
+
+function assertExactCapabilityMethods(methods: readonly string[]): void {
+  assert.deepEqual(
+    [...methods],
+    [...EXPECTED_CAPABILITY_METHODS],
+    "Protected browser capability methods must match the exact reviewed read-only allowlist."
+  );
+}
+
+function protectedSessionPublicMethods(sourceText: string): string[] {
+  const source = ts.createSourceFile(SESSION_PATH, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declaration = source.statements.find((statement): statement is ts.TypeAliasDeclaration =>
+    ts.isTypeAliasDeclaration(statement) &&
+    statement.name.text === "ProtectedApplicationBrowserSession" &&
+    Boolean(statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword))
+  );
+  if (!declaration) assert.fail("Exported ProtectedApplicationBrowserSession type alias is missing.");
+  const wrapper = declaration.type;
+  if (
+    !ts.isTypeReferenceNode(wrapper) ||
+    !ts.isIdentifier(wrapper.typeName) ||
+    wrapper.typeName.text !== "Readonly" ||
+    wrapper.typeArguments?.length !== 1
+  ) {
+    assert.fail("ProtectedApplicationBrowserSession must remain a direct Readonly type literal.");
   }
-  return null;
-}
-
-function propertyName(node: ts.Node): string | null {
-  if (ts.isPropertyAccessExpression(node)) return node.name.text;
-  if (ts.isElementAccessExpression(node)) return constantString(node.argumentExpression);
-  return null;
-}
-
-function bindingPropertyName(node: ts.BindingElement): string | null {
-  const property = node.propertyName ?? node.name;
-  if (ts.isIdentifier(property) || ts.isStringLiteral(property)) return property.text;
-  return ts.isComputedPropertyName(property)
-    ? constantString(property.expression)
-    : null;
-}
-
-function invokedName(node: ts.Expression): string | null {
-  return ts.isIdentifier(node) ? node.text : propertyName(node);
-}
-
-function isAuthorizedCheckCall(node: ts.CallExpression, fileName: string): boolean {
-  if (fileName.endsWith("form-fill-dom.ts") || !ts.isPropertyAccessExpression(node.expression)) return false;
-  const receiver = node.expression.expression;
-  if (!ts.isPropertyAccessExpression(receiver) || !ts.isIdentifier(receiver.expression) || receiver.expression.text !== "runtimeInput") {
-    return false;
+  const surface = wrapper.typeArguments[0];
+  if (!ts.isTypeLiteralNode(surface)) {
+    assert.fail("ProtectedApplicationBrowserSession must remain a direct Readonly type literal.");
   }
-  const branch = containingCase(node);
-  return (branch === "RADIO_GROUP" && receiver.name.text === "proposedChoiceHandle") ||
-    (branch === "CHECKBOX_BOOLEAN" && receiver.name.text === "handle");
+  return surface.members.map((member) => {
+    if (!ts.isMethodSignature(member) || !member.name) {
+      assert.fail("ProtectedApplicationBrowserSession may contain only direct method signatures.");
+    }
+    if (ts.isIdentifier(member.name) || ts.isStringLiteralLike(member.name)) return member.name.text;
+    assert.fail("ProtectedApplicationBrowserSession method names must be static.");
+  });
 }
 
-function isPristineCheckedGetterCapture(node: ts.StringLiteralLike): boolean {
-  const call = node.parent;
-  if (!ts.isCallExpression(call)) return false;
-  const descriptorCall = ts.isIdentifier(call.expression)
-    ? call.expression.text === "nativeGetOwnPropertyDescriptor"
-    : ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "getOwnPropertyDescriptor";
-  if (!descriptorCall) return false;
-  const access = call.parent;
-  return ts.isPropertyAccessExpression(access) && access.expression === call && access.name.text === "get";
-}
-
-function containingCase(node: ts.Node): string | null {
-  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
-    if (ts.isCaseClause(current) && ts.isStringLiteral(current.expression)) return current.expression.text;
-  }
-  return null;
-}
-
-function executablePolicyViolations(sourceText: string, fileName = "policy-subject.ts"): string[] {
-  const source = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+function obsoleteWriterViolations(fixtures: readonly SourceFixture[]): string[] {
   const violations: string[] = [];
-  const add = (node: ts.Node, reason: string) => {
-    const position = source.getLineAndCharacterOfPosition(node.getStart(source));
-    violations.push(`${fileName}:${position.line + 1}:${position.character + 1} ${reason}`);
-  };
-
-  const visit = (node: ts.Node): void => {
-    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-      const name = propertyName(node);
-      if (name && ["requestSubmit", "submit", "uncheck", "click"].includes(name)) {
-        add(node, `forbidden ${name} method reference`);
-      }
-      if (name === "check") {
-        const parent = node.parent;
-        const runtimeShapeCheck = ts.isTypeOfExpression(parent) && parent.expression === node &&
-          ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "value";
-        if (!runtimeShapeCheck &&
-          (!ts.isCallExpression(parent) || parent.expression !== node || !isAuthorizedCheckCall(parent, fileName))) {
-          add(node, "check() outside an authorized typed branch");
-        }
-      }
+  for (const fixture of fixtures) {
+    if (REMOVED_WRITER_PATHS.includes(fixture.path as (typeof REMOVED_WRITER_PATHS)[number])) {
+      violations.push(fixture.path + ": removed writer module exists");
     }
-    if (ts.isBindingElement(node)) {
-      const name = bindingPropertyName(node);
-      if (name && ["requestSubmit", "submit", "uncheck", "click"].includes(name)) {
-        add(node, `forbidden ${name} binding reference`);
-      }
+    for (const name of REMOVED_WRITER_AUTHORITY_NAMES) {
+      if (fixture.source.includes(name)) violations.push(fixture.path + ": removed writer authority " + name);
     }
-    if (ts.isCallExpression(node)) {
-      const name = invokedName(node.expression);
-      if (name && ["press", "pressSequentially", "type", "down", "insertText"].includes(name)) {
-        for (const argument of node.arguments) {
-          if (ts.isStringLiteralLike(argument) && /^(Enter|Return)$/i.test(argument.text)) add(node, "keyboard submission path");
-        }
-      }
-    }
-    if (ts.isNewExpression(node) && invokedName(node.expression) === "KeyboardEvent") {
-      if (node.arguments?.some((argument) => argument.getText(source).match(/["'](?:Enter|Return)["']/i))) {
-        add(node, "keyboard submission event");
-      }
-    }
-    if (
-      ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      propertyName(node.left) === "checked"
-    ) add(node, "native checked assignment");
-    if (ts.isPropertyAssignment(node) && propertyName(node.name) === null && ts.isIdentifier(node.name) && node.name.text === "checked") {
-      add(node, "native checked property construction");
-    }
-    if (ts.isStringLiteralLike(node) &&
-      (/submit|FILL_APPROVED_FIELDS|^click$/i.test(node.text) ||
-        (/^checked$/i.test(node.text) && !isPristineCheckedGetterCapture(node)))) {
-      add(node, "forbidden command or control literal");
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(source);
+  }
   return violations;
 }
 
-test("employer writer production surface contains no submit or false-checkbox authority", async () => {
-  const violations: string[] = [];
-  for (const path of PRODUCTION_PATHS) {
-    violations.push(...executablePolicyViolations(await readFile(path, "utf8"), path));
-  }
-  assert.deepEqual(violations, []);
+function assertNoObsoleteWriterSurface(fixtures: readonly SourceFixture[]): void {
+  assert.deepEqual(
+    obsoleteWriterViolations(fixtures),
+    [],
+    "Production must not restore or import removed browser-write modules or writer-authority APIs."
+  );
+}
+
+function assertNoExperimentalLiterals(fixtures: readonly SourceFixture[]): void {
+  const violations = fixtures.flatMap((fixture) =>
+    PROHIBITED_EXPERIMENTAL_LITERALS
+      .filter((literal) => fixture.source.includes(literal))
+      .map((literal) => fixture.path + ": prohibited experimental dependency " + literal)
+  );
+  assert.deepEqual(
+    violations,
+    [],
+    "Protected browser source must not depend on runImmediately or required uniqueContextId."
+  );
+}
+
+async function productionSourceFixtures(): Promise<SourceFixture[]> {
+  const fixtures: SourceFixture[] = [];
+  const walk = async (absoluteDirectory: string): Promise<void> => {
+    for (const entry of await readdir(absoluteDirectory, { withFileTypes: true })) {
+      if (entry.isDirectory() && (entry.name.startsWith(".") || EXCLUDED_SOURCE_DIRECTORIES.has(entry.name))) {
+        continue;
+      }
+      const absolutePath = join(absoluteDirectory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath);
+      } else if (entry.isFile() && /\.[cm]?[jt]sx?$/u.test(entry.name)) {
+        fixtures.push({
+          path: relative(REPOSITORY_ROOT, absolutePath),
+          source: await readFile(absolutePath, "utf8")
+        });
+      }
+    }
+  };
+  await walk(REPOSITORY_ROOT);
+  return fixtures;
+}
+
+test("a one-byte session-source change fails the sealed baseline", async () => {
+  const bytes = await readFile(repositoryPath(SESSION_PATH));
+  assert.throws(
+    () => assertSealedSource(SESSION_PATH, oneByteChanged(bytes)),
+    (error: unknown) => error instanceof Error && error.message.includes(BASELINE_MISMATCH_MESSAGE)
+  );
 });
 
-test("AST policy catches obvious executable bypasses without matching comments", () => {
-  assert.deepEqual(executablePolicyViolations(`// form.submit(); button.click(); input.checked = false;`), []);
-  assert.deepEqual(executablePolicyViolations(
-    `const checkedGetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked")?.get;`
-  ), []);
-  for (const source of [
-    `form.submit()`,
-    `form["submit"]()`,
-    `form["sub" + "mit"]()`,
-    `form.requestSubmit()`,
-    `form["requestSubmit"]()`,
-    `const invoke = form.requestSubmit; invoke.call(form);`,
-    `const invoke = form["requestSubmit"]; invoke.call(form);`,
-    `const { requestSubmit: invoke } = form; invoke();`,
-    `const { ["requestSubmit"]: invoke } = form; invoke();`,
-    `const { ["requestSub" + "mit"]: invoke } = form; invoke();`,
-    `HTMLFormElement.prototype.submit.call(form)`,
-    `const invoke = form.submit; invoke.call(form);`,
-    `const { submit: invoke } = form; invoke();`,
-    `control.uncheck()`,
-    `control["uncheck"]()`,
-    `const clear = control.uncheck; clear.call(control);`,
-    `const { uncheck: clear } = control; clear();`,
-    `const { ["uncheck"]: clear } = control; clear();`,
-    `const clear = control["un" + "check"]; clear.call(control);`,
-    `control.click()`,
-    `control["click"]()`,
-    `const activate = control.click; activate.call(control);`,
-    `const { click: activate } = control; activate();`,
-    `control.checked = false`,
-    `control["checked"] = false`,
-    `control["che" + "cked"] = false`,
-    `control.checked = true`,
-    `Object.assign(control, { checked: false })`,
-    `Reflect.set(control, "checked", false)`,
-    `Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked").set.call(control, false)`,
-    `control.dispatchEvent(new MouseEvent("click", { bubbles: true }))`,
-    `page.keyboard.press("Enter")`,
-    `press("Enter")`,
-    `press("Return")`,
-    `page.press("Return")`,
-    `page.keyboard.down("Return")`,
-    `control.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }))`,
-    `control.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Return" }))`,
-    `switch (runtimeInput.fieldType) { case "RADIO_GROUP": await someHandle.check(); }`,
-    `switch (runtimeInput.fieldType) { case "CHECKBOX_BOOLEAN": await runtimeInput.proposedChoiceHandle.check(); }`,
-    `document.querySelector('button[type="submit"]')`,
-    `send({ type: "FILL_APPROVED_FIELDS" })`
+test("a one-byte world-source change fails the sealed baseline", async () => {
+  const bytes = await readFile(repositoryPath(WORLD_PATH));
+  assert.throws(
+    () => assertSealedSource(WORLD_PATH, oneByteChanged(bytes)),
+    (error: unknown) => error instanceof Error && error.message.includes(BASELINE_MISMATCH_MESSAGE)
+  );
+});
+
+test("the exact current protected production sources match their sealed baselines", async () => {
+  for (const path of PROTECTED_SOURCE_PATHS) {
+    assertSealedSource(path, await readFile(repositoryPath(path)));
+  }
+});
+
+test("the protected capability bootstrap exposes exactly the reviewed read-only methods", () => {
+  assertExactCapabilityMethods(PROTECTED_BROWSER_CAPABILITY_METHODS);
+  assert.ok(
+    protectedBrowserWorldBootstrapSource().includes(
+      '"methods":' + JSON.stringify(EXPECTED_CAPABILITY_METHODS)
+    ),
+    "The generated protected-world bootstrap must receive the exact reviewed capability method list."
+  );
+});
+
+test("an extra protected capability method is rejected", () => {
+  assert.throws(
+    () => assertExactCapabilityMethods([...EXPECTED_CAPABILITY_METHODS, "submit"]),
+    /exact reviewed read-only allowlist/u
+  );
+});
+
+test("the protected session public API remains the exact reviewed read-only surface", async () => {
+  const methods = protectedSessionPublicMethods(await readFile(repositoryPath(SESSION_PATH), "utf8"));
+  assert.deepEqual(
+    methods,
+    [...EXPECTED_PROTECTED_SESSION_METHODS],
+    "Protected session public methods must not add filling, writing, interaction, navigation, submission, upload, keyboard, or caller-supplied evaluation authority."
+  );
+});
+
+test("production contains no removed writer module or writer-authority API", async () => {
+  for (const path of REMOVED_WRITER_PATHS) {
+    await assert.rejects(access(repositoryPath(path)), { code: "ENOENT" });
+  }
+  assertNoObsoleteWriterSurface(await productionSourceFixtures());
+});
+
+test("representative removed writer paths, imports, and APIs are rejected", () => {
+  for (const fixture of [
+    { path: REMOVED_WRITER_PATHS[0], source: "" },
+    {
+      path: "lib/application-browser/coordinator.ts",
+      source: 'import { installTrustedFormFillDomCapability } from "@/lib/application-browser/form-fill-dom";'
+    },
+    {
+      path: "lib/application-browser/reintroduced-writer.ts",
+      source: "export async function writeApplicationFormField() {}"
+    }
   ]) {
-    assert.ok(executablePolicyViolations(source).length > 0, source);
+    assert.throws(
+      () => assertNoObsoleteWriterSurface([fixture]),
+      /removed browser-write modules or writer-authority APIs/u
+    );
+  }
+});
+
+test("protected source has no runImmediately or required uniqueContextId dependency", async () => {
+  assertNoExperimentalLiterals(await Promise.all(PROTECTED_SOURCE_PATHS.map(async (path) => ({
+    path,
+    source: await readFile(repositoryPath(path), "utf8")
+  }))));
+});
+
+test("representative prohibited experimental literals are rejected", () => {
+  for (const literal of PROHIBITED_EXPERIMENTAL_LITERALS) {
+    assert.throws(
+      () => assertNoExperimentalLiterals([{
+        path: SESSION_PATH,
+        source: "const registration = { " + literal + ": true };"
+      }]),
+      /must not depend on runImmediately or required uniqueContextId/u
+    );
   }
 });
