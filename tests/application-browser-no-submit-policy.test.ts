@@ -60,6 +60,36 @@ const EXPECTED_PROTECTED_SESSION_METHODS = [
   "close"
 ] as const;
 
+/*
+ * The protected inspection contract exports semantic labels, constraints, and
+ * option labels, never live/default control contents or selection/file state.
+ * Contenteditable and role-based applicant text must pass through the world's
+ * node-by-node applicant-content filter, so unfiltered bulk text getters are
+ * also forbidden. This is a deliberately syntactic, protected-world-only rule;
+ * the exact source seal separately preserves the reviewed filtering algorithm.
+ */
+const PROHIBITED_PROTECTED_APPLICANT_READ_MEMBERS = [
+  "value",
+  "defaultValue",
+  "valueAsDate",
+  "valueAsNumber",
+  "checked",
+  "defaultChecked",
+  "files",
+  "selected",
+  "defaultSelected",
+  "selectedIndex",
+  "selectedOptions",
+  "textContent",
+  "innerText"
+] as const;
+
+const PROHIBITED_PROTECTED_APPLICANT_STATE_ATTRIBUTES = [
+  "value",
+  "checked",
+  "selected"
+] as const;
+
 const REMOVED_WRITER_PATHS = [
   "lib/application-browser/form-fill-dom.ts",
   "lib/application-browser/form-fill-writer.ts"
@@ -105,8 +135,196 @@ const EXCLUDED_SOURCE_DIRECTORIES = new Set([
   "output",
   "tests"
 ]);
+const REACHABILITY_EXCLUDED_SOURCE_DIRECTORIES = new Set([
+  ".git",
+  ".next",
+  ".superpowers",
+  "node_modules"
+]);
 
 type SourceFixture = Readonly<{ path: string; source: string }>;
+
+function productionInspectionAuthorityViolations(
+  fixtures: readonly SourceFixture[],
+  rootPath = "scripts/application-browser-companion.ts"
+): string[] {
+  const sources = new Map(fixtures.map((fixture) => [fixture.path, fixture.source]));
+  const forbiddenIdentifiers = new Set([
+    "extractSafeApplicationForm",
+    "SafeApplicationFormExtraction",
+    "SafeDomFieldReference",
+    "createPageSemanticObserver",
+    "OwnedFormSemanticObserver",
+    "ElementHandle",
+    "isHandleAttached"
+  ]);
+  const violations = new Set<string>();
+  const reachable = new Set<string>();
+
+  if (!sources.has(rootPath)) {
+    violations.add(`${rootPath}: production inspection graph root is missing`);
+  }
+
+  const normalizedRepositoryPath = (value: string): string =>
+    value.replaceAll("\\", "/").replace(/^\.\//u, "");
+
+  const isRepositoryLocalSpecifier = (specifier: string): boolean =>
+    specifier.startsWith("@/") || specifier.startsWith(".");
+
+  const resolveLocalModule = (importer: string, specifier: string): string | null => {
+    let base: string;
+    if (specifier.startsWith("@/")) {
+      base = specifier.slice(2);
+    } else if (specifier.startsWith(".")) {
+      base = normalizedRepositoryPath(join(dirname(importer), specifier));
+    } else {
+      return null;
+    }
+    if (base === ".." || base.startsWith("../") || base.startsWith("/")) return null;
+    const withoutRuntimeExtension = base.replace(/\.[cm]?js$/u, "");
+    const candidates = /\.[cm]?[jt]sx?$/u.test(base)
+      ? [base]
+      : [
+          `${withoutRuntimeExtension}.ts`,
+          `${withoutRuntimeExtension}.tsx`,
+          `${withoutRuntimeExtension}/index.ts`,
+          `${withoutRuntimeExtension}/index.tsx`
+        ];
+    return candidates.map(normalizedRepositoryPath).find((candidate) => sources.has(candidate)) ?? null;
+  };
+
+  const importedSpecifiers = (path: string, sourceText: string): string[] => {
+    const sourceFile = ts.createSourceFile(
+      path,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    );
+    const specifiers: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteralLike(node.moduleSpecifier)
+      ) {
+        specifiers.push(node.moduleSpecifier.text);
+      } else if (
+        ts.isImportEqualsDeclaration(node) &&
+        ts.isExternalModuleReference(node.moduleReference) &&
+        node.moduleReference.expression &&
+        ts.isStringLiteralLike(node.moduleReference.expression)
+      ) {
+        specifiers.push(node.moduleReference.expression.text);
+      } else if (
+        ts.isImportTypeNode(node) &&
+        ts.isLiteralTypeNode(node.argument) &&
+        ts.isStringLiteralLike(node.argument.literal)
+      ) {
+        specifiers.push(node.argument.literal.text);
+      } else if (
+        ts.isCallExpression(node) &&
+        node.arguments.length >= 1 &&
+        ts.isStringLiteralLike(node.arguments[0])
+      ) {
+        if (
+          node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (
+            node.arguments.length === 1 &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === "require"
+          )
+        ) {
+          specifiers.push(node.arguments[0].text);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return specifiers;
+  };
+
+  const visitReachability = (path: string): void => {
+    if (reachable.has(path)) return;
+    reachable.add(path);
+    const sourceText = sources.get(path);
+    if (sourceText === undefined) return;
+    for (const specifier of importedSpecifiers(path, sourceText)) {
+      const resolved = resolveLocalModule(path, specifier);
+      if (resolved) {
+        visitReachability(resolved);
+      } else if (isRepositoryLocalSpecifier(specifier)) {
+        violations.add(`${path}: unresolved repository-local import ${specifier}`);
+      }
+    }
+  };
+  visitReachability(rootPath);
+
+  for (const path of [...reachable].sort()) {
+    const sourceText = sources.get(path);
+    if (sourceText === undefined) continue;
+    if (path === "lib/application-browser/form-inspection-dom.ts") {
+      violations.add(`${path}: reachable legacy inspection module form-inspection-dom.ts`);
+    }
+    const sourceFile = ts.createSourceFile(
+      path,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    );
+    const inspect = (node: ts.Node): void => {
+      if (ts.isIdentifier(node) && forbiddenIdentifiers.has(node.text)) {
+        violations.add(`${path}: forbidden inspection authority ${node.text}`);
+      }
+      if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+        const propertyName = node.propertyName;
+        const member = propertyName
+          ? ts.isIdentifier(propertyName) || ts.isStringLiteralLike(propertyName)
+            ? propertyName.text
+            : ts.isComputedPropertyName(propertyName) &&
+                ts.isStringLiteralLike(propertyName.expression)
+              ? propertyName.expression.text
+              : null
+          : !node.dotDotDotToken && ts.isIdentifier(node.name)
+            ? node.name.text
+            : null;
+        if (member === "evaluate" || member === "evaluateHandle") {
+          violations.add(`${path}: forbidden inspection authority .${member}`);
+        }
+      }
+      if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+        const member = ts.isPropertyAccessExpression(node)
+          ? node.name.text
+          : node.argumentExpression && ts.isStringLiteralLike(node.argumentExpression)
+            ? node.argumentExpression.text
+            : null;
+        if (member === "evaluate" || member === "evaluateHandle") {
+          violations.add(`${path}: forbidden inspection authority .${member}`);
+        }
+      }
+      if (ts.isCallExpression(node)) {
+        let method: string | null = null;
+        if (ts.isPropertyAccessExpression(node.expression)) {
+          method = node.expression.name.text;
+        } else if (
+          ts.isElementAccessExpression(node.expression) &&
+          node.expression.argumentExpression &&
+          ts.isStringLiteralLike(node.expression.argumentExpression)
+        ) {
+          method = node.expression.argumentExpression.text;
+        }
+        if (method === "evaluate" || method === "evaluateHandle") {
+          violations.add(`${path}: forbidden inspection call .${method}()`);
+        }
+      }
+      ts.forEachChild(node, inspect);
+    };
+    inspect(sourceFile);
+  }
+
+  return [...violations].sort();
+}
 
 function repositoryPath(path: string): string {
   return join(REPOSITORY_ROOT, path);
@@ -172,6 +390,82 @@ function protectedSessionPublicMethods(sourceText: string): string[] {
   });
 }
 
+function protectedWorldApplicantReadViolations(sourceText: string): string[] {
+  const prohibitedMembers = new Set<string>(PROHIBITED_PROTECTED_APPLICANT_READ_MEMBERS);
+  const prohibitedAttributes = new Set<string>(PROHIBITED_PROTECTED_APPLICANT_STATE_ATTRIBUTES);
+  const source = ts.createSourceFile(
+    WORLD_PATH,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const violations = new Set<string>();
+
+  const staticName = (node: ts.Node | undefined): string | null => {
+    if (!node) return null;
+    if (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) return node.text;
+    if (ts.isComputedPropertyName(node)) return staticName(node.expression);
+    return null;
+  };
+  const memberName = (node: ts.Expression): string | null => {
+    if (ts.isPropertyAccessExpression(node)) return node.name.text;
+    if (ts.isElementAccessExpression(node)) return staticName(node.argumentExpression);
+    return null;
+  };
+  const addViolation = (node: ts.Node, detail: string): void => {
+    const location = source.getLineAndCharacterOfPosition(node.getStart(source));
+    violations.add(`${WORLD_PATH}:${location.line + 1}:${location.character + 1}: ${detail}`);
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+      const member = memberName(node);
+      if (member && prohibitedMembers.has(member)) {
+        addViolation(node, `prohibited applicant-current member read ${member}`);
+      }
+    } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+      const member = node.propertyName
+        ? staticName(node.propertyName)
+        : ts.isIdentifier(node.name)
+          ? node.name.text
+          : null;
+      if (member && prohibitedMembers.has(member)) {
+        addViolation(node, `prohibited applicant-current destructuring read ${member}`);
+      }
+    }
+
+    if (ts.isCallExpression(node)) {
+      const method = memberName(node.expression);
+      if (
+        method === "get" &&
+        (ts.isPropertyAccessExpression(node.expression) || ts.isElementAccessExpression(node.expression)) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "Reflect"
+      ) {
+        const member = staticName(node.arguments[1]);
+        if (member && prohibitedMembers.has(member)) {
+          addViolation(node, `prohibited reflected applicant-current read ${member}`);
+        }
+      }
+
+      const attributeNameArgument = method === "getAttribute" || method === "hasAttribute"
+        ? node.arguments[0]
+        : method === "getAttributeNS" || method === "hasAttributeNS"
+          ? node.arguments[1]
+          : undefined;
+      const attribute = staticName(attributeNameArgument);
+      if (attribute && prohibitedAttributes.has(attribute.toLowerCase())) {
+        addViolation(node, `prohibited applicant-state attribute read ${attribute.toLowerCase()}`);
+      }
+    }
+
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...violations].sort();
+}
+
 function obsoleteWriterViolations(fixtures: readonly SourceFixture[]): string[] {
   const violations: string[] = [];
   for (const fixture of fixtures) {
@@ -206,11 +500,19 @@ function assertNoExperimentalLiterals(fixtures: readonly SourceFixture[]): void 
   );
 }
 
-async function productionSourceFixtures(): Promise<SourceFixture[]> {
+async function sourceFixtures(input: Readonly<{
+  excludedDirectories: ReadonlySet<string>;
+  excludeHiddenDirectories: boolean;
+}>): Promise<SourceFixture[]> {
   const fixtures: SourceFixture[] = [];
   const walk = async (absoluteDirectory: string): Promise<void> => {
     for (const entry of await readdir(absoluteDirectory, { withFileTypes: true })) {
-      if (entry.isDirectory() && (entry.name.startsWith(".") || EXCLUDED_SOURCE_DIRECTORIES.has(entry.name))) {
+      if (
+        entry.isDirectory() && (
+          input.excludedDirectories.has(entry.name) ||
+          (input.excludeHiddenDirectories && entry.name.startsWith("."))
+        )
+      ) {
         continue;
       }
       const absolutePath = join(absoluteDirectory, entry.name);
@@ -226,6 +528,20 @@ async function productionSourceFixtures(): Promise<SourceFixture[]> {
   };
   await walk(REPOSITORY_ROOT);
   return fixtures;
+}
+
+async function productionSourceFixtures(): Promise<SourceFixture[]> {
+  return sourceFixtures({
+    excludedDirectories: EXCLUDED_SOURCE_DIRECTORIES,
+    excludeHiddenDirectories: true
+  });
+}
+
+async function productionReachabilityFixtures(): Promise<SourceFixture[]> {
+  return sourceFixtures({
+    excludedDirectories: REACHABILITY_EXCLUDED_SOURCE_DIRECTORIES,
+    excludeHiddenDirectories: false
+  });
 }
 
 test("a one-byte session-source change fails the sealed baseline", async () => {
@@ -248,6 +564,68 @@ test("the exact current protected production sources match their sealed baseline
   for (const path of PROTECTED_SOURCE_PATHS) {
     assertSealedSource(path, await readFile(repositoryPath(path)));
   }
+});
+
+test("the protected isolated world contains no prohibited applicant-current read", async () => {
+  assert.deepEqual(
+    protectedWorldApplicantReadViolations(await readFile(repositoryPath(WORLD_PATH), "utf8")),
+    [],
+    "Protected inspection must not read current/default control state or unfiltered applicant text."
+  );
+});
+
+test("representative protected applicant-current reads are rejected", () => {
+  for (const member of PROHIBITED_PROTECTED_APPLICANT_READ_MEMBERS) {
+    const violations = protectedWorldApplicantReadViolations(
+      `function syntheticProtectedInspection(surface: object) { void surface.${member}; }`
+    );
+    assert.ok(
+      violations.some((violation) => violation.includes(member)),
+      `missing synthetic applicant-current violation for ${member}`
+    );
+  }
+
+  for (const attribute of PROHIBITED_PROTECTED_APPLICANT_STATE_ATTRIBUTES) {
+    const violations = protectedWorldApplicantReadViolations(
+      `function syntheticProtectedInspection(input: Element) { void input.getAttribute("${attribute}"); }`
+    );
+    assert.ok(
+      violations.some((violation) => violation.includes(`attribute read ${attribute}`)),
+      `missing synthetic applicant-state attribute violation for ${attribute}`
+    );
+  }
+
+  const alternateForms = protectedWorldApplicantReadViolations(`
+    function syntheticProtectedInspection(input: object, option: object) {
+      void input["checked"];
+      const { files } = input as { files: unknown };
+      void Reflect.get(option, "selected");
+    }
+  `);
+  for (const member of ["checked", "files", "selected"]) {
+    assert.ok(
+      alternateForms.some((violation) => violation.includes(member)),
+      `missing alternate-syntax applicant-current violation for ${member}`
+    );
+  }
+});
+
+test("protected semantic and filtered text reads remain permitted", () => {
+  assert.deepEqual(protectedWorldApplicantReadViolations(`
+    function syntheticProtectedInspection(
+      input: HTMLInputElement,
+      option: HTMLOptionElement,
+      node: Node,
+      element: HTMLElement
+    ) {
+      void input.type;
+      void input.required;
+      void input.getAttribute("autocomplete");
+      void option.getAttribute("label");
+      void node.nodeValue;
+      void element.isContentEditable;
+    }
+  `), []);
 });
 
 test("the protected capability bootstrap exposes exactly the reviewed read-only methods", () => {
@@ -319,4 +697,189 @@ test("representative prohibited experimental literals are rejected", () => {
       /must not depend on runImmediately or required uniqueContextId/u
     );
   }
+});
+
+test("synthetic alias and relative reachability detects the legacy DOM inspection module", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'import "@/lib/application-browser/inspection-entry";'
+    },
+    {
+      path: "lib/application-browser/inspection-entry.ts",
+      source: 'export * from "./form-inspection-dom";'
+    },
+    {
+      path: "lib/application-browser/form-inspection-dom.ts",
+      source: "export function extractSafeApplicationForm() {}"
+    }
+  ]);
+
+  assert.ok(violations.some((violation) => violation.includes("form-inspection-dom.ts")));
+  assert.ok(violations.some((violation) => violation.includes("extractSafeApplicationForm")));
+});
+
+test("synthetic extensionless index TSX reachability detects every forbidden inspection authority", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'import "../lib/inspection-authority";'
+    },
+    {
+      path: "lib/inspection-authority/index.tsx",
+      source: `
+        type A = SafeApplicationFormExtraction;
+        type B = SafeDomFieldReference;
+        type C = OwnedFormSemanticObserver;
+        type D = ElementHandle;
+        const observer = createPageSemanticObserver;
+        const attached = isHandleAttached;
+        page.evaluateHandle(() => null);
+        remoteHandle.evaluate(() => null);
+      `
+    }
+  ]);
+
+  for (const authority of [
+    "SafeApplicationFormExtraction",
+    "SafeDomFieldReference",
+    "OwnedFormSemanticObserver",
+    "ElementHandle",
+    "createPageSemanticObserver",
+    "isHandleAttached",
+    ".evaluateHandle()",
+    ".evaluate()"
+  ]) {
+    assert.ok(
+      violations.some((violation) => violation.includes(authority)),
+      `missing synthetic violation for ${authority}`
+    );
+  }
+});
+
+test("synthetic bound and indirect evaluate access cannot alias forbidden inspection authority", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'import "@/lib/application-browser/inspection-alias";'
+    },
+    {
+      path: "lib/application-browser/inspection-alias.ts",
+      source: `
+        const invoke = page.evaluate.bind(page);
+        const invokeHandle = remoteHandle["evaluateHandle"].call(remoteHandle, () => null);
+        void invoke;
+        void invokeHandle;
+      `
+    }
+  ]);
+
+  assert.ok(violations.some((violation) => violation.includes(".evaluate")));
+  assert.ok(violations.some((violation) => violation.includes(".evaluateHandle")));
+});
+
+test("synthetic object destructuring cannot alias forbidden inspection authority", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'import "@/lib/application-browser/destructured-inspection";'
+    },
+    {
+      path: "lib/application-browser/destructured-inspection.ts",
+      source: `
+        const { evaluate: invoke } = page;
+        const { evaluateHandle } = remoteHandle;
+        void invoke;
+        void evaluateHandle;
+      `
+    }
+  ]);
+
+  assert.ok(violations.some((violation) => violation.includes(".evaluate")));
+  assert.ok(violations.some((violation) => violation.includes(".evaluateHandle")));
+});
+
+test("synthetic unresolved repository-local imports fail the reachability graph closed", () => {
+  const violations = productionInspectionAuthorityViolations([{
+    path: "scripts/application-browser-companion.ts",
+    source: 'export * from "@/tests/inspection-bridge";'
+  }]);
+
+  assert.ok(violations.some((violation) => violation.includes("unresolved repository-local import")));
+});
+
+test("synthetic two-argument dynamic imports remain in the reachability graph", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'void import("@/lib/application-browser/dynamic-inspection", {});'
+    },
+    {
+      path: "lib/application-browser/dynamic-inspection.ts",
+      source: "type LegacyAuthority = ElementHandle;"
+    }
+  ]);
+
+  assert.ok(violations.some((violation) => violation.includes("ElementHandle")));
+});
+
+test("synthetic import type nodes remain in the reachability graph", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'type LegacyOracle = typeof import("@/lib/application-browser/form-inspection-dom");'
+    },
+    {
+      path: "lib/application-browser/form-inspection-dom.ts",
+      source: "export const legacyOracle = true;"
+    }
+  ]);
+
+  assert.ok(violations.some((violation) => violation.includes("form-inspection-dom.ts")));
+});
+
+test("reachability inventory retains repository-local TS and TSX bridge directories", async () => {
+  const inventory = new Set((await productionReachabilityFixtures()).map((fixture) => fixture.path));
+
+  assert.equal(inventory.has("tests/application-browser-no-submit-policy.test.ts"), true);
+});
+
+test("synthetic reachability traverses a repository-local tests-directory bridge", () => {
+  const violations = productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'import "@/tests/inspection-bridge";'
+    },
+    {
+      path: "tests/inspection-bridge.ts",
+      source: 'export * from "../lib/application-browser/form-inspection-dom";'
+    },
+    {
+      path: "lib/application-browser/form-inspection-dom.ts",
+      source: "export function extractSafeApplicationForm() {}"
+    }
+  ]);
+
+  assert.ok(violations.some((violation) => violation.includes("form-inspection-dom.ts")));
+});
+
+test("sealed CDP Runtime.evaluate strings are not mistaken for Playwright or handle authority", () => {
+  assert.deepEqual(productionInspectionAuthorityViolations([
+    {
+      path: "scripts/application-browser-companion.ts",
+      source: 'import "@/lib/application-browser/protected-browser-session";'
+    },
+    {
+      path: "lib/application-browser/protected-browser-session.ts",
+      source: 'cdp.send("Runtime.evaluate", { expression: "safe sealed source" });'
+    }
+  ]), []);
+});
+
+test("the companion production graph cannot reach legacy inspection authority", async () => {
+  assert.deepEqual(
+    productionInspectionAuthorityViolations(await productionReachabilityFixtures()),
+    [],
+    "Production INSPECT_FORM reachability must remain protected-only."
+  );
 });

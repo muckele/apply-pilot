@@ -473,6 +473,32 @@ test("publication sends exactly one serialized five-key body after the synchrono
   assert.equal(JSON.stringify(result).includes(QUESTION_SENTINEL), false);
 });
 
+test("publication invokes POST in the same turn as the final authority callback", async () => {
+  let callbackMicrotaskRan = false;
+  let posts = 0;
+  const client = makeClient({
+    async post(url) {
+      posts += 1;
+      assert.equal(callbackMicrotaskRan, false);
+      return response(url, 200, publicationResponse({
+        replayed: true,
+        stateVersion: 7,
+        inspectionVersion: 2,
+        answerPacketVersion: 3
+      }));
+    }
+  });
+
+  await client.publishFormInspection(publicationInput(), () => {
+    queueMicrotask(() => {
+      callbackMicrotaskRan = true;
+    });
+  });
+
+  assert.equal(posts, 1);
+  assert.equal(callbackMicrotaskRan, true);
+});
+
 test("publication authority callback propagates unchanged and prevents POST", async () => {
   let posts = 0;
   let callbacks = 0;

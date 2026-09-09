@@ -1087,26 +1087,13 @@ test("hostile main-world globals and poisoned prototypes cannot observe or alter
   }
 });
 
-test("protected extraction returns no current values and performs no employer-page mutation or event", async () => {
+test("protected extraction exports no current values and causes no employer-page mutation or event", async () => {
   const trapScript = `<script>
     (() => {
+      // Main-world observers cover shared-DOM effects, not isolated-world reads.
       const counts = window.__protectedPrivacy = {
-        inputValue: 0, textAreaValue: 0, selectValue: 0, checked: 0,
-        optionSelected: 0, files: 0, mutations: 0, events: 0
+        mutations: 0, events: 0
       };
-      const wrap = (prototype, property, key) => {
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
-        Object.defineProperty(prototype, property, {
-          ...descriptor,
-          get() { counts[key] += 1; return descriptor.get.call(this); }
-        });
-      };
-      wrap(HTMLInputElement.prototype, 'value', 'inputValue');
-      wrap(HTMLTextAreaElement.prototype, 'value', 'textAreaValue');
-      wrap(HTMLSelectElement.prototype, 'value', 'selectValue');
-      wrap(HTMLInputElement.prototype, 'checked', 'checked');
-      wrap(HTMLOptionElement.prototype, 'selected', 'optionSelected');
-      wrap(HTMLInputElement.prototype, 'files', 'files');
       for (const type of ['click', 'keydown', 'beforeinput', 'input', 'change', 'submit', 'formdata']) {
         document.addEventListener(type, () => { counts.events += 1; }, true);
       }
@@ -1129,12 +1116,6 @@ test("protected extraction returns no current values and performs no employer-pa
     assert.deepEqual(await fixture.page.evaluate(() =>
       (window as unknown as { __protectedPrivacy: Record<string, number> }).__protectedPrivacy
     ), {
-      inputValue: 0,
-      textAreaValue: 0,
-      selectValue: 0,
-      checked: 0,
-      optionSelected: 0,
-      files: 0,
       mutations: 0,
       events: 0
     });

@@ -112,6 +112,12 @@ type CleanupStep = Readonly<{
   run(): void | Promise<void>;
 }>;
 
+type CleanupStepSettlement = Readonly<{
+  label: string;
+  status: "fulfilled" | "rejected";
+  settledAtMs: number;
+}>;
+
 type Workflow = Readonly<{
   browser: Browser;
   context: BrowserContext;
@@ -300,18 +306,22 @@ async function waitFor<T>(
 async function runCleanupSteps(
   primaryError: unknown | undefined,
   steps: readonly CleanupStep[],
-  onAttempt?: (label: string) => void
+  onAttempt?: (label: string) => void,
+  onSettlement?: (label: string, status: CleanupStepSettlement["status"]) => void
 ): Promise<void> {
   const cleanupErrors: unknown[] = [];
   const failedLabels: string[] = [];
   for (const step of steps) {
     onAttempt?.(step.label);
+    let status: CleanupStepSettlement["status"] = "fulfilled";
     try {
       await step.run();
     } catch (error) {
+      status = "rejected";
       cleanupErrors.push(error);
       failedLabels.push(step.label);
     }
+    onSettlement?.(step.label, status);
   }
 
   if (primaryError !== undefined) {
@@ -361,12 +371,15 @@ function observe<T>(promise: Promise<T>): Promise<PromiseSettledResult<T>> {
 
 async function createWorkflow(input: {
   mutateBeforeAssertCurrent?: boolean;
+  initialOnlyQuestion?: string;
+  publicationOrder?: string[];
   failAt?: "AFTER_FIXTURES" | "AFTER_BRIDGE";
   armHeldPacketReadBeforeFailure?: boolean;
   setupFailure?: Error;
   closeSettlementTimeoutMs?: number;
   testOnlyTransformCapturedCloseExecution?: CapturedCloseExecutionTransform;
   onCleanupStepAttempt?(label: string): void;
+  onCleanupStepSettled?(label: string, status: CleanupStepSettlement["status"]): void;
   onFixturesAcquired?(fixtures: IntegrationFixtures): void;
   onBrowserAcquired?(browser: Browser): void;
   onCompanionStarted?(input: Readonly<{
@@ -520,7 +533,7 @@ async function createWorkflow(input: {
           }
         }
       }
-    ], input.onCleanupStepAttempt);
+    ], input.onCleanupStepAttempt, input.onCleanupStepSettled);
   };
 
   try {
@@ -550,7 +563,40 @@ async function createWorkflow(input: {
           }
         };
       },
-      createClient: createSameOriginClient,
+      createClient(clientInput) {
+        const client = createSameOriginClient(clientInput);
+        const order = input.publicationOrder;
+        if (!order) return client;
+        return Object.freeze({
+          async getApplicationRun(runId: string) {
+            order.push("run:start");
+            const value = await client.getApplicationRun(runId);
+            order.push("run:end");
+            return value;
+          },
+          async getAutomationPolicy() {
+            order.push("policy:start");
+            const value = await client.getAutomationPolicy();
+            order.push("policy:end");
+            return value;
+          },
+          async getCurrentAnswerPacket(runId: string) {
+            order.push("packet:start");
+            const value = await client.getCurrentAnswerPacket(runId);
+            order.push("packet:end");
+            return value;
+          },
+          publishFormInspection(publication, assertReadyToDispatch) {
+            order.push("publish:enter");
+            const result = client.publishFormInspection(publication, () => {
+              order.push("publish:dispatch");
+              assertReadyToDispatch();
+            });
+            order.push("publish:return");
+            return result;
+          }
+        });
+      },
       createTargetController(targetInput) {
         assert.equal(targetInput.context, acquiredContext);
         assert.equal(typeof targetInput.onUnsafe, "function");
@@ -573,15 +619,61 @@ async function createWorkflow(input: {
         return controller;
       },
       createFormInspectionController(controllerInput) {
-        const controller = createApplicationFormInspectionController(controllerInput);
-        if (!input.mutateBeforeAssertCurrent) return controller;
+        const controller = createApplicationFormInspectionController(input.publicationOrder
+          ? {
+              ...controllerInput,
+              onInvalidated(code) {
+                input.publicationOrder?.push(`invalidated:${code}`);
+                controllerInput.onInvalidated?.(code);
+              }
+            }
+          : controllerInput);
+        if (
+          !input.mutateBeforeAssertCurrent &&
+          !input.initialOnlyQuestion &&
+          !input.publicationOrder
+        ) return controller;
         return {
           ...controller,
+          async inspect(options) {
+            input.publicationOrder?.push("inspect:start");
+            let generation;
+            try {
+              generation = await controller.inspect(options);
+            } catch (error) {
+              const code = error instanceof Error && "code" in error ? error.code : "unknown";
+              input.publicationOrder?.push(`inspect:error:${String(code)}`);
+              throw error;
+            }
+            input.publicationOrder?.push("inspect:end");
+            if (!input.initialOnlyQuestion) return generation;
+            const initialReport = structuredClone(generation.inspectionReport);
+            initialReport.forms[0].sections[0].fields[0].question = input.initialOnlyQuestion;
+            return Object.freeze({
+              generationId: generation.generationId,
+              inspectionReport: initialReport,
+              dispose: () => generation.dispose()
+            });
+          },
           async assertCurrent(generationId, options) {
-            assert.equal(acquiredFixtures.publicationHits(), 0);
-            assertSemanticMutationPreservesField(await mutateIntegrationLabel(controllerInput.page));
-            assert.equal(acquiredFixtures.publicationHits(), 0);
-            return controller.assertCurrent(generationId, options);
+            input.publicationOrder?.push("assert-current:start");
+            const publicationBaseline = acquiredFixtures.publicationHits();
+            if (input.mutateBeforeAssertCurrent) {
+              const employerPage = capturedTargetController?.page();
+              assert.ok(employerPage);
+              assertSemanticMutationPreservesField(await mutateIntegrationLabel(employerPage));
+            }
+            assert.equal(acquiredFixtures.publicationHits(), publicationBaseline);
+            let generation;
+            try {
+              generation = await controller.assertCurrent(generationId, options);
+            } catch (error) {
+              const code = error instanceof Error && "code" in error ? error.code : "unknown";
+              input.publicationOrder?.push(`assert-current:error:${String(code)}`);
+              throw error;
+            }
+            input.publicationOrder?.push("assert-current:end");
+            return generation;
           }
         } satisfies ApplicationFormInspectionController;
       },
@@ -901,12 +993,17 @@ test("real workflow cleanup retains a captured-executor close rejection and atte
 
 test("real workflow cleanup locally times out a never-settling captured-executor close and attempts every later step", { timeout: 20_000 }, async () => {
   const primary = new Error("PRIMARY_ASSERTION_SENTINEL");
+  const capturedExecutorTimeoutMs = 40;
   const cleanupAttempts: string[] = [];
+  const cleanupSettlements: CleanupStepSettlement[] = [];
   let releaseClose: (() => void) | undefined;
   const workflow = await createWorkflow({
-    closeSettlementTimeoutMs: 40,
+    closeSettlementTimeoutMs: capturedExecutorTimeoutMs,
     onCleanupStepAttempt(label) {
       cleanupAttempts.push(label);
+    },
+    onCleanupStepSettled(label, status) {
+      cleanupSettlements.push({ label, status, settledAtMs: performance.now() });
     },
     testOnlyTransformCapturedCloseExecution(execution) {
       return new Promise((resolve, reject) => {
@@ -915,16 +1012,50 @@ test("real workflow cleanup locally times out a never-settling captured-executor
     }
   });
   await workflow.controlPage.close();
-  const startedAt = Date.now();
+  const startedAt = performance.now();
   const cleanupOutcome = observe(workflow.cleanup(primary));
-  let outcome: PromiseSettledResult<void>;
+  let outcome: PromiseSettledResult<void> | undefined;
   try {
-    outcome = await settleWithin(cleanupOutcome, 250, "real CLOSE_WORKFLOW regression watchdog");
+    const capturedCloseSettlement = await waitFor(
+      "captured-executor close stage to settle through its local timeout",
+      () => cleanupSettlements.find(({ label }) => label === "companion close request"),
+      (settlement) => settlement !== undefined,
+      LOCAL_SETTLEMENT_TIMEOUT_MS
+    );
+    assert.ok(capturedCloseSettlement);
+    assert.equal(capturedCloseSettlement.status, "rejected");
+    const capturedCloseElapsedMs = capturedCloseSettlement.settledAtMs - startedAt;
+    assert.equal(capturedCloseElapsedMs >= capturedExecutorTimeoutMs - 5, true);
+    assert.equal(capturedCloseElapsedMs < LOCAL_SETTLEMENT_TIMEOUT_MS, true);
+
+    for (const label of [
+      "browser context close",
+      "companion settlement",
+      "browser close",
+      "fixture server close"
+    ]) {
+      const settlement = await waitFor(
+        `${label} cleanup stage to settle`,
+        () => cleanupSettlements.find((entry) => entry.label === label),
+        (entry) => entry !== undefined,
+        LOCAL_SETTLEMENT_TIMEOUT_MS
+      );
+      assert.ok(settlement);
+      assert.equal(settlement.status, "fulfilled", label);
+    }
+    outcome = await cleanupOutcome;
   } finally {
     releaseClose?.();
-    await cleanupOutcome;
+    if (!outcome) {
+      await settleWithin(
+        cleanupOutcome,
+        LOCAL_SETTLEMENT_TIMEOUT_MS,
+        "real cleanup recovery after a stage-specific assertion"
+      );
+    }
   }
 
+  assert.ok(outcome);
   assert.equal(outcome.status, "rejected");
   assert.equal(outcome.reason instanceof AggregateError, true);
   const errors = (outcome.reason as AggregateError).errors;
@@ -939,10 +1070,21 @@ test("real workflow cleanup locally times out a never-settling captured-executor
     "fixture server close",
     "captured executor boundary assertion"
   ]);
+  assert.deepEqual(
+    cleanupSettlements.map(({ label, status }) => ({ label, status })),
+    [
+      { label: "held packet-read release", status: "fulfilled" },
+      { label: "companion close request", status: "rejected" },
+      { label: "browser context close", status: "fulfilled" },
+      { label: "companion settlement", status: "fulfilled" },
+      { label: "browser close", status: "fulfilled" },
+      { label: "fixture server close", status: "fulfilled" },
+      { label: "captured executor boundary assertion", status: "fulfilled" }
+    ]
+  );
   assert.equal(workflow.companionSettled(), true);
   assert.equal(workflow.browser.isConnected(), false);
   await assertFixtureListenersUnreachable(workflow.fixtures);
-  assert.equal(Date.now() - startedAt < 250, true);
 });
 
 test("workflow setup failure after fixture acquisition rolls back both fixture listeners", async () => {
@@ -1070,8 +1212,11 @@ test("captured executor fallback is cleanup-only CLOSE_WORKFLOW after the bindin
 });
 
 test("real companion materially publishes, exposes the full owner packet only by HTTP, and exactly replays", { timeout: 30_000 }, async () => {
-  await withWorkflow({}, async (workflow) => {
+  const publicationOrder: string[] = [];
+  const initialOnlyQuestion = "INITIAL-ONLY-REPORT-MUST-NOT-PUBLISH";
+  await withWorkflow({ initialOnlyQuestion, publicationOrder }, async (workflow) => {
     const employerPage = await openAndArm(workflow);
+    publicationOrder.length = 0;
 
     const material = await invoke(workflow.controlPage, { type: "INSPECT_FORM" });
     assertSuccessfulBindingResult(material, false);
@@ -1086,6 +1231,32 @@ test("real companion materially publishes, exposes the full owner packet only by
     assert.equal(firstRequest.parsedBody.expectedAnswerPacketVersion, 0);
     assert.equal(firstRequest.parsedBody.observedUrl, SYNTHETIC_EMPLOYER_URL);
     assert.equal(typeof firstRequest.parsedBody.inspectionReport, "object");
+    assert.equal(firstRequest.rawBody.includes(initialOnlyQuestion), false);
+    assert.equal(
+      (((firstRequest.parsedBody.inspectionReport as {
+        forms: Array<{ sections: Array<{ fields: Array<{ question: string }> }> }>;
+      }).forms[0].sections[0].fields[0]).question),
+      "Name"
+    );
+    assert.deepEqual(publicationOrder, [
+      "run:start",
+      "run:end",
+      "policy:start",
+      "policy:end",
+      "inspect:start",
+      "inspect:end",
+      "run:start",
+      "run:end",
+      "packet:start",
+      "packet:end",
+      "policy:start",
+      "policy:end",
+      "assert-current:start",
+      "assert-current:end",
+      "publish:enter",
+      "publish:dispatch",
+      "publish:return"
+    ]);
 
     const packetResponse = await fetch(
       `${workflow.fixtures.controlOrigin}/api/application-runs/${BROWSER_SMOKE_RUN_ID}/answer-packet`
@@ -1136,7 +1307,14 @@ test("real companion materially publishes, exposes the full owner packet only by
     assert.equal(JSON.stringify(material).includes("Ada Lovelace"), false);
     assert.equal(JSON.stringify(material).includes("inspectionReport"), false);
 
-    const replay = await invoke(workflow.controlPage, { type: "INSPECT_FORM" });
+    const replayOutcome = await observe(invoke(workflow.controlPage, { type: "INSPECT_FORM" }));
+    assert.equal(
+      replayOutcome.status,
+      "fulfilled",
+      `Replay failed after events: ${JSON.stringify(publicationOrder)}`
+    );
+    if (replayOutcome.status !== "fulfilled") return;
+    const replay = replayOutcome.value;
     assertSuccessfulBindingResult(replay, true);
     assert.equal(workflow.fixtures.publicationHits(), 2);
     const requests = workflow.fixtures.publicationRequests();

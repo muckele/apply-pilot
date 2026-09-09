@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { ElementHandle } from "playwright";
-
 import {
   ApplicationFormCorrelationError,
-  correlateSafeApplicationFormExtraction,
-  type CorrelatedApplicationFormChoiceReference
+  correlateProtectedApplicationFormExtraction,
+  type CorrelatedProtectedApplicationFormExtraction
 } from "@/lib/application-browser/form-inspection-correlation";
 import type {
-  SafeApplicationFormExtraction,
-  SafeDomFieldReference,
-  SourceChoiceOrdinal,
-  SourceFieldOrdinal
-} from "@/lib/application-browser/form-inspection-dom";
+  OpaqueExtractionCandidate,
+  ProtectedApplicationFormExtraction,
+  ProtectedFieldSlot
+} from "@/lib/application-browser/protected-browser-session";
 import {
   applicationFormInspectionReportSchema,
   buildNormalizedApplicationFormInspection,
@@ -25,6 +22,13 @@ import {
 } from "@/lib/application-runs/form-inspection";
 
 const AUTHORITATIVE_APPLY_HOST = "jobs.example.com";
+
+type CorrelatedOpaqueMapKey = Extract<
+  keyof CorrelatedProtectedApplicationFormExtraction,
+  "fields" | "choices"
+>;
+const CORRELATED_RESULT_HAS_NO_OPAQUE_MAP_KEYS:
+  [CorrelatedOpaqueMapKey] extends [never] ? true : false = true;
 
 type RawField =
   ApplicationFormInspectionReport["forms"][number]["sections"][number]["fields"][number];
@@ -70,59 +74,48 @@ function singleSectionReport(
   });
 }
 
-function fieldOrdinalKey(ordinal: SourceFieldOrdinal): string {
-  return `${ordinal.form}/${ordinal.section}/${ordinal.field}`;
-}
-
-function choiceOrdinalKey(ordinal: SourceChoiceOrdinal): string {
-  return `${ordinal.form}/${ordinal.section}/${ordinal.field}/${ordinal.choice}`;
-}
-
-function opaqueHandle(): ElementHandle {
-  return Object.freeze({}) as unknown as ElementHandle;
+function opaqueIdentity<T extends object>(): T {
+  return Object.freeze(Object.create(null)) as T;
 }
 
 type SyntheticExtraction = Readonly<{
-  extraction: SafeApplicationFormExtraction;
-  fieldHandles: ReadonlyMap<string, ElementHandle>;
-  choiceHandles: ReadonlyMap<string, ElementHandle>;
+  extraction: ProtectedApplicationFormExtraction;
+  candidate: OpaqueExtractionCandidate;
   disposeCalls(): number;
 }>;
 
 function syntheticExtraction(
   report: ApplicationFormInspectionReport,
   input: Readonly<{
-    transformReferences?: (references: SafeDomFieldReference[]) => readonly SafeDomFieldReference[];
+    transformReferences?: (references: ProtectedFieldSlot[]) => readonly ProtectedFieldSlot[];
     disposalError?: Error;
     synchronousDisposalError?: Error;
-    handleFactory?: () => ElementHandle;
+    referenceFactory?: () => object;
   }> = {}
 ): SyntheticExtraction {
-  const fieldHandles = new Map<string, ElementHandle>();
-  const choiceHandles = new Map<string, ElementHandle>();
-  const references: SafeDomFieldReference[] = [];
-  const makeHandle = input.handleFactory ?? opaqueHandle;
+  const candidate = opaqueIdentity<OpaqueExtractionCandidate>();
+  const references: ProtectedFieldSlot[] = [];
+  const makeReference = input.referenceFactory ?? (() => opaqueIdentity<object>());
 
   for (const [formIndex, form] of report.forms.entries()) {
     for (const [sectionIndex, section] of form.sections.entries()) {
       for (const [fieldIndex, field] of section.fields.entries()) {
         const sourceOrdinal = { form: formIndex, section: sectionIndex, field: fieldIndex };
-        const handle = makeHandle();
-        fieldHandles.set(fieldOrdinalKey(sourceOrdinal), handle);
+        const reference = makeReference() as ProtectedFieldSlot["reference"];
         const choices = field.choices.map((_choice, choiceIndex) => {
           const choiceOrdinal = { ...sourceOrdinal, choice: choiceIndex };
-          const choiceHandle = makeHandle();
-          choiceHandles.set(choiceOrdinalKey(choiceOrdinal), choiceHandle);
-          return { sourceOrdinal: choiceOrdinal, handle: choiceHandle };
+          const choiceReference = makeReference() as ProtectedFieldSlot["choices"][number]["reference"];
+          return { sourceOrdinal: choiceOrdinal, reference: choiceReference };
         });
-        references.push({ sourceOrdinal, handle, choices });
+        references.push({ sourceOrdinal, reference, choices });
       }
     }
   }
 
   const transformed = input.transformReferences?.(references) ?? references;
   let disposeCallCount = 0;
-  const extraction: SafeApplicationFormExtraction = {
+  const extraction: ProtectedApplicationFormExtraction = {
+    candidate,
     report,
     fields: transformed,
     dispose() {
@@ -133,8 +126,7 @@ function syntheticExtraction(
   };
   return {
     extraction,
-    fieldHandles,
-    choiceHandles,
+    candidate,
     disposeCalls: () => disposeCallCount
   };
 }
@@ -147,12 +139,52 @@ function normalizedFields(
   );
 }
 
+const EXPECTED_COMMIT_2B_CORRELATED_KEYS = [
+  "candidate",
+  "dispose",
+  "fieldCount",
+  "formFingerprint",
+  "inspectionReport",
+  "normalizedSnapshot",
+  "requiredFieldCount"
+] as const;
+
+function assertNoOpaqueReferenceAuthority(
+  result: CorrelatedProtectedApplicationFormExtraction,
+  suppliedReferences: readonly object[]
+): void {
+  const legacy = result as CorrelatedProtectedApplicationFormExtraction & Readonly<{
+    fields?: ReadonlyMap<string, Readonly<{ reference: object }>>;
+    choices?: ReadonlyMap<string, ReadonlyMap<string, Readonly<{ reference: object }>>>;
+  }>;
+  const retainedReferences = [
+    ...[...(legacy.fields?.values() ?? [])].map((entry) => entry.reference),
+    ...[...(legacy.choices?.values() ?? [])]
+      .flatMap((choices) => [...choices.values()])
+      .map((entry) => entry.reference)
+  ];
+  const evidence = {
+    ownKeys: Object.keys(result).sort(),
+    opaqueMapKeys: ["fields", "choices"].filter((key) => key in result),
+    retainedSuppliedReferenceCount: retainedReferences.filter((reference) =>
+      suppliedReferences.includes(reference)
+    ).length
+  };
+
+  assert.equal(CORRELATED_RESULT_HAS_NO_OPAQUE_MAP_KEYS, true);
+  assert.deepEqual(evidence, {
+    ownKeys: [...EXPECTED_COMMIT_2B_CORRELATED_KEYS],
+    opaqueMapKeys: [],
+    retainedSuppliedReferenceCount: 0
+  });
+}
+
 async function assertCorrelationInvalid(
   synthetic: SyntheticExtraction,
   secrets: readonly string[] = []
 ): Promise<void> {
   await assert.rejects(
-    correlateSafeApplicationFormExtraction({
+    correlateProtectedApplicationFormExtraction({
       extraction: synthetic.extraction,
       authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
     }),
@@ -160,7 +192,7 @@ async function assertCorrelationInvalid(
       assert.ok(error instanceof ApplicationFormCorrelationError);
       assert.equal(error.name, "ApplicationFormCorrelationError");
       assert.equal(error.code, "FORM_CORRELATION_INVALID");
-      assert.equal(error.message, "Safe form correlation failed: FORM_CORRELATION_INVALID");
+      assert.equal(error.message, "Protected form correlation failed: FORM_CORRELATION_INVALID");
       for (const secret of secrets) assert.equal(error.message.includes(secret), false);
       return true;
     }
@@ -168,7 +200,7 @@ async function assertCorrelationInvalid(
   assert.equal(synthetic.disposeCalls(), 1);
 }
 
-test("correlates one safe field through the complete canonical authority and owns disposal", async () => {
+test("correlates one protected report through candidate-level authority and owns disposal", async () => {
   const report = singleSectionReport([rawField()]);
   const expected = buildNormalizedApplicationFormInspection({
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST,
@@ -176,30 +208,295 @@ test("correlates one safe field through the complete canonical authority and own
   });
   const synthetic = syntheticExtraction(report);
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
 
   assert.equal(result.formFingerprint, expected.formFingerprint);
+  assert.equal(result.candidate, synthetic.candidate);
   assert.equal(result.fieldCount, 1);
   assert.equal(result.requiredFieldCount, 1);
   assert.deepEqual(result.inspectionReport, report);
   assert.deepEqual(result.normalizedSnapshot, expected.snapshot);
-  const normalized = normalizedFields(expected.snapshot)[0];
-  assert.deepEqual(result.fields.get(normalized.normalizedFieldKey), {
-    fieldFingerprint: normalized.fieldFingerprint,
-    sourceOrdinal: { form: 0, section: 0, field: 0 },
-    handle: synthetic.fieldHandles.get("0/0/0")
-  });
-  assert.equal(result.choices.size, 0);
+  assertNoOpaqueReferenceAuthority(result, synthetic.extraction.fields.map((slot) => slot.reference));
   assert.equal(synthetic.disposeCalls(), 0);
 
   await Promise.all([result.dispose(), result.dispose(), result.dispose()]);
   assert.equal(synthetic.disposeCalls(), 1);
 });
 
-test("correlates reordered references across multiple null and classified contexts by canonical key", async () => {
+test("detaches candidate cleanup without later dereferencing the extraction slot container", async (context) => {
+  for (const cleanupResult of ["resolves", "rejects"] as const) {
+    await context.test(`cleanup ${cleanupResult}`, async () => {
+      const report = singleSectionReport([rawField()]);
+      const synthetic = syntheticExtraction(report);
+      const cleanupError = new Error("private candidate cleanup failure");
+      type AccessPhase = "correlation" | "after-correlation" | "negative-control";
+      let phase: AccessPhase = "correlation";
+      const operations: Array<Readonly<{
+        phase: AccessPhase;
+        operation: "get" | "getOwnPropertyDescriptor" | "ownKeys";
+        property: string | null;
+      }>> = [];
+      let cleanupCalls = 0;
+      const disposeOwnedCandidate = (): Promise<void> => {
+        cleanupCalls += 1;
+        return cleanupResult === "rejects" ? Promise.reject(cleanupError) : Promise.resolve();
+      };
+      const extractionTarget: ProtectedApplicationFormExtraction = {
+        candidate: synthetic.extraction.candidate,
+        report: synthetic.extraction.report,
+        fields: synthetic.extraction.fields,
+        dispose: disposeOwnedCandidate
+      };
+      const suppliedReferences = extractionTarget.fields.flatMap((slot) => [
+        slot.reference,
+        ...slot.choices.map((choice) => choice.reference)
+      ]);
+      const record = (
+        operation: "get" | "getOwnPropertyDescriptor" | "ownKeys",
+        property: PropertyKey | null
+      ): void => {
+        operations.push({ phase, operation, property: property === null ? null : String(property) });
+      };
+      const extraction = new Proxy(extractionTarget, {
+        get(target, property, receiver) {
+          record("get", property);
+          return Reflect.get(target, property, receiver);
+        },
+        getOwnPropertyDescriptor(target, property) {
+          record("getOwnPropertyDescriptor", property);
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+        ownKeys(target) {
+          record("ownKeys", null);
+          return Reflect.ownKeys(target);
+        }
+      });
+
+      const result = await correlateProtectedApplicationFormExtraction({
+        extraction,
+        authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+      });
+      assertNoOpaqueReferenceAuthority(result, suppliedReferences);
+
+      phase = "after-correlation";
+      const firstDisposal = result.dispose();
+      assert.equal(result.dispose(), firstDisposal);
+      const outcomes = await Promise.allSettled([firstDisposal, result.dispose()]);
+
+      assert.deepEqual(
+        operations.filter((operation) => operation.phase === "after-correlation"),
+        []
+      );
+      assert.equal(cleanupCalls, 1);
+      assert.deepEqual(
+        outcomes.map((outcome) => outcome.status),
+        cleanupResult === "rejects" ? ["rejected", "rejected"] : ["fulfilled", "fulfilled"]
+      );
+      if (cleanupResult === "rejects") {
+        assert.equal(outcomes[0].status === "rejected" && outcomes[0].reason, cleanupError);
+        assert.equal(outcomes[1].status === "rejected" && outcomes[1].reason, cleanupError);
+      }
+
+      phase = "negative-control";
+      void extraction.fields;
+      void Object.getOwnPropertyDescriptor(extraction, "candidate");
+      void Reflect.ownKeys(extraction);
+      assert.deepEqual(
+        operations.filter((operation) => operation.phase === "negative-control"),
+        [
+          { phase: "negative-control", operation: "get", property: "fields" },
+          {
+            phase: "negative-control",
+            operation: "getOwnPropertyDescriptor",
+            property: "candidate"
+          },
+          { phase: "negative-control", operation: "ownKeys", property: null }
+        ]
+      );
+    });
+  }
+});
+
+test("substituted field references cannot become Commit 2B authority", async () => {
+  const report = singleSectionReport([
+    rawField({ question: "Portfolio URL" }),
+    rawField({ question: "LinkedIn URL" })
+  ]);
+  const synthetic = syntheticExtraction(report, {
+    transformReferences: ([first, second]) => [
+      { ...first, reference: second.reference },
+      { ...second, reference: first.reference }
+    ]
+  });
+  const supplied = synthetic.extraction.fields.map((slot) => slot.reference);
+  const result = await correlateProtectedApplicationFormExtraction({
+    extraction: synthetic.extraction,
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+  });
+
+  try {
+    assertNoOpaqueReferenceAuthority(result, supplied);
+  } finally {
+    await result.dispose();
+  }
+});
+
+test("substituted choice references cannot become Commit 2B authority", async () => {
+  const report = singleSectionReport([
+    rawField({
+      question: "Preferred office",
+      fieldType: "SELECT_ONE",
+      autocomplete: null,
+      choices: [
+        { label: "Alpha", disabled: false },
+        { label: "Beta", disabled: false }
+      ]
+    })
+  ]);
+  const synthetic = syntheticExtraction(report, {
+    transformReferences: ([field]) => [{
+      ...field,
+      choices: [
+        { ...field.choices[0], reference: field.choices[1].reference },
+        { ...field.choices[1], reference: field.choices[0].reference }
+      ]
+    }]
+  });
+  const supplied = synthetic.extraction.fields[0].choices.map((slot) => slot.reference);
+  const result = await correlateProtectedApplicationFormExtraction({
+    extraction: synthetic.extraction,
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+  });
+
+  try {
+    assertNoOpaqueReferenceAuthority(result, supplied);
+  } finally {
+    await result.dispose();
+  }
+});
+
+test("a duplicated opaque reference across coordinates cannot become Commit 2B authority", async () => {
+  const report = singleSectionReport([
+    rawField({ question: "Portfolio URL" }),
+    rawField({ question: "LinkedIn URL" })
+  ]);
+  const synthetic = syntheticExtraction(report, {
+    transformReferences: ([first, second]) => [
+      first,
+      { ...second, reference: first.reference }
+    ]
+  });
+  const duplicated = synthetic.extraction.fields[0].reference;
+  const result = await correlateProtectedApplicationFormExtraction({
+    extraction: synthetic.extraction,
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+  });
+
+  try {
+    assertNoOpaqueReferenceAuthority(result, [duplicated]);
+  } finally {
+    await result.dispose();
+  }
+});
+
+test("candidate and report A cannot retain slot references supplied by extraction B", async () => {
+  const reportA = singleSectionReport([
+    rawField({ question: "Portfolio URL" }),
+    rawField({
+      question: "Preferred office",
+      fieldType: "SELECT_ONE",
+      autocomplete: null,
+      choices: [{ label: "Remote", disabled: false }]
+    })
+  ]);
+  const reportB = singleSectionReport([
+    rawField({ question: "Other portfolio" }),
+    rawField({
+      question: "Other office",
+      fieldType: "SELECT_ONE",
+      autocomplete: null,
+      choices: [{ label: "Onsite", disabled: false }]
+    })
+  ]);
+  const extractionB = syntheticExtraction(reportB);
+  const syntheticA = syntheticExtraction(reportA, {
+    transformReferences: (references) => references.map((slot, fieldIndex) => ({
+      ...slot,
+      reference: extractionB.extraction.fields[fieldIndex].reference,
+      choices: slot.choices.map((choice, choiceIndex) => ({
+        ...choice,
+        reference: extractionB.extraction.fields[fieldIndex].choices[choiceIndex].reference
+      }))
+    }))
+  });
+  const supplied = syntheticA.extraction.fields.flatMap((slot) => [
+    slot.reference,
+    ...slot.choices.map((choice) => choice.reference)
+  ]);
+  const result = await correlateProtectedApplicationFormExtraction({
+    extraction: syntheticA.extraction,
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+  });
+
+  try {
+    assert.equal(result.candidate, syntheticA.candidate);
+    assert.deepEqual(result.inspectionReport, reportA);
+    assertNoOpaqueReferenceAuthority(result, supplied);
+  } finally {
+    await result.dispose();
+  }
+});
+
+test("decorated copied and forged empty references cannot become Commit 2B authority", async (context) => {
+  const copiedOpaqueReference = { ...opaqueIdentity<object>() };
+  const cases: ReadonlyArray<Readonly<{ name: string; makeReference: () => object }>> = [
+    {
+      name: "decorated objects",
+      makeReference: () => Object.freeze({ unauthenticated: true })
+    },
+    {
+      name: "copied opaque objects",
+      makeReference: () => Object.freeze({ ...copiedOpaqueReference })
+    },
+    {
+      name: "forged empty null-prototype objects",
+      makeReference: () => Object.freeze(Object.create(null)) as object
+    }
+  ];
+
+  for (const entry of cases) {
+    await context.test(entry.name, async () => {
+      const report = singleSectionReport([
+        rawField({
+          question: "Preferred office",
+          fieldType: "SELECT_ONE",
+          autocomplete: null,
+          choices: [{ label: "Remote", disabled: false }]
+        })
+      ]);
+      const synthetic = syntheticExtraction(report, { referenceFactory: entry.makeReference });
+      const supplied = synthetic.extraction.fields.flatMap((slot) => [
+        slot.reference,
+        ...slot.choices.map((choice) => choice.reference)
+      ]);
+      const result = await correlateProtectedApplicationFormExtraction({
+        extraction: synthetic.extraction,
+        authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+      });
+
+      try {
+        assertNoOpaqueReferenceAuthority(result, supplied);
+      } finally {
+        await result.dispose();
+      }
+    });
+  }
+});
+
+test("normalizes reordered protected slots across null and classified contexts", async () => {
   const report = applicationFormInspectionReportSchema.parse({
     schemaVersion: FORM_INSPECTION_SCHEMA_VERSION,
     forms: [
@@ -259,32 +556,27 @@ test("correlates reordered references across multiple null and classified contex
     transformReferences: (references) => [...references].reverse()
   });
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
 
-  assert.equal(result.fields.size, 5);
+  assert.equal(result.fieldCount, 5);
   const fields = normalizedFields(expected.snapshot);
   assert.deepEqual(
     new Set(fields.map((field) => field.permittedDisposition)),
     new Set(["PROPOSABLE", "MANUAL_ONLY", "EXCLUDED", "UNSUPPORTED"])
   );
   assert.ok(fields.some((field) => field.semanticFieldKey === "professional.linkedin"));
-  for (const normalized of fields) {
-    const correlated = result.fields.get(normalized.normalizedFieldKey);
-    assert.ok(correlated);
-    assert.equal(correlated.fieldFingerprint, normalized.fieldFingerprint);
-    assert.equal(
-      correlated.handle,
-      synthetic.fieldHandles.get(fieldOrdinalKey(correlated.sourceOrdinal))
-    );
-  }
   assert.deepEqual(result.normalizedSnapshot, expected.snapshot);
+  assertNoOpaqueReferenceAuthority(
+    result,
+    synthetic.extraction.fields.map((slot) => slot.reference)
+  );
   await result.dispose();
 });
 
-test("keeps every source handle aligned while canonical forms, sections, fields, and choices reorder", async () => {
+test("preserves canonical form section field and choice ordering without retaining references", async () => {
   const report = applicationFormInspectionReportSchema.parse({
     schemaVersion: FORM_INSPECTION_SCHEMA_VERSION,
     forms: [
@@ -356,7 +648,7 @@ test("keeps every source handle aligned while canonical forms, sections, fields,
   });
   const synthetic = syntheticExtraction(report);
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
@@ -422,60 +714,20 @@ test("keeps every source handle aligned while canonical forms, sections, fields,
     ),
     0
   );
-  assert.equal(result.fields.size, rawFieldCount);
+  assert.equal(result.fieldCount, rawFieldCount);
   assert.equal(authoritativeFields.length, rawFieldCount);
-
-  let choiceBearingFieldCount = 0;
-  for (const [formIndex, form] of report.forms.entries()) {
-    for (const [sectionIndex, section] of form.sections.entries()) {
-      for (const [fieldIndex, field] of section.fields.entries()) {
-        const sourceOrdinal = { form: formIndex, section: sectionIndex, field: fieldIndex };
-        const normalized = authoritativeFields.find(
-          (candidate) => candidate.question === field.question
-        );
-        const fieldHandle = synthetic.fieldHandles.get(fieldOrdinalKey(sourceOrdinal));
-        assert.ok(normalized);
-        assert.ok(fieldHandle);
-        assert.deepEqual(result.fields.get(normalized.normalizedFieldKey), {
-          fieldFingerprint: normalized.fieldFingerprint,
-          sourceOrdinal,
-          handle: fieldHandle
-        });
-
-        if (field.choices.length === 0) {
-          assert.equal(result.choices.has(normalized.normalizedFieldKey), false);
-          continue;
-        }
-
-        choiceBearingFieldCount += 1;
-        const correlatedChoices = result.choices.get(normalized.normalizedFieldKey);
-        assert.ok(correlatedChoices);
-        assert.equal(correlatedChoices.size, field.choices.length);
-        for (const canonicalChoice of normalized.choices) {
-          const choiceIndex = field.choices.findIndex(
-            (choice) =>
-              choice.label === canonicalChoice.label &&
-              choice.disabled === canonicalChoice.disabled
-          );
-          assert.notEqual(choiceIndex, -1);
-          const sourceChoiceOrdinal = { ...sourceOrdinal, choice: choiceIndex };
-          const choiceHandle = synthetic.choiceHandles.get(
-            choiceOrdinalKey(sourceChoiceOrdinal)
-          );
-          assert.ok(choiceHandle);
-          assert.deepEqual(correlatedChoices.get(canonicalChoice.key), {
-            sourceOrdinal: sourceChoiceOrdinal,
-            handle: choiceHandle
-          });
-        }
-      }
-    }
-  }
-  assert.equal(result.choices.size, choiceBearingFieldCount);
+  assert.deepEqual(result.normalizedSnapshot, authoritative.snapshot);
+  assertNoOpaqueReferenceAuthority(
+    result,
+    synthetic.extraction.fields.flatMap((slot) => [
+      slot.reference,
+      ...slot.choices.map((choice) => choice.reference)
+    ])
+  );
   await result.dispose();
 });
 
-test("correlates unique choices by canonical choice key without relying on source order", async () => {
+test("normalizes unique choices without relying on protected slot order", async () => {
   const report = singleSectionReport([
     rawField({
       question: "Preferred office",
@@ -501,27 +753,21 @@ test("correlates unique choices by canonical choice key without relying on sourc
   });
   const expectedField = normalizedFields(expected.snapshot)[0];
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
 
-  const correlatedChoices = result.choices.get(expectedField.normalizedFieldKey);
-  assert.ok(correlatedChoices);
-  assert.equal(correlatedChoices.size, 3);
-  for (const canonicalChoice of expectedField.choices) {
-    const correlated: CorrelatedApplicationFormChoiceReference | undefined =
-      correlatedChoices.get(canonicalChoice.key);
-    assert.ok(correlated);
-    const rawChoice: RawField["choices"][number] =
-      report.forms[0].sections[0].fields[0].choices[correlated.sourceOrdinal.choice];
-    assert.equal(canonicalChoice.label, rawChoice.label);
-    assert.equal(canonicalChoice.disabled, rawChoice.disabled);
-    assert.equal(
-      correlated.handle,
-      synthetic.choiceHandles.get(choiceOrdinalKey(correlated.sourceOrdinal))
-    );
-  }
+  assert.deepEqual(normalizedFields(result.normalizedSnapshot)[0], expectedField);
+  assert.deepEqual(expectedField.choices.map((choice) => choice.label), [
+    "Alpha office",
+    "Middle office",
+    "Zulu office"
+  ]);
+  assertNoOpaqueReferenceAuthority(
+    result,
+    synthetic.extraction.fields[0].choices.map((choice) => choice.reference)
+  );
   await result.dispose();
 });
 
@@ -539,7 +785,7 @@ test("keeps an ambiguous-choice field but exposes no invented canonical choice i
   ]);
   const synthetic = syntheticExtraction(report);
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
@@ -548,13 +794,18 @@ test("keeps an ambiguous-choice field but exposes no invented canonical choice i
   assert.equal(normalized.fieldType, "UNSUPPORTED");
   assert.equal(normalized.unsupportedReason, "AMBIGUOUS_CHOICES");
   assert.deepEqual(normalized.choices, []);
-  assert.equal(result.fields.has(normalized.normalizedFieldKey), true);
-  assert.equal(result.choices.has(normalized.normalizedFieldKey), false);
+  assertNoOpaqueReferenceAuthority(
+    result,
+    synthetic.extraction.fields.flatMap((slot) => [
+      slot.reference,
+      ...slot.choices.map((choice) => choice.reference)
+    ])
+  );
   await result.dispose();
   assert.equal(synthetic.disposeCalls(), 1);
 });
 
-test("correlates multiple-file upload normalization without a choice map", async () => {
+test("correlates multiple-file upload normalization without retaining field authority", async () => {
   const report = singleSectionReport([
     rawField({
       question: "Upload résumé",
@@ -569,7 +820,7 @@ test("correlates multiple-file upload normalization without a choice map", async
   ]);
   const synthetic = syntheticExtraction(report);
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
@@ -577,8 +828,10 @@ test("correlates multiple-file upload normalization without a choice map", async
   const normalized = normalizedFields(result.normalizedSnapshot)[0];
   assert.equal(normalized.fieldType, "UNSUPPORTED");
   assert.equal(normalized.unsupportedReason, "MULTIPLE_FILE_UPLOAD");
-  assert.equal(result.fields.get(normalized.normalizedFieldKey)?.handle, synthetic.fieldHandles.get("0/0/0"));
-  assert.equal(result.choices.has(normalized.normalizedFieldKey), false);
+  assertNoOpaqueReferenceAuthority(
+    result,
+    synthetic.extraction.fields.map((slot) => slot.reference)
+  );
   await result.dispose();
 });
 
@@ -588,7 +841,7 @@ test("preserves canonical duplicate-field ambiguity and disposes transferred own
   const synthetic = syntheticExtraction(report);
 
   await assert.rejects(
-    correlateSafeApplicationFormExtraction({
+    correlateProtectedApplicationFormExtraction({
       extraction: synthetic.extraction,
       authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
     }),
@@ -620,7 +873,7 @@ test("rejects every malformed field-reference shape with one bounded disposal", 
   const cases: ReadonlyArray<Readonly<{
     name: string;
     report: ApplicationFormInspectionReport;
-    transform: (references: SafeDomFieldReference[]) => readonly SafeDomFieldReference[];
+    transform: (references: ProtectedFieldSlot[]) => readonly ProtectedFieldSlot[];
   }>> = [
     {
       name: "missing field reference",
@@ -688,11 +941,11 @@ test("rejects every malformed choice-reference shape with one bounded disposal",
     })
   ]);
   const mutateChoices = (
-    transform: (reference: SafeDomFieldReference) => SafeDomFieldReference
-  ) => (references: SafeDomFieldReference[]) => [transform(references[0])];
+    transform: (reference: ProtectedFieldSlot) => ProtectedFieldSlot
+  ) => (references: ProtectedFieldSlot[]) => [transform(references[0])];
   const cases: ReadonlyArray<Readonly<{
     name: string;
-    transform: (references: SafeDomFieldReference[]) => readonly SafeDomFieldReference[];
+    transform: (references: ProtectedFieldSlot[]) => readonly ProtectedFieldSlot[];
   }>> = [
     {
       name: "raw and reference choice counts differ",
@@ -803,11 +1056,11 @@ test("maps canonical failures to a fixed private error even when cleanup rejects
   });
   const synthetic = syntheticExtraction(report, {
     disposalError: new Error("SECRET_DISPOSAL_FAILURE"),
-    handleFactory: () => Object.freeze({
+    referenceFactory: () => Object.freeze({
       toString() {
         return secrets[6];
       }
-    }) as unknown as ElementHandle
+    })
   });
 
   await assertCorrelationInvalid(synthetic, [...secrets, "SECRET_DISPOSAL_FAILURE"]);
@@ -823,7 +1076,7 @@ test("a synchronous cleanup failure cannot replace a bounded correlation error",
   await assertCorrelationInvalid(synthetic, ["SECRET_SYNCHRONOUS_DISPOSAL_FAILURE"]);
 });
 
-test("uses exact canonical field and choice objects rather than one-choice fingerprints", async () => {
+test("uses exact canonical field and choice objects without retaining opaque references", async () => {
   const report = singleSectionReport([
     rawField({
       question: "Preferred schedule",
@@ -842,7 +1095,7 @@ test("uses exact canonical field and choice objects rather than one-choice finge
   });
   const fullField = normalizedFields(full.snapshot)[0];
 
-  const result = await correlateSafeApplicationFormExtraction({
+  const result = await correlateProtectedApplicationFormExtraction({
     extraction: synthetic.extraction,
     authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
   });
@@ -850,6 +1103,12 @@ test("uses exact canonical field and choice objects rather than one-choice finge
   const resultField = normalizedFields(result.normalizedSnapshot)[0];
   assert.equal(canonicalJson(resultField), canonicalJson(fullField));
   assert.equal(resultField.fieldFingerprint, fullField.fieldFingerprint);
-  assert.equal(result.choices.get(fullField.normalizedFieldKey)?.size, fullField.choices.length);
+  assertNoOpaqueReferenceAuthority(
+    result,
+    synthetic.extraction.fields.flatMap((slot) => [
+      slot.reference,
+      ...slot.choices.map((choice) => choice.reference)
+    ])
+  );
   await result.dispose();
 });

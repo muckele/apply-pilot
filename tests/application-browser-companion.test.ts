@@ -8,12 +8,13 @@ const APP_ORIGIN = "https://apply.example.com";
 const CONTROL_URL = `${APP_ORIGIN}/application-runs/${RUN_ID}/browser`;
 const TARGET_URL = "https://jobs.example.test/apply?posting=123";
 
-test("companion owns one exact-page inspection controller and closes controller, target, runtime", async () => {
+test("companion owns one protected target inspection controller and closes controller, target, runtime", async () => {
   const calls: string[] = [];
-  const employerPage = {
-    url: () => `${TARGET_URL}#current`,
-    isClosed: () => false
-  };
+  const protectedTarget = Object.freeze({
+    authority: Object.freeze({}),
+    currentTargetUrl: () => `${TARGET_URL}#current`,
+    subscribeMainFrameNavigation: () => () => undefined
+  });
   const mainFrame = {};
   const controlPage = {
     url: () => CONTROL_URL,
@@ -50,12 +51,13 @@ test("companion owns one exact-page inspection controller and closes controller,
       }),
       createTargetController: () => ({
         async open() { calls.push("target-open"); return { finalUrl: TARGET_URL }; },
-        page: () => employerPage,
+        formInspectionTarget: () => protectedTarget,
         async close() { calls.push("target-close"); }
       }),
       createFormInspectionController(input: Record<string, unknown>) {
         calls.push("controller-create");
-        assert.equal(input.page, employerPage);
+        assert.equal(input.target, protectedTarget);
+        assert.equal("page" in input, false);
         assert.equal(input.authoritativeApplyHost, "jobs.example.test");
         return {
           async inspect() { return { generationId, inspectionReport: report }; },
@@ -90,10 +92,74 @@ test("companion owns one exact-page inspection controller and closes controller,
   assert.equal(calls.filter((call) => call === "controller-create").length, 1);
 });
 
+test("companion fails closed when a successfully opened target has no protected inspection facade", async () => {
+  const calls: string[] = [];
+  const mainFrame = {};
+  const controlPage = {
+    url: () => CONTROL_URL,
+    mainFrame: () => mainFrame,
+    on: () => undefined,
+    async goto() { return null; }
+  };
+  let execute!: (command: { type: string }, assertActive: () => void) => Promise<Record<string, unknown>>;
+  const running = runApplicationBrowserCompanion(
+    ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
+    {
+      async launchRuntime() {
+        return {
+          context: { request: {} },
+          controlPage,
+          async close() { calls.push("runtime-close"); }
+        };
+      },
+      createClient: () => ({
+        async getApplicationRun() {
+          return { id: RUN_ID, state: "READY", stateVersion: 2, applyHost: "jobs.example.test", applyUrlSnapshot: TARGET_URL };
+        },
+        async getAutomationPolicy() {
+          return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
+        },
+        async getCurrentAnswerPacket() { throw new Error("unexpected packet read"); },
+        async publishFormInspection() { throw new Error("unexpected publication"); }
+      }),
+      createTargetController: () => ({
+        async open() { calls.push("target-open"); return { finalUrl: TARGET_URL }; },
+        formInspectionTarget: () => null,
+        async close() { calls.push("target-close"); }
+      }),
+      createFormInspectionController() {
+        calls.push("unexpected-controller-create");
+        throw new Error("unexpected controller creation");
+      },
+      async installBridge(input: Record<string, unknown>) {
+        execute = input.execute as typeof execute;
+      },
+      writeOutput: () => undefined
+    } as never
+  );
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await assert.rejects(
+    execute({ type: "OPEN_TARGET" }, () => undefined),
+    (error: unknown) =>
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "BROWSER_WORKFLOW_FAILED"
+  );
+  assert.deepEqual(calls, ["target-open"]);
+  await execute({ type: "CLOSE_WORKFLOW" }, () => undefined);
+  await running;
+  assert.deepEqual(calls, ["target-open", "target-close", "runtime-close"]);
+});
+
 test("companion cleanup attempts every stage and retains the first failure", async () => {
   const calls: string[] = [];
   const firstError = new Error("controller cleanup failed first");
-  const employerPage = { url: () => TARGET_URL, isClosed: () => false };
+  const protectedTarget = {
+    authority: {},
+    currentTargetUrl: () => TARGET_URL,
+    subscribeMainFrameNavigation: () => () => undefined
+  };
   const mainFrame = {};
   const controlPage = {
     url: () => CONTROL_URL,
@@ -120,7 +186,7 @@ test("companion cleanup attempts every stage and retains the first failure", asy
       }),
       createTargetController: () => ({
         async open() { return { finalUrl: TARGET_URL }; },
-        page: () => employerPage,
+        formInspectionTarget: () => protectedTarget,
         async close() { calls.push("target-close"); throw new Error("later target cleanup failure"); }
       }),
       createFormInspectionController: () => ({

@@ -1,21 +1,22 @@
-import type { ElementHandle, Frame, Page } from "playwright";
-
 import {
   ApplicationFormCorrelationError,
-  correlateSafeApplicationFormExtraction,
-  type CorrelatedSafeApplicationFormExtraction
+  correlateProtectedApplicationFormExtraction,
+  type CorrelatedProtectedApplicationFormExtraction
 } from "@/lib/application-browser/form-inspection-correlation";
 import {
-  extractSafeApplicationForm,
-  type SafeApplicationFormExtraction,
-  type SourceChoiceOrdinal,
-  type SourceFieldOrdinal
-} from "@/lib/application-browser/form-inspection-dom";
+  ProtectedApplicationFormExtractionError,
+  ProtectedBrowserSessionError,
+  type BrowserDocumentFence,
+  type ProtectedApplicationFormExtraction,
+  type ProtectedApplicationBrowserSession,
+  type ProtectedCandidateVerification,
+  type ProtectedSessionLifecycleCode
+} from "@/lib/application-browser/protected-browser-session";
 import {
+  buildNormalizedApplicationFormInspection,
   canonicalJson,
   FormInspectionDomainError,
-  type ApplicationFormInspectionReport,
-  type NormalizedApplicationFormSnapshot
+  type ApplicationFormInspectionReport
 } from "@/lib/application-runs/form-inspection";
 
 export const RELEVANT_MUTATION_QUIET_MS = 500;
@@ -27,7 +28,8 @@ export const APPLICATION_FORM_INSPECTION_CONTROLLER_ERROR_CODES = [
   "FORM_CORRELATION_INVALID",
   "FORM_INSPECTION_IN_PROGRESS",
   "FORM_INSPECTION_CANCELLED",
-  "FORM_GENERATION_INVALIDATED"
+  "FORM_GENERATION_INVALIDATED",
+  "FORM_INSPECTION_REQUEST_TOO_LARGE"
 ] as const;
 
 export type ApplicationFormInspectionControllerErrorCode =
@@ -46,51 +48,36 @@ export class ApplicationFormInspectionControllerError extends Error {
 export type ApplicationFormInspectionInvalidationCode =
   | "REINSPECTION_REQUIRED"
   | "TARGET_NAVIGATED"
+  | "PROTECTED_SESSION_LOST"
   | "PAGE_CLOSED";
 
-export type FormSemanticObserverSnapshot = Readonly<{
-  semanticRevision: number;
-  applicantStateEpoch: number;
-}>;
+export type ProtectedFormInspectionAuthority = Readonly<
+  Pick<
+    ProtectedApplicationBrowserSession,
+    | "waitUntilReady"
+    | "extractApplicationForm"
+    | "verifyCandidate"
+    | "snapshot"
+    | "waitForChange"
+    | "subscribe"
+  >
+>;
 
-export type OwnedFormSemanticObserver = Readonly<{
-  snapshot(): Promise<FormSemanticObserverSnapshot>;
-  waitForChange(input: Readonly<{
-    semanticRevision: number;
-    applicantStateEpoch: number;
-    timeoutMs: number;
-  }>): Promise<FormSemanticObserverSnapshot>;
-  refresh(extraction: SafeApplicationFormExtraction): Promise<void>;
-  dispose(): Promise<void>;
+export type ProtectedFormInspectionTarget = Readonly<{
+  authority: ProtectedFormInspectionAuthority;
+  currentTargetUrl(): string | null;
+  subscribeMainFrameNavigation(listener: () => void): () => void;
 }>;
 
 export type ApplicationFormInspectionControllerRuntime = Readonly<{
-  extract(page: Page): Promise<SafeApplicationFormExtraction>;
-  correlate(input: Readonly<{
-    extraction: SafeApplicationFormExtraction;
-    authoritativeApplyHost: string;
-  }>): Promise<CorrelatedSafeApplicationFormExtraction>;
   now(): number;
   setTimer(callback: () => void, delayMs: number): unknown;
   clearTimer(timer: unknown): void;
-  createObserver(page: Page): Promise<OwnedFormSemanticObserver>;
-  isHandleAttached(handle: ElementHandle): Promise<boolean>;
 }>;
 
 export type TransientInspectionGeneration = Readonly<{
   generationId: symbol;
-  formFingerprint: string;
-  inspectionReport: ApplicationFormInspectionReport;
-  normalizedSnapshot: NormalizedApplicationFormSnapshot;
-  fields: ReadonlyMap<string, Readonly<{
-    fieldFingerprint: string;
-    sourceOrdinal: SourceFieldOrdinal;
-    handle: ElementHandle;
-  }>>;
-  choices: ReadonlyMap<string, ReadonlyMap<string, Readonly<{
-    sourceOrdinal: SourceChoiceOrdinal;
-    handle: ElementHandle;
-  }>>>;
+  readonly inspectionReport: ApplicationFormInspectionReport;
   dispose(): Promise<void>;
 }>;
 
@@ -104,27 +91,16 @@ export type ApplicationFormInspectionController = Readonly<{
   close(): Promise<void>;
 }>;
 
-type PrivateFieldReference = Readonly<{
-  canonicalKey: string;
-  fieldFingerprint: string;
-  sourceOrdinal: SourceFieldOrdinal;
-  handle: ElementHandle;
-}>;
-
-type PrivateChoiceReference = Readonly<{
-  fieldCanonicalKey: string;
-  canonicalKey: string;
-  sourceOrdinal: SourceChoiceOrdinal;
-  handle: ElementHandle;
-}>;
-
 type AcceptedGeneration = {
   readonly generationId: symbol;
-  readonly correlated: CorrelatedSafeApplicationFormExtraction;
+  readonly correlated: CorrelatedProtectedApplicationFormExtraction;
   readonly privateReportCanonical: string;
-  readonly privateFields: readonly PrivateFieldReference[];
-  readonly privateChoices: readonly PrivateChoiceReference[];
+  readonly privateNormalizedCanonical: string;
+  readonly privateFormFingerprint: string;
+  readonly privateFieldCount: number;
+  readonly privateRequiredFieldCount: number;
   readonly facade: TransientInspectionGeneration;
+  latestVerifiedReport: ApplicationFormInspectionReport;
   active: boolean;
   invalidationEmitted: boolean;
   disposePromise: Promise<void> | null;
@@ -132,39 +108,34 @@ type AcceptedGeneration = {
 
 type AttemptTerminalCode = "FORM_STABILITY_TIMEOUT" | "FORM_INSPECTION_CANCELLED";
 
-type InspectAttempt = {
+type ControllerAttempt = {
   readonly deadline: number;
   readonly navigationEpoch: number;
   terminalCode: AttemptTerminalCode | null;
-  terminalPromise: Promise<never>;
-  rejectTerminal: (error: ApplicationFormInspectionControllerError) => void;
+  readonly terminalPromise: Promise<never>;
+  readonly rejectTerminal: (error: ApplicationFormInspectionControllerError) => void;
   timer: unknown;
-  quarantined: boolean;
+  quarantineCount: number;
+  finished: boolean;
+  completionResolved: boolean;
+  readonly completion: Promise<void>;
+  readonly resolveCompletion: () => void;
 };
 
-type RemoteObserver = Readonly<{
-  snapshot(): FormSemanticObserverSnapshot;
-  waitForChange(input: Readonly<{
-    semanticRevision: number;
-    applicantStateEpoch: number;
-    timeoutMs: number;
-  }>): Promise<FormSemanticObserverSnapshot>;
-  refresh(nodes: readonly Element[]): void;
-  dispose(): void;
-}>;
+class ProtectedInspectionIntegrityError extends Error {
+  readonly code = "BROWSER_WORKFLOW_FAILED";
 
-function cloneFieldOrdinal(source: SourceFieldOrdinal): SourceFieldOrdinal {
-  return { form: source.form, section: source.section, field: source.field };
+  constructor() {
+    super("Protected form inspection authority failed safely.");
+    this.name = "ProtectedInspectionIntegrityError";
+  }
 }
 
-function cloneChoiceOrdinal(source: SourceChoiceOrdinal): SourceChoiceOrdinal {
-  return {
-    form: source.form,
-    section: source.section,
-    field: source.field,
-    choice: source.choice
-  };
-}
+const PRODUCTION_RUNTIME: ApplicationFormInspectionControllerRuntime = {
+  now: () => performance.now(),
+  setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)
+};
 
 function controllerError(
   code: ApplicationFormInspectionControllerErrorCode
@@ -172,442 +143,79 @@ function controllerError(
   return new ApplicationFormInspectionControllerError(code);
 }
 
-function plainClone<T>(value: T): T {
-  return structuredClone(value);
+function integrityError(): ProtectedInspectionIntegrityError {
+  return new ProtectedInspectionIntegrityError();
 }
 
-async function createPageSemanticObserver(page: Page): Promise<OwnedFormSemanticObserver> {
-  const remote = await page.evaluateHandle((): RemoteObserver => {
-    let semanticRevision = 0;
-    let applicantStateEpoch = 0;
-    let disposed = false;
-    let explicitSemanticNodes = new WeakSet<Node>();
-    let semanticAncestors = new WeakSet<Node>();
-    const rootObservers = new Map<Document | ShadowRoot, MutationObserver>();
-    const cleanupListeners: Array<() => void> = [];
-    const waiters = new Set<{
-      resolve: (snapshot: FormSemanticObserverSnapshot) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }>();
-    const semanticSelector = [
-      "form",
-      "input",
-      "textarea",
-      "select",
-      "button",
-      "label",
-      "fieldset",
-      "legend",
-      "option",
-      "optgroup",
-      "[role]",
-      "[contenteditable]",
-      "[form]",
-      "style",
-      "link[rel~='stylesheet']"
-    ].join(",");
-    const structuralSurfaceSelector = "form,[form],style,link[rel~='stylesheet']";
-    const structuralIntroductionSelector =
-      "form,input,textarea,select,[form],style,link[rel~='stylesheet']";
-
-    const snapshot = [(): FormSemanticObserverSnapshot => ({
-      semanticRevision,
-      applicantStateEpoch
-    })][0];
-    const wake = [() => {
-      const value = snapshot();
-      for (const waiter of waiters) {
-        clearTimeout(waiter.timer);
-        waiter.resolve(value);
-      }
-      waiters.clear();
-    }][0];
-    const bumpSemantic = [() => {
-      semanticRevision += 1;
-      wake();
-    }][0];
-    const bumpApplicant = [() => {
-      applicantStateEpoch += 1;
-      wake();
-    }][0];
-    const elementMayIntroduceSemantics = [(element: Element): boolean =>
-      element.matches(structuralIntroductionSelector) ||
-      element.querySelector(structuralIntroductionSelector) !== null
-    ][0];
-    const isCurrentContentText = [(node: Node): boolean => {
-      const element = node.nodeType === Node.ELEMENT_NODE
-        ? node as Element
-        : node.parentElement;
-      if (!element) return false;
-      if (element.matches("textarea") || element.closest("textarea")) return true;
-      const editable = element.matches("[contenteditable]")
-        ? element
-        : element.closest("[contenteditable]");
-      return editable !== null && !element.querySelector(semanticSelector);
-    }][0];
-    const isRelated = [(node: Node | null): boolean => {
-      if (!node) return false;
-      if (explicitSemanticNodes.has(node)) return true;
-      const element = node.nodeType === Node.ELEMENT_NODE
-        ? node as Element
-        : node.parentElement;
-      if (!element) return false;
-      if (explicitSemanticNodes.has(element)) return true;
-      if (semanticAncestors.has(element)) return true;
-      if (element === document.head || document.head.contains(element)) return true;
-      let surface: Element | null = element;
-      while (surface) {
-        if (
-          explicitSemanticNodes.has(surface) ||
-          semanticAncestors.has(surface) ||
-          surface.matches(structuralSurfaceSelector) ||
-          surface.closest("form") !== null
-        ) {
-          return true;
-        }
-        const root = surface.getRootNode();
-        surface = root instanceof ShadowRoot ? root.host : null;
-      }
-      return false;
-    }][0];
-    const observeRoot = [(root: Document | ShadowRoot) => {
-      if (rootObservers.has(root)) return;
-      const observer = new MutationObserver(onRecords);
-      observer.observe(root, {
-        attributes: true,
-        characterData: true,
-        childList: true,
-        subtree: true
-      });
-      rootObservers.set(root, observer);
-    }][0];
-    const discoverOpenRootsIncrementally = [(
-      node: Element | ShadowRoot,
-      roots: Set<Document | ShadowRoot>
-    ) => {
-      if (node instanceof Element && node.shadowRoot) roots.add(node.shadowRoot);
-      const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
-      for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-        if (current instanceof Element && current.shadowRoot) roots.add(current.shadowRoot);
-      }
-    }][0];
-    const mutationNodesSome = [(
-      record: MutationRecord,
-      predicate: (node: Node) => boolean
-    ): boolean => {
-      for (const node of record.addedNodes) {
-        if (predicate(node)) return true;
-      }
-      for (const node of record.removedNodes) {
-        if (predicate(node)) return true;
-      }
-      return false;
-    }][0];
-    const recordIsRelevant = [(record: MutationRecord): boolean => {
-      if (record.type === "attributes") {
-        if (record.attributeName === "value" || record.attributeName === "checked" || record.attributeName === "selected") {
-          return false;
-        }
-        return isRelated(record.target);
-      }
-      if (record.type === "characterData") {
-        return !isCurrentContentText(record.target) && isRelated(record.target);
-      }
-      const targetElement = record.target.nodeType === Node.ELEMENT_NODE
-        ? record.target as Element
-        : record.target.parentElement;
-      const targetIsDirectSurface =
-        explicitSemanticNodes.has(record.target) ||
-        (record.target instanceof ShadowRoot && isRelated(record.target.host)) ||
-        (targetElement !== null && (
-          targetElement === document.head ||
-          document.head.contains(targetElement) ||
-          targetElement.matches(structuralSurfaceSelector) ||
-          targetElement.closest("form") !== null
-        ));
-      if (targetIsDirectSurface) {
-        if (isCurrentContentText(record.target)) {
-          return mutationNodesSome(record, (node) =>
-            node.nodeType === Node.ELEMENT_NODE
-          );
-        }
-        return true;
-      }
-      return mutationNodesSome(record, (node) =>
-        node.nodeType === Node.ELEMENT_NODE && elementMayIntroduceSemantics(node as Element)
-      );
-    }][0];
-    const onRecords = [(records: MutationRecord[]) => {
-      let relevant = false;
-      for (const record of records) {
-        if (recordIsRelevant(record)) relevant = true;
-      }
-      if (relevant) bumpSemantic();
-    }][0];
-    observeRoot(document);
-    const onApplicantState = [() => bumpApplicant()][0];
-    document.addEventListener("input", onApplicantState, true);
-    document.addEventListener("change", onApplicantState, true);
-    cleanupListeners.push(() => document.removeEventListener("input", onApplicantState, true));
-    cleanupListeners.push(() => document.removeEventListener("change", onApplicantState, true));
-
-    const onStyleRisk = [(event: Event) => {
-      if (event.type === "resize" || isRelated(event.target as Node | null)) bumpSemantic();
-    }][0];
-    document.addEventListener("load", onStyleRisk, true);
-    cleanupListeners.push(() => document.removeEventListener("load", onStyleRisk, true));
-    const styleRiskEvents = [
-      "resize",
-      "animationstart",
-      "animationiteration",
-      "animationend",
-      "animationcancel",
-      "transitionrun",
-      "transitionstart",
-      "transitionend",
-      "transitioncancel"
-    ];
-    for (const eventName of styleRiskEvents) {
-      window.addEventListener(eventName, onStyleRisk, true);
-      cleanupListeners.push(() => window.removeEventListener(eventName, onStyleRisk, true));
-    }
-
-    return {
-      snapshot,
-      waitForChange(input) {
-        if (
-          disposed ||
-          semanticRevision !== input.semanticRevision ||
-          applicantStateEpoch !== input.applicantStateEpoch
-        ) {
-          return Promise.resolve(snapshot());
-        }
-        return new Promise((resolve) => {
-          const waiter = {
-            resolve,
-            timer: setTimeout(() => {
-              waiters.delete(waiter);
-              resolve(snapshot());
-            }, input.timeoutMs)
-          };
-          waiters.add(waiter);
-        });
-      },
-      refresh(nodes) {
-        explicitSemanticNodes = new WeakSet<Node>();
-        semanticAncestors = new WeakSet<Node>();
-        const scanSurfaces = new Set<Element>();
-        for (const node of nodes) {
-          explicitSemanticNodes.add(node);
-          scanSurfaces.add(node);
-          let current: Node | null = node;
-          while (current) {
-            if (current instanceof Element) {
-              const ownerForm = (
-                current instanceof HTMLInputElement ||
-                current instanceof HTMLTextAreaElement ||
-                current instanceof HTMLSelectElement ||
-                current instanceof HTMLButtonElement
-              ) ? current.form : null;
-              const containingForm = ownerForm ?? current.closest("form");
-              if (containingForm) scanSurfaces.add(containingForm);
-              if ("labels" in current) {
-                for (const label of (current as HTMLInputElement).labels ?? []) {
-                  explicitSemanticNodes.add(label);
-                }
-              }
-              for (const attribute of ["aria-labelledby", "aria-describedby"]) {
-                for (const id of (current.getAttribute(attribute) ?? "").split(/\s+/u)) {
-                  if (!id) continue;
-                  const referenced = document.getElementById(id);
-                  if (referenced) explicitSemanticNodes.add(referenced);
-                }
-              }
-            }
-            current = current.parentNode instanceof ShadowRoot
-              ? current.parentNode.host
-              : current.parentNode;
-            if (current) semanticAncestors.add(current);
-          }
-        }
-
-        const desiredRoots = new Set<Document | ShadowRoot>([document]);
-        for (const surface of scanSurfaces) {
-          if (surface.isConnected) discoverOpenRootsIncrementally(surface, desiredRoots);
-        }
-        for (const root of desiredRoots) {
-          if (root instanceof ShadowRoot && root.host.isConnected) {
-            discoverOpenRootsIncrementally(root, desiredRoots);
-          }
-        }
-        for (const [root, observer] of rootObservers) {
-          if (desiredRoots.has(root)) continue;
-          observer.disconnect();
-          rootObservers.delete(root);
-        }
-        for (const root of desiredRoots) observeRoot(root);
-      },
-      dispose() {
-        if (disposed) return;
-        disposed = true;
-        for (const observer of rootObservers.values()) observer.disconnect();
-        rootObservers.clear();
-        for (const cleanup of cleanupListeners) cleanup();
-        wake();
-      }
-    };
-  });
-
-  let disposePromise: Promise<void> | null = null;
-  return {
-    async snapshot() {
-      return remote.evaluate((state) => state.snapshot());
-    },
-    async waitForChange(input) {
-      return remote.evaluate((state, value) => state.waitForChange(value), input);
-    },
-    async refresh(extraction) {
-      const handles = extraction.fields.flatMap((field) => [
-        field.handle,
-        ...field.choices.map((choice) => choice.handle)
-      ]);
-      await remote.evaluate(
-        (state, nodes) => state.refresh(nodes as unknown as readonly Element[]),
-        handles
-      );
-    },
-    dispose() {
-      disposePromise ??= (async () => {
-        try {
-          await remote.evaluate((state) => state.dispose());
-        } finally {
-          await remote.dispose();
-        }
-      })();
-      return disposePromise;
-    }
-  };
+function fencesEqual(left: BrowserDocumentFence, right: BrowserDocumentFence): boolean {
+  return left.documentEpoch === right.documentEpoch &&
+    left.semanticRevision === right.semanticRevision &&
+    left.applicantStateEpoch === right.applicantStateEpoch;
 }
 
-const PRODUCTION_RUNTIME: ApplicationFormInspectionControllerRuntime = {
-  extract: extractSafeApplicationForm,
-  correlate: correlateSafeApplicationFormExtraction,
-  now: () => performance.now(),
-  setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-  clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
-  createObserver: createPageSemanticObserver,
-  isHandleAttached: (handle) => handle.evaluate((element) =>
-    element.isConnected && element.ownerDocument === document
-  )
-};
-
-function capturePrivateReferences(correlated: CorrelatedSafeApplicationFormExtraction): {
-  fields: readonly PrivateFieldReference[];
-  choices: readonly PrivateChoiceReference[];
-} {
-  const fields = [...correlated.fields].map(([canonicalKey, reference]) => ({
-    canonicalKey,
-    fieldFingerprint: reference.fieldFingerprint,
-    sourceOrdinal: cloneFieldOrdinal(reference.sourceOrdinal),
-    handle: reference.handle
-  }));
-  const choices = [...correlated.choices].flatMap(([fieldCanonicalKey, fieldChoices]) =>
-    [...fieldChoices].map(([canonicalKey, reference]) => ({
-      fieldCanonicalKey,
-      canonicalKey,
-      sourceOrdinal: cloneChoiceOrdinal(reference.sourceOrdinal),
-      handle: reference.handle
-    }))
-  );
-  return { fields, choices };
+function cloneReport(report: ApplicationFormInspectionReport): ApplicationFormInspectionReport {
+  return structuredClone(report);
 }
 
 export function createApplicationFormInspectionControllerWithRuntime(
   input: Readonly<{
-    page: Page;
+    target: ProtectedFormInspectionTarget;
     authoritativeApplyHost: string;
     onInvalidated?: (code: ApplicationFormInspectionInvalidationCode) => void;
   }>,
   runtime: ApplicationFormInspectionControllerRuntime
 ): ApplicationFormInspectionController {
+  const authority = input.target.authority;
   let closed = false;
+  let terminalUnavailable = false;
   let closePromise: Promise<void> | null = null;
-  let observer: OwnedFormSemanticObserver | null = null;
-  let observerPromise: Promise<OwnedFormSemanticObserver> | null = null;
   let currentRecord: AcceptedGeneration | null = null;
-  let activeAttempt: InspectAttempt | null = null;
-  const activeVerifications = new Set<InspectAttempt>();
+  let activeAttempt: ControllerAttempt | null = null;
+  const pendingDisposals = new Set<Promise<void>>();
   let navigationEpoch = 0;
-  let pageClosedEmitted = false;
-  let listenersRemoved = false;
+  let recoverableInvalidationAnnounced = false;
+  let terminalInvalidationAnnounced = false;
+  let subscriptionsRemoved = false;
 
   const emitInvalidation = (code: ApplicationFormInspectionInvalidationCode): void => {
     try {
       input.onInvalidated?.(code);
     } catch {
-      // Caller notification is advisory and cannot control mandatory cleanup.
+      // Notification cannot interrupt synchronous authority revocation or cleanup.
     }
   };
 
-  const ensureObserver = async (): Promise<OwnedFormSemanticObserver> => {
-    if (observer) return observer;
-    const observerEpoch = navigationEpoch;
-    observerPromise ??= runtime.createObserver(input.page).then(async (created) => {
-      if (closed || input.page.isClosed() || navigationEpoch !== observerEpoch) {
-        await created.dispose().catch(() => undefined);
-        throw controllerError("FORM_INSPECTION_CANCELLED");
-      }
-      observer = created;
-      return created;
-    }).finally(() => {
-      observerPromise = null;
-    });
-    return observerPromise;
+  const maybeResolveAttempt = (attempt: ControllerAttempt): void => {
+    if (!attempt.finished || attempt.quarantineCount !== 0 || attempt.completionResolved) return;
+    attempt.completionResolved = true;
+    if (activeAttempt === attempt) activeAttempt = null;
+    attempt.resolveCompletion();
   };
 
-  const disposeAccepted = (record: AcceptedGeneration): Promise<void> => {
-    record.disposePromise ??= Promise.resolve().then(() => record.correlated.dispose()).catch(() => undefined);
-    return record.disposePromise;
-  };
-
-  const releaseGeneration = (generationId: symbol): Promise<void> => {
-    const record = currentRecord;
-    if (!record || record.generationId !== generationId) return Promise.resolve();
-    currentRecord = null;
-    record.active = false;
-    return disposeAccepted(record);
-  };
-
-  const invalidateAccepted = (
-    record: AcceptedGeneration,
-    code: ApplicationFormInspectionInvalidationCode,
-    notify = true
-  ): Promise<void> => {
-    if (!record.active || currentRecord !== record) return record.disposePromise ?? Promise.resolve();
-    currentRecord = null;
-    record.active = false;
-    const cleanup = disposeAccepted(record);
-    if (!record.invalidationEmitted) {
-      record.invalidationEmitted = true;
-      if (notify) emitInvalidation(code);
-    }
-    return cleanup;
-  };
-
-  const makeAttempt = (): InspectAttempt => {
+  const makeAttempt = (): ControllerAttempt => {
     let rejectTerminal!: (error: ApplicationFormInspectionControllerError) => void;
-    const terminalPromise = new Promise<never>((_, reject) => {
+    const terminalPromise = new Promise<never>((_resolve, reject) => {
       rejectTerminal = reject;
     });
-    terminalPromise.catch(() => undefined);
-    const attempt: InspectAttempt = {
+    // The rejection is also consumed by every raced protected operation. This
+    // observer covers a cancellation that lands in a synchronous controller gap.
+    void terminalPromise.catch(() => undefined);
+    let resolveCompletion!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const attempt: ControllerAttempt = {
       deadline: runtime.now() + MAX_STABILIZATION_MS,
       navigationEpoch,
       terminalCode: null,
       terminalPromise,
       rejectTerminal,
       timer: undefined,
-      quarantined: false
+      quarantineCount: 0,
+      finished: false,
+      completionResolved: false,
+      completion,
+      resolveCompletion
     };
     attempt.timer = runtime.setTimer(() => {
       if (attempt.terminalCode) return;
@@ -617,361 +225,394 @@ export function createApplicationFormInspectionControllerWithRuntime(
     return attempt;
   };
 
-  const terminateAttempt = (attempt: InspectAttempt, code: AttemptTerminalCode) => {
+  const terminateAttempt = (
+    attempt: ControllerAttempt,
+    code: AttemptTerminalCode
+  ): void => {
     if (attempt.terminalCode) return;
     attempt.terminalCode = code;
     runtime.clearTimer(attempt.timer);
     attempt.rejectTerminal(controllerError(code));
   };
 
-  const finishAttempt = (attempt: InspectAttempt) => {
+  const finishAttempt = (attempt: ControllerAttempt): void => {
     runtime.clearTimer(attempt.timer);
-    if (!attempt.quarantined && activeAttempt === attempt) activeAttempt = null;
+    attempt.finished = true;
+    maybeResolveAttempt(attempt);
   };
 
-  const assertAttemptActive = (attempt: InspectAttempt, frame: Frame | object) => {
+  const quarantine = <T>(
+    attempt: ControllerAttempt,
+    pending: Promise<T>,
+    onLateSuccess?: (value: T) => void | Promise<void>
+  ): void => {
+    attempt.quarantineCount += 1;
+    void pending.then(
+      async (value) => {
+        try {
+          await onLateSuccess?.(value);
+        } catch {
+          // Late authority-reducing cleanup is best effort and never resumes work.
+        }
+      },
+      () => undefined
+    ).finally(() => {
+      attempt.quarantineCount -= 1;
+      maybeResolveAttempt(attempt);
+    });
+  };
+
+  const raceAttempt = async <T>(
+    attempt: ControllerAttempt,
+    pending: Promise<T>,
+    onLateSuccess?: (value: T) => void | Promise<void>
+  ): Promise<T> => {
+    const protectedOutcome = pending.then(
+      (value) => ({ kind: "value" as const, value }),
+      (error: unknown) => ({ kind: "error" as const, error })
+    );
+    try {
+      const outcome = await Promise.race([protectedOutcome, attempt.terminalPromise]);
+      if (outcome.kind === "error") throw outcome.error;
+      return outcome.value;
+    } catch (error) {
+      if (attempt.terminalCode) quarantine(attempt, pending, onLateSuccess);
+      throw error;
+    }
+  };
+
+  const assertAttemptActive = (attempt: ControllerAttempt): void => {
     if (attempt.terminalCode) throw controllerError(attempt.terminalCode);
-    if (closed || input.page.isClosed()) throw controllerError("FORM_INSPECTION_CANCELLED");
     if (
+      closed ||
+      terminalUnavailable ||
       navigationEpoch !== attempt.navigationEpoch ||
-      input.page.mainFrame() !== frame
+      input.target.currentTargetUrl() === null
     ) {
       throw controllerError("FORM_INSPECTION_CANCELLED");
     }
-    if (runtime.now() >= attempt.deadline) throw controllerError("FORM_STABILITY_TIMEOUT");
+    if (runtime.now() >= attempt.deadline) {
+      terminateAttempt(attempt, "FORM_STABILITY_TIMEOUT");
+      throw controllerError("FORM_STABILITY_TIMEOUT");
+    }
   };
 
-  const raceAttempt = <T>(attempt: InspectAttempt, operation: Promise<T>): Promise<T> =>
-    Promise.race([operation, attempt.terminalPromise]);
+  const remainingWait = (attempt: ControllerAttempt, desiredMs: number): number =>
+    Math.max(0, Math.min(desiredMs, Math.floor(attempt.deadline - runtime.now())));
 
-  const disposeObserverForLifecycle = (): Promise<void> => {
-    const owned = observer;
-    const pending = observerPromise;
-    observer = null;
-    observerPromise = null;
-    return Promise.all([
-      owned?.dispose().catch(() => undefined) ?? Promise.resolve(),
-      pending?.then((created) => created.dispose()).catch(() => undefined) ?? Promise.resolve()
-    ]).then(() => undefined);
+  const disposeCorrelated = async (
+    correlated: CorrelatedProtectedApplicationFormExtraction | null
+  ): Promise<void> => {
+    if (!correlated) return;
+    try {
+      await correlated.dispose();
+    } catch {
+      // Cleanup failure cannot replace the primary bounded controller result.
+    }
   };
 
-  const disposeExtraction = async (extraction: SafeApplicationFormExtraction | null) => {
-    if (!extraction) return;
+  const disposeExtraction = async (
+    extraction: ProtectedApplicationFormExtraction
+  ): Promise<void> => {
     try {
       await extraction.dispose();
     } catch {
-      // Cleanup errors never replace the bounded controller result.
+      // Cleanup failure cannot replace the primary bounded controller result.
     }
   };
 
-  const extractOwned = async (attempt: InspectAttempt): Promise<SafeApplicationFormExtraction> => {
-    const pending = runtime.extract(input.page);
-    try {
-      return await raceAttempt(attempt, pending);
-    } catch (error) {
-      if (attempt.terminalCode) {
-        attempt.quarantined = true;
-        void pending.then(disposeExtraction, () => undefined).finally(() => {
-          attempt.quarantined = false;
-          if (activeAttempt === attempt) activeAttempt = null;
-        });
-      }
-      throw error;
+  const disposeAccepted = (record: AcceptedGeneration): Promise<void> => {
+    if (currentRecord === record) currentRecord = null;
+    record.active = false;
+    if (!record.disposePromise) {
+      const disposal = disposeCorrelated(record.correlated);
+      record.disposePromise = disposal;
+      pendingDisposals.add(disposal);
+      void disposal.finally(() => pendingDisposals.delete(disposal));
     }
+    return record.disposePromise;
   };
 
-  const correlateOwned = async (
-    attempt: InspectAttempt,
-    extraction: SafeApplicationFormExtraction
-  ): Promise<CorrelatedSafeApplicationFormExtraction> => {
-    const pending = runtime.correlate({
-      extraction,
-      authoritativeApplyHost: input.authoritativeApplyHost
-    });
-    try {
-      return await raceAttempt(attempt, pending);
-    } catch (error) {
-      if (attempt.terminalCode) {
-        attempt.quarantined = true;
-        void pending.then(
-          (candidate) => candidate.dispose().catch(() => undefined),
-          () => undefined
-        ).finally(() => {
-          attempt.quarantined = false;
-          if (activeAttempt === attempt) activeAttempt = null;
-        });
-      }
-      throw error;
-    }
+  const announceRecoverable = (code: ApplicationFormInspectionInvalidationCode): void => {
+    if (recoverableInvalidationAnnounced || terminalInvalidationAnnounced || closed) return;
+    recoverableInvalidationAnnounced = true;
+    emitInvalidation(code);
   };
 
-  const reportsEqual = (
-    left: ApplicationFormInspectionReport,
-    right: ApplicationFormInspectionReport
-  ): boolean => canonicalJson(left) === canonicalJson(right);
-
-  const allAttached = async (
-    fields: readonly PrivateFieldReference[],
-    choices: readonly PrivateChoiceReference[]
-  ): Promise<boolean> => {
-    for (const reference of [...fields, ...choices]) {
-      try {
-        if (!await runtime.isHandleAttached(reference.handle)) return false;
-      } catch {
-        return false;
-      }
-    }
-    return true;
-  };
-
-  const armSemanticInvalidationWait = (
+  const invalidateAccepted = (
     record: AcceptedGeneration,
-    initial: FormSemanticObserverSnapshot
-  ) => {
-    void (async () => {
-      let observed = initial;
-      while (!closed && record.active && currentRecord === record) {
-        let changed: FormSemanticObserverSnapshot;
-        try {
-          changed = await (await ensureObserver()).waitForChange({
-            ...observed,
-            timeoutMs: MAX_STABILIZATION_MS
-          });
-        } catch {
-          return;
-        }
-        if (!record.active || currentRecord !== record) return;
-        if (changed.semanticRevision !== observed.semanticRevision) {
-          await invalidateAccepted(record, "REINSPECTION_REQUIRED");
-          return;
-        }
-        observed = changed;
-      }
-    })();
+    code: ApplicationFormInspectionInvalidationCode,
+    emit = true
+  ): Promise<void> => {
+    const wasActive = record.active && currentRecord === record;
+    if (currentRecord === record) currentRecord = null;
+    record.active = false;
+    if (emit && wasActive && !record.invalidationEmitted) {
+      record.invalidationEmitted = true;
+      announceRecoverable(code);
+    }
+    return disposeAccepted(record);
   };
 
-  const buildFacade = (
-    generationId: symbol,
-    correlated: CorrelatedSafeApplicationFormExtraction,
-    privateReferences: ReturnType<typeof capturePrivateReferences>
-  ): TransientInspectionGeneration => {
-    const fields = new Map(privateReferences.fields.map((reference) => [
-      reference.canonicalKey,
-      {
-        fieldFingerprint: reference.fieldFingerprint,
-        sourceOrdinal: cloneFieldOrdinal(reference.sourceOrdinal),
-        handle: reference.handle
-      }
-    ]));
-    const choices = new Map<string, ReadonlyMap<string, Readonly<{
-      sourceOrdinal: SourceChoiceOrdinal;
-      handle: ElementHandle;
-    }>>>();
-    for (const reference of privateReferences.choices) {
-      const fieldChoices = new Map(choices.get(reference.fieldCanonicalKey) ?? []);
-      fieldChoices.set(reference.canonicalKey, {
-        sourceOrdinal: cloneChoiceOrdinal(reference.sourceOrdinal),
-        handle: reference.handle
-      });
-      choices.set(reference.fieldCanonicalKey, fieldChoices);
-    }
-    let disposePromise: Promise<void> | null = null;
-    const facade: TransientInspectionGeneration = {
+  const buildAccepted = (
+    correlated: CorrelatedProtectedApplicationFormExtraction,
+    freshReport: ApplicationFormInspectionReport
+  ): AcceptedGeneration => {
+    const generationId = Symbol("protected-form-inspection-generation");
+    const facade = Object.freeze({
       generationId,
-      formFingerprint: correlated.formFingerprint,
-      inspectionReport: plainClone(correlated.inspectionReport),
-      normalizedSnapshot: plainClone(correlated.normalizedSnapshot),
-      fields,
-      choices,
-      dispose() {
-        disposePromise ??= releaseGeneration(generationId);
-        return disposePromise;
+      get inspectionReport(): ApplicationFormInspectionReport {
+        return cloneReport(record.latestVerifiedReport);
+      },
+      dispose(): Promise<void> {
+        return disposeAccepted(record);
       }
+    });
+    const record: AcceptedGeneration = {
+      generationId,
+      correlated,
+      privateReportCanonical: canonicalJson(correlated.inspectionReport),
+      privateNormalizedCanonical: canonicalJson(correlated.normalizedSnapshot),
+      privateFormFingerprint: correlated.formFingerprint,
+      privateFieldCount: correlated.fieldCount,
+      privateRequiredFieldCount: correlated.requiredFieldCount,
+      facade,
+      latestVerifiedReport: cloneReport(freshReport),
+      active: true,
+      invalidationEmitted: false,
+      disposePromise: null
     };
-    return facade;
+    return record;
   };
 
-  const verifyCandidate = async (
-    attempt: InspectAttempt,
-    candidate: CorrelatedSafeApplicationFormExtraction,
-    privateReportCanonical: string,
-    privateReferences: ReturnType<typeof capturePrivateReferences>
-  ): Promise<boolean> => {
-    const frame = input.page.mainFrame();
-    while (true) {
-      assertAttemptActive(attempt, frame);
-      const state = await raceAttempt(attempt, (await ensureObserver()).snapshot());
-      const temporary = await extractOwned(attempt);
-      let retry = false;
-      try {
-        assertAttemptActive(attempt, frame);
-        const after = await raceAttempt(attempt, (await ensureObserver()).snapshot());
-        if (
-          state.semanticRevision !== after.semanticRevision ||
-          state.applicantStateEpoch !== after.applicantStateEpoch
-        ) {
-          retry = true;
-        } else {
-          if (canonicalJson(temporary.report) !== privateReportCanonical) return false;
-          if (!await allAttached(privateReferences.fields, privateReferences.choices)) return false;
-          const afterAttachment = await raceAttempt(
-            attempt,
-            (await ensureObserver()).snapshot()
-          );
-          if (
-            state.semanticRevision !== afterAttachment.semanticRevision ||
-            state.applicantStateEpoch !== afterAttachment.applicantStateEpoch
-          ) {
-            retry = true;
-          }
-        }
-      } finally {
-        await disposeExtraction(temporary);
-      }
-      if (retry) continue;
-      const afterDisposal = await raceAttempt(attempt, (await ensureObserver()).snapshot());
-      if (
-        state.semanticRevision !== afterDisposal.semanticRevision ||
-        state.applicantStateEpoch !== afterDisposal.applicantStateEpoch
-      ) {
-        continue;
-      }
-      assertAttemptActive(attempt, frame);
-      return true;
+  const freshVerificationMatches = (
+    candidate: Readonly<{
+      privateReportCanonical: string;
+      privateNormalizedCanonical: string;
+      privateFormFingerprint: string;
+      privateFieldCount: number;
+      privateRequiredFieldCount: number;
+    }>,
+    report: ApplicationFormInspectionReport
+  ): boolean => {
+    try {
+      if (canonicalJson(report) !== candidate.privateReportCanonical) return false;
+      const rebuilt = buildNormalizedApplicationFormInspection({
+        authoritativeApplyHost: input.authoritativeApplyHost,
+        report
+      });
+      return rebuilt.formFingerprint === candidate.privateFormFingerprint &&
+        rebuilt.fieldCount === candidate.privateFieldCount &&
+        rebuilt.requiredFieldCount === candidate.privateRequiredFieldCount &&
+        canonicalJson(rebuilt.snapshot) === candidate.privateNormalizedCanonical;
+    } catch {
+      return false;
     }
   };
+
+  const correlatedContract = (
+    correlated: CorrelatedProtectedApplicationFormExtraction
+  ) => ({
+    privateReportCanonical: canonicalJson(correlated.inspectionReport),
+    privateNormalizedCanonical: canonicalJson(correlated.normalizedSnapshot),
+    privateFormFingerprint: correlated.formFingerprint,
+    privateFieldCount: correlated.fieldCount,
+    privateRequiredFieldCount: correlated.requiredFieldCount
+  });
+
+  const establishTerminalAuthorityLoss = (): void => {
+    terminalUnavailable = true;
+    navigationEpoch += 1;
+    const accepted = currentRecord;
+    if (accepted) {
+      currentRecord = null;
+      accepted.active = false;
+    }
+    if (!terminalInvalidationAnnounced && !closed) {
+      terminalInvalidationAnnounced = true;
+      emitInvalidation("PROTECTED_SESSION_LOST");
+    }
+    if (accepted) void disposeAccepted(accepted);
+  };
+
+  const mapProtectedFailure = (error: unknown): Error => {
+    if (error instanceof ApplicationFormInspectionControllerError) return error;
+    if (
+      error instanceof FormInspectionDomainError &&
+      error.code === "AMBIGUOUS_DUPLICATE_FIELD"
+    ) {
+      return error;
+    }
+    if (error instanceof ApplicationFormCorrelationError) {
+      return controllerError("FORM_CORRELATION_INVALID");
+    }
+    if (error instanceof ProtectedApplicationFormExtractionError) {
+      if (error.code === "FORM_INSPECTION_OVERSIZE") {
+        return controllerError("FORM_INSPECTION_REQUEST_TOO_LARGE");
+      }
+      if (error.code === "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED") return error;
+      return controllerError("FORM_CORRELATION_INVALID");
+    }
+    if (error instanceof ProtectedBrowserSessionError) {
+      if (error.code === "PROTECTED_SESSION_BUSY") {
+        return controllerError("FORM_INSPECTION_IN_PROGRESS");
+      }
+      if (
+        error.code === "PROTECTED_SESSION_SETUP_FAILED" ||
+        error.code === "PROTECTED_SESSION_CLOSED" ||
+        error.code === "PROTECTED_SESSION_INVALID_RESPONSE" ||
+        error.code === "PROTECTED_CANDIDATE_INVALID"
+      ) {
+        establishTerminalAuthorityLoss();
+        return integrityError();
+      }
+    }
+    establishTerminalAuthorityLoss();
+    return integrityError();
+  };
+
+  const retryableProtectedFailure = (error: unknown): boolean =>
+    error instanceof ProtectedBrowserSessionError && (
+      error.code === "PROTECTED_SESSION_NOT_READY" ||
+      error.code === "PROTECTED_SESSION_READINESS_TIMEOUT" ||
+      error.code === "PROTECTED_SESSION_STALE_RESPONSE"
+    );
 
   const inspect = async (
     options: Readonly<{ signal?: AbortSignal }> = {}
   ): Promise<TransientInspectionGeneration> => {
-    if (closed || input.page.isClosed() || options.signal?.aborted) {
+    if (
+      closed ||
+      terminalUnavailable ||
+      input.target.currentTargetUrl() === null ||
+      options.signal?.aborted
+    ) {
       throw controllerError("FORM_INSPECTION_CANCELLED");
     }
     if (activeAttempt) throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+
+    const predecessor = currentRecord;
+    const precedingDisposals = [...pendingDisposals];
+    recoverableInvalidationAnnounced = false;
     const attempt = makeAttempt();
     activeAttempt = attempt;
     const onAbort = () => terminateAttempt(attempt, "FORM_INSPECTION_CANCELLED");
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      const ownedObserver = await raceAttempt(attempt, ensureObserver());
-      const frame = input.page.mainFrame();
+      if (precedingDisposals.length > 0) {
+        await raceAttempt(attempt, Promise.all(precedingDisposals));
+        assertAttemptActive(attempt);
+      }
       while (true) {
-        assertAttemptActive(attempt, frame);
-        const quietStart = await raceAttempt(attempt, ownedObserver.snapshot());
-        const quietEnd = await raceAttempt(attempt, ownedObserver.waitForChange({
-          ...quietStart,
-          timeoutMs: Math.min(RELEVANT_MUTATION_QUIET_MS, attempt.deadline - runtime.now())
-        }));
-        if (quietStart.semanticRevision !== quietEnd.semanticRevision) continue;
-
-        let extractionA: SafeApplicationFormExtraction | null = null;
-        let extractionB: SafeApplicationFormExtraction | null = null;
+        assertAttemptActive(attempt);
+        let extraction: ProtectedApplicationFormExtraction | null = null;
+        let correlated: CorrelatedProtectedApplicationFormExtraction | null = null;
+        let replacementCommitted = false;
         try {
-          const aFence = quietEnd;
-          extractionA = await extractOwned(attempt);
-          const afterA = await raceAttempt(attempt, ownedObserver.snapshot());
-          if (
-            aFence.semanticRevision !== afterA.semanticRevision ||
-            aFence.applicantStateEpoch !== afterA.applicantStateEpoch
-          ) {
-            continue;
-          }
-          await raceAttempt(attempt, ownedObserver.refresh(extractionA));
-          const gapEnd = await raceAttempt(attempt, ownedObserver.waitForChange({
-            ...afterA,
-            timeoutMs: Math.min(SEMANTIC_EXTRACTION_GAP_MS, attempt.deadline - runtime.now())
-          }));
-          if (
-            afterA.semanticRevision !== gapEnd.semanticRevision ||
-            afterA.applicantStateEpoch !== gapEnd.applicantStateEpoch
-          ) {
-            continue;
-          }
+          await raceAttempt(attempt, authority.waitUntilReady());
+          assertAttemptActive(attempt);
+          const quietStart = await raceAttempt(attempt, authority.snapshot());
+          assertAttemptActive(attempt);
+          const quietEnd = await raceAttempt(
+            attempt,
+            authority.waitForChange(
+              quietStart,
+              remainingWait(attempt, RELEVANT_MUTATION_QUIET_MS)
+            )
+          );
+          assertAttemptActive(attempt);
+          if (!fencesEqual(quietStart, quietEnd)) continue;
 
-          extractionB = await extractOwned(attempt);
-          const afterB = await raceAttempt(attempt, ownedObserver.snapshot());
-          if (
-            gapEnd.semanticRevision !== afterB.semanticRevision ||
-            gapEnd.applicantStateEpoch !== afterB.applicantStateEpoch
-          ) {
-            continue;
-          }
-          if (!reportsEqual(extractionA.report, extractionB.report)) continue;
-          await disposeExtraction(extractionA);
-          extractionA = null;
-          assertAttemptActive(attempt, frame);
+          extraction = await raceAttempt(
+            attempt,
+            authority.extractApplicationForm(),
+            (late) => late.dispose()
+          );
+          assertAttemptActive(attempt);
+          const transferredExtraction = extraction;
+          extraction = null;
+          correlated = await raceAttempt(
+            attempt,
+            correlateProtectedApplicationFormExtraction({
+              extraction: transferredExtraction,
+              authoritativeApplyHost: input.authoritativeApplyHost
+            }),
+            (late) => late.dispose()
+          );
+          assertAttemptActive(attempt);
 
-          const transferredExtractionB = extractionB;
-          extractionB = null;
-          const candidate = await correlateOwned(attempt, transferredExtractionB);
-          let candidateAccepted = false;
-          try {
-            const privateReportCanonical = canonicalJson(candidate.inspectionReport);
-            const privateReferences = capturePrivateReferences(candidate);
-            if (!await verifyCandidate(attempt, candidate, privateReportCanonical, privateReferences)) {
-              continue;
+          const gapEnd = await raceAttempt(
+            attempt,
+            authority.waitForChange(
+              quietEnd,
+              remainingWait(attempt, SEMANTIC_EXTRACTION_GAP_MS)
+            )
+          );
+          assertAttemptActive(attempt);
+          if (!fencesEqual(quietEnd, gapEnd)) continue;
+
+          const contract = correlatedContract(correlated);
+          const verified = await raceAttempt(
+            attempt,
+            authority.verifyCandidate(correlated.candidate)
+          );
+          assertAttemptActive(attempt);
+          if (verified.status === "INVALID") continue;
+          if (!freshVerificationMatches(contract, verified.report)) throw integrityError();
+
+          const previous = predecessor;
+          if (previous) {
+            if (currentRecord !== previous && currentRecord !== null) throw integrityError();
+            if (currentRecord === previous) currentRecord = null;
+            previous.active = false;
+            replacementCommitted = true;
+            await raceAttempt(attempt, disposeAccepted(previous));
+            assertAttemptActive(attempt);
+            const reverified = await raceAttempt(
+              attempt,
+              authority.verifyCandidate(correlated.candidate)
+            );
+            assertAttemptActive(attempt);
+            if (reverified.status === "INVALID") {
+              throw controllerError("FORM_GENERATION_INVALIDATED");
             }
-            const commitFence = await raceAttempt(attempt, ownedObserver.snapshot());
-
-            const previous = currentRecord;
-            if (previous) {
-              currentRecord = null;
-              previous.active = false;
-              await disposeAccepted(previous);
-              const afterOldDisposal = await raceAttempt(attempt, ownedObserver.snapshot());
-              if (
-                afterOldDisposal.semanticRevision !== commitFence.semanticRevision ||
-                afterOldDisposal.applicantStateEpoch !== commitFence.applicantStateEpoch
-              ) {
-                throw controllerError("FORM_GENERATION_INVALIDATED");
-              }
-              if (!await verifyCandidate(attempt, candidate, privateReportCanonical, privateReferences)) {
-                throw controllerError("FORM_GENERATION_INVALIDATED");
-              }
-            }
-            assertAttemptActive(attempt, frame);
-            const acceptanceFence = await raceAttempt(attempt, ownedObserver.snapshot());
-            assertAttemptActive(attempt, frame);
-            const generationId = Symbol();
-            const facade = buildFacade(generationId, candidate, privateReferences);
-            const accepted: AcceptedGeneration = {
-              generationId,
-              correlated: candidate,
-              privateReportCanonical,
-              privateFields: privateReferences.fields,
-              privateChoices: privateReferences.choices,
-              facade,
-              active: true,
-              invalidationEmitted: false,
-              disposePromise: null
-            };
+            if (!freshVerificationMatches(contract, reverified.report)) throw integrityError();
+            const accepted = buildAccepted(correlated, reverified.report);
+            assertAttemptActive(attempt);
             currentRecord = accepted;
-            armSemanticInvalidationWait(accepted, acceptanceFence);
-            candidateAccepted = true;
-            return facade;
-          } finally {
-            if (!candidateAccepted) await candidate.dispose().catch(() => undefined);
+            recoverableInvalidationAnnounced = false;
+            correlated = null;
+            return accepted.facade;
           }
+
+          const accepted = buildAccepted(correlated, verified.report);
+          assertAttemptActive(attempt);
+          currentRecord = accepted;
+          recoverableInvalidationAnnounced = false;
+          correlated = null;
+          return accepted.facade;
+        } catch (error) {
+          if (replacementCommitted) {
+            if (retryableProtectedFailure(error)) {
+              throw controllerError("FORM_GENERATION_INVALIDATED");
+            }
+            throw mapProtectedFailure(error);
+          }
+          if (retryableProtectedFailure(error)) {
+            assertAttemptActive(attempt);
+            continue;
+          }
+          throw mapProtectedFailure(error);
         } finally {
-          await Promise.all([
-            disposeExtraction(extractionA),
-            disposeExtraction(extractionB)
-          ]);
+          if (extraction) {
+            await raceAttempt(attempt, disposeExtraction(extraction));
+          }
+          if (correlated) {
+            await raceAttempt(attempt, disposeCorrelated(correlated));
+          }
         }
       }
-    } catch (error) {
-      if (error instanceof ApplicationFormInspectionControllerError) throw error;
-      if (
-        error instanceof FormInspectionDomainError &&
-        error.code === "AMBIGUOUS_DUPLICATE_FIELD"
-      ) {
-        throw error;
-      }
-      if (error instanceof ApplicationFormCorrelationError) {
-        throw controllerError("FORM_CORRELATION_INVALID");
-      }
-      throw controllerError("FORM_CORRELATION_INVALID");
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
       finishAttempt(attempt);
@@ -982,160 +623,184 @@ export function createApplicationFormInspectionControllerWithRuntime(
     generationId: symbol,
     options: Readonly<{ signal?: AbortSignal }> = {}
   ): Promise<TransientInspectionGeneration> => {
-    const record = currentRecord;
-    if (closed || input.page.isClosed() || options.signal?.aborted) {
+    if (
+      closed ||
+      terminalUnavailable ||
+      input.target.currentTargetUrl() === null ||
+      options.signal?.aborted
+    ) {
       throw controllerError("FORM_INSPECTION_CANCELLED");
     }
+    const record = currentRecord;
     if (!record || !record.active || record.generationId !== generationId) {
       throw controllerError("FORM_GENERATION_INVALIDATED");
     }
+    if (activeAttempt) throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+
     const attempt = makeAttempt();
-    activeVerifications.add(attempt);
-    const frame = input.page.mainFrame();
+    activeAttempt = attempt;
     const onAbort = () => terminateAttempt(attempt, "FORM_INSPECTION_CANCELLED");
     options.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      const ownedObserver = await raceAttempt(attempt, ensureObserver());
-      while (true) {
-        assertAttemptActive(attempt, frame);
-        if (!record.active || currentRecord !== record) {
+      assertAttemptActive(attempt);
+      let verified: ProtectedCandidateVerification;
+      try {
+        verified = await raceAttempt(
+          attempt,
+          authority.verifyCandidate(record.correlated.candidate)
+        );
+      } catch (error) {
+        if (retryableProtectedFailure(error)) {
+          await raceAttempt(
+            attempt,
+            invalidateAccepted(record, "REINSPECTION_REQUIRED")
+          );
           throw controllerError("FORM_GENERATION_INVALIDATED");
         }
-        const before = await raceAttempt(attempt, ownedObserver.snapshot());
-        const pending = runtime.extract(input.page);
-        let temporary: SafeApplicationFormExtraction;
-        try {
-          temporary = await raceAttempt(attempt, pending);
-        } catch (error) {
-          if (attempt.terminalCode) {
-            void pending.then(disposeExtraction, () => undefined);
-            throw error;
-          }
-          await invalidateAccepted(record, "REINSPECTION_REQUIRED");
-          throw controllerError("FORM_GENERATION_INVALIDATED");
-        }
-        let retry = false;
-        try {
-          assertAttemptActive(attempt, frame);
-          const afterExtraction = await raceAttempt(attempt, ownedObserver.snapshot());
-          if (
-            before.semanticRevision !== afterExtraction.semanticRevision ||
-            before.applicantStateEpoch !== afterExtraction.applicantStateEpoch
-          ) {
-            retry = true;
-          } else if (canonicalJson(temporary.report) !== record.privateReportCanonical) {
-            await invalidateAccepted(record, "REINSPECTION_REQUIRED");
-            throw controllerError("FORM_GENERATION_INVALIDATED");
-          } else if (!await allAttached(record.privateFields, record.privateChoices)) {
-            await invalidateAccepted(record, "REINSPECTION_REQUIRED");
-            throw controllerError("FORM_GENERATION_INVALIDATED");
-          } else {
-            const afterAttachment = await raceAttempt(attempt, ownedObserver.snapshot());
-            if (
-              afterExtraction.semanticRevision !== afterAttachment.semanticRevision ||
-              afterExtraction.applicantStateEpoch !== afterAttachment.applicantStateEpoch
-            ) {
-              retry = true;
-            }
-          }
-        } finally {
-          await disposeExtraction(temporary);
-        }
-        if (retry) continue;
-        const afterDisposal = await raceAttempt(attempt, ownedObserver.snapshot());
         if (
-          before.semanticRevision !== afterDisposal.semanticRevision ||
-          before.applicantStateEpoch !== afterDisposal.applicantStateEpoch
+          error instanceof ProtectedBrowserSessionError &&
+          error.code === "PROTECTED_SESSION_BUSY"
         ) {
-          continue;
+          throw controllerError("FORM_INSPECTION_IN_PROGRESS");
         }
-        assertAttemptActive(attempt, frame);
-        if (!record.active || currentRecord !== record) {
-          throw controllerError("FORM_GENERATION_INVALIDATED");
+        if (
+          error instanceof ProtectedBrowserSessionError && (
+            error.code === "PROTECTED_SESSION_SETUP_FAILED" ||
+            error.code === "PROTECTED_SESSION_CLOSED" ||
+            error.code === "PROTECTED_SESSION_INVALID_RESPONSE" ||
+            error.code === "PROTECTED_CANDIDATE_INVALID"
+          )
+        ) {
+          establishTerminalAuthorityLoss();
+          throw integrityError();
         }
-        return record.facade;
+        throw mapProtectedFailure(error);
       }
+      assertAttemptActive(attempt);
+      if (!record.active || currentRecord !== record) {
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      if (verified.status === "INVALID") {
+        await raceAttempt(
+          attempt,
+          invalidateAccepted(record, "REINSPECTION_REQUIRED")
+        );
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      if (!freshVerificationMatches(record, verified.report)) {
+        await raceAttempt(
+          attempt,
+          invalidateAccepted(record, "REINSPECTION_REQUIRED")
+        );
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      if (!record.active || currentRecord !== record) {
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      const latestVerifiedReport = cloneReport(verified.report);
+      assertAttemptActive(attempt);
+      record.latestVerifiedReport = latestVerifiedReport;
+      return record.facade;
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
-      runtime.clearTimer(attempt.timer);
-      activeVerifications.delete(attempt);
+      finishAttempt(attempt);
     }
   };
 
-  const terminateAllActive = () => {
-    if (activeAttempt) terminateAttempt(activeAttempt, "FORM_INSPECTION_CANCELLED");
-    for (const verification of activeVerifications) {
-      terminateAttempt(verification, "FORM_INSPECTION_CANCELLED");
-    }
-  };
-
-  const onFrameNavigated = (frame: Frame) => {
-    if (frame !== input.page.mainFrame()) return;
-    navigationEpoch += 1;
-    terminateAllActive();
-    const accepted = currentRecord;
-    if (accepted) void invalidateAccepted(accepted, "TARGET_NAVIGATED");
-    void disposeObserverForLifecycle();
-  };
-
-  const removePageListeners = () => {
-    if (listenersRemoved) return;
-    listenersRemoved = true;
-    input.page.off("framenavigated", onFrameNavigated);
-    input.page.off("close", onPageClose);
-  };
-
-  const onPageClose = () => {
+  const terminateAndRevoke = (
+    code: ApplicationFormInspectionInvalidationCode,
+    terminal: boolean
+  ): void => {
     if (closed) return;
-    closed = true;
-    terminateAllActive();
-    removePageListeners();
+    navigationEpoch += 1;
+    const attempt = activeAttempt;
+    if (attempt) terminateAttempt(attempt, "FORM_INSPECTION_CANCELLED");
     const accepted = currentRecord;
-    const acceptedCleanup = accepted
-      ? invalidateAccepted(accepted, "PAGE_CLOSED", false)
-      : Promise.resolve();
-    const shouldEmitPageClosed = !pageClosedEmitted;
-    pageClosedEmitted = true;
-    const observerCleanup = disposeObserverForLifecycle();
-    closePromise = Promise.all([acceptedCleanup, observerCleanup]).then(() => undefined);
-    if (shouldEmitPageClosed) emitInvalidation("PAGE_CLOSED");
+    if (accepted) {
+      currentRecord = null;
+      accepted.active = false;
+    }
+
+    if (terminal) {
+      terminalUnavailable = true;
+      if (!terminalInvalidationAnnounced) {
+        terminalInvalidationAnnounced = true;
+        emitInvalidation(code);
+      }
+    } else if (accepted || attempt) {
+      announceRecoverable(code);
+    }
+
+    if (accepted) void disposeAccepted(accepted);
+  };
+
+  const onLifecycle = (code: ProtectedSessionLifecycleCode): void => {
+    if (code === "DOCUMENT_CHANGED") {
+      terminateAndRevoke("TARGET_NAVIGATED", false);
+      return;
+    }
+    if (code === "EXECUTION_CONTEXT_DESTROYED") {
+      terminateAndRevoke("REINSPECTION_REQUIRED", false);
+      return;
+    }
+    if (code === "PAGE_CLOSED") {
+      terminateAndRevoke("PAGE_CLOSED", true);
+      return;
+    }
+    terminateAndRevoke("PROTECTED_SESSION_LOST", true);
+  };
+
+  const onMainFrameNavigation = (): void => {
+    terminateAndRevoke("TARGET_NAVIGATED", false);
+  };
+
+  const unsubscribeLifecycle = authority.subscribe(onLifecycle);
+  const unsubscribeNavigation = input.target.subscribeMainFrameNavigation(onMainFrameNavigation);
+
+  const removeSubscriptions = (): void => {
+    if (subscriptionsRemoved) return;
+    subscriptionsRemoved = true;
+    try {
+      unsubscribeLifecycle();
+    } catch {
+      // Subscription removal is best effort after authority has been revoked.
+    }
+    try {
+      unsubscribeNavigation();
+    } catch {
+      // Subscription removal is best effort after authority has been revoked.
+    }
   };
 
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     closed = true;
-    terminateAllActive();
-    removePageListeners();
+    removeSubscriptions();
+    navigationEpoch += 1;
+    const attempt = activeAttempt;
+    if (attempt) terminateAttempt(attempt, "FORM_INSPECTION_CANCELLED");
+    const attemptCompletion = attempt?.completion ?? Promise.resolve();
     const accepted = currentRecord;
     currentRecord = null;
     if (accepted) accepted.active = false;
-    const ownedObserver = observer;
-    const pendingObserver = observerPromise;
-    observer = null;
-    observerPromise = null;
-    closePromise = (async () => {
-      await Promise.all([
-        accepted ? disposeAccepted(accepted) : Promise.resolve(),
-        ownedObserver?.dispose() ?? pendingObserver?.then((created) => created.dispose()).catch(() => undefined)
-      ]);
-    })();
+    const acceptedDisposal = accepted ? disposeAccepted(accepted) : Promise.resolve();
+    closePromise = Promise.all([attemptCompletion, acceptedDisposal])
+      .then(() => Promise.all([...pendingDisposals]))
+      .then(() => undefined);
     return closePromise;
   };
 
-  input.page.on("framenavigated", onFrameNavigated);
-  input.page.on("close", onPageClose);
-
-  return {
+  return Object.freeze({
     inspect,
     current: () => currentRecord?.facade ?? null,
     assertCurrent,
     close
-  };
+  });
 }
 
 export function createApplicationFormInspectionController(input: Readonly<{
-  page: Page;
+  target: ProtectedFormInspectionTarget;
   authoritativeApplyHost: string;
   onInvalidated?: (code: ApplicationFormInspectionInvalidationCode) => void;
 }>): ApplicationFormInspectionController {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { BrowserContext, Request, Route } from "playwright";
+import type { BrowserContext, Page, Request, Route } from "playwright";
 
 import {
   ApplicationBrowserCoordinator,
@@ -19,20 +19,462 @@ import {
   parseB1Command,
   parseImmutableRunId
 } from "@/lib/application-browser/types";
+import type { ProtectedSessionLifecycleCode } from "@/lib/application-browser/protected-browser-session";
 import * as companionModule from "@/scripts/application-browser-companion";
 
 const RUN_ID = "clz8w7m9a0002qwer1234tyui";
 const APP_ORIGIN = "https://apply.example.com";
 const CONTROL_URL = `${APP_ORIGIN}/application-runs/${RUN_ID}/browser`;
 
-test("protected session setup and readiness fence target open with protected-first cleanup", async () => {
+const TARGET_OPEN_INPUT = {
+  target: { host: "jobs.example.com", url: new URL("https://jobs.example.com/apply") },
+  policy: { allowedHosts: ["jobs.example.com"], blockedHosts: [] }
+} as never;
+
+type TargetSetupBoundary =
+  | "page creation"
+  | "opener lookup"
+  | "protected-session creation"
+  | "navigation"
+  | "protected readiness";
+
+function targetSetupHarness(
+  boundary: TargetSetupBoundary,
+  onReadinessAboutToResolve?: () => void
+) {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const calls: string[] = [];
+  const contextListeners = new Set<(page: Page) => void>();
+  const pageListeners = new Map<string, Set<(...args: unknown[]) => void>>();
+  let currentUrl = "about:blank";
+  let pageClosed = false;
+  let pageCloseCalls = 0;
+  let sessionCloseCalls = 0;
+  let sessionFactoryCalls = 0;
+
+  const hold = async (candidate: TargetSetupBoundary): Promise<void> => {
+    if (candidate !== boundary) return;
+    entered.resolve();
+    await release.promise;
+  };
+  const frame = { url: () => currentUrl };
+  const page = {
+    url: () => currentUrl,
+    isClosed: () => pageClosed,
+    mainFrame: () => frame,
+    async opener() {
+      calls.push("opener");
+      await hold("opener lookup");
+      return null;
+    },
+    on(name: string, listener: (...args: unknown[]) => void) {
+      const listeners = pageListeners.get(name) ?? new Set();
+      listeners.add(listener);
+      pageListeners.set(name, listeners);
+      return page;
+    },
+    off(name: string, listener: (...args: unknown[]) => void) {
+      pageListeners.get(name)?.delete(listener);
+      return page;
+    },
+    async route() {
+      calls.push("route");
+    },
+    async goto(target: string) {
+      calls.push("goto");
+      await hold("navigation");
+      currentUrl = target;
+    },
+    async close() {
+      pageCloseCalls += 1;
+      pageClosed = true;
+      calls.push("page-close");
+    }
+  } as unknown as Page;
+  const session = {
+    async waitUntilReady() {
+      calls.push("ready");
+      await hold("protected readiness");
+      onReadinessAboutToResolve?.();
+    },
+    async extractApplicationForm() {
+      calls.push("extract");
+      throw new Error("not used");
+    },
+    async verifyCandidate() {
+      calls.push("verify");
+      return { status: "INVALID" as const };
+    },
+    async snapshot() {
+      calls.push("snapshot");
+      return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+    },
+    async waitForChange() {
+      calls.push("wait-for-change");
+      return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+    },
+    subscribe() {
+      calls.push("subscribe");
+      return () => undefined;
+    },
+    async close() {
+      sessionCloseCalls += 1;
+      calls.push("session-close");
+    }
+  };
+  const context = {
+    on(name: string, listener: (candidate: Page) => void) {
+      if (name === "page") contextListeners.add(listener);
+    },
+    off(name: string, listener: (candidate: Page) => void) {
+      if (name === "page") contextListeners.delete(listener);
+    },
+    async newPage() {
+      calls.push("new-page");
+      await hold("page creation");
+      return page;
+    }
+  } as unknown as BrowserContext;
+
+  return {
+    calls,
+    context,
+    page,
+    entered,
+    release,
+    emitPage(candidate: Page) {
+      for (const listener of contextListeners) listener(candidate);
+    },
+    sessionFactoryCalls: () => sessionFactoryCalls,
+    pageCloseCalls: () => pageCloseCalls,
+    sessionCloseCalls: () => sessionCloseCalls,
+    createProtectedSession: async (created: Page) => {
+      sessionFactoryCalls += 1;
+      assert.equal(created, page);
+      calls.push("session-create");
+      await hold("protected-session creation");
+      return session;
+    }
+  };
+}
+
+function successfulTargetTeardownHarness() {
+  const primaryClose = deferred<void>();
+  const contextListeners = new Set<(page: Page) => void>();
+  const lifecycleListeners = new Set<(
+    code: ProtectedSessionLifecycleCode
+  ) => void | Promise<void>>();
+  let currentUrl = "about:blank";
+  let pageClosed = false;
+  let pageCloseCalls = 0;
+  let sessionCloseCalls = 0;
+  let listenerRetireCalls = 0;
+  const frame = { url: () => currentUrl };
+  const page = {
+    url: () => currentUrl,
+    isClosed: () => pageClosed,
+    mainFrame: () => frame,
+    async opener() {
+      return null;
+    },
+    on() {
+      return page;
+    },
+    off() {
+      return page;
+    },
+    async route() {},
+    async goto(target: string) {
+      currentUrl = target;
+    },
+    async close() {
+      pageCloseCalls += 1;
+      pageClosed = true;
+      await primaryClose.promise;
+    }
+  } as unknown as Page;
+  const session = {
+    async waitUntilReady() {},
+    async extractApplicationForm() {
+      throw new Error("not used");
+    },
+    async verifyCandidate() {
+      return { status: "INVALID" as const };
+    },
+    async snapshot() {
+      return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+    },
+    async waitForChange() {
+      return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+    },
+    subscribe(listener: (code: ProtectedSessionLifecycleCode) => void | Promise<void>) {
+      lifecycleListeners.add(listener);
+      return () => {
+        lifecycleListeners.delete(listener);
+      };
+    },
+    async close() {
+      sessionCloseCalls += 1;
+      for (const listener of lifecycleListeners) void listener("CLOSED");
+    }
+  };
+  const context = {
+    on(name: string, listener: (candidate: Page) => void) {
+      if (name === "page") contextListeners.add(listener);
+    },
+    off(name: string, listener: (candidate: Page) => void) {
+      if (name !== "page") return;
+      if (contextListeners.delete(listener)) listenerRetireCalls += 1;
+    },
+    async newPage() {
+      return page;
+    }
+  } as unknown as BrowserContext;
+
+  return {
+    context,
+    page,
+    primaryClose,
+    listenerCount: () => contextListeners.size,
+    listenerRetireCalls: () => listenerRetireCalls,
+    pageCloseCalls: () => pageCloseCalls,
+    sessionCloseCalls: () => sessionCloseCalls,
+    emitPage(candidate: Page) {
+      for (const listener of contextListeners) listener(candidate);
+    },
+    async createProtectedSession(created: Page) {
+      assert.equal(created, page);
+      return session;
+    }
+  };
+}
+
+function controlledClosePage() {
+  const release = deferred<void>();
+  let closeCalls = 0;
+  const page = {
+    async close() {
+      closeCalls += 1;
+      await release.promise;
+    }
+  } as unknown as Page;
+  return { page, release, closeCalls: () => closeCalls };
+}
+
+function naturalReadinessFailureTeardownHarness() {
+  const readinessEntered = deferred<void>();
+  const readiness = deferred<void>();
+  const primaryClose = deferred<void>();
+  const contextListeners = new Set<(page: Page) => void>();
+  let currentUrl = "about:blank";
+  let pageClosed = false;
+  let pageCloseCalls = 0;
+  let sessionCloseCalls = 0;
+  let sessionFactoryCalls = 0;
+  let listenerRetireCalls = 0;
+  const frame = { url: () => currentUrl };
+  const page = {
+    url: () => currentUrl,
+    isClosed: () => pageClosed,
+    mainFrame: () => frame,
+    async opener() {
+      return null;
+    },
+    on() {
+      return page;
+    },
+    off() {
+      return page;
+    },
+    async route() {},
+    async goto(target: string) {
+      currentUrl = target;
+    },
+    async close() {
+      pageCloseCalls += 1;
+      pageClosed = true;
+      await primaryClose.promise;
+    }
+  } as unknown as Page;
+  const session = {
+    async waitUntilReady() {
+      readinessEntered.resolve();
+      await readiness.promise;
+    },
+    async extractApplicationForm() {
+      throw new Error("not used");
+    },
+    async verifyCandidate() {
+      return { status: "INVALID" as const };
+    },
+    async snapshot() {
+      return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+    },
+    async waitForChange() {
+      return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+    },
+    subscribe() {
+      return () => undefined;
+    },
+    async close() {
+      sessionCloseCalls += 1;
+    }
+  };
+  const context = {
+    on(name: string, listener: (candidate: Page) => void) {
+      if (name === "page") contextListeners.add(listener);
+    },
+    off(name: string, listener: (candidate: Page) => void) {
+      if (name !== "page") return;
+      if (contextListeners.delete(listener)) listenerRetireCalls += 1;
+    },
+    async newPage() {
+      return page;
+    }
+  } as unknown as BrowserContext;
+
+  return {
+    context,
+    page,
+    primaryClose,
+    readiness,
+    readinessEntered,
+    listenerCount: () => contextListeners.size,
+    listenerRetireCalls: () => listenerRetireCalls,
+    pageCloseCalls: () => pageCloseCalls,
+    sessionCloseCalls: () => sessionCloseCalls,
+    sessionFactoryCalls: () => sessionFactoryCalls,
+    emitPage(candidate: Page) {
+      for (const listener of contextListeners) listener(candidate);
+    },
+    async createProtectedSession(created: Page) {
+      sessionFactoryCalls += 1;
+      assert.equal(created, page);
+      return session;
+    }
+  };
+}
+
+test("natural readiness failure retains late-page ownership through a stable cleanup drain", async () => {
+  const harness = naturalReadinessFailureTeardownHarness();
+  const lateA = controlledClosePage();
+  const lateB = controlledClosePage();
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  let openSettled = false;
+  const openingOutcome = controller.open(TARGET_OPEN_INPUT, () => {}).then(
+    () => {
+      openSettled = true;
+      return "fulfilled" as const;
+    },
+    () => {
+      openSettled = true;
+      return "rejected" as const;
+    }
+  );
+  await harness.readinessEntered.promise;
+
+  harness.readiness.reject(new Error("natural protected readiness failure"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual({
+    formInspectionTarget: controller.formInspectionTarget(),
+    page: controller.page(),
+    listenerCount: harness.listenerCount(),
+    pageCloseCalls: harness.pageCloseCalls(),
+    sessionCloseCalls: harness.sessionCloseCalls()
+  }, {
+    formInspectionTarget: null,
+    page: null,
+    listenerCount: 1,
+    pageCloseCalls: 1,
+    sessionCloseCalls: 1
+  });
+
+  harness.emitPage(lateA.page);
+  assert.equal(lateA.closeCalls(), 1);
+  harness.primaryClose.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual({ openSettled, listenerCount: harness.listenerCount() }, {
+    openSettled: false,
+    listenerCount: 1
+  });
+
+  harness.emitPage(lateB.page);
+  assert.equal(lateB.closeCalls(), 1);
+  lateA.release.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual({ openSettled, listenerCount: harness.listenerCount() }, {
+    openSettled: false,
+    listenerCount: 1
+  });
+
+  lateB.release.resolve();
+  assert.equal(await openingOutcome, "rejected");
+  assert.equal(harness.listenerCount(), 0);
+  assert.equal(harness.listenerRetireCalls(), 1);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+  assert.equal(harness.sessionFactoryCalls(), 1);
+  assert.equal(lateA.closeCalls(), 1);
+  assert.equal(lateB.closeCalls(), 1);
+  assert.equal(controller.formInspectionTarget(), null);
+  assert.equal(controller.page(), null);
+
+  await controller.close();
+  assert.equal(harness.listenerRetireCalls(), 1);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+  assert.equal(lateA.closeCalls(), 1);
+  assert.equal(lateB.closeCalls(), 1);
+});
+
+test("synchronous lifecycle reentrancy shares the exact target close operation", async () => {
+  const harness = successfulTargetTeardownHarness();
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  await controller.open(TARGET_OPEN_INPUT, () => {});
+  const target = controller.formInspectionTarget();
+  assert.ok(target);
+  let reentrantClose: Promise<void> | undefined;
+  target.authority.subscribe(() => {
+    reentrantClose = controller.close();
+  });
+
+  const outerClose = controller.close();
+  assert.ok(reentrantClose, "session close must synchronously reenter before outer close returns");
+  assert.equal(reentrantClose, outerClose);
+  assert.equal(controller.close(), outerClose);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+  assert.equal(harness.listenerCount(), 1);
+  assert.equal(harness.listenerRetireCalls(), 0);
+
+  harness.primaryClose.resolve();
+  await Promise.all([outerClose, reentrantClose]);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+  assert.equal(harness.listenerCount(), 0);
+  assert.equal(harness.listenerRetireCalls(), 1);
+  assert.equal(controller.close(), outerClose);
+});
+
+test("target opening exposes one frozen non-closing protected inspection facade only for its owned lifetime", async () => {
   for (const mode of ["success", "setup-failure", "readiness-failure"] as const) {
     const calls: string[] = [];
+    let protectedSessionFactoryCalls = 0;
     let url = "about:blank";
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
+    const lifecycleListeners = new Set<(code: "CLOSED") => void>();
     const frame = { url: () => url };
     const page = {
-      url: () => url, mainFrame: () => frame, opener: async () => null,
+      url: () => url, isClosed: () => false, mainFrame: () => frame, opener: async () => null,
       on(name: string, fn: (...args: unknown[]) => void) { const set = listeners.get(name) ?? new Set(); set.add(fn); listeners.set(name, set); return page; },
       off(name: string, fn: (...args: unknown[]) => void) { listeners.get(name)?.delete(fn); return page; },
       async route() { calls.push("route"); },
@@ -44,6 +486,7 @@ test("protected session setup and readiness fence target open with protected-fir
       context,
       onUnsafe() {},
       async testOnlyCreateProtectedSession(created) {
+        protectedSessionFactoryCalls += 1;
         assert.equal(created, page);
         calls.push("setup");
         if (mode === "setup-failure") throw new Error("private setup failure");
@@ -53,25 +496,558 @@ test("protected session setup and readiness fence target open with protected-fir
             assert.equal(url, "https://jobs.example.com/apply");
             if (mode === "readiness-failure") throw new Error("private readiness failure");
           },
-          async close() { calls.push("session-close"); }
+          async extractApplicationForm() { throw new Error("not used"); },
+          async verifyCandidate() { return { status: "INVALID" as const }; },
+          async snapshot() {
+            return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+          },
+          async waitForChange() {
+            return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+          },
+          subscribe(listener) {
+            lifecycleListeners.add(listener as (code: "CLOSED") => void);
+            return () => lifecycleListeners.delete(listener as (code: "CLOSED") => void);
+          },
+          async close() {
+            calls.push("session-close");
+            for (const listener of lifecycleListeners) listener("CLOSED");
+          }
         };
       }
     });
+    const targetController = controller as typeof controller & {
+      formInspectionTarget(): {
+        authority: Record<string, unknown>;
+        currentTargetUrl(): string | null;
+        subscribeMainFrameNavigation(listener: () => void): () => void;
+      } | null;
+    };
+    assert.equal(
+      typeof targetController.formInspectionTarget,
+      "function",
+      "target controller must expose the protected inspection facade accessor"
+    );
+    assert.equal(targetController.formInspectionTarget(), null);
     const open = controller.open({ target: { host: "jobs.example.com", url: new URL("https://jobs.example.com/apply") }, policy: { allowedHosts: ["jobs.example.com"], blockedHosts: [] } } as never, () => {});
     if (mode === "setup-failure") {
       await assert.rejects(open, (error: unknown) => error instanceof ApplicationBrowserError && !error.message.includes("private"));
       assert.deepEqual(calls, ["setup", "page-close"]);
+      assert.equal(targetController.formInspectionTarget(), null);
     } else if (mode === "readiness-failure") {
       await assert.rejects(open, (error: unknown) => error instanceof ApplicationBrowserError && !error.message.includes("private"));
       assert.deepEqual(calls, ["setup", "route", "goto", "ready", "session-close", "page-close"]);
+      assert.equal(targetController.formInspectionTarget(), null);
     } else {
       await open;
       assert.deepEqual(calls, ["setup", "route", "goto", "ready"]);
+      const target = targetController.formInspectionTarget();
+      assert.ok(target);
+      assert.equal(Object.isFrozen(target), true);
+      assert.equal(Object.isFrozen(target.authority), true);
+      assert.deepEqual(Object.keys(target.authority).sort(), [
+        "extractApplicationForm",
+        "snapshot",
+        "subscribe",
+        "verifyCandidate",
+        "waitForChange",
+        "waitUntilReady"
+      ]);
+      assert.equal("close" in target.authority, false);
+      assert.equal(target.currentTargetUrl(), "https://jobs.example.com/apply");
+
+      let navigationNotifications = 0;
+      const unsubscribe = target.subscribeMainFrameNavigation(() => {
+        navigationNotifications += 1;
+      });
+      for (const listener of listeners.get("framenavigated") ?? []) listener(frame);
+      assert.equal(navigationNotifications, 1);
+      unsubscribe();
+      for (const listener of listeners.get("framenavigated") ?? []) listener(frame);
+      assert.equal(navigationNotifications, 1);
+
+      target.subscribeMainFrameNavigation(() => {
+        navigationNotifications += 1;
+      });
       await controller.close();
       await controller.close();
       assert.deepEqual(calls, ["setup", "route", "goto", "ready", "session-close", "page-close"]);
+      assert.equal(targetController.formInspectionTarget(), null);
+      assert.equal(target.currentTargetUrl(), null);
+      for (const listener of listeners.get("framenavigated") ?? []) listener(frame);
+      assert.equal(navigationNotifications, 1, "close must remove retained inspection navigation subscribers");
     }
+    assert.equal(protectedSessionFactoryCalls, 1);
   }
+});
+
+test("post-success close keeps page cleanup ownership until employer teardown settles", async () => {
+  const harness = successfulTargetTeardownHarness();
+  const late = controlledClosePage();
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  await controller.open(TARGET_OPEN_INPUT, () => {});
+  const retained = controller.formInspectionTarget();
+  assert.ok(retained);
+  assert.equal(harness.listenerCount(), 1);
+
+  let closeSettled = false;
+  const closing = controller.close();
+  void closing.then(() => {
+    closeSettled = true;
+  });
+  const repeatedClosuresShareOwnership =
+    controller.close() === closing && controller.close() === closing;
+  const synchronousRevocation = {
+    formInspectionTarget: controller.formInspectionTarget(),
+    page: controller.page(),
+    retainedUrl: retained.currentTargetUrl(),
+    listenerCount: harness.listenerCount()
+  };
+
+  harness.emitPage(late.page);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const beforeCleanupRelease = {
+    closeSettled,
+    lateCloseCalls: late.closeCalls()
+  };
+  late.release.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const closeSettledAfterLateCleanup = closeSettled;
+  harness.primaryClose.resolve();
+  await closing;
+
+  assert.equal(repeatedClosuresShareOwnership, true);
+  assert.deepEqual(synchronousRevocation, {
+    formInspectionTarget: null,
+    page: null,
+    retainedUrl: null,
+    listenerCount: 1
+  });
+  assert.deepEqual(beforeCleanupRelease, {
+    closeSettled: false,
+    lateCloseCalls: 1
+  });
+  assert.equal(closeSettledAfterLateCleanup, false);
+  assert.equal(harness.listenerCount(), 0);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(late.closeCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+
+  await controller.close();
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(late.closeCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+});
+
+test("post-success close drains pages enrolled while an earlier cleanup drain is pending", async () => {
+  const harness = successfulTargetTeardownHarness();
+  const lateA = controlledClosePage();
+  const lateB = controlledClosePage();
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  await controller.open(TARGET_OPEN_INPUT, () => {});
+
+  let closeSettled = false;
+  const closing = controller.close();
+  void closing.then(() => {
+    closeSettled = true;
+  });
+  harness.emitPage(lateA.page);
+  assert.equal(lateA.closeCalls(), 1);
+
+  harness.primaryClose.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(closeSettled, false);
+  assert.equal(harness.listenerCount(), 1);
+
+  harness.emitPage(lateB.page);
+  assert.equal(lateB.closeCalls(), 1);
+  lateA.release.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const whileSecondCleanupPending = {
+    closeSettled,
+    listenerCount: harness.listenerCount()
+  };
+
+  lateB.release.resolve();
+  await closing;
+
+  assert.deepEqual(whileSecondCleanupPending, {
+    closeSettled: false,
+    listenerCount: 1
+  });
+  assert.equal(harness.listenerCount(), 0);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(lateA.closeCalls(), 1);
+  assert.equal(lateB.closeCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+});
+
+test("close owns setup through every late page and protected-session handoff", async (context) => {
+  const boundaries: readonly TargetSetupBoundary[] = [
+    "page creation",
+    "opener lookup",
+    "protected-session creation",
+    "navigation",
+    "protected readiness"
+  ];
+
+  for (const boundary of boundaries) {
+    await context.test(boundary, async () => {
+      const harness = targetSetupHarness(boundary);
+      const controller = createPlaywrightTargetController({
+        context: harness.context,
+        onUnsafe() {},
+        testOnlyCreateProtectedSession: harness.createProtectedSession
+      });
+      const opening = controller.open(TARGET_OPEN_INPUT, () => {});
+      const openingOutcome = opening.then(
+        () => "fulfilled" as const,
+        () => "rejected" as const
+      );
+      await harness.entered.promise;
+
+      let closeSettled = false;
+      const closing = controller.close().then(() => {
+        closeSettled = true;
+      });
+      assert.equal(controller.formInspectionTarget(), null);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const closeSettledBeforeHandoff = closeSettled;
+      const pageClosesBeforeHandoff = harness.pageCloseCalls();
+      const sessionClosesBeforeHandoff = harness.sessionCloseCalls();
+
+      harness.release.resolve();
+      const outcome = await openingOutcome;
+      await closing;
+      const expectedSessionFactoryCalls =
+        boundary === "page creation" || boundary === "opener lookup" ? 0 : 1;
+      const expectedSessionCloseCalls =
+        boundary === "protected-session creation" ||
+          boundary === "navigation" ||
+          boundary === "protected readiness"
+          ? 1
+          : 0;
+      const expectedPageClosesBeforeHandoff = boundary === "page creation" ? 0 : 1;
+      const expectedSessionClosesBeforeHandoff =
+        boundary === "navigation" || boundary === "protected readiness" ? 1 : 0;
+
+      assert.equal(closeSettledBeforeHandoff, false);
+      assert.equal(pageClosesBeforeHandoff, expectedPageClosesBeforeHandoff);
+      assert.equal(sessionClosesBeforeHandoff, expectedSessionClosesBeforeHandoff);
+      assert.equal(outcome, "rejected");
+      assert.equal(controller.page(), null);
+      assert.equal(controller.formInspectionTarget(), null);
+      assert.equal(harness.sessionFactoryCalls(), expectedSessionFactoryCalls);
+      assert.equal(harness.sessionCloseCalls(), expectedSessionCloseCalls);
+      assert.equal(harness.pageCloseCalls(), 1);
+
+      await controller.close();
+      assert.equal(harness.sessionCloseCalls(), expectedSessionCloseCalls);
+      assert.equal(harness.pageCloseCalls(), 1);
+    });
+  }
+});
+
+test("close during the final setup handoff prevents open from returning success", async () => {
+  let closing: Promise<void> | undefined;
+  let targetWasPublishedBeforeClose = false;
+  const closeBegan = deferred<void>();
+  const harness = targetSetupHarness("protected readiness", () => {
+    queueMicrotask(() => {
+      queueMicrotask(() => {
+        targetWasPublishedBeforeClose = controller.formInspectionTarget() !== null;
+        closing = controller.close();
+        closeBegan.resolve(undefined);
+      });
+    });
+  });
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const openingOutcome = controller.open(TARGET_OPEN_INPUT, () => {}).then(
+    () => "fulfilled" as const,
+    () => "rejected" as const
+  );
+  await harness.entered.promise;
+
+  harness.release.resolve();
+  await closeBegan.promise;
+  const outcome = await openingOutcome;
+  assert.ok(closing);
+  await closing;
+
+  assert.equal(targetWasPublishedBeforeClose, true);
+  assert.equal(outcome, "rejected");
+  assert.equal(controller.page(), null);
+  assert.equal(controller.formInspectionTarget(), null);
+  assert.equal(harness.sessionCloseCalls(), 1);
+  assert.equal(harness.pageCloseCalls(), 1);
+});
+
+test("close waits for rejected setup boundaries and contains all materialized resources", async (context) => {
+  const cases: ReadonlyArray<Readonly<{
+    boundary: "page creation" | "protected-session creation" | "navigation";
+    expectedPageCloses: number;
+    expectedSessionCloses: number;
+  }>> = [
+    { boundary: "page creation", expectedPageCloses: 0, expectedSessionCloses: 0 },
+    { boundary: "protected-session creation", expectedPageCloses: 1, expectedSessionCloses: 0 },
+    { boundary: "navigation", expectedPageCloses: 1, expectedSessionCloses: 1 }
+  ];
+
+  for (const entry of cases) {
+    await context.test(entry.boundary, async () => {
+      const harness = targetSetupHarness(entry.boundary);
+      const controller = createPlaywrightTargetController({
+        context: harness.context,
+        onUnsafe() {},
+        testOnlyCreateProtectedSession: harness.createProtectedSession
+      });
+      const openingOutcome = controller.open(TARGET_OPEN_INPUT, () => {}).then(
+        () => "fulfilled" as const,
+        () => "rejected" as const
+      );
+      await harness.entered.promise;
+
+      let closeSettled = false;
+      const closing = controller.close().then(() => {
+        closeSettled = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const closeSettledBeforeRejection = closeSettled;
+      harness.release.reject(new Error(`late ${entry.boundary} rejection`));
+
+      assert.equal(await openingOutcome, "rejected");
+      await closing;
+      assert.equal(closeSettledBeforeRejection, false);
+      assert.equal(controller.page(), null);
+      assert.equal(controller.formInspectionTarget(), null);
+      assert.equal(harness.pageCloseCalls(), entry.expectedPageCloses);
+      assert.equal(harness.sessionCloseCalls(), entry.expectedSessionCloses);
+
+      await controller.close();
+      assert.equal(harness.pageCloseCalls(), entry.expectedPageCloses);
+      assert.equal(harness.sessionCloseCalls(), entry.expectedSessionCloses);
+    });
+  }
+});
+
+test("an unexpected context page during newPage setup is never mistaken for the employer page", async () => {
+  const harness = targetSetupHarness("page creation");
+  const unsafe: string[] = [];
+  let unexpectedCloseCalls = 0;
+  const unexpected = {
+    async close() {
+      unexpectedCloseCalls += 1;
+    }
+  } as unknown as Page;
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe(code) { unsafe.push(code); },
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const opening = controller.open(TARGET_OPEN_INPUT, () => {});
+  await harness.entered.promise;
+
+  harness.emitPage(unexpected);
+  harness.release.resolve();
+  await opening;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(unsafe, ["UNEXPECTED_POPUP"]);
+  assert.equal(unexpectedCloseCalls, 1);
+  assert.equal(controller.page(), harness.page);
+  await controller.close();
+  assert.equal(unexpectedCloseCalls, 1);
+  assert.equal(harness.pageCloseCalls(), 1);
+  assert.equal(harness.sessionCloseCalls(), 1);
+});
+
+test("failed page creation always restores unexpected-page handling", async () => {
+  const harness = targetSetupHarness("page creation");
+  const unsafe: string[] = [];
+  let unexpectedCloseCalls = 0;
+  const unexpected = {
+    async close() {
+      unexpectedCloseCalls += 1;
+    }
+  } as unknown as Page;
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe(code) { unsafe.push(code); },
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const opening = controller.open(TARGET_OPEN_INPUT, () => {});
+  await harness.entered.promise;
+  harness.release.reject(new Error("page creation failed"));
+  await assert.rejects(opening);
+
+  harness.emitPage(unexpected);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const evidence = { unsafe, unexpectedCloseCalls };
+  await controller.close();
+
+  assert.deepEqual(evidence, {
+    unsafe: ["UNEXPECTED_POPUP"],
+    unexpectedCloseCalls: 1
+  });
+  assert.equal(unexpectedCloseCalls, 1);
+});
+
+test("a context page appearing after close during newPage setup is closed before handoff", async () => {
+  const harness = targetSetupHarness("page creation");
+  let latePageCloseCalls = 0;
+  const latePage = {
+    async close() {
+      latePageCloseCalls += 1;
+    }
+  } as unknown as Page;
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const openingOutcome = controller.open(TARGET_OPEN_INPUT, () => {}).then(
+    () => "fulfilled" as const,
+    () => "rejected" as const
+  );
+  await harness.entered.promise;
+  const closing = controller.close();
+
+  harness.emitPage(latePage);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const closesBeforeHandoff = latePageCloseCalls;
+  harness.release.resolve();
+
+  assert.equal(await openingOutcome, "rejected");
+  await closing;
+  assert.equal(closesBeforeHandoff, 1);
+  assert.equal(latePageCloseCalls, 1);
+  assert.equal(harness.pageCloseCalls(), 1);
+});
+
+test("retained inspection authority is synchronously revoked before close yields", async () => {
+  const harness = targetSetupHarness("page creation");
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {},
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const opening = controller.open(TARGET_OPEN_INPUT, () => {});
+  await harness.entered.promise;
+  harness.release.resolve();
+  await opening;
+  const retained = controller.formInspectionTarget();
+  assert.ok(retained);
+  const protectedCallsBeforeClose = harness.calls.filter((call) =>
+    ["ready", "extract", "verify", "snapshot", "wait-for-change", "subscribe"].includes(call)
+  );
+
+  const closing = controller.close();
+  const asyncOutcomes = await Promise.all([
+    retained.authority.waitUntilReady(),
+    retained.authority.extractApplicationForm(),
+    retained.authority.verifyCandidate(Object.freeze(Object.create(null)) as never),
+    retained.authority.snapshot(),
+    retained.authority.waitForChange({
+      documentEpoch: 0,
+      semanticRevision: 0,
+      applicantStateEpoch: 0
+    }, 1)
+  ].map((operation) => operation.then(
+    () => "fulfilled" as const,
+    () => "rejected" as const
+  )));
+  let subscribeOutcome: "returned" | "threw" = "returned";
+  try {
+    retained.authority.subscribe(() => {});
+  } catch {
+    subscribeOutcome = "threw";
+  }
+  const protectedCallsAfterClose = harness.calls.filter((call) =>
+    ["ready", "extract", "verify", "snapshot", "wait-for-change", "subscribe"].includes(call)
+  );
+  await closing;
+
+  assert.equal(controller.formInspectionTarget(), null);
+  assert.deepEqual(asyncOutcomes, ["rejected", "rejected", "rejected", "rejected", "rejected"]);
+  assert.equal(subscribeOutcome, "threw");
+  assert.deepEqual(protectedCallsAfterClose, protectedCallsBeforeClose);
+});
+
+test("a buffered context page is reported when newPage later rejects", async () => {
+  const harness = targetSetupHarness("page creation");
+  const unsafe: string[] = [];
+  let unexpectedCloseCalls = 0;
+  const unexpected = {
+    async close() {
+      unexpectedCloseCalls += 1;
+    }
+  } as unknown as Page;
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe(code) { unsafe.push(code); },
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const opening = controller.open(TARGET_OPEN_INPUT, () => {});
+  await harness.entered.promise;
+
+  harness.emitPage(unexpected);
+  harness.release.reject(new Error("page creation failed"));
+  await assert.rejects(opening);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const evidence = { unsafe, unexpectedCloseCalls };
+  await controller.close();
+
+  assert.deepEqual(evidence, {
+    unsafe: ["UNEXPECTED_POPUP"],
+    unexpectedCloseCalls: 1
+  });
+  assert.equal(unexpectedCloseCalls, 1);
+});
+
+test("an unsafe callback failure cannot strand buffered-page setup cleanup", async () => {
+  const harness = targetSetupHarness("page creation");
+  const unexpected = { async close() {} } as unknown as Page;
+  const controller = createPlaywrightTargetController({
+    context: harness.context,
+    onUnsafe() {
+      throw new Error("SECRET_UNSAFE_CALLBACK_FAILURE");
+    },
+    testOnlyCreateProtectedSession: harness.createProtectedSession
+  });
+  const openingOutcome = controller.open(TARGET_OPEN_INPUT, () => {}).then(
+    () => ({ kind: "fulfilled" as const, message: "" }),
+    (error: unknown) => ({
+      kind: "rejected" as const,
+      message: error instanceof Error ? error.message : ""
+    })
+  );
+  await harness.entered.promise;
+
+  harness.emitPage(unexpected);
+  harness.release.reject(new Error("PRIMARY_PAGE_CREATION_FAILURE"));
+  const outcome = await openingOutcome;
+  let closeSettled = false;
+  void controller.close().then(() => {
+    closeSettled = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(outcome, {
+    kind: "rejected",
+    message: "PRIMARY_PAGE_CREATION_FAILURE"
+  });
+  assert.equal(closeSettled, true);
 });
 
 test("protected readiness cannot retain initial redirect authority for a noncanonical navigation", async () => {
@@ -130,6 +1106,15 @@ test("protected readiness cannot retain initial redirect authority for a noncano
             for (const listener of listeners.get("framenavigated") ?? []) listener(frame);
           }), requestFor(drifted));
         },
+        async extractApplicationForm() { throw new Error("not used"); },
+        async verifyCandidate() { return { status: "INVALID" as const }; },
+        async snapshot() {
+          return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+        },
+        async waitForChange() {
+          return { documentEpoch: 0, semanticRevision: 0, applicantStateEpoch: 0 };
+        },
+        subscribe() { return () => undefined; },
         async close() { calls.push("session-close"); }
       };
     }
@@ -440,6 +1425,33 @@ test("inspection invalidation is monotonic and PAGE_CLOSED is terminal", async (
   assert.equal(coordinator.state(), "CLOSED");
 });
 
+test("protected-session loss is terminal and safe-stops with the fixed workflow code", async () => {
+  let releaseCleanup!: () => void;
+  const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+  const coordinator = new ApplicationBrowserCoordinator({
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      ...UNEXPECTED_B23A_CLIENT_METHODS,
+      async getApplicationRun() { throw new Error("unexpected"); },
+      async getAutomationPolicy() { throw new Error("unexpected"); }
+    },
+    async openTarget() { throw new Error("unexpected"); },
+    initializeFormInspectionController() {},
+    getFormInspectionPort: () => null,
+    async closeResources() { await cleanup; }
+  } as never);
+
+  const stopping = coordinator.handleFormInspectionInvalidation("PROTECTED_SESSION_LOST");
+  assert.equal(coordinator.state(), "ERROR");
+  assert.equal(coordinator.status().errorCode, "BROWSER_WORKFLOW_FAILED");
+  coordinator.handleFormInspectionInvalidation("PAGE_CLOSED");
+  assert.equal(coordinator.status().errorCode, "BROWSER_WORKFLOW_FAILED");
+  releaseCleanup();
+  await stopping;
+  await coordinator.close();
+});
+
 test("INSPECT_FORM authorization is closed to TARGET_OPEN and recoverable codes are exact", () => {
   for (const state of [
     "STARTING",
@@ -528,6 +1540,7 @@ test("the closed recoverable error set remains TARGET_OPEN without throwing", as
 test("terminal and unknown inspection errors synchronously establish ERROR and preserve first code", async () => {
   for (const [thrownCode, expectedCode] of [
     ["APPLY_PILOT_AUTH_REQUIRED", "APPLY_PILOT_AUTH_REQUIRED"],
+    ["EMPLOYER_AUTH_REQUIRED_UNSUPPORTED", "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED"],
     ["SAME_ORIGIN_REDIRECT_REJECTED", "SAME_ORIGIN_REDIRECT_REJECTED"],
     ["CALLER_SUPPLIED_ARBITRARY_CODE", "BROWSER_WORKFLOW_FAILED"],
     [undefined, "BROWSER_WORKFLOW_FAILED"]

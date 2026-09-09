@@ -15,7 +15,11 @@ import type {
   BrowserAutomationPolicy,
   SameOriginClient
 } from "@/lib/application-browser/same-origin-client";
-import type { ApplicationFormInspectionInvalidationCode } from "@/lib/application-browser/form-inspection-controller";
+import type {
+  ApplicationFormInspectionInvalidationCode,
+  ProtectedFormInspectionAuthority,
+  ProtectedFormInspectionTarget
+} from "@/lib/application-browser/form-inspection-controller";
 import type { ApplicationFormInspectionReport } from "@/lib/application-runs/form-inspection";
 import {
   BROWSER_INSPECTION_RECOVERABLE_CODES,
@@ -78,6 +82,7 @@ function errorCode(error: unknown): string {
 const RECOVERABLE_INSPECTION_CODES = new Set<string>(BROWSER_INSPECTION_RECOVERABLE_CODES);
 const TERMINAL_INSPECTION_CODES = new Set([
   "APPLY_PILOT_AUTH_REQUIRED",
+  "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED",
   "AUTOMATION_DISABLED",
   "RUN_NOT_FOUND",
   "RUN_IDENTITY_MISMATCH",
@@ -432,6 +437,7 @@ export class ApplicationBrowserCoordinator {
 
   handleFormInspectionInvalidation(code: ApplicationFormInspectionInvalidationCode): void | Promise<void> {
     if (code === "PAGE_CLOSED") return this.safeStop("TARGET_PAGE_CLOSED");
+    if (code === "PROTECTED_SESSION_LOST") return this.safeStop("BROWSER_WORKFLOW_FAILED");
     if (this.workflowState !== "TARGET_OPEN") return;
     this.inspectionStatus = {
       outcome: "REINSPECTION_REQUIRED",
@@ -490,9 +496,9 @@ export function createSafeBrowserDiagnostic(input: {
 }
 
 type SyntheticFulfill = (request: Request, route: Route) => Promise<void>;
-type ProtectedTargetSession = Pick<
-  ProtectedApplicationBrowserSession,
-  "waitUntilReady" | "close"
+type ProtectedTargetSession = Readonly<
+  ProtectedFormInspectionAuthority &
+  Pick<ProtectedApplicationBrowserSession, "close">
 >;
 
 export function createPlaywrightTargetController(input: {
@@ -503,156 +509,439 @@ export function createPlaywrightTargetController(input: {
 }) {
   let employerPage: Page | null = null;
   let protectedSession: ProtectedTargetSession | null = null;
+  let formInspectionTarget: ProtectedFormInspectionTarget | null = null;
+  const mainFrameNavigationListeners = new Set<() => void>();
+  const setupPageEvents = new Set<Page>();
+  const pageClosePromises = new WeakMap<Page, Promise<void>>();
+  const sessionClosePromises = new WeakMap<ProtectedTargetSession, Promise<void>>();
+  const pendingCleanup = new Set<Promise<void>>();
   let acceptingEmployerPage = false;
+  let setupSettlement: Promise<void> | null = null;
+  let setupPage: Page | null = null;
+  let setupSession: ProtectedTargetSession | null = null;
+  let contextListenerRetirementPromise: Promise<void> | null = null;
+  let closePromise: Promise<void> | null = null;
   let closed = false;
+  let contextListenerRemoved = false;
+  let pageCleanupGeneration = 0;
   let guardFailure: ApplicationBrowserError | null = null;
 
+  const trackCleanup = (cleanup: Promise<void>): Promise<void> => {
+    pendingCleanup.add(cleanup);
+    void cleanup.finally(() => pendingCleanup.delete(cleanup));
+    return cleanup;
+  };
+
+  const closePageOnce = (page: Page): Promise<void> => {
+    const existing = pageClosePromises.get(page);
+    if (existing) return existing;
+    let resolveCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      resolveCleanup = resolve;
+    });
+    pageClosePromises.set(page, cleanup);
+    pageCleanupGeneration += 1;
+    trackCleanup(cleanup);
+    try {
+      void Promise.resolve(page.close()).then(resolveCleanup, resolveCleanup);
+    } catch {
+      resolveCleanup();
+    }
+    return cleanup;
+  };
+
+  const closeSessionOnce = (session: ProtectedTargetSession): Promise<void> => {
+    const existing = sessionClosePromises.get(session);
+    if (existing) return existing;
+    let resolveCleanup!: () => void;
+    const cleanup = new Promise<void>((resolve) => {
+      resolveCleanup = resolve;
+    });
+    sessionClosePromises.set(session, cleanup);
+    trackCleanup(cleanup);
+    try {
+      void Promise.resolve(session.close()).then(resolveCleanup, resolveCleanup);
+    } catch {
+      resolveCleanup();
+    }
+    return cleanup;
+  };
+
+  const reportUnexpectedPage = (page: Page): void => {
+    void closePageOnce(page);
+    try {
+      void Promise.resolve(input.onUnsafe("UNEXPECTED_POPUP")).catch(() => undefined);
+    } catch {
+      // Notification cannot interrupt synchronous popup revocation or setup settlement.
+    }
+  };
+
   const unexpectedPage = (page: Page) => {
-    if (acceptingEmployerPage && employerPage === null) {
-      employerPage = page;
+    if (closed) {
+      void closePageOnce(page);
       return;
     }
-    void page.close().catch(() => undefined);
-    void input.onUnsafe("UNEXPECTED_POPUP");
+    if (acceptingEmployerPage) {
+      setupPageEvents.add(page);
+      return;
+    }
+    reportUnexpectedPage(page);
   };
   input.context.on("page", unexpectedPage);
 
-  async function close(): Promise<void> {
+  const removeContextListener = (): void => {
+    if (contextListenerRemoved) return;
+    contextListenerRemoved = true;
+    input.context.off("page", unexpectedPage);
+  };
+
+  const retireContextListenerAfterStableCleanup = (): Promise<void> => {
+    if (contextListenerRetirementPromise) return contextListenerRetirementPromise;
+    contextListenerRetirementPromise = (async () => {
+      while (true) {
+        const observedGeneration = pageCleanupGeneration;
+        await Promise.all([...pendingCleanup]);
+        if (pageCleanupGeneration !== observedGeneration) continue;
+        removeContextListener();
+        return;
+      }
+    })();
+    return contextListenerRetirementPromise;
+  };
+
+  const revoke = (): void => {
     if (closed) return;
     closed = true;
-    input.context.off("page", unexpectedPage);
-    await protectedSession?.close().catch(() => undefined);
+    formInspectionTarget = null;
+    mainFrameNavigationListeners.clear();
+  };
+
+  const cleanupOwnedResources = (): Promise<void> => {
+    const ownedSessions = [protectedSession, setupSession].filter(
+      (session): session is ProtectedTargetSession => session !== null
+    );
     protectedSession = null;
-    await employerPage?.close().catch(() => undefined);
+    setupSession = null;
+    const ownedPages = [employerPage, setupPage, ...setupPageEvents].filter(
+      (page): page is Page => page !== null
+    );
     employerPage = null;
+    setupPage = null;
+    setupPageEvents.clear();
+    const sessionClosures = ownedSessions.map((session) => closeSessionOnce(session));
+    const pageClosures = ownedPages.map((page) => closePageOnce(page));
+    return Promise.all([...sessionClosures, ...pageClosures]).then(() => undefined);
+  };
+
+  function close(): Promise<void> {
+    if (closePromise) return closePromise;
+    let resolveClose!: () => void;
+    let rejectClose!: (error: unknown) => void;
+    const sharedClose = new Promise<void>((resolve, reject) => {
+      resolveClose = () => resolve();
+      rejectClose = reject;
+    });
+    closePromise = sharedClose;
+    revoke();
+    const ownedSetup = setupSettlement;
+    void (async () => {
+      await cleanupOwnedResources();
+      if (ownedSetup) await ownedSetup;
+      await cleanupOwnedResources();
+      await retireContextListenerAfterStableCleanup();
+    })().then(resolveClose, rejectClose);
+    return sharedClose;
   }
+
+  const assertOpeningActive = (): void => {
+    if (!closed) return;
+    throw new ApplicationBrowserError(
+      "The employer target opening was cancelled.",
+      "BROWSER_WORKFLOW_FAILED"
+    );
+  };
+
+  const reconcileSetupPageEvents = (created: Page): void => {
+    const observed = [...setupPageEvents];
+    setupPageEvents.clear();
+    for (const page of observed) {
+      if (page === created) continue;
+      if (closed) {
+        void closePageOnce(page);
+      } else {
+        reportUnexpectedPage(page);
+      }
+    }
+  };
 
   return Object.freeze({
     async open(openInput: TargetOpenInput, assertActive: () => void): Promise<{ finalUrl: string }> {
-      if (closed || employerPage) {
+      if (closed || employerPage || setupSettlement) {
         throw new ApplicationBrowserError("The employer page is already open.", "TARGET_ALREADY_OPEN");
       }
-      acceptingEmployerPage = true;
-      const created = await input.context.newPage();
-      acceptingEmployerPage = false;
-      employerPage = created;
-      if (await created.opener()) {
-        await close();
-        throw new ApplicationBrowserError("The employer page unexpectedly has an opener.", "TARGET_OPENER_PRESENT");
-      }
+      let settleSetup!: () => void;
+      const ownedSetup = new Promise<void>((resolve) => {
+        settleSetup = resolve;
+      });
+      setupSettlement = ownedSetup;
+      let created: Page | null = null;
+      let session: ProtectedTargetSession | null = null;
+      let handedOff = false;
 
       try {
-        protectedSession = await (
-          input.testOnlyCreateProtectedSession?.(created) ??
-          createProtectedApplicationBrowserSession({ page: created })
-        );
-      } catch {
-        await close();
-        throw new ApplicationBrowserError("Protected employer-page session setup failed.", "BROWSER_WORKFLOW_FAILED");
-      }
-
-      let navigationCount = 0;
-      let navigationPhase: "INITIAL_CONVERGENCE" | "STEADY_TARGET" = "INITIAL_CONVERGENCE";
-      const frozenOrigin = openInput.target.url.origin;
-      const frozenCanonicalUrl = canonicalWithoutFragment(openInput.target.url);
-      const policy = {
-        allowedHosts: [...openInput.policy.allowedHosts],
-        blockedHosts: [...openInput.policy.blockedHosts]
-      };
-      const isAllowedAuthority = (candidate: ExecutionTarget | null): candidate is ExecutionTarget =>
-        candidate !== null &&
-        candidate.url.origin === frozenOrigin &&
-        candidate.host === openInput.target.host &&
-        isHostAllowedForExecution(candidate.host, policy);
-      const isCanonicalTarget = (candidate: ExecutionTarget | null): boolean =>
-        isAllowedAuthority(candidate) &&
-        canonicalWithoutFragment(candidate.url) === frozenCanonicalUrl;
-      const markUnsafe = () => {
-        if (guardFailure) return;
-        guardFailure = new ApplicationBrowserError(
-          "Employer navigation was blocked before the request left Chromium.",
-          "TARGET_NAVIGATION_BLOCKED"
-        );
-        void input.onUnsafe("TARGET_NAVIGATION_BLOCKED");
-      };
-
-      created.on("framenavigated", (frame) => {
-        if (navigationPhase !== "STEADY_TARGET" || frame !== created.mainFrame()) return;
-        if (!isCanonicalTarget(parseExecutionTargetUrl(frame.url()))) markUnsafe();
-      });
-      await created.route("**/*", async (route, request) => {
-        if (
-          !request.isNavigationRequest() ||
-          request.resourceType() !== "document" ||
-          request.frame() !== created.mainFrame()
-        ) {
-          await route.continue();
-          return;
+        acceptingEmployerPage = true;
+        try {
+          created = await input.context.newPage();
+        } finally {
+          acceptingEmployerPage = false;
         }
+        setupPage = created;
+        if (closed) void closePageOnce(created);
+        reconcileSetupPageEvents(created);
+        const openingPage = created;
+        assertOpeningActive();
+        if (await openingPage.opener()) {
+          revoke();
+          throw new ApplicationBrowserError(
+            "The employer page unexpectedly has an opener.",
+            "TARGET_OPENER_PRESENT"
+          );
+        }
+        assertOpeningActive();
 
-        if (navigationPhase === "INITIAL_CONVERGENCE") navigationCount += 1;
-        const candidate = parseExecutionTargetUrl(request.url());
-        const valid =
-          !guardFailure &&
+        try {
+          session = await (
+            input.testOnlyCreateProtectedSession?.(openingPage) ??
+            createProtectedApplicationBrowserSession({ page: openingPage })
+          );
+          setupSession = session;
+          if (closed) void closeSessionOnce(session);
+        } catch {
+          revoke();
+          throw new ApplicationBrowserError(
+            "Protected employer-page session setup failed.",
+            "BROWSER_WORKFLOW_FAILED"
+          );
+        }
+        assertOpeningActive();
+
+        let navigationCount = 0;
+        let navigationPhase: "INITIAL_CONVERGENCE" | "STEADY_TARGET" = "INITIAL_CONVERGENCE";
+        const frozenOrigin = openInput.target.url.origin;
+        const frozenCanonicalUrl = canonicalWithoutFragment(openInput.target.url);
+        const policy = {
+          allowedHosts: [...openInput.policy.allowedHosts],
+          blockedHosts: [...openInput.policy.blockedHosts]
+        };
+        const isAllowedAuthority = (candidate: ExecutionTarget | null): candidate is ExecutionTarget =>
+          candidate !== null &&
+          candidate.url.origin === frozenOrigin &&
+          candidate.host === openInput.target.host &&
+          isHostAllowedForExecution(candidate.host, policy);
+        const isCanonicalTarget = (candidate: ExecutionTarget | null): boolean =>
           isAllowedAuthority(candidate) &&
-          (navigationPhase === "STEADY_TARGET"
-            ? isCanonicalTarget(candidate)
-            : navigationCount <= 5 && (navigationCount > 1 || isCanonicalTarget(candidate)));
-        if (!valid) {
-          markUnsafe();
-          await route.abort("blockedbyclient");
-          return;
-        }
-        if (input.testOnlyFulfillMainDocument) {
-          await input.testOnlyFulfillMainDocument(request, route);
-          return;
-        }
-        await route.continue();
-      });
+          canonicalWithoutFragment(candidate.url) === frozenCanonicalUrl;
+        const markUnsafe = () => {
+          if (guardFailure) return;
+          guardFailure = new ApplicationBrowserError(
+            "Employer navigation was blocked before the request left Chromium.",
+            "TARGET_NAVIGATION_BLOCKED"
+          );
+          void input.onUnsafe("TARGET_NAVIGATION_BLOCKED");
+        };
 
-      assertActive();
-      try {
-        await created.goto(openInput.target.url.toString(), { waitUntil: "domcontentloaded" });
-      } catch {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        await close();
-        if (guardFailure) throw guardFailure;
-        throw new ApplicationBrowserError("Employer target navigation failed.", "TARGET_NAVIGATION_FAILED");
+        openingPage.on("framenavigated", (frame) => {
+          if (navigationPhase !== "STEADY_TARGET" || frame !== openingPage.mainFrame()) return;
+          if (!isCanonicalTarget(parseExecutionTargetUrl(frame.url()))) markUnsafe();
+          for (const listener of mainFrameNavigationListeners) {
+            try {
+              listener();
+            } catch {
+              // Inspection lifecycle observers cannot interrupt the target guard.
+            }
+          }
+        });
+        await openingPage.route("**/*", async (route, request) => {
+          if (
+            !request.isNavigationRequest() ||
+            request.resourceType() !== "document" ||
+            request.frame() !== openingPage.mainFrame()
+          ) {
+            await route.continue();
+            return;
+          }
+
+          if (navigationPhase === "INITIAL_CONVERGENCE") navigationCount += 1;
+          const candidate = parseExecutionTargetUrl(request.url());
+          const valid =
+            !guardFailure &&
+            isAllowedAuthority(candidate) &&
+            (navigationPhase === "STEADY_TARGET"
+              ? isCanonicalTarget(candidate)
+              : navigationCount <= 5 && (navigationCount > 1 || isCanonicalTarget(candidate)));
+          if (!valid) {
+            markUnsafe();
+            await route.abort("blockedbyclient");
+            return;
+          }
+          if (input.testOnlyFulfillMainDocument) {
+            await input.testOnlyFulfillMainDocument(request, route);
+            return;
+          }
+          await route.continue();
+        });
+        assertOpeningActive();
+
+        assertActive();
+        assertOpeningActive();
+        try {
+          await openingPage.goto(openInput.target.url.toString(), { waitUntil: "domcontentloaded" });
+        } catch {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          revoke();
+          if (guardFailure) throw guardFailure;
+          throw new ApplicationBrowserError(
+            "Employer target navigation failed.",
+            "TARGET_NAVIGATION_FAILED"
+          );
+        }
+        assertOpeningActive();
+        assertActive();
+        assertOpeningActive();
+        if (guardFailure) {
+          revoke();
+          throw guardFailure;
+        }
+        if (!isCanonicalTarget(parseExecutionTargetUrl(openingPage.url()))) {
+          revoke();
+          throw new ApplicationBrowserError(
+            "The anonymous employer target could not be reached exactly.",
+            "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED"
+          );
+        }
+        navigationPhase = "STEADY_TARGET";
+        try {
+          await session.waitUntilReady();
+        } catch {
+          revoke();
+          if (guardFailure) throw guardFailure;
+          throw new ApplicationBrowserError(
+            "Protected employer-page session was not ready.",
+            "BROWSER_WORKFLOW_FAILED"
+          );
+        }
+        assertOpeningActive();
+        if (guardFailure) {
+          revoke();
+          throw guardFailure;
+        }
+        if (!isCanonicalTarget(parseExecutionTargetUrl(openingPage.url()))) {
+          revoke();
+          throw new ApplicationBrowserError(
+            "The anonymous employer target could not be reached exactly.",
+            "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED"
+          );
+        }
+        const ownedPage = openingPage;
+        const ownedSession = session;
+        const assertAuthorityActive = (): void => {
+          if (
+            closed ||
+            employerPage !== ownedPage ||
+            protectedSession !== ownedSession ||
+            ownedPage.isClosed()
+          ) {
+            throw new ApplicationBrowserError(
+              "Protected employer-page authority is no longer current.",
+              "BROWSER_WORKFLOW_FAILED"
+            );
+          }
+        };
+        const authority: ProtectedFormInspectionAuthority = Object.freeze({
+          waitUntilReady: async () => {
+            assertAuthorityActive();
+            return ownedSession.waitUntilReady();
+          },
+          extractApplicationForm: async () => {
+            assertAuthorityActive();
+            return ownedSession.extractApplicationForm();
+          },
+          verifyCandidate: async (candidate) => {
+            assertAuthorityActive();
+            return ownedSession.verifyCandidate(candidate);
+          },
+          snapshot: async () => {
+            assertAuthorityActive();
+            return ownedSession.snapshot();
+          },
+          waitForChange: async (since, timeoutMs) => {
+            assertAuthorityActive();
+            return ownedSession.waitForChange(since, timeoutMs);
+          },
+          subscribe: (listener) => {
+            assertAuthorityActive();
+            return ownedSession.subscribe(listener);
+          }
+        });
+        const target: ProtectedFormInspectionTarget = Object.freeze({
+          authority,
+          currentTargetUrl: () =>
+            !closed && employerPage === ownedPage && !ownedPage.isClosed()
+              ? ownedPage.url()
+              : null,
+          subscribeMainFrameNavigation(listener) {
+            if (closed || formInspectionTarget !== target || ownedPage.isClosed()) {
+              return () => undefined;
+            }
+            mainFrameNavigationListeners.add(listener);
+            return () => mainFrameNavigationListeners.delete(listener);
+          }
+        });
+
+        assertOpeningActive();
+        employerPage = ownedPage;
+        protectedSession = ownedSession;
+        setupPage = null;
+        setupSession = null;
+        formInspectionTarget = target;
+        handedOff = true;
+        created = null;
+        session = null;
+        return { finalUrl: ownedPage.url() };
+      } finally {
+        acceptingEmployerPage = false;
+        try {
+          const provisionalPages = [...setupPageEvents];
+          setupPageEvents.clear();
+          if (setupPage === created) setupPage = null;
+          if (setupSession === session) setupSession = null;
+          if (!handedOff && session) await closeSessionOnce(session);
+          await Promise.all([
+            ...(!handedOff && created ? [closePageOnce(created)] : []),
+            ...provisionalPages.map((page) => {
+              if (closed) return closePageOnce(page);
+              reportUnexpectedPage(page);
+              return closePageOnce(page);
+            })
+          ]);
+          if (handedOff) assertOpeningActive();
+        } finally {
+          try {
+            if (closed && !closePromise) {
+              await retireContextListenerAfterStableCleanup();
+            }
+          } finally {
+            settleSetup();
+            if (setupSettlement === ownedSetup) setupSettlement = null;
+          }
+        }
       }
-      assertActive();
-      if (guardFailure) {
-        await close();
-        throw guardFailure;
-      }
-      if (!isCanonicalTarget(parseExecutionTargetUrl(created.url()))) {
-        await close();
-        throw new ApplicationBrowserError(
-          "The anonymous employer target could not be reached exactly.",
-          "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED"
-        );
-      }
-      navigationPhase = "STEADY_TARGET";
-      try {
-        await protectedSession.waitUntilReady();
-      } catch {
-        await close();
-        if (guardFailure) throw guardFailure;
-        throw new ApplicationBrowserError("Protected employer-page session was not ready.", "BROWSER_WORKFLOW_FAILED");
-      }
-      if (guardFailure) {
-        await close();
-        throw guardFailure;
-      }
-      if (!isCanonicalTarget(parseExecutionTargetUrl(created.url()))) {
-        await close();
-        throw new ApplicationBrowserError(
-          "The anonymous employer target could not be reached exactly.",
-          "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED"
-        );
-      }
-      return { finalUrl: created.url() };
     },
     page: () => employerPage,
+    formInspectionTarget: () =>
+      !closed && employerPage && !employerPage.isClosed()
+        ? formInspectionTarget
+        : null,
     close
   });
 }

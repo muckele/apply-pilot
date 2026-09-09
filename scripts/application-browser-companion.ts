@@ -75,7 +75,6 @@ export async function runApplicationBrowserCompanion(
   const context = runtime.context as BrowserContext;
   const controlPage = runtime.controlPage as Page;
   let targetController: ReturnType<typeof createPlaywrightTargetController> | null = null;
-  let ownedEmployerPage: Page | null = null;
   let formInspectionController: ApplicationFormInspectionController | null = null;
   let formInspectionPort: FormInspectionPort | null = null;
   let closeOwnedResourcesPromise: Promise<void> | null = null;
@@ -124,22 +123,21 @@ export async function runApplicationBrowserCompanion(
       client,
       openTarget: (target, assertActive) => createdTargetController.open(target, assertActive),
       initializeFormInspectionController: ({ authoritativeApplyHost }) => {
-        if (ownedEmployerPage || formInspectionController || formInspectionPort) {
+        if (formInspectionController || formInspectionPort) {
           throw new ApplicationBrowserError(
             "The form inspection controller is already initialized.",
             "BROWSER_WORKFLOW_FAILED"
           );
         }
-        const page = createdTargetController.page();
-        if (!page || page.isClosed()) {
+        const target = createdTargetController.formInspectionTarget();
+        if (!target) {
           throw new ApplicationBrowserError(
-            "The exact employer page is unavailable.",
-            "TARGET_PAGE_CLOSED"
+            "The protected form inspection target is unavailable.",
+            "BROWSER_WORKFLOW_FAILED"
           );
         }
-        ownedEmployerPage = page;
         const controller = dependencies.createFormInspectionController({
-          page,
+          target,
           authoritativeApplyHost,
           onInvalidated: (code) => {
             void coordinator.handleFormInspectionInvalidation(code);
@@ -162,12 +160,8 @@ export async function runApplicationBrowserCompanion(
             });
           },
           currentTargetUrl() {
-            if (
-              !ownedEmployerPage ||
-              createdTargetController.page() !== ownedEmployerPage ||
-              ownedEmployerPage.isClosed()
-            ) return null;
-            return ownedEmployerPage.url();
+            if (createdTargetController.formInspectionTarget() !== target) return null;
+            return target.currentTargetUrl();
           }
         });
       },
