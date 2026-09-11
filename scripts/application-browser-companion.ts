@@ -18,7 +18,10 @@ import {
   createSafeBrowserDiagnostic,
   type FormInspectionPort
 } from "@/lib/application-browser/coordinator";
-import { createSameOriginClient } from "@/lib/application-browser/same-origin-client";
+import {
+  createSameOriginClient,
+  type SameOriginClient
+} from "@/lib/application-browser/same-origin-client";
 import { parseApplyPilotOrigin, parseImmutableRunId } from "@/lib/application-browser/types";
 
 export function parseCompanionArguments(args: string[]) {
@@ -42,7 +45,7 @@ export function parseCompanionArguments(args: string[]) {
 
 type CompanionDependencies = Readonly<{
   launchRuntime(): Promise<ApplicationBrowserRuntime>;
-  createClient: typeof createSameOriginClient;
+  createClient(input: Parameters<typeof createSameOriginClient>[0]): SameOriginClient;
   createTargetController: typeof createPlaywrightTargetController;
   createFormInspectionController: typeof createApplicationFormInspectionController;
   installBridge: typeof installControlBridge;
@@ -158,6 +161,12 @@ export async function runApplicationBrowserCompanion(
               generationId: generation.generationId,
               inspectionReport: generation.inspectionReport
             });
+          },
+          assertAcquiredFillAuthority(generationId, authority) {
+            controller.assertAcquiredFillAuthority(generationId, authority);
+          },
+          writeApprovedField(generationId, request) {
+            return controller.writeApprovedField(generationId, request);
           },
           currentTargetUrl() {
             if (createdTargetController.formInspectionTarget() !== target) return null;

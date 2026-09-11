@@ -14,6 +14,13 @@ const RUN_URL = `${ORIGIN}/api/application-runs/${RUN_ID}`;
 const POLICY_URL = `${ORIGIN}/api/application-automation-policy`;
 const PACKET_URL = `${RUN_URL}/answer-packet`;
 const PUBLICATION_URL = `${RUN_URL}/form-inspection`;
+const FILL_ATTEMPT_URL = `${RUN_URL}/fill-attempt`;
+const FILL_ATTEMPT_ID = "550e8400-e29b-41d4-a716-446655440000";
+const FIELD_KEY = "1".repeat(64);
+const FIELD_FINGERPRINT = "2".repeat(64);
+const FORM_FINGERPRINT = "3".repeat(64);
+const PACKET_HASH = "4".repeat(64);
+const STEP_KEY = `fill:${FILL_ATTEMPT_ID}:${FIELD_KEY}`;
 const BACKEND_MESSAGE_SENTINEL = "backend-private-message-sentinel";
 const PROPOSAL_SENTINEL = "private-proposal-sentinel";
 const QUESTION_SENTINEL = "private-question-sentinel";
@@ -61,6 +68,42 @@ function policyResponse() {
   };
 }
 
+function fillAcquisitionResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    attemptId: FILL_ATTEMPT_ID,
+    runStateVersion: 8,
+    leaseExpiresAt: "2026-09-10T20:10:00.000Z",
+    formInspectionVersion: 2,
+    answerPacketVersion: 3,
+    packetHash: PACKET_HASH,
+    formFingerprint: FORM_FINGERPRINT,
+    eligibleFields: [{
+      stepKey: STEP_KEY,
+      normalizedFieldKey: FIELD_KEY,
+      fieldFingerprint: FIELD_FINGERPRINT,
+      fieldType: "TEXT",
+      proposal: { kind: "SCALAR", value: PROPOSAL_SENTINEL }
+    }],
+    ...overrides
+  };
+}
+
+function fillStatusResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    state: "FILLING",
+    stateVersion: 8,
+    fillAttemptId: FILL_ATTEMPT_ID,
+    fillLeaseExpiresAt: "2026-09-10T20:10:00.000Z",
+    leaseLive: true,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: true,
+    outcome: null,
+    errorCode: null,
+    steps: [],
+    ...overrides
+  };
+}
+
 function publicationInput(
   overrides: Partial<BrowserFormInspectionPublicationInput> = {}
 ): BrowserFormInspectionPublicationInput {
@@ -104,6 +147,7 @@ function publicationResponse(input: {
 function makeClient(input: {
   get?: (url: string, options: RequestOptions) => Promise<TestResponse>;
   post?: (url: string, options: RequestOptions) => Promise<TestResponse>;
+  patch?: (url: string, options: RequestOptions) => Promise<TestResponse>;
 } = {}) {
   return createSameOriginClient({
     configuredApplyPilotOrigin: ORIGIN,
@@ -116,6 +160,10 @@ function makeClient(input: {
       async post(url, options) {
         if (!input.post) throw new Error(`Unexpected POST: ${url}`);
         return input.post(url, options);
+      },
+      async patch(url, options) {
+        if (!input.patch) throw new Error(`Unexpected PATCH: ${url}`);
+        return input.patch(url, options);
       }
     }
   });
@@ -173,13 +221,17 @@ function inputWithSerializedByteLength(targetBytes: number): BrowserFormInspecti
   return sized;
 }
 
-test("same-origin client exposes only the four fixed operations", () => {
+test("same-origin client exposes only the eight fixed operations", () => {
   const client = makeClient();
   assert.deepEqual(Object.keys(client).sort(), [
+    "acquireFillAttempt",
+    "finalizeFillAttempt",
     "getApplicationRun",
     "getAutomationPolicy",
     "getCurrentAnswerPacket",
-    "publishFormInspection"
+    "getFillAttemptStatus",
+    "publishFormInspection",
+    "recoverExpiredFillAttempt"
   ]);
   for (const generic of ["request", "fetch", "get", "post", "send", "execute"]) {
     assert.equal(generic in client, false, generic);
@@ -789,4 +841,238 @@ test("malformed successful responses never expose raw packet proposal or questio
     assert.equal(error.message.includes(QUESTION_SENTINEL), false);
     return true;
   });
+});
+
+test("Fill acquisition uses the fixed route once and freezes exact server-issued step material", async () => {
+  const calls: Array<{ url: string; options: RequestOptions }> = [];
+  let dispatchChecks = 0;
+  const client = makeClient({
+    async post(url, options) {
+      calls.push({ url, options });
+      return response(url, 201, fillAcquisitionResponse());
+    }
+  });
+
+  const acquired = await client.acquireFillAttempt({
+    runId: RUN_ID,
+    expectedStateVersion: 7
+  }, () => {
+    dispatchChecks += 1;
+  });
+
+  assert.equal(dispatchChecks, 1);
+  assert.deepEqual(calls, [{
+    url: FILL_ATTEMPT_URL,
+    options: {
+      data: JSON.stringify({ expectedStateVersion: 7 }),
+      headers: { "Content-Type": "application/json" },
+      failOnStatusCode: false,
+      maxRedirects: 0,
+      maxRetries: 0
+    }
+  }]);
+  assert.deepEqual(acquired, fillAcquisitionResponse());
+  assert.equal(Object.isFrozen(acquired), true);
+  assert.equal(Object.isFrozen(acquired.eligibleFields), true);
+  assert.equal(Object.isFrozen(acquired.eligibleFields[0]), true);
+  assert.equal(Object.isFrozen(acquired.eligibleFields[0].proposal), true);
+  assert.equal("fillAttemptId" in acquired, false);
+});
+
+test("Fill status and terminal mutations use only the exact fixed GET/PATCH contracts", async () => {
+  const calls: Array<{ method: string; url: string; options: RequestOptions }> = [];
+  const terminal = fillStatusResponse({
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 9,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    fieldOperationAllowed: false,
+    outcome: "COMPLETED",
+    steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: null }]
+  });
+  const client = makeClient({
+    async get(url, options) {
+      calls.push({ method: "GET", url, options });
+      return response(url, 200, fillStatusResponse());
+    },
+    async patch(url, options) {
+      calls.push({ method: "PATCH", url, options });
+      return response(url, 200, terminal);
+    }
+  });
+
+  assert.deepEqual(await client.getFillAttemptStatus(RUN_ID), fillStatusResponse());
+  assert.deepEqual(await client.finalizeFillAttempt({
+    runId: RUN_ID,
+    fillAttemptId: FILL_ATTEMPT_ID,
+    expectedStateVersion: 8,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: null }]
+  }, () => undefined), terminal);
+  assert.deepEqual(await client.recoverExpiredFillAttempt({
+    runId: RUN_ID,
+    fillAttemptId: FILL_ATTEMPT_ID,
+    expectedStateVersion: 8
+  }, () => undefined), terminal);
+
+  assert.deepEqual(calls, [
+    {
+      method: "GET",
+      url: FILL_ATTEMPT_URL,
+      options: { failOnStatusCode: false, maxRedirects: 0 }
+    },
+    {
+      method: "PATCH",
+      url: FILL_ATTEMPT_URL,
+      options: {
+        data: JSON.stringify({
+          action: "FINALIZE",
+          fillAttemptId: FILL_ATTEMPT_ID,
+          expectedStateVersion: 8,
+          outcome: "COMPLETED",
+          errorCode: null,
+          steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: null }]
+        }),
+        headers: { "Content-Type": "application/json" },
+        failOnStatusCode: false,
+        maxRedirects: 0,
+        maxRetries: 0
+      }
+    },
+    {
+      method: "PATCH",
+      url: FILL_ATTEMPT_URL,
+      options: {
+        data: JSON.stringify({
+          action: "RECOVER_EXPIRED",
+          fillAttemptId: FILL_ATTEMPT_ID,
+          expectedStateVersion: 8
+        }),
+        headers: { "Content-Type": "application/json" },
+        failOnStatusCode: false,
+        maxRedirects: 0,
+        maxRetries: 0
+      }
+    }
+  ]);
+});
+
+test("Fill mutation errors identify the real dispatch boundary without proposal leakage", async () => {
+  let calls = 0;
+  const beforeDispatch = makeClient({
+    async post(url) {
+      calls += 1;
+      return response(url, 201, fillAcquisitionResponse());
+    }
+  });
+  await assert.rejects(
+    beforeDispatch.acquireFillAttempt({ runId: RUN_ID, expectedStateVersion: -1 }, () => undefined),
+    (error: unknown) => {
+      assert.ok(error instanceof SameOriginClientError);
+      assert.equal(error.code, "INVALID_FILL_ACQUISITION_REQUEST");
+      assert.equal(error.dispatchState, "NOT_DISPATCHED");
+      assert.equal(error.responseReceived, false);
+      return true;
+    }
+  );
+  assert.equal(calls, 0);
+
+  const uncertain = makeClient({
+    async post() {
+      throw new Error(`${PROPOSAL_SENTINEL}-transport`);
+    }
+  });
+  await assert.rejects(
+    uncertain.acquireFillAttempt({ runId: RUN_ID, expectedStateVersion: 7 }, () => undefined),
+    (error: unknown) => {
+      assert.ok(error instanceof SameOriginClientError);
+      assert.equal(error.code, "SAME_ORIGIN_REQUEST_FAILED");
+      assert.equal(error.dispatchState, "MAY_HAVE_DISPATCHED");
+      assert.equal(error.responseReceived, false);
+      assert.equal(error.message.includes(PROPOSAL_SENTINEL), false);
+      return true;
+    }
+  );
+
+  const malformed = makeClient({
+    async post(url) {
+      return response(url, 201, fillAcquisitionResponse({ eligibleFields: [{ private: PROPOSAL_SENTINEL }] }));
+    }
+  });
+  await assert.rejects(
+    malformed.acquireFillAttempt({ runId: RUN_ID, expectedStateVersion: 7 }, () => undefined),
+    (error: unknown) => {
+      assert.ok(error instanceof SameOriginClientError);
+      assert.equal(error.code, "INVALID_FILL_ACQUISITION_RESPONSE");
+      assert.equal(error.dispatchState, "MAY_HAVE_DISPATCHED");
+      assert.equal(error.responseReceived, true);
+      assert.equal(error.message.includes(PROPOSAL_SENTINEL), false);
+      return true;
+    }
+  );
+
+  const rejected = makeClient({
+    async post(url) {
+      return response(url, 409, {
+        code: "FILL_NO_ELIGIBLE_FIELDS",
+        message: BACKEND_MESSAGE_SENTINEL
+      });
+    }
+  });
+  await assert.rejects(
+    rejected.acquireFillAttempt({ runId: RUN_ID, expectedStateVersion: 7 }, () => undefined),
+    (error: unknown) => {
+      assert.ok(error instanceof SameOriginClientError);
+      assert.equal(error.code, "FILL_NO_ELIGIBLE_FIELDS");
+      assert.equal(error.dispatchState, "MAY_HAVE_DISPATCHED");
+      assert.equal(error.responseReceived, true);
+      assert.equal(error.message.includes(BACKEND_MESSAGE_SENTINEL), false);
+      return true;
+    }
+  );
+});
+
+test("Fill parsers reject extra, mismatched, duplicate, and malformed authority", async () => {
+  const invalidAcquisitions = [
+    fillAcquisitionResponse({ extra: true }),
+    fillAcquisitionResponse({ attemptId: "not-a-uuid" }),
+    fillAcquisitionResponse({ leaseExpiresAt: "not-a-date" }),
+    fillAcquisitionResponse({ eligibleFields: [
+      fillAcquisitionResponse().eligibleFields[0],
+      fillAcquisitionResponse().eligibleFields[0]
+    ] }),
+    fillAcquisitionResponse({ eligibleFields: [{
+      ...fillAcquisitionResponse().eligibleFields[0],
+      stepKey: `fill:${FILL_ATTEMPT_ID}:${"f".repeat(64)}`
+    }] }),
+    fillAcquisitionResponse({ eligibleFields: [{
+      ...fillAcquisitionResponse().eligibleFields[0],
+      fieldType: "RADIO_GROUP"
+    }] })
+  ];
+  for (const body of invalidAcquisitions) {
+    const client = makeClient({ async post(url) { return response(url, 201, body); } });
+    await assert.rejects(
+      client.acquireFillAttempt({ runId: RUN_ID, expectedStateVersion: 7 }, () => undefined),
+      hasCode("INVALID_FILL_ACQUISITION_RESPONSE")
+    );
+  }
+
+  for (const body of [
+    fillStatusResponse({ extra: true }),
+    fillStatusResponse({ stateVersion: -1 }),
+    fillStatusResponse({ fillLeaseExpiresAt: "invalid" }),
+    fillStatusResponse({
+      steps: [{
+        stepKey: `fill:${FILL_ATTEMPT_ID}:not-a-field-key`,
+        result: "FILLED",
+        errorCode: null
+      }]
+    }),
+    fillStatusResponse({ steps: [{ stepKey: STEP_KEY, result: PROPOSAL_SENTINEL, errorCode: null }] })
+  ]) {
+    const client = makeClient({ async get(url) { return response(url, 200, body); } });
+    await assert.rejects(client.getFillAttemptStatus(RUN_ID), hasCode("INVALID_FILL_STATUS_RESPONSE"));
+  }
 });

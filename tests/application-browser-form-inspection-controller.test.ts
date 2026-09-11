@@ -9,6 +9,7 @@ import {
   SEMANTIC_EXTRACTION_GAP_MS,
   type ApplicationFormInspectionControllerRuntime,
   type ApplicationFormInspectionInvalidationCode,
+  type AcquiredFillAuthority,
   type ProtectedFormInspectionAuthority,
   type ProtectedFormInspectionTarget
 } from "@/lib/application-browser/form-inspection-controller";
@@ -18,6 +19,8 @@ import type {
   OpaqueProtectedChoiceReference,
   OpaqueProtectedFieldReference,
   ProtectedApplicationFormExtraction,
+  ProtectedCandidateFieldWriteRequest,
+  ProtectedCandidateFieldWriteResult,
   ProtectedCandidateVerification,
   ProtectedSessionLifecycleCode
 } from "@/lib/application-browser/protected-browser-session";
@@ -27,6 +30,7 @@ import {
 } from "@/lib/application-browser/protected-browser-session";
 import {
   applicationFormInspectionReportSchema,
+  buildNormalizedApplicationFormInspection,
   FORM_INSPECTION_SCHEMA_VERSION,
   type ApplicationFormInspectionReport
 } from "@/lib/application-runs/form-inspection";
@@ -67,6 +71,30 @@ function report(
   });
 }
 
+function selectReport(): ApplicationFormInspectionReport {
+  const value = report();
+  return applicationFormInspectionReportSchema.parse({
+    ...value,
+    forms: [{
+      ...value.forms[0],
+      sections: [{
+        ...value.forms[0].sections[0],
+        fields: [{
+          ...value.forms[0].sections[0].fields[0],
+          fieldType: "SELECT_ONE",
+          autocomplete: null,
+          constraints: {
+            ...value.forms[0].sections[0].fields[0].constraints,
+            minLength: null,
+            maxLength: null
+          },
+          choices: [{ label: "Remote", disabled: false }]
+        }]
+      }]
+    }]
+  });
+}
+
 function opaque<T extends object>(): T {
   return Object.freeze(Object.create(null)) as T;
 }
@@ -98,7 +126,10 @@ function controlledExtraction(
       fields: [{
         sourceOrdinal: { form: 0, section: 0, field: 0 },
         reference: fieldReference,
-        choices: []
+        choices: inspectionReport.forms[0].sections[0].fields[0].choices.map((_choice, choice) => ({
+          sourceOrdinal: { form: 0, section: 0, field: 0, choice },
+          reference: choiceReference
+        }))
       }],
       sealWriterTargets() {
         return Promise.resolve();
@@ -145,6 +176,11 @@ class FakeProtectedTarget {
   readonly readiness: Queued<void>[] = [];
   readonly extractions: Queued<ProtectedApplicationFormExtraction>[] = [];
   readonly verifications: Queued<ProtectedCandidateVerification>[] = [];
+  readonly writes: Queued<ProtectedCandidateFieldWriteResult>[] = [];
+  readonly writeRequests: Array<Readonly<{
+    candidate: OpaqueExtractionCandidate;
+    request: ProtectedCandidateFieldWriteRequest;
+  }>> = [];
   readonly snapshots: Queued<BrowserDocumentFence>[] = [];
   readonly waits: Queued<BrowserDocumentFence>[] = [];
   readonly reportsByCandidate = new Map<OpaqueExtractionCandidate, ApplicationFormInspectionReport>();
@@ -179,6 +215,12 @@ class FakeProtectedTarget {
       return candidateReport
         ? { status: "CURRENT", report: structuredClone(candidateReport), fence: this.fence }
         : { status: "INVALID" };
+    },
+    writeCandidateField: async (candidate, request) => {
+      this.calls.push(`write:${this.candidateLabel(candidate)}`);
+      this.writeRequests.push({ candidate, request });
+      const queued = this.writes.shift();
+      return queued === undefined ? { status: "FILLED" } : settleQueued(queued);
     },
     snapshot: async () => {
       this.calls.push("snapshot");
@@ -221,6 +263,10 @@ class FakeProtectedTarget {
 
   enqueueVerification(value: Queued<ProtectedCandidateVerification>): void {
     this.verifications.push(value);
+  }
+
+  enqueueWrite(value: Queued<ProtectedCandidateFieldWriteResult>): void {
+    this.writes.push(value);
   }
 
   enqueueWait(value: Queued<BrowserDocumentFence>): void {
@@ -313,6 +359,35 @@ function createController(
   }, runtime);
 }
 
+function acquiredAuthority(inspectionReport = report()): Readonly<{
+  normalized: ReturnType<typeof buildNormalizedApplicationFormInspection>;
+  authority: AcquiredFillAuthority;
+}> {
+  const normalized = buildNormalizedApplicationFormInspection({
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST,
+    report: inspectionReport
+  });
+  const field = normalized.snapshot.forms[0].sections[0].fields[0];
+  if (field.fieldType !== "TEXT" && field.fieldType !== "SELECT_ONE") {
+    throw new Error("test fixture must produce a protected writable field");
+  }
+  const request: ProtectedCandidateFieldWriteRequest = {
+    normalizedFieldKey: field.normalizedFieldKey,
+    fieldFingerprint: field.fieldFingerprint,
+    fieldType: field.fieldType,
+    proposal: field.fieldType === "SELECT_ONE"
+      ? { kind: "OPTIONS", optionKeys: [field.choices[0].key] }
+      : { kind: "SCALAR", value: "Reviewed exact value" }
+  };
+  return {
+    normalized,
+    authority: {
+      formFingerprint: normalized.formFingerprint,
+      fields: [request]
+    }
+  };
+}
+
 test("stable protected inspection accepts only a fresh CURRENT candidate and exposes no opaque authority", async () => {
   const fake = new FakeProtectedTarget();
   const extraction = controlledExtraction();
@@ -342,6 +417,109 @@ test("stable protected inspection accepts only a fresh CURRENT candidate and exp
   await Promise.all([generation.dispose(), generation.dispose(), generation.dispose()]);
   assert.equal(controller.current(), null);
   assert.equal(extraction.disposeCalls(), 1);
+  await controller.close();
+});
+
+test("acquired Fill authority binds exact private generation, form, field, family, and option identity", async () => {
+  for (const inspectionReport of [report(), selectReport()]) {
+    const fake = new FakeProtectedTarget();
+    const extraction = controlledExtraction(inspectionReport);
+    fake.enqueueExtraction(extraction.value);
+    const controller = createController(fake);
+    const generation = await controller.inspect();
+    const acquired = acquiredAuthority(inspectionReport);
+
+    await controller.assertAcquiredFillAuthority(generation.generationId, acquired.authority);
+    assert.throws(
+      () => controller.assertAcquiredFillAuthority(generation.generationId, acquired.authority),
+      controllerError("FORM_GENERATION_INVALIDATED")
+    );
+    const request = acquired.authority.fields[0];
+    const result = await controller.writeApprovedField(generation.generationId, request);
+
+    assert.deepEqual(result, { status: "FILLED" });
+    assert.equal(fake.writeRequests.length, 1);
+    assert.equal(fake.writeRequests[0].candidate, extraction.candidate);
+    assert.deepEqual(fake.writeRequests[0].request, request);
+    assert.equal("candidate" in acquired.authority, false);
+    await controller.close();
+  }
+});
+
+test("acquired Fill authority mismatch fails before protected writing", async () => {
+  const fake = new FakeProtectedTarget();
+  const extraction = controlledExtraction(selectReport());
+  fake.enqueueExtraction(extraction.value);
+  const controller = createController(fake);
+  const generation = await controller.inspect();
+  const acquired = acquiredAuthority(selectReport());
+  const field = acquired.authority.fields[0];
+  const invalid = [
+    { ...acquired.authority, formFingerprint: "f".repeat(64) },
+    { ...acquired.authority, fields: [{ ...field, normalizedFieldKey: "e".repeat(64) }] },
+    { ...acquired.authority, fields: [{ ...field, fieldFingerprint: "d".repeat(64) }] },
+    { ...acquired.authority, fields: [{ ...field, fieldType: "TEXT" }] },
+    { ...acquired.authority, fields: [field, field] },
+    {
+      ...acquired.authority,
+      fields: [{
+        ...field,
+        proposal: { kind: "OPTIONS", optionKeys: ["c".repeat(64)] }
+      }]
+    }
+  ];
+
+  for (const authority of invalid) {
+    await assert.rejects(
+      Promise.resolve().then(() => controller.assertAcquiredFillAuthority(
+        generation.generationId,
+        authority as never
+      )),
+      controllerError("FORM_GENERATION_INVALIDATED")
+    );
+  }
+  await assert.rejects(
+    Promise.resolve().then(() => controller.assertAcquiredFillAuthority(Symbol("stale"), acquired.authority)),
+    controllerError("FORM_GENERATION_INVALIDATED")
+  );
+  assert.equal(fake.writeRequests.length, 0);
+  await controller.close();
+});
+
+test("protected Fill writing excludes inspection and every overlapping write", async () => {
+  const fake = new FakeProtectedTarget();
+  const extraction = controlledExtraction();
+  const pendingWrite = deferred<ProtectedCandidateFieldWriteResult>();
+  fake.enqueueExtraction(extraction.value);
+  fake.enqueueWrite(pendingWrite.promise);
+  const controller = createController(fake);
+  const generation = await controller.inspect();
+  const acquired = acquiredAuthority();
+  await controller.assertAcquiredFillAuthority(generation.generationId, acquired.authority);
+
+  const write = controller.writeApprovedField(
+    generation.generationId,
+    acquired.authority.fields[0]
+  );
+  await Promise.resolve();
+  assert.equal(fake.writeRequests.length, 1);
+  await assert.rejects(controller.inspect(), controllerError("FORM_INSPECTION_IN_PROGRESS"));
+  await assert.rejects(
+    controller.assertCurrent(generation.generationId),
+    controllerError("FORM_INSPECTION_IN_PROGRESS")
+  );
+  await assert.rejects(
+    controller.writeApprovedField(generation.generationId, acquired.authority.fields[0]),
+    controllerError("FORM_INSPECTION_IN_PROGRESS")
+  );
+
+  pendingWrite.resolve({ status: "PRESERVED_EXISTING" });
+  assert.deepEqual(await write, { status: "PRESERVED_EXISTING" });
+  await assert.rejects(
+    controller.writeApprovedField(generation.generationId, acquired.authority.fields[0]),
+    controllerError("FORM_GENERATION_INVALIDATED")
+  );
+  assert.equal(fake.writeRequests.length, 1);
   await controller.close();
 });
 

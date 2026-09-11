@@ -1,14 +1,19 @@
+import { createHash } from "node:crypto";
+
 import {
   ApplicationFormCorrelationError,
   correlateProtectedApplicationFormExtraction,
   type CorrelatedProtectedApplicationFormExtraction
 } from "@/lib/application-browser/form-inspection-correlation";
 import {
+  PROTECTED_WRITABLE_FIELD_TYPES,
   ProtectedApplicationFormExtractionError,
   ProtectedBrowserSessionError,
   type BrowserDocumentFence,
   type ProtectedApplicationFormExtraction,
   type ProtectedApplicationBrowserSession,
+  type ProtectedCandidateFieldWriteRequest,
+  type ProtectedCandidateFieldWriteResult,
   type ProtectedCandidateVerification,
   type ProtectedSessionLifecycleCode
 } from "@/lib/application-browser/protected-browser-session";
@@ -61,7 +66,7 @@ export type ProtectedFormInspectionAuthority = Readonly<
     | "waitForChange"
     | "subscribe"
   >
->;
+> & Partial<Pick<ProtectedApplicationBrowserSession, "writeCandidateField">>;
 
 export type ProtectedFormInspectionTarget = Readonly<{
   authority: ProtectedFormInspectionAuthority;
@@ -81,6 +86,11 @@ export type TransientInspectionGeneration = Readonly<{
   dispose(): Promise<void>;
 }>;
 
+export type AcquiredFillAuthority = Readonly<{
+  formFingerprint: string;
+  fields: readonly ProtectedCandidateFieldWriteRequest[];
+}>;
+
 export type ApplicationFormInspectionController = Readonly<{
   inspect(options?: Readonly<{ signal?: AbortSignal }>): Promise<TransientInspectionGeneration>;
   current(): TransientInspectionGeneration | null;
@@ -88,6 +98,14 @@ export type ApplicationFormInspectionController = Readonly<{
     generationId: symbol,
     options?: Readonly<{ signal?: AbortSignal }>
   ): Promise<TransientInspectionGeneration>;
+  assertAcquiredFillAuthority(
+    generationId: symbol,
+    authority: AcquiredFillAuthority
+  ): void;
+  writeApprovedField(
+    generationId: symbol,
+    request: ProtectedCandidateFieldWriteRequest
+  ): Promise<ProtectedCandidateFieldWriteResult>;
   close(): Promise<void>;
 }>;
 
@@ -101,6 +119,8 @@ type AcceptedGeneration = {
   readonly privateRequiredFieldCount: number;
   readonly facade: TransientInspectionGeneration;
   latestVerifiedReport: ApplicationFormInspectionReport;
+  privateApprovedWriteDigests: Map<string, string> | null;
+  readonly consumedWriteKeys: Set<string>;
   active: boolean;
   invalidationEmitted: boolean;
   disposePromise: Promise<void> | null;
@@ -136,6 +156,8 @@ const PRODUCTION_RUNTIME: ApplicationFormInspectionControllerRuntime = {
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)
 };
+const protectedWritableFieldTypes = new Set<string>(PROTECTED_WRITABLE_FIELD_TYPES);
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function controllerError(
   code: ApplicationFormInspectionControllerErrorCode
@@ -157,6 +179,21 @@ function cloneReport(report: ApplicationFormInspectionReport): ApplicationFormIn
   return structuredClone(report);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function canonicalDigest(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value), "utf8").digest("hex");
+}
+
 export function createApplicationFormInspectionControllerWithRuntime(
   input: Readonly<{
     target: ProtectedFormInspectionTarget;
@@ -171,6 +208,7 @@ export function createApplicationFormInspectionControllerWithRuntime(
   let closePromise: Promise<void> | null = null;
   let currentRecord: AcceptedGeneration | null = null;
   let activeAttempt: ControllerAttempt | null = null;
+  let activeWriteCompletion: Promise<void> | null = null;
   const pendingDisposals = new Set<Promise<void>>();
   let navigationEpoch = 0;
   let recoverableInvalidationAnnounced = false;
@@ -378,6 +416,8 @@ export function createApplicationFormInspectionControllerWithRuntime(
       privateRequiredFieldCount: correlated.requiredFieldCount,
       facade,
       latestVerifiedReport: cloneReport(freshReport),
+      privateApprovedWriteDigests: null,
+      consumedWriteKeys: new Set<string>(),
       active: true,
       invalidationEmitted: false,
       disposePromise: null
@@ -408,6 +448,87 @@ export function createApplicationFormInspectionControllerWithRuntime(
     } catch {
       return false;
     }
+  };
+
+  const validateAcquiredFillAuthority = (
+    record: AcceptedGeneration,
+    acquired: AcquiredFillAuthority
+  ): Map<string, string> => {
+    if (
+      !isRecord(acquired) ||
+      !hasExactKeys(acquired, ["formFingerprint", "fields"]) ||
+      acquired.formFingerprint !== record.privateFormFingerprint ||
+      !Array.isArray(acquired.fields) ||
+      acquired.fields.length < 1
+    ) {
+      throw controllerError("FORM_GENERATION_INVALIDATED");
+    }
+
+    const normalizedFields = new Map(
+      record.correlated.normalizedSnapshot.forms.flatMap((form) =>
+        form.sections.flatMap((section) =>
+          section.fields.map((field) => [field.normalizedFieldKey, field] as const)
+        )
+      )
+    );
+    const requestDigests = new Map<string, string>();
+    for (const request of acquired.fields) {
+      if (
+        !isRecord(request) ||
+        !hasExactKeys(request, [
+          "normalizedFieldKey",
+          "fieldFingerprint",
+          "fieldType",
+          "proposal"
+        ]) ||
+        typeof request.normalizedFieldKey !== "string" ||
+        !SHA256_PATTERN.test(request.normalizedFieldKey) ||
+        typeof request.fieldFingerprint !== "string" ||
+        !SHA256_PATTERN.test(request.fieldFingerprint) ||
+        typeof request.fieldType !== "string" ||
+        !protectedWritableFieldTypes.has(request.fieldType) ||
+        requestDigests.has(request.normalizedFieldKey)
+      ) {
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      const normalized = normalizedFields.get(request.normalizedFieldKey);
+      if (
+        !normalized ||
+        normalized.fieldFingerprint !== request.fieldFingerprint ||
+        normalized.fieldType !== request.fieldType ||
+        !isRecord(request.proposal)
+      ) {
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      const proposal = request.proposal;
+      if (request.fieldType === "SELECT_ONE") {
+        if (
+          !hasExactKeys(proposal, ["kind", "optionKeys"]) ||
+          proposal.kind !== "OPTIONS" ||
+          !Array.isArray(proposal.optionKeys) ||
+          proposal.optionKeys.length !== 1 ||
+          typeof proposal.optionKeys[0] !== "string" ||
+          !SHA256_PATTERN.test(proposal.optionKeys[0])
+        ) {
+          throw controllerError("FORM_GENERATION_INVALIDATED");
+        }
+        const optionKey = proposal.optionKeys[0];
+        const choice = normalized.choices.find(
+          (candidate) => candidate.key === optionKey
+        );
+        if (!choice || choice.disabled) {
+          throw controllerError("FORM_GENERATION_INVALIDATED");
+        }
+      } else if (
+        !hasExactKeys(proposal, ["kind", "value"]) ||
+        proposal.kind !== "SCALAR" ||
+        typeof proposal.value !== "string"
+      ) {
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      requestDigests.set(request.normalizedFieldKey, canonicalDigest(request));
+    }
+    return requestDigests;
   };
 
   const correlatedContract = (
@@ -489,8 +610,9 @@ export function createApplicationFormInspectionControllerWithRuntime(
     ) {
       throw controllerError("FORM_INSPECTION_CANCELLED");
     }
-    if (activeAttempt) throw controllerError("FORM_INSPECTION_IN_PROGRESS");
-
+    if (activeAttempt || activeWriteCompletion) {
+      throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+    }
     const predecessor = currentRecord;
     const precedingDisposals = [...pendingDisposals];
     recoverableInvalidationAnnounced = false;
@@ -635,7 +757,9 @@ export function createApplicationFormInspectionControllerWithRuntime(
     if (!record || !record.active || record.generationId !== generationId) {
       throw controllerError("FORM_GENERATION_INVALIDATED");
     }
-    if (activeAttempt) throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+    if (activeAttempt || activeWriteCompletion) {
+      throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+    }
 
     const attempt = makeAttempt();
     activeAttempt = attempt;
@@ -705,6 +829,107 @@ export function createApplicationFormInspectionControllerWithRuntime(
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
       finishAttempt(attempt);
+    }
+  };
+
+  const assertAcquiredFillAuthority = (
+    generationId: symbol,
+    acquired: AcquiredFillAuthority
+  ): void => {
+    if (closed || terminalUnavailable || input.target.currentTargetUrl() === null) {
+      throw controllerError("FORM_INSPECTION_CANCELLED");
+    }
+    const record = currentRecord;
+    if (!record || !record.active || record.generationId !== generationId) {
+      throw controllerError("FORM_GENERATION_INVALIDATED");
+    }
+    if (activeAttempt || activeWriteCompletion) {
+      throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+    }
+    const validated = validateAcquiredFillAuthority(record, acquired);
+    if (record.privateApprovedWriteDigests !== null) {
+      throw controllerError("FORM_GENERATION_INVALIDATED");
+    }
+    // Retain only fixed digests. Proposal plaintext remains confined to the
+    // immutable acquired material and the exact protected write request.
+    record.privateApprovedWriteDigests = validated;
+  };
+
+  const writeApprovedField = async (
+    generationId: symbol,
+    request: ProtectedCandidateFieldWriteRequest
+  ): Promise<ProtectedCandidateFieldWriteResult> => {
+    if (closed || terminalUnavailable || input.target.currentTargetUrl() === null) {
+      throw controllerError("FORM_INSPECTION_CANCELLED");
+    }
+    const record = currentRecord;
+    if (!record || !record.active || record.generationId !== generationId) {
+      throw controllerError("FORM_GENERATION_INVALIDATED");
+    }
+    if (activeAttempt || activeWriteCompletion) {
+      throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+    }
+    const writeCandidateField = authority.writeCandidateField;
+    if (typeof writeCandidateField !== "function") {
+      establishTerminalAuthorityLoss();
+      throw integrityError();
+    }
+    let requestDigest: string;
+    try {
+      requestDigest = canonicalDigest(request);
+    } catch {
+      throw controllerError("FORM_GENERATION_INVALIDATED");
+    }
+    const approvedDigest = record.privateApprovedWriteDigests?.get(request.normalizedFieldKey);
+    if (
+      approvedDigest === undefined ||
+      approvedDigest !== requestDigest ||
+      record.consumedWriteKeys.has(request.normalizedFieldKey)
+    ) {
+      throw controllerError("FORM_GENERATION_INVALIDATED");
+    }
+
+    let resolveCompletion!: () => void;
+    const completion = new Promise<void>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    activeWriteCompletion = completion;
+    record.consumedWriteKeys.add(request.normalizedFieldKey);
+    try {
+      let result: ProtectedCandidateFieldWriteResult;
+      try {
+        result = await writeCandidateField.call(authority, record.correlated.candidate, request);
+      } catch (error) {
+        if (
+          error instanceof ProtectedBrowserSessionError &&
+          (error.code === "PROTECTED_SESSION_NOT_READY" ||
+            error.code === "PROTECTED_SESSION_READINESS_TIMEOUT" ||
+            error.code === "PROTECTED_SESSION_STALE_RESPONSE")
+        ) {
+          await invalidateAccepted(record, "REINSPECTION_REQUIRED");
+          throw controllerError("FORM_GENERATION_INVALIDATED");
+        }
+        if (
+          error instanceof ProtectedBrowserSessionError &&
+          error.code === "PROTECTED_SESSION_BUSY"
+        ) {
+          throw controllerError("FORM_INSPECTION_IN_PROGRESS");
+        }
+        throw mapProtectedFailure(error);
+      }
+      if (!record.active || currentRecord !== record) {
+        throw controllerError("FORM_GENERATION_INVALIDATED");
+      }
+      if (result.status === "FAILED") {
+        return Object.freeze({ status: "FAILED" as const, reason: result.reason });
+      }
+      if (result.status === "MANUAL") {
+        return Object.freeze({ status: "MANUAL" as const, reason: result.reason });
+      }
+      return Object.freeze({ status: result.status });
+    } finally {
+      resolveCompletion();
+      if (activeWriteCompletion === completion) activeWriteCompletion = null;
     }
   };
 
@@ -781,11 +1006,12 @@ export function createApplicationFormInspectionControllerWithRuntime(
     const attempt = activeAttempt;
     if (attempt) terminateAttempt(attempt, "FORM_INSPECTION_CANCELLED");
     const attemptCompletion = attempt?.completion ?? Promise.resolve();
+    const writeCompletion = activeWriteCompletion ?? Promise.resolve();
     const accepted = currentRecord;
     currentRecord = null;
     if (accepted) accepted.active = false;
-    const acceptedDisposal = accepted ? disposeAccepted(accepted) : Promise.resolve();
-    closePromise = Promise.all([attemptCompletion, acceptedDisposal])
+    closePromise = Promise.all([attemptCompletion, writeCompletion])
+      .then(() => accepted ? disposeAccepted(accepted) : undefined)
       .then(() => Promise.all([...pendingDisposals]))
       .then(() => undefined);
     return closePromise;
@@ -795,6 +1021,8 @@ export function createApplicationFormInspectionControllerWithRuntime(
     inspect,
     current: () => currentRecord?.facade ?? null,
     assertCurrent,
+    assertAcquiredFillAuthority,
+    writeApprovedField,
     close
   });
 }

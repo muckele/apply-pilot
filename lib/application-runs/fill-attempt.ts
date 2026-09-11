@@ -674,11 +674,16 @@ export function createApplicationRunFillAttemptService(
         });
         if (update.count !== 1) throw fillStale();
 
-        const stepData = eligibleFields.map((field, sequence) => ({
+        const acquiredFields = eligibleFields.map((field, sequence) => ({
+          ...field,
+          stepKey: `fill:${attemptId}:${field.normalizedFieldKey}`,
+          sequence
+        }));
+        const stepData = acquiredFields.map((field) => ({
           runId: run.id,
           userId: parsed.userId,
-          stepKey: `fill:${attemptId}:${field.normalizedFieldKey}`,
-          sequence,
+          stepKey: field.stepKey,
+          sequence: field.sequence,
           action: "FILL_FIELD",
           semanticFieldKey: null,
           adapter: null,
@@ -720,7 +725,13 @@ export function createApplicationRunFillAttemptService(
           answerPacketVersion: run.currentAnswerPacketVersion,
           packetHash: verified.packetRecord.packetHash,
           formFingerprint: verified.inspection.formFingerprint,
-          eligibleFields
+          eligibleFields: acquiredFields.map((field) => ({
+            stepKey: field.stepKey,
+            normalizedFieldKey: field.normalizedFieldKey,
+            fieldFingerprint: field.fieldFingerprint,
+            fieldType: field.fieldType,
+            proposal: field.proposal
+          }))
         };
       });
     } catch (error) {

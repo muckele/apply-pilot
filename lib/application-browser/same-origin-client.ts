@@ -2,7 +2,24 @@ import type { ApplicationRunState } from "@prisma/client";
 
 import { parseApplyPilotOrigin, parseImmutableRunId } from "@/lib/application-browser/types";
 import {
+  parseApplicationAnswerProposal,
+  type ApplicationAnswerProposal
+} from "@/lib/application-runs/answer-packet-domain";
+import {
+  FILL_ATTEMPT_OUTCOMES,
+  FILL_ELIGIBLE_FIELD_TYPES,
+  FILL_ERROR_CODES,
+  FILL_STEP_RESULTS,
+  reconcileFillFinalization,
+  type FillAttemptOutcome,
+  type FillEligibleFieldType,
+  type FillErrorCode,
+  type FillStepResult,
+  type StoppedEarlyFillError
+} from "@/lib/application-runs/fill-attempt-domain";
+import {
   MAX_FUTURE_RAW_HTTP_BODY_BYTES,
+  MAX_FIELDS_TOTAL,
   type ApplicationFormInspectionReport
 } from "@/lib/application-runs/form-inspection";
 
@@ -25,9 +42,12 @@ type PostOptions = {
   maxRetries: 0;
 };
 
+type PatchOptions = PostOptions;
+
 export type ContextRequestLike = {
   get(url: string, options: GetOptions): Promise<ResponseLike>;
   post(url: string, options: PostOptions): Promise<ResponseLike>;
+  patch(url: string, options: PatchOptions): Promise<ResponseLike>;
 };
 
 export type BrowserApplicationRun = Readonly<{
@@ -93,6 +113,70 @@ export type BrowserFormInspectionPublicationResult = Readonly<{
   current: BrowserAnswerPacketMetadata;
 }>;
 
+export type FillMutationDispatchState = "NOT_DISPATCHED" | "MAY_HAVE_DISPATCHED";
+
+export type BrowserFillProposal =
+  | Readonly<{ kind: "SCALAR"; value: string }>
+  | Readonly<{ kind: "OPTIONS"; optionKeys: readonly [string] }>;
+
+export type BrowserAcquiredFillField = Readonly<{
+  stepKey: string;
+  normalizedFieldKey: string;
+  fieldFingerprint: string;
+  fieldType: FillEligibleFieldType;
+  proposal: BrowserFillProposal;
+}>;
+
+export type BrowserFillAcquisition = Readonly<{
+  attemptId: string;
+  runStateVersion: number;
+  leaseExpiresAt: string;
+  formInspectionVersion: number;
+  answerPacketVersion: number;
+  packetHash: string;
+  formFingerprint: string;
+  eligibleFields: readonly BrowserAcquiredFillField[];
+}>;
+
+export type BrowserFillStepResult = Readonly<{
+  stepKey: string;
+  result: FillStepResult;
+  errorCode: FillErrorCode | null;
+}>;
+
+export type BrowserFillAttemptStatus = Readonly<{
+  state: ApplicationRunState;
+  stateVersion: number;
+  fillAttemptId: string | null;
+  fillLeaseExpiresAt: string | null;
+  leaseLive: boolean;
+  expiredRecoveryRequired: boolean;
+  fieldOperationAllowed: boolean;
+  outcome: FillAttemptOutcome | null;
+  errorCode: FillErrorCode | null;
+  steps: readonly BrowserFillStepResult[];
+}>;
+
+export type BrowserFillAcquireInput = Readonly<{
+  runId: string;
+  expectedStateVersion: number;
+}>;
+
+export type BrowserFillFinalizeInput = Readonly<{
+  runId: string;
+  fillAttemptId: string;
+  expectedStateVersion: number;
+  outcome: "COMPLETED" | "STOPPED_EARLY";
+  errorCode: StoppedEarlyFillError | null;
+  steps: readonly BrowserFillStepResult[];
+}>;
+
+export type BrowserFillRecoverInput = Readonly<{
+  runId: string;
+  fillAttemptId: string;
+  expectedStateVersion: number;
+}>;
+
 export type SameOriginClient = Readonly<{
   getApplicationRun(runId: string): Promise<BrowserApplicationRun>;
   getAutomationPolicy(): Promise<BrowserAutomationPolicy>;
@@ -103,13 +187,40 @@ export type SameOriginClient = Readonly<{
   ): Promise<BrowserFormInspectionPublicationResult>;
 }>;
 
+export type SameOriginFillClient = Readonly<{
+  acquireFillAttempt(
+    input: BrowserFillAcquireInput,
+    assertReadyToDispatch: () => void
+  ): Promise<BrowserFillAcquisition>;
+  getFillAttemptStatus(runId: string): Promise<BrowserFillAttemptStatus>;
+  finalizeFillAttempt(
+    input: BrowserFillFinalizeInput,
+    assertReadyToDispatch: () => void
+  ): Promise<BrowserFillAttemptStatus>;
+  recoverExpiredFillAttempt(
+    input: BrowserFillRecoverInput,
+    assertReadyToDispatch: () => void
+  ): Promise<BrowserFillAttemptStatus>;
+}>;
+
+export type SameOriginClientWithFill = SameOriginClient & SameOriginFillClient;
+
 export class SameOriginClientError extends Error {
   readonly code: string;
+  readonly dispatchState: FillMutationDispatchState | null;
+  readonly responseReceived: boolean;
 
-  constructor(message: string, code: string) {
+  constructor(
+    message: string,
+    code: string,
+    dispatchState: FillMutationDispatchState | null = null,
+    responseReceived = false
+  ) {
     super(message);
     this.name = "SameOriginClientError";
     this.code = code;
+    this.dispatchState = dispatchState;
+    this.responseReceived = responseReceived;
   }
 }
 
@@ -152,15 +263,85 @@ const PUBLICATION_ERROR_CODES = new Set([
   "INVALID_REQUEST_BODY",
   "UNSUPPORTED_MEDIA_TYPE"
 ]);
+const FILL_ERROR_RESPONSE_CODES = new Set([
+  "RUN_NOT_FOUND",
+  "FILL_POLICY_DENIED",
+  "FILL_REVIEW_REQUIRED",
+  "FILL_ALREADY_IN_PROGRESS",
+  "FILL_NO_ELIGIBLE_FIELDS",
+  "FILL_STALE"
+]);
 
 const GET_OPTIONS = { failOnStatusCode: false, maxRedirects: 0 } as const;
 const SUCCESS_200 = new Set([200]);
+const SUCCESS_201 = new Set([201]);
 const SUCCESS_PUBLICATION = new Set([200, 201]);
 const NO_ERROR_CODES = new Set<string>();
 const TEXT_ENCODER = new TextEncoder();
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const fillEligibleTypes = new Set<string>(FILL_ELIGIBLE_FIELD_TYPES);
+const fillStepResults = new Set<string>(FILL_STEP_RESULTS);
+const fillErrorCodes = new Set<string>(FILL_ERROR_CODES);
+const fillAttemptOutcomes = new Set<string>(FILL_ATTEMPT_OUTCOMES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && SHA256_PATTERN.test(value);
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value);
+}
+
+function isCanonicalIsoDate(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+}
+
+function isFillErrorCode(value: unknown): value is FillErrorCode {
+  return typeof value === "string" && fillErrorCodes.has(value);
+}
+
+function isFillStepResult(value: unknown): value is FillStepResult {
+  return typeof value === "string" && fillStepResults.has(value);
+}
+
+function safeErrorCode(error: unknown): string {
+  if (error instanceof SameOriginClientError) return error.code;
+  if (
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)
+  ) {
+    return error.code;
+  }
+  return "SAME_ORIGIN_REQUEST_FAILED";
+}
+
+function mutationFailure(
+  error: unknown,
+  dispatchState: FillMutationDispatchState,
+  responseReceived: boolean
+): SameOriginClientError {
+  return new SameOriginClientError(
+    "The Fill mutation failed safely.",
+    safeErrorCode(error),
+    dispatchState,
+    responseReceived
+  );
 }
 
 function isKnownRunState(value: unknown): value is ApplicationRunState {
@@ -212,6 +393,49 @@ async function performPost(
     });
   } catch {
     throw requestFailed();
+  }
+}
+
+function mutationOptions(body: string): PostOptions {
+  return {
+    data: body,
+    headers: { "Content-Type": "application/json" },
+    failOnStatusCode: false,
+    maxRedirects: 0,
+    maxRetries: 0
+  };
+}
+
+async function performFillMutation<T>(input: Readonly<{
+  expectedUrl: string;
+  buildBody(): string;
+  assertReadyToDispatch(): void;
+  dispatch(options: PostOptions): Promise<ResponseLike>;
+  successStatuses: ReadonlySet<number>;
+  parse(value: unknown): T;
+}>): Promise<T> {
+  let dispatchState: FillMutationDispatchState = "NOT_DISPATCHED";
+  let responseReceived = false;
+  try {
+    const body = input.buildBody();
+    input.assertReadyToDispatch();
+    dispatchState = "MAY_HAVE_DISPATCHED";
+    const response = await input.dispatch(mutationOptions(body));
+    responseReceived = true;
+    await assertExactResponse(
+      response,
+      input.expectedUrl,
+      input.successStatuses,
+      FILL_ERROR_RESPONSE_CODES
+    );
+    const value = await parseJsonOrThrow(
+      response,
+      "Invalid Fill response.",
+      "INVALID_FILL_RESPONSE"
+    );
+    return input.parse(value);
+  } catch (error) {
+    throw mutationFailure(error, dispatchState, responseReceived);
   }
 }
 
@@ -365,6 +589,302 @@ function parseCurrentAnswerPacketResponse(
   };
 }
 
+function invalidFillAcquisitionResponse(): SameOriginClientError {
+  return new SameOriginClientError(
+    "Invalid Fill acquisition response.",
+    "INVALID_FILL_ACQUISITION_RESPONSE"
+  );
+}
+
+function parseBrowserFillProposal(
+  value: unknown,
+  fieldType: FillEligibleFieldType
+): BrowserFillProposal {
+  let proposal: ApplicationAnswerProposal;
+  try {
+    proposal = parseApplicationAnswerProposal(value);
+  } catch {
+    throw invalidFillAcquisitionResponse();
+  }
+  if (fieldType === "SELECT_ONE") {
+    if (
+      proposal.kind !== "OPTIONS" ||
+      proposal.optionKeys.length !== 1 ||
+      !isSha256(proposal.optionKeys[0])
+    ) {
+      throw invalidFillAcquisitionResponse();
+    }
+    return Object.freeze({
+      kind: "OPTIONS" as const,
+      optionKeys: Object.freeze([proposal.optionKeys[0]]) as readonly [string]
+    });
+  }
+  if (proposal.kind !== "SCALAR") throw invalidFillAcquisitionResponse();
+  return Object.freeze({ kind: "SCALAR" as const, value: proposal.value });
+}
+
+function parseFillAcquisitionResponse(value: unknown): BrowserFillAcquisition {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "attemptId",
+      "runStateVersion",
+      "leaseExpiresAt",
+      "formInspectionVersion",
+      "answerPacketVersion",
+      "packetHash",
+      "formFingerprint",
+      "eligibleFields"
+    ]) ||
+    !isUuid(value.attemptId) ||
+    !isSafeNonnegativeInteger(value.runStateVersion) ||
+    !isCanonicalIsoDate(value.leaseExpiresAt) ||
+    !isSafePositiveInteger(value.formInspectionVersion) ||
+    !isSafePositiveInteger(value.answerPacketVersion) ||
+    !isSha256(value.packetHash) ||
+    !isSha256(value.formFingerprint) ||
+    !Array.isArray(value.eligibleFields) ||
+    value.eligibleFields.length < 1 ||
+    value.eligibleFields.length > MAX_FIELDS_TOTAL
+  ) {
+    throw invalidFillAcquisitionResponse();
+  }
+
+  const fieldKeys = new Set<string>();
+  const stepKeys = new Set<string>();
+  const eligibleFields = value.eligibleFields.map((candidate): BrowserAcquiredFillField => {
+    if (
+      !isRecord(candidate) ||
+      !hasExactKeys(candidate, [
+        "stepKey",
+        "normalizedFieldKey",
+        "fieldFingerprint",
+        "fieldType",
+        "proposal"
+      ]) ||
+      typeof candidate.stepKey !== "string" ||
+      !isSha256(candidate.normalizedFieldKey) ||
+      !isSha256(candidate.fieldFingerprint) ||
+      typeof candidate.fieldType !== "string" ||
+      !fillEligibleTypes.has(candidate.fieldType) ||
+      candidate.stepKey !== `fill:${value.attemptId}:${candidate.normalizedFieldKey}` ||
+      fieldKeys.has(candidate.normalizedFieldKey) ||
+      stepKeys.has(candidate.stepKey)
+    ) {
+      throw invalidFillAcquisitionResponse();
+    }
+    fieldKeys.add(candidate.normalizedFieldKey);
+    stepKeys.add(candidate.stepKey);
+    const fieldType = candidate.fieldType as FillEligibleFieldType;
+    return Object.freeze({
+      stepKey: candidate.stepKey,
+      normalizedFieldKey: candidate.normalizedFieldKey,
+      fieldFingerprint: candidate.fieldFingerprint,
+      fieldType,
+      proposal: parseBrowserFillProposal(candidate.proposal, fieldType)
+    });
+  });
+
+  return Object.freeze({
+    attemptId: value.attemptId,
+    runStateVersion: value.runStateVersion,
+    leaseExpiresAt: value.leaseExpiresAt,
+    formInspectionVersion: value.formInspectionVersion,
+    answerPacketVersion: value.answerPacketVersion,
+    packetHash: value.packetHash,
+    formFingerprint: value.formFingerprint,
+    eligibleFields: Object.freeze(eligibleFields)
+  });
+}
+
+function invalidFillStatusResponse(): SameOriginClientError {
+  return new SameOriginClientError(
+    "Invalid Fill status response.",
+    "INVALID_FILL_STATUS_RESPONSE"
+  );
+}
+
+function parseFillStatusResponse(value: unknown): BrowserFillAttemptStatus {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "state",
+      "stateVersion",
+      "fillAttemptId",
+      "fillLeaseExpiresAt",
+      "leaseLive",
+      "expiredRecoveryRequired",
+      "fieldOperationAllowed",
+      "outcome",
+      "errorCode",
+      "steps"
+    ]) ||
+    !isKnownRunState(value.state) ||
+    !isSafeNonnegativeInteger(value.stateVersion) ||
+    !(value.fillAttemptId === null || isUuid(value.fillAttemptId)) ||
+    !(value.fillLeaseExpiresAt === null || isCanonicalIsoDate(value.fillLeaseExpiresAt)) ||
+    typeof value.leaseLive !== "boolean" ||
+    typeof value.expiredRecoveryRequired !== "boolean" ||
+    typeof value.fieldOperationAllowed !== "boolean" ||
+    !(value.outcome === null || (
+      typeof value.outcome === "string" && fillAttemptOutcomes.has(value.outcome)
+    )) ||
+    !(value.errorCode === null || isFillErrorCode(value.errorCode)) ||
+    !Array.isArray(value.steps) ||
+    value.steps.length > MAX_FIELDS_TOTAL
+  ) {
+    throw invalidFillStatusResponse();
+  }
+
+  const stepKeys = new Set<string>();
+  const steps = value.steps.map((candidate): BrowserFillStepResult => {
+    if (
+      !isRecord(candidate) ||
+      !hasExactKeys(candidate, ["stepKey", "result", "errorCode"]) ||
+      typeof candidate.stepKey !== "string" ||
+      !isFillStepResult(candidate.result) ||
+      !(candidate.errorCode === null || isFillErrorCode(candidate.errorCode)) ||
+      (candidate.result === "FAILED") !== (candidate.errorCode !== null) ||
+      stepKeys.has(candidate.stepKey) ||
+      (value.fillAttemptId !== null &&
+        (
+          !candidate.stepKey.startsWith(`fill:${value.fillAttemptId}:`) ||
+          !isSha256(candidate.stepKey.slice(`fill:${value.fillAttemptId}:`.length))
+        ))
+    ) {
+      throw invalidFillStatusResponse();
+    }
+    stepKeys.add(candidate.stepKey);
+    return Object.freeze({
+      stepKey: candidate.stepKey,
+      result: candidate.result,
+      errorCode: candidate.errorCode
+    });
+  });
+
+  if (steps.length > 0 && value.fillAttemptId === null) throw invalidFillStatusResponse();
+
+  return Object.freeze({
+    state: value.state,
+    stateVersion: value.stateVersion,
+    fillAttemptId: value.fillAttemptId,
+    fillLeaseExpiresAt: value.fillLeaseExpiresAt,
+    leaseLive: value.leaseLive,
+    expiredRecoveryRequired: value.expiredRecoveryRequired,
+    fieldOperationAllowed: value.fieldOperationAllowed,
+    outcome: value.outcome as FillAttemptOutcome | null,
+    errorCode: value.errorCode,
+    steps: Object.freeze(steps)
+  });
+}
+
+function assertExactInputKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return isRecord(value) && hasExactKeys(value, keys);
+}
+
+function serializeFillAcquire(input: BrowserFillAcquireInput): string {
+  if (
+    !assertExactInputKeys(input, ["runId", "expectedStateVersion"]) ||
+    !isSafeNonnegativeInteger(input.expectedStateVersion)
+  ) {
+    throw new SameOriginClientError(
+      "Invalid Fill acquisition request.",
+      "INVALID_FILL_ACQUISITION_REQUEST"
+    );
+  }
+  return JSON.stringify({ expectedStateVersion: input.expectedStateVersion });
+}
+
+function parseFinalizationStep(value: unknown): BrowserFillStepResult {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ["stepKey", "result", "errorCode"]) ||
+    typeof value.stepKey !== "string" ||
+    !isFillStepResult(value.result) ||
+    !(value.errorCode === null || isFillErrorCode(value.errorCode))
+  ) {
+    throw new SameOriginClientError(
+      "Invalid Fill finalization request.",
+      "INVALID_FILL_FINALIZATION_REQUEST"
+    );
+  }
+  return {
+    stepKey: value.stepKey,
+    result: value.result,
+    errorCode: value.errorCode
+  };
+}
+
+function serializeFillFinalization(input: BrowserFillFinalizeInput): string {
+  const invalid = () => new SameOriginClientError(
+    "Invalid Fill finalization request.",
+    "INVALID_FILL_FINALIZATION_REQUEST"
+  );
+  if (
+    !assertExactInputKeys(input, [
+      "runId",
+      "fillAttemptId",
+      "expectedStateVersion",
+      "outcome",
+      "errorCode",
+      "steps"
+    ]) ||
+    !isUuid(input.fillAttemptId) ||
+    !isSafeNonnegativeInteger(input.expectedStateVersion) ||
+    (input.outcome !== "COMPLETED" && input.outcome !== "STOPPED_EARLY") ||
+    !(input.errorCode === null || isFillErrorCode(input.errorCode)) ||
+    !Array.isArray(input.steps) ||
+    input.steps.length < 1 ||
+    input.steps.length > MAX_FIELDS_TOTAL
+  ) {
+    throw invalid();
+  }
+  const steps = input.steps.map(parseFinalizationStep);
+  try {
+    reconcileFillFinalization({
+      fillAttemptId: input.fillAttemptId,
+      persistedSteps: steps.map((step) => ({
+        fillAttemptId: input.fillAttemptId,
+        stepKey: step.stepKey
+      })),
+      assertion: {
+        fillAttemptId: input.fillAttemptId,
+        outcome: input.outcome,
+        errorCode: input.errorCode,
+        steps
+      }
+    });
+  } catch {
+    throw invalid();
+  }
+  return JSON.stringify({
+    action: "FINALIZE",
+    fillAttemptId: input.fillAttemptId,
+    expectedStateVersion: input.expectedStateVersion,
+    outcome: input.outcome,
+    errorCode: input.errorCode,
+    steps
+  });
+}
+
+function serializeFillRecovery(input: BrowserFillRecoverInput): string {
+  if (
+    !assertExactInputKeys(input, ["runId", "fillAttemptId", "expectedStateVersion"]) ||
+    !isUuid(input.fillAttemptId) ||
+    !isSafeNonnegativeInteger(input.expectedStateVersion)
+  ) {
+    throw new SameOriginClientError(
+      "Invalid Fill recovery request.",
+      "INVALID_FILL_RECOVERY_REQUEST"
+    );
+  }
+  return JSON.stringify({
+    action: "RECOVER_EXPIRED",
+    fillAttemptId: input.fillAttemptId,
+    expectedStateVersion: input.expectedStateVersion
+  });
+}
+
 function invalidPublicationResponse(): SameOriginClientError {
   return new SameOriginClientError(
     "Invalid form-inspection publication response.",
@@ -501,13 +1021,14 @@ export function createSameOriginClient(input: {
   configuredApplyPilotOrigin: string;
   immutableRunId: string;
   requestContext: ContextRequestLike;
-}): SameOriginClient {
+}): SameOriginClientWithFill {
   const origin = parseApplyPilotOrigin(input.configuredApplyPilotOrigin);
   const immutableRunId = parseImmutableRunId(input.immutableRunId);
   const runUrl = `${origin}/api/application-runs/${immutableRunId}`;
   const policyUrl = `${origin}/api/application-automation-policy`;
   const packetUrl = `${runUrl}/answer-packet`;
   const publicationUrl = `${runUrl}/form-inspection`;
+  const fillAttemptUrl = `${runUrl}/fill-attempt`;
 
   return Object.freeze({
     async getApplicationRun(runId: string) {
@@ -537,6 +1058,70 @@ export function createSameOriginClient(input: {
         "INVALID_ANSWER_PACKET_RESPONSE"
       );
       return parseCurrentAnswerPacketResponse(value, immutableRunId);
+    },
+    async acquireFillAttempt(
+      acquireInput: BrowserFillAcquireInput,
+      assertReadyToDispatch: () => void
+    ) {
+      return performFillMutation({
+        expectedUrl: fillAttemptUrl,
+        buildBody: () => {
+          if (acquireInput.runId !== immutableRunId) throw identityMismatch();
+          return serializeFillAcquire(acquireInput);
+        },
+        assertReadyToDispatch,
+        dispatch: (options) => input.requestContext.post(fillAttemptUrl, options),
+        successStatuses: SUCCESS_201,
+        parse: parseFillAcquisitionResponse
+      });
+    },
+    async getFillAttemptStatus(runId: string) {
+      if (runId !== immutableRunId) throw identityMismatch();
+      const response = await performGet(input.requestContext, fillAttemptUrl);
+      await assertExactResponse(
+        response,
+        fillAttemptUrl,
+        SUCCESS_200,
+        FILL_ERROR_RESPONSE_CODES
+      );
+      const value = await parseJsonOrThrow(
+        response,
+        "Invalid Fill status response.",
+        "INVALID_FILL_STATUS_RESPONSE"
+      );
+      return parseFillStatusResponse(value);
+    },
+    async finalizeFillAttempt(
+      finalizeInput: BrowserFillFinalizeInput,
+      assertReadyToDispatch: () => void
+    ) {
+      return performFillMutation({
+        expectedUrl: fillAttemptUrl,
+        buildBody: () => {
+          if (finalizeInput.runId !== immutableRunId) throw identityMismatch();
+          return serializeFillFinalization(finalizeInput);
+        },
+        assertReadyToDispatch,
+        dispatch: (options) => input.requestContext.patch(fillAttemptUrl, options),
+        successStatuses: SUCCESS_200,
+        parse: parseFillStatusResponse
+      });
+    },
+    async recoverExpiredFillAttempt(
+      recoverInput: BrowserFillRecoverInput,
+      assertReadyToDispatch: () => void
+    ) {
+      return performFillMutation({
+        expectedUrl: fillAttemptUrl,
+        buildBody: () => {
+          if (recoverInput.runId !== immutableRunId) throw identityMismatch();
+          return serializeFillRecovery(recoverInput);
+        },
+        assertReadyToDispatch,
+        dispatch: (options) => input.requestContext.patch(fillAttemptUrl, options),
+        successStatuses: SUCCESS_200,
+        parse: parseFillStatusResponse
+      });
     },
     async publishFormInspection(
       publication: BrowserFormInspectionPublicationInput,

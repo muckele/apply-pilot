@@ -12,6 +12,7 @@ import {
   launchApplicationBrowserRuntimeWithLauncherForTest,
   MISSING_CHROMIUM_MESSAGE
 } from "@/lib/application-browser/browser-runtime";
+import { GuardedFillOrchestrationError } from "@/lib/application-browser/fill-orchestration";
 import {
   BROWSER_INSPECTION_RECOVERABLE_CODES,
   isB1CommandAllowed,
@@ -20,6 +21,7 @@ import {
   parseImmutableRunId
 } from "@/lib/application-browser/types";
 import type { ProtectedSessionLifecycleCode } from "@/lib/application-browser/protected-browser-session";
+import { SameOriginClientError } from "@/lib/application-browser/same-origin-client";
 import * as companionModule from "@/scripts/application-browser-companion";
 
 const RUN_ID = "clz8w7m9a0002qwer1234tyui";
@@ -465,7 +467,7 @@ test("synchronous lifecycle reentrancy shares the exact target close operation",
   assert.equal(controller.close(), outerClose);
 });
 
-test("target opening exposes one frozen non-closing protected inspection facade only for its owned lifetime", async () => {
+test("target opening exposes one frozen non-closing protected inspection/fill facade only for its owned lifetime", async () => {
   for (const mode of ["success", "setup-failure", "readiness-failure"] as const) {
     const calls: string[] = [];
     let protectedSessionFactoryCalls = 0;
@@ -550,7 +552,8 @@ test("target opening exposes one frozen non-closing protected inspection facade 
         "subscribe",
         "verifyCandidate",
         "waitForChange",
-        "waitUntilReady"
+        "waitUntilReady",
+        "writeCandidateField"
       ]);
       assert.equal("close" in target.authority, false);
       assert.equal(target.currentTargetUrl(), "https://jobs.example.com/apply");
@@ -1243,6 +1246,8 @@ test("the B1 command parser accepts only the closed no-payload union", () => {
     { type: "CLICK" },
     { type: "SUBMIT" },
     { type: "FILL" },
+    { type: "FILL_FORM" },
+    { type: "FILL_APPROVED_FIELDS" },
     { type: "UPLOAD" },
     { type: "REQUEST" },
     { type: "KEYBOARD" },
@@ -1272,6 +1277,261 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+function acquisitionUncertaintyHarness(
+  acquireBehavior: "UNCERTAIN" | "DEFINITIVE_REJECTION" | "STALE_REJECTION" = "UNCERTAIN"
+) {
+  const targetUrl = "https://jobs.example.test/apply";
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const report = { schemaVersion: "application-form-inspection.v1", forms: [] } as never;
+  let generationCounter = 0;
+  let currentGeneration = Symbol("unset");
+  let acquisitionDispatches = 0;
+  let statusReads = 0;
+  let writes = 0;
+  let closeCalls = 0;
+  let status: Record<string, unknown> = {
+    state: "READY",
+    stateVersion: 7,
+    fillAttemptId: null,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: null,
+    errorCode: null,
+    steps: []
+  };
+  const port = {
+    async inspect() {
+      generationCounter += 1;
+      currentGeneration = Symbol(`generation-${generationCounter}`);
+      return { generationId: currentGeneration, inspectionReport: report };
+    },
+    async assertCurrent(generationId: symbol) {
+      assert.equal(generationId, currentGeneration);
+      return { generationId, inspectionReport: report };
+    },
+    assertAcquiredFillAuthority() {
+      throw new Error("uncertain acquisition must not yield browser authority");
+    },
+    async writeApprovedField(): Promise<never> {
+      writes += 1;
+      throw new Error("uncertain acquisition must not write");
+    },
+    currentTargetUrl: () => targetUrl
+  };
+  const coordinator = new ApplicationBrowserCoordinator({
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      async getApplicationRun() {
+        return {
+          id: RUN_ID,
+          state: "READY" as const,
+          stateVersion: 7,
+          applyHost: "jobs.example.test",
+          applyUrlSnapshot: targetUrl
+        };
+      },
+      async getAutomationPolicy() {
+        return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
+      },
+      async getCurrentAnswerPacket() {
+        return { runId: RUN_ID, current: { inspectionVersion: 1, answerPacketVersion: 1 } };
+      },
+      async publishFormInspection(_input: unknown, assertReadyToDispatch: () => void) {
+        assertReadyToDispatch();
+        return {
+          replayed: false,
+          run: { id: RUN_ID, state: "REVIEW_REQUIRED" as const, stateVersion: 8 },
+          current: { inspectionVersion: 1, answerPacketVersion: 1 }
+        };
+      },
+      async acquireFillAttempt(_input: unknown, assertReadyToDispatch: () => void): Promise<never> {
+        assertReadyToDispatch();
+        acquisitionDispatches += 1;
+        if (acquireBehavior === "DEFINITIVE_REJECTION") {
+          throw new SameOriginClientError(
+            "bounded rejection",
+            "FILL_POLICY_DENIED",
+            "MAY_HAVE_DISPATCHED",
+            true
+          );
+        }
+        if (acquireBehavior === "STALE_REJECTION") {
+          throw new SameOriginClientError(
+            "stale version rejection",
+            "FILL_STALE",
+            "MAY_HAVE_DISPATCHED",
+            true
+          );
+        }
+        throw new SameOriginClientError(
+          "bounded uncertainty",
+          "SAME_ORIGIN_REQUEST_FAILED",
+          "MAY_HAVE_DISPATCHED"
+        );
+      },
+      async getFillAttemptStatus() {
+        statusReads += 1;
+        return structuredClone(status);
+      },
+      async finalizeFillAttempt(): Promise<never> {
+        throw new Error("unexpected finalization");
+      },
+      async recoverExpiredFillAttempt(): Promise<never> {
+        throw new Error("unexpected recovery");
+      }
+    },
+    async openTarget() {
+      return { finalUrl: targetUrl };
+    },
+    initializeFormInspectionController() {},
+    getFormInspectionPort: () => port,
+    async closeResources() {
+      closeCalls += 1;
+    }
+  } as never);
+
+  return {
+    coordinator,
+    inspect: () => coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined),
+    setStatus(next: Record<string, unknown>) {
+      status = next;
+    },
+    liveAttemptStatus: {
+      state: "FILLING",
+      stateVersion: 8,
+      fillAttemptId: attemptId,
+      fillLeaseExpiresAt: "2099-09-10T20:10:00.000Z",
+      leaseLive: true,
+      expiredRecoveryRequired: false,
+      fieldOperationAllowed: true,
+      outcome: null,
+      errorCode: null,
+      steps: []
+    },
+    counts: () => ({ acquisitionDispatches, statusReads, writes, closeCalls, generationCounter })
+  };
+}
+
+test("acquisition uncertainty survives repeated reinspection and blocks every later POST", async () => {
+  const value = acquisitionUncertaintyHarness();
+  value.coordinator.markControlReady();
+  await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await value.inspect();
+
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError && error.code === "FILL_INTERNAL"
+  );
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError && error.code === "FILL_INTERNAL"
+  );
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError && error.code === "FILL_INTERNAL"
+  );
+
+  assert.deepEqual(value.counts(), {
+    acquisitionDispatches: 1,
+    statusReads: 3,
+    writes: 0,
+    closeCalls: 0,
+    generationCounter: 3
+  });
+
+  await value.coordinator.handleCommand({ type: "CLOSE_WORKFLOW" }, () => undefined);
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof ApplicationBrowserError && error.code === "FILL_INTERNAL"
+  );
+  assert.equal(value.counts().acquisitionDispatches, 1);
+  assert.equal(value.counts().statusReads, 3);
+  assert.equal(value.counts().closeCalls, 1);
+});
+
+test("a delayed uncertain acquisition is observed through GET without another POST or write", async () => {
+  const value = acquisitionUncertaintyHarness();
+  value.coordinator.markControlReady();
+  await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError && error.code === "FILL_INTERNAL"
+  );
+
+  await value.inspect();
+  value.setStatus(value.liveAttemptStatus);
+  const observed = await value.coordinator.fillApprovedFields(() => undefined);
+
+  assert.equal(observed.disposition, "RECOVERY_PENDING");
+  assert.deepEqual(value.counts(), {
+    acquisitionDispatches: 1,
+    statusReads: 2,
+    writes: 0,
+    closeCalls: 0,
+    generationCounter: 2
+  });
+});
+
+test("a definitive acquisition rejection does not create the uncertainty latch", async () => {
+  const value = acquisitionUncertaintyHarness("DEFINITIVE_REJECTION");
+  value.coordinator.markControlReady();
+  await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError &&
+      error.code === "FILL_POLICY_DENIED"
+  );
+
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError &&
+      error.code === "FILL_POLICY_DENIED"
+  );
+
+  assert.deepEqual(value.counts(), {
+    acquisitionDispatches: 2,
+    statusReads: 0,
+    writes: 0,
+    closeCalls: 0,
+    generationCounter: 2
+  });
+});
+
+test("a response-backed stale acquisition rejection does not create the uncertainty latch", async () => {
+  const value = acquisitionUncertaintyHarness("STALE_REJECTION");
+  value.coordinator.markControlReady();
+  await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError &&
+      error.code === "FILL_STALE"
+  );
+
+  await value.inspect();
+  await assert.rejects(
+    value.coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof GuardedFillOrchestrationError &&
+      error.code === "FILL_STALE"
+  );
+
+  assert.deepEqual(value.counts(), {
+    acquisitionDispatches: 2,
+    statusReads: 0,
+    writes: 0,
+    closeCalls: 0,
+    generationCounter: 2
+  });
+});
 
 test("INSPECT_FORM is single-flight, privately sequenced, and publishes fresh authority", async () => {
   const calls: string[] = [];
@@ -1395,6 +1655,336 @@ test("INSPECT_FORM is single-flight, privately sequenced, and publishes fresh au
   assert.equal(JSON.stringify(result).includes("posting=123"), false);
 });
 
+test("dormant guarded Fill uses only published generation authority and excludes Fill or Inspect overlap", async () => {
+  const generationId = Symbol("published-generation");
+  const fieldKey = "1".repeat(64);
+  const fieldFingerprint = "2".repeat(64);
+  const formFingerprint = "3".repeat(64);
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const stepKey = `fill:${attemptId}:${fieldKey}`;
+  const writeEntered = deferred<void>();
+  const releaseWrite = deferred<void>();
+  const calls: string[] = [];
+  const finalized: unknown[] = [];
+  let runReads = 0;
+  let packetReads = 0;
+  const report = { schemaVersion: "application-form-inspection.v1", forms: [] } as never;
+  const port = {
+    async inspect() {
+      calls.push("inspect");
+      return { generationId, inspectionReport: report };
+    },
+    async assertCurrent(id: symbol) {
+      calls.push("current");
+      assert.equal(id, generationId);
+      return { generationId, inspectionReport: report };
+    },
+    assertAcquiredFillAuthority(id: symbol, authority: unknown) {
+      calls.push("bind");
+      assert.equal(id, generationId);
+      assert.deepEqual(authority, {
+        formFingerprint,
+        fields: [{
+          normalizedFieldKey: fieldKey,
+          fieldFingerprint,
+          fieldType: "TEXT",
+          proposal: { kind: "SCALAR", value: "private-proposal-sentinel" }
+        }]
+      });
+    },
+    async writeApprovedField(id: symbol, request: unknown) {
+      calls.push("write");
+      assert.equal(id, generationId);
+      assert.deepEqual(request, {
+        normalizedFieldKey: fieldKey,
+        fieldFingerprint,
+        fieldType: "TEXT",
+        proposal: { kind: "SCALAR", value: "private-proposal-sentinel" }
+      });
+      writeEntered.resolve();
+      await releaseWrite.promise;
+      return { status: "FILLED" as const };
+    },
+    currentTargetUrl: () => "https://jobs.example.test/apply#current"
+  };
+  const coordinator = new ApplicationBrowserCoordinator({
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      async getApplicationRun() {
+        runReads += 1;
+        return {
+          id: RUN_ID,
+          state: "READY",
+          stateVersion: runReads >= 4 ? 9 : 7,
+          applyHost: "jobs.example.test",
+          applyUrlSnapshot: "https://jobs.example.test/apply"
+        };
+      },
+      async getAutomationPolicy() {
+        return {
+          effectiveEnabled: true,
+          allowedHosts: ["jobs.example.test"],
+          blockedHosts: []
+        };
+      },
+      async getCurrentAnswerPacket() {
+        packetReads += 1;
+        return {
+          runId: RUN_ID,
+          current: packetReads === 1
+            ? { inspectionVersion: 1, answerPacketVersion: 2 }
+            : { inspectionVersion: 2, answerPacketVersion: 3 }
+        };
+      },
+      async publishFormInspection(_input: unknown, assertReadyToDispatch: () => void) {
+        assertReadyToDispatch();
+        return {
+          replayed: false,
+          run: { id: RUN_ID, state: "REVIEW_REQUIRED", stateVersion: 8 },
+          current: { inspectionVersion: 2, answerPacketVersion: 3 }
+        };
+      },
+      async acquireFillAttempt(_input: unknown, assertReadyToDispatch: () => void) {
+        calls.push("acquire");
+        assertReadyToDispatch();
+        return {
+          attemptId,
+          runStateVersion: 10,
+          leaseExpiresAt: "2099-09-10T20:10:00.000Z",
+          formInspectionVersion: 2,
+          answerPacketVersion: 3,
+          packetHash: "4".repeat(64),
+          formFingerprint,
+          eligibleFields: [{
+            stepKey,
+            normalizedFieldKey: fieldKey,
+            fieldFingerprint,
+            fieldType: "TEXT",
+            proposal: { kind: "SCALAR", value: "private-proposal-sentinel" }
+          }]
+        };
+      },
+      async getFillAttemptStatus() {
+        return {
+          state: "FILLING",
+          stateVersion: 10,
+          fillAttemptId: attemptId,
+          fillLeaseExpiresAt: "2099-09-10T20:10:00.000Z",
+          leaseLive: true,
+          expiredRecoveryRequired: false,
+          fieldOperationAllowed: true,
+          outcome: null,
+          errorCode: null,
+          steps: []
+        };
+      },
+      async finalizeFillAttempt(input: unknown, assertReadyToDispatch: () => void) {
+        calls.push("finalize");
+        finalized.push(structuredClone(input));
+        assertReadyToDispatch();
+        return {
+          state: "READY_FOR_USER_SUBMISSION",
+          stateVersion: 11,
+          fillAttemptId: attemptId,
+          fillLeaseExpiresAt: null,
+          leaseLive: false,
+          expiredRecoveryRequired: false,
+          fieldOperationAllowed: false,
+          outcome: "COMPLETED",
+          errorCode: null,
+          steps: [{ stepKey, result: "FILLED", errorCode: null }]
+        };
+      },
+      async recoverExpiredFillAttempt() {
+
+        throw new Error("unexpected recovery");
+      }
+    },
+    async openTarget() {
+      return { finalUrl: "https://jobs.example.test/apply#opened" };
+    },
+    initializeFormInspectionController() {},
+    getFormInspectionPort: () => port,
+    async closeResources() {}
+  } as never);
+
+  coordinator.markControlReady();
+  await coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined);
+  assert.equal(calls.includes("acquire"), false, "inspection must not activate Fill");
+
+  const filling = coordinator.fillApprovedFields(() => undefined);
+  await writeEntered.promise;
+  const inspectionWhileFilling = await coordinator.handleCommand(
+    { type: "INSPECT_FORM" },
+    () => undefined
+  );
+  assert.equal(inspectionWhileFilling.inspection?.outcome, "FAILED");
+  assert.equal(
+    inspectionWhileFilling.inspection && "errorCode" in inspectionWhileFilling.inspection
+      ? inspectionWhileFilling.inspection.errorCode
+      : null,
+    "FORM_INSPECTION_IN_PROGRESS"
+  );
+  await assert.rejects(
+    coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof ApplicationBrowserError && error.code === "FILL_INTERNAL"
+  );
+
+  releaseWrite.resolve();
+  const fillResult = await filling;
+  assert.equal(fillResult.disposition, "FINALIZED");
+  assert.equal(calls.filter((call) => call === "acquire").length, 1);
+  assert.equal(calls.filter((call) => call === "write").length, 1);
+  assert.equal(calls.filter((call) => call === "finalize").length, 1);
+  assert.deepEqual(finalized, [{
+    runId: RUN_ID,
+    fillAttemptId: attemptId,
+    expectedStateVersion: 10,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{ stepKey, result: "FILLED", errorCode: null }]
+  }]);
+  await assert.rejects(
+    coordinator.fillApprovedFields(() => undefined),
+    (error: unknown) => error instanceof ApplicationBrowserError && error.code === "FILL_INTERNAL"
+  );
+});
+
+test("a workflow stop during the final status GET synchronously revokes the active Fill operation", async () => {
+  const targetUrl = "https://jobs.example.test/apply";
+  const generationId = Symbol("stop-race-generation");
+  const fieldKey = "1".repeat(64);
+  const fieldFingerprint = "2".repeat(64);
+  const formFingerprint = "3".repeat(64);
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const stepKey = `fill:${attemptId}:${fieldKey}`;
+  const statusEntered = deferred<void>();
+  const releaseStatus = deferred<void>();
+  const releaseCleanup = deferred<void>();
+  const report = { schemaVersion: "application-form-inspection.v1", forms: [] } as never;
+  let statusReads = 0;
+  let writes = 0;
+  let finalizationDispatches = 0;
+  const liveStatus = {
+    state: "FILLING" as const,
+    stateVersion: 8,
+    fillAttemptId: attemptId,
+    fillLeaseExpiresAt: "2099-09-10T20:10:00.000Z",
+    leaseLive: true,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: true,
+    outcome: null,
+    errorCode: null,
+    steps: []
+  };
+  const port = {
+    async inspect() {
+      return { generationId, inspectionReport: report };
+    },
+    async assertCurrent(id: symbol) {
+      assert.equal(id, generationId);
+      return { generationId, inspectionReport: report };
+    },
+    assertAcquiredFillAuthority(id: symbol) {
+      assert.equal(id, generationId);
+    },
+    async writeApprovedField() {
+      writes += 1;
+      return { status: "FILLED" as const };
+    },
+    currentTargetUrl: () => targetUrl
+  };
+  const coordinator = new ApplicationBrowserCoordinator({
+    configuredApplyPilotOrigin: APP_ORIGIN,
+    immutableRunId: RUN_ID,
+    client: {
+      async getApplicationRun() {
+        return {
+          id: RUN_ID,
+          state: "READY" as const,
+          stateVersion: 7,
+          applyHost: "jobs.example.test",
+          applyUrlSnapshot: targetUrl
+        };
+      },
+      async getAutomationPolicy() {
+        return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
+      },
+      async getCurrentAnswerPacket() {
+        return { runId: RUN_ID, current: { inspectionVersion: 1, answerPacketVersion: 1 } };
+      },
+      async publishFormInspection(_input: unknown, assertReadyToDispatch: () => void) {
+        assertReadyToDispatch();
+        return {
+          replayed: false,
+          run: { id: RUN_ID, state: "REVIEW_REQUIRED" as const, stateVersion: 8 },
+          current: { inspectionVersion: 1, answerPacketVersion: 1 }
+        };
+      },
+      async acquireFillAttempt(_input: unknown, assertReadyToDispatch: () => void) {
+        assertReadyToDispatch();
+        return {
+          attemptId,
+          runStateVersion: 8,
+          leaseExpiresAt: liveStatus.fillLeaseExpiresAt,
+          formInspectionVersion: 1,
+          answerPacketVersion: 1,
+          packetHash: "4".repeat(64),
+          formFingerprint,
+          eligibleFields: [{
+            stepKey,
+            normalizedFieldKey: fieldKey,
+            fieldFingerprint,
+            fieldType: "TEXT" as const,
+            proposal: { kind: "SCALAR" as const, value: "private-proposal-sentinel" }
+          }]
+        };
+      },
+      async getFillAttemptStatus() {
+        statusReads += 1;
+        if (statusReads === 1) {
+          statusEntered.resolve();
+          await releaseStatus.promise;
+        }
+        return structuredClone(liveStatus);
+      },
+      async finalizeFillAttempt(_input: unknown, assertReadyToDispatch: () => void) {
+        assertReadyToDispatch();
+        finalizationDispatches += 1;
+        throw new Error("a stopped workflow must not finalize");
+      },
+      async recoverExpiredFillAttempt(): Promise<never> {
+        throw new Error("unexpected recovery");
+      }
+    },
+    async openTarget() {
+      return { finalUrl: targetUrl };
+    },
+    initializeFormInspectionController() {},
+    getFormInspectionPort: () => port,
+    async closeResources() {
+      await releaseCleanup.promise;
+    }
+  } as never);
+
+  coordinator.markControlReady();
+  await coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined);
+  const filling = coordinator.fillApprovedFields(() => undefined);
+  await statusEntered.promise;
+
+  const stopping = coordinator.safeStop("BROWSER_WORKFLOW_FAILED");
+  assert.equal(coordinator.state(), "ERROR");
+  releaseStatus.resolve();
+  await filling.catch(() => undefined);
+
+  assert.equal(writes, 0);
+  assert.equal(finalizationDispatches, 0);
+  releaseCleanup.resolve();
+  await stopping;
+});
 test("inspection invalidation is monotonic and PAGE_CLOSED is terminal", async () => {
   let releaseCleanup!: () => void;
   const cleanup = new Promise<void>((resolve) => { releaseCleanup = resolve; });

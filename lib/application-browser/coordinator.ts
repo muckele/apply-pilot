@@ -1,6 +1,11 @@
 import type { BrowserContext, Page, Request, Route } from "playwright";
 
 import {
+  createGuardedFillOrchestrationService,
+  type GuardedFillControllerPort,
+  type GuardedFillOrchestrationResult
+} from "@/lib/application-browser/fill-orchestration";
+import {
   createProtectedApplicationBrowserSession,
   type ProtectedApplicationBrowserSession
 } from "@/lib/application-browser/protected-browser-session";
@@ -13,7 +18,8 @@ import {
 import type {
   BrowserApplicationRun,
   BrowserAutomationPolicy,
-  SameOriginClient
+  SameOriginClient,
+  SameOriginFillClient
 } from "@/lib/application-browser/same-origin-client";
 import type {
   ApplicationFormInspectionInvalidationCode,
@@ -54,6 +60,8 @@ export type FormInspectionPort = Readonly<{
   inspect(): Promise<CoordinatorInspectionGeneration>;
   assertCurrent(generationId: symbol): Promise<CoordinatorInspectionGeneration>;
   currentTargetUrl(): string | null;
+  assertAcquiredFillAuthority?: GuardedFillControllerPort["assertAcquiredFillAuthority"];
+  writeApprovedField?: GuardedFillControllerPort["writeApprovedField"];
 }>;
 
 type CoordinatorInput = {
@@ -134,7 +142,16 @@ export class ApplicationBrowserCoordinator {
   private workflowErrorCode: string | undefined;
   private openedTarget: ExecutionTarget | null = null;
   private inspectionInFlight = false;
+  private fillInFlight = false;
+  private activeFillOperation: symbol | null = null;
+  private acquisitionMayHaveDispatchedForRun = false;
   private inspectionStatus: B2InspectionCommandStatus | undefined;
+  private publishedFillAuthority: Readonly<{
+    generationId: symbol;
+    formInspectionVersion: number;
+    answerPacketVersion: number;
+    frozenTargetUrl: string;
+  }> | null = null;
   private cleanupPromise: Promise<void> | null = null;
 
   constructor(input: CoordinatorInput) {
@@ -308,7 +325,7 @@ export class ApplicationBrowserCoordinator {
     if (this.workflowState !== "TARGET_OPEN") {
       throw new ApplicationBrowserError("INSPECT_FORM is not allowed in this state.", "COMMAND_NOT_ALLOWED");
     }
-    if (this.inspectionInFlight) {
+    if (this.inspectionInFlight || this.fillInFlight) {
       return this.ephemeralInspection({
         outcome: "FAILED",
         errorCode: "FORM_INSPECTION_IN_PROGRESS",
@@ -332,6 +349,7 @@ export class ApplicationBrowserCoordinator {
       throw new ApplicationBrowserError("The form inspection command failed safely.", code);
     }
     this.inspectionInFlight = true;
+    this.publishedFillAuthority = null;
     this.inspectionStatus = { outcome: "IN_PROGRESS" };
 
     try {
@@ -407,6 +425,14 @@ export class ApplicationBrowserCoordinator {
         answerPacketVersion: published.current.answerPacketVersion,
         reinspectionRequired
       };
+      if (!reinspectionRequired && this.inspectionStatus?.outcome === "IN_PROGRESS") {
+        this.publishedFillAuthority = Object.freeze({
+          generationId: current.generationId,
+          formInspectionVersion: published.current.inspectionVersion,
+          answerPacketVersion: published.current.answerPacketVersion,
+          frozenTargetUrl: (this.openedTarget as ExecutionTarget).url.toString()
+        });
+      }
       if (this.inspectionStatus?.outcome === "IN_PROGRESS") this.persistInspection(success);
       return this.ephemeralInspection(success);
     } catch (error) {
@@ -435,7 +461,84 @@ export class ApplicationBrowserCoordinator {
     }
   }
 
+  async fillApprovedFields(
+    assertActive: () => void
+  ): Promise<GuardedFillOrchestrationResult> {
+    if (this.workflowState !== "TARGET_OPEN") {
+      throw new ApplicationBrowserError(
+        "Guarded Fill is not available in this workflow state.",
+        "FILL_INTERNAL"
+      );
+    }
+    if (this.inspectionInFlight || this.fillInFlight) {
+      throw new ApplicationBrowserError(
+        "A protected browser operation is already active.",
+        "FILL_INTERNAL"
+      );
+    }
+    const port = this.input.getFormInspectionPort?.() ?? null;
+    const published = this.publishedFillAuthority;
+    const fillClient = this.input.client as SameOriginClient & Partial<SameOriginFillClient>;
+    if (
+      !port ||
+      !published ||
+      typeof port.assertAcquiredFillAuthority !== "function" ||
+      typeof port.writeApprovedField !== "function" ||
+      typeof fillClient.acquireFillAttempt !== "function" ||
+      typeof fillClient.getFillAttemptStatus !== "function" ||
+      typeof fillClient.finalizeFillAttempt !== "function" ||
+      typeof fillClient.recoverExpiredFillAttempt !== "function"
+    ) {
+      throw new ApplicationBrowserError(
+        "No published protected generation is available for Fill.",
+        "FILL_INTERNAL"
+      );
+    }
+
+    const fillOperation = Symbol("guarded-fill-operation");
+    this.fillInFlight = true;
+    this.activeFillOperation = fillOperation;
+    this.publishedFillAuthority = null;
+    try {
+      const orchestration = createGuardedFillOrchestrationService({
+        client: fillClient as SameOriginClient & SameOriginFillClient,
+        controller: port as GuardedFillControllerPort,
+        onAcquisitionUncertain: () => {
+          this.acquisitionMayHaveDispatchedForRun = true;
+        }
+      });
+      const execution = {
+        runId: this.immutableRunId,
+        generationId: published.generationId,
+        formInspectionVersion: published.formInspectionVersion,
+        answerPacketVersion: published.answerPacketVersion,
+        frozenTargetUrl: published.frozenTargetUrl,
+        assertActive: () => {
+          assertActive();
+          if (
+            this.workflowState !== "TARGET_OPEN" ||
+            !this.fillInFlight ||
+            this.activeFillOperation !== fillOperation
+          ) {
+            throw new ApplicationBrowserError(
+              "The guarded Fill operation is no longer active.",
+              "BROWSER_WORKFLOW_FAILED"
+            );
+          }
+        }
+      };
+      return await (this.acquisitionMayHaveDispatchedForRun
+        ? orchestration.reconcileAcquisitionUncertainty(execution)
+        : orchestration.execute(execution));
+    } finally {
+      if (this.activeFillOperation === fillOperation) this.activeFillOperation = null;
+      this.fillInFlight = false;
+    }
+  }
+
   handleFormInspectionInvalidation(code: ApplicationFormInspectionInvalidationCode): void | Promise<void> {
+    this.publishedFillAuthority = null;
+    this.activeFillOperation = null;
     if (code === "PAGE_CLOSED") return this.safeStop("TARGET_PAGE_CLOSED");
     if (code === "PROTECTED_SESSION_LOST") return this.safeStop("BROWSER_WORKFLOW_FAILED");
     if (this.workflowState !== "TARGET_OPEN") return;
@@ -459,7 +562,9 @@ export class ApplicationBrowserCoordinator {
   }
 
   async safeStop(code: string): Promise<void> {
+    this.activeFillOperation = null;
     if (this.workflowState === "CLOSED") return;
+    this.publishedFillAuthority = null;
     this.establishError(code);
     try {
       await this.closeResourcesOnce();
@@ -469,6 +574,8 @@ export class ApplicationBrowserCoordinator {
   }
 
   async close(): Promise<void> {
+    this.publishedFillAuthority = null;
+    this.activeFillOperation = null;
     if (this.workflowState !== "CLOSED") this.workflowState = "CLOSED";
     await this.closeResourcesOnce();
   }
@@ -869,6 +976,17 @@ export function createPlaywrightTargetController(input: {
           verifyCandidate: async (candidate) => {
             assertAuthorityActive();
             return ownedSession.verifyCandidate(candidate);
+          },
+          writeCandidateField: async (candidate, request) => {
+            assertAuthorityActive();
+            const writer = ownedSession.writeCandidateField;
+            if (typeof writer !== "function") {
+              throw new ApplicationBrowserError(
+                "Protected employer-page writing is unavailable.",
+                "BROWSER_WORKFLOW_FAILED"
+              );
+            }
+            return writer.call(ownedSession, candidate, request);
           },
           snapshot: async () => {
             assertAuthorityActive();

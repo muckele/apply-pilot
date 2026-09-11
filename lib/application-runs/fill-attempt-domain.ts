@@ -9,9 +9,7 @@ export const FILL_ELIGIBLE_FIELD_TYPES = [
   "TEL",
   "URL",
   "TEXTAREA",
-  "SELECT_ONE",
-  "RADIO_GROUP",
-  "CHECKBOX_BOOLEAN"
+  "SELECT_ONE"
 ] as const satisfies readonly ApplicationFormFieldType[];
 
 export const FILL_STEP_RESULTS = [
@@ -252,7 +250,7 @@ function isValidStoppedStepPattern(
     return false;
   }
 
-  return failedCount <= 1;
+  return tailStarted && failedCount <= 1;
 }
 
 export function reconcileFillFinalization(input: {

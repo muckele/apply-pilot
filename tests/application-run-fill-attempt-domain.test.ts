@@ -46,9 +46,7 @@ test("Fill constants expose only the frozen lease, field, result, outcome, and e
     "TEL",
     "URL",
     "TEXTAREA",
-    "SELECT_ONE",
-    "RADIO_GROUP",
-    "CHECKBOX_BOOLEAN"
+    "SELECT_ONE"
   ]);
   assert.deepEqual(FILL_STEP_RESULTS, [
     "FILLED",
@@ -78,7 +76,7 @@ test("Fill constants expose only the frozen lease, field, result, outcome, and e
   ]);
 });
 
-test("verified candidate projection preserves supplied canonical order and only filters unsupported or proposal-free material", () => {
+test("verified candidate projection preserves canonical order and excludes manual radio fields", () => {
   const candidates = [
     {
       normalizedFieldKey: fieldKey(4),
@@ -123,7 +121,7 @@ test("verified candidate projection preserves supplied canonical order and only 
     }
   ];
 
-  assert.deepEqual(projectVerifiedFillCandidates(candidates), [candidates[0], candidates[3], candidates[5]]);
+  assert.deepEqual(projectVerifiedFillCandidates(candidates), [candidates[0], candidates[3]]);
 });
 
 test("safe step mapping produces only closed ApplicationRunStep persistence fields", () => {
@@ -239,6 +237,30 @@ test("normal finalization reconciles exact completed, pre-field-stop, and in-fie
     errorCategory: "FILL_WRITE_FAILED"
   });
 });
+
+for (const scenario of [
+  { label: "FILLED", results: ["FILLED"] },
+  { label: "PRESERVED_EXISTING", results: ["PRESERVED_EXISTING"] },
+  { label: "MANUAL", results: ["MANUAL"] },
+  { label: "mixed successful results", results: ["FILLED", "PRESERVED_EXISTING", "MANUAL"] }
+] as const) {
+  test(`normal finalization rejects all-success STOPPED_EARLY with ${scenario.label}`, () => {
+    assertDomainRejects(() => reconcileFillFinalization({
+      fillAttemptId: ATTEMPT_ID,
+      persistedSteps: PERSISTED_IDENTITIES.slice(0, scenario.results.length),
+      assertion: {
+        fillAttemptId: ATTEMPT_ID,
+        outcome: "STOPPED_EARLY",
+        errorCode: "FILL_INTERNAL",
+        steps: scenario.results.map((result, index) => ({
+          stepKey: stepKey(index + 1),
+          result,
+          errorCode: null
+        }))
+      }
+    }));
+  });
+}
 
 test("normal finalization rejects identity, coverage, order, and deterministic stop-pattern violations", () => {
   const validStopped = {

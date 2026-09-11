@@ -510,6 +510,7 @@ test("acquisition uses locked authority, DB time, one guarded attempt, canonical
     packetHash: PACKET_HASH,
     formFingerprint: FORM_FINGERPRINT,
     eligibleFields: [{
+      stepKey: `fill:${ATTEMPT_ID}:${FIELD_KEY}`,
       normalizedFieldKey: FIELD_KEY,
       fieldFingerprint: FIELD_FINGERPRINT,
       fieldType: "TEXT",
@@ -568,7 +569,13 @@ test("acquisition preserves verified packet order across filtering, response, an
     expectedStateVersion: 7
   });
   const expectedKeys = ["f".repeat(64), "a".repeat(64)];
-  assert.deepEqual(result.eligibleFields.map((field) => field.normalizedFieldKey), expectedKeys);
+  assert.deepEqual(result.eligibleFields.map((field) => ({
+    stepKey: field.stepKey,
+    normalizedFieldKey: field.normalizedFieldKey
+  })), expectedKeys.map((normalizedFieldKey) => ({
+    stepKey: `fill:${ATTEMPT_ID}:${normalizedFieldKey}`,
+    normalizedFieldKey
+  })));
   assert.deepEqual(state.stepRows.map((step) => ({ stepKey: step.stepKey, sequence: step.sequence })), [
     { stepKey: `fill:${ATTEMPT_ID}:${expectedKeys[0]}`, sequence: 0 },
     { stepKey: `fill:${ATTEMPT_ID}:${expectedKeys[1]}`, sequence: 1 }
@@ -640,6 +647,55 @@ test("zero eligible leaves the permanent attempt opportunity untouched before UU
   assert.equal(state.writes.length, 0);
   assert.equal(state.run.state, "READY");
   assert.equal(state.run.fillAttemptId, null);
+});
+
+test("radio or Boolean checkbox proposals alone remain manual and consume no Fill attempt", async () => {
+  const optionKey = "c".repeat(64);
+  const scenarios = [
+    {
+      fieldType: "RADIO_GROUP",
+      proposal: { kind: "OPTIONS", optionKeys: [optionKey] },
+      choices: [{ key: optionKey, disabled: false }]
+    },
+    {
+      fieldType: "CHECKBOX_BOOLEAN",
+      proposal: { kind: "BOOLEAN", value: true },
+      choices: []
+    }
+  ] as const;
+
+  for (const scenario of scenarios) {
+    const verified = createVerifiedPacket({
+      fieldType: scenario.fieldType,
+      proposal: scenario.proposal
+    });
+    const frozenField = verified.fieldsByKey.get(FIELD_KEY)!;
+    const fieldsByKey = new Map(verified.fieldsByKey);
+    fieldsByKey.set(FIELD_KEY, { ...frozenField, choices: [...scenario.choices] } as never);
+    const state = createFakeState({
+      verified: { ...verified, fieldsByKey } as VerifiedCurrentAnswerPacket
+    });
+    let generated = 0;
+
+    await assert.rejects(
+      serviceFor(state, {
+        attemptIdGenerator: () => {
+          generated += 1;
+          return ATTEMPT_ID;
+        }
+      }).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
+      (error) => assertFillError(error, "FILL_NO_ELIGIBLE_FIELDS", 409)
+    );
+
+    assert.equal(generated, 0, scenario.fieldType);
+    assert.equal(state.operations.includes("clock"), false, scenario.fieldType);
+    assert.equal(state.writes.length, 0, scenario.fieldType);
+    assert.equal(state.stepRows.length, 0, scenario.fieldType);
+    assert.equal(state.audits.length, 0, scenario.fieldType);
+    assert.equal(state.run.state, "READY", scenario.fieldType);
+    assert.equal(state.run.fillAttemptId, null, scenario.fieldType);
+    assert.equal(state.run.fillLeaseExpiresAt, null, scenario.fieldType);
+  }
 });
 
 test("acquisition policy and host gates fail closed without packet verification or mutation", async () => {
@@ -1160,6 +1216,32 @@ test("FINALIZE STOPPED_EARLY accepts exactly one matching in-field failure follo
   assert.equal((state.terminalSteps[1].startedAt as Date).getTime(), DB_NOW.getTime() - 50);
   assert.equal(state.run.errorCategory, "FILL_WRITE_FAILED");
 });
+
+for (const scenario of [
+  { label: "FILLED", results: ["FILLED"] },
+  { label: "PRESERVED_EXISTING", results: ["PRESERVED_EXISTING"] },
+  { label: "MANUAL", results: ["MANUAL"] },
+  { label: "mixed successful results", results: ["FILLED", "PRESERVED_EXISTING", "MANUAL"] }
+] as const) {
+  test(`FINALIZE rejects all-success STOPPED_EARLY with ${scenario.label} before mutation`, async () => {
+    const fieldKeys = [FIELD_KEY, SECOND_FIELD_KEY, THIRD_FIELD_KEY];
+    const steps = scenario.results.map((_, index) => createAttemptStep(fieldKeys[index], index));
+    const state = createFakeState({ run: createFillingRun(), terminalSteps: steps });
+
+    await assert.rejects(
+      serviceFor(state).finalizeFillAttempt(completedFinalizationInput(
+        scenario.results.map((result, index) => ({
+          stepKey: steps[index].stepKey,
+          result,
+          errorCode: null
+        })),
+        { outcome: "STOPPED_EARLY", errorCode: "FILL_INTERNAL" }
+      )),
+      (error) => assertFillError(error, "FILL_INTERNAL", 500)
+    );
+    assert.equal(state.writes.length, 0);
+  });
+}
 
 test("FINALIZE rejects forbidden or mismatched stopped errors without mutation", async () => {
   const step = createAttemptStep(FIELD_KEY, 0);
