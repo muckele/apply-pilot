@@ -3,15 +3,23 @@ import type { CDPSession, Page } from "playwright";
 
 import {
   PROTECTED_BROWSER_CAPABILITY_METHODS,
+  PROTECTED_WRITABLE_FIELD_TYPES,
   protectedBrowserCapabilityExpression,
   protectedBrowserWorldBootstrapSource
 } from "@/lib/application-browser/protected-browser-world";
 import {
   applicationFormInspectionReportSchema,
+  MAX_CHOICES_PER_FIELD,
+  MAX_CHOICES_TOTAL,
+  MAX_FIELDS_TOTAL,
   type ApplicationFormInspectionReport
 } from "@/lib/application-runs/form-inspection";
+import { parseApplicationAnswerProposal } from "@/lib/application-runs/answer-packet-domain";
 
-export { PROTECTED_BROWSER_CAPABILITY_METHODS } from "@/lib/application-browser/protected-browser-world";
+export {
+  PROTECTED_BROWSER_CAPABILITY_METHODS,
+  PROTECTED_WRITABLE_FIELD_TYPES
+} from "@/lib/application-browser/protected-browser-world";
 
 export const PROTECTED_BROWSER_SESSION_ERROR_CODES = [
   "PROTECTED_SESSION_SETUP_FAILED",
@@ -83,6 +91,45 @@ export type ProtectedSourceChoiceOrdinal = Readonly<{
   choice: number;
 }>;
 
+export type ProtectedWritableFieldType = (typeof PROTECTED_WRITABLE_FIELD_TYPES)[number];
+
+export type ProtectedWriterChoiceBinding = Readonly<{
+  choiceKey: string;
+  sourceOrdinal: ProtectedSourceChoiceOrdinal;
+}>;
+
+export type ProtectedWriterTargetBinding = Readonly<{
+  normalizedFieldKey: string;
+  fieldFingerprint: string;
+  fieldType: ProtectedWritableFieldType;
+  sourceOrdinal: ProtectedSourceFieldOrdinal;
+  choices: readonly ProtectedWriterChoiceBinding[];
+}>;
+
+export type ProtectedCandidateFieldWriteRequest = Readonly<{
+  normalizedFieldKey: string;
+  fieldFingerprint: string;
+  fieldType: ProtectedWritableFieldType;
+  proposal:
+    | Readonly<{ kind: "SCALAR"; value: string }>
+      | Readonly<{ kind: "OPTIONS"; optionKeys: readonly [string] }>;
+}>;
+
+/**
+ * `MANUAL / UNWRITABLE` applies only to a supported target that was present
+ * in the protected candidate and sealed for writing. Initially effectively
+ * disabled controls remain outside the inspection candidate and have no
+ * writer request or result until a fresh inspection discovers them enabled.
+ */
+export type ProtectedCandidateFieldWriteResult =
+  | Readonly<{ status: "FILLED" }>
+  | Readonly<{ status: "PRESERVED_EXISTING" }>
+  | Readonly<{ status: "MANUAL"; reason: "UNWRITABLE" }>
+  | Readonly<{
+      status: "FAILED";
+      reason: "CANDIDATE_INVALID" | "TARGET_INVALID" | "UNEXPECTED_ACTIVITY" | "WRITE_FAILED";
+    }>;
+
 export type ProtectedChoiceSlot = Readonly<{
   sourceOrdinal: ProtectedSourceChoiceOrdinal;
   reference: OpaqueProtectedChoiceReference;
@@ -98,6 +145,7 @@ export type ProtectedApplicationFormExtraction = Readonly<{
   candidate: OpaqueExtractionCandidate;
   report: ApplicationFormInspectionReport;
   fields: readonly ProtectedFieldSlot[];
+  sealWriterTargets(bindings: readonly ProtectedWriterTargetBinding[]): Promise<void>;
   dispose(): Promise<void>;
 }>;
 
@@ -130,16 +178,18 @@ export type ProtectedApplicationBrowserSession = Readonly<{
   extractApplicationForm(): Promise<ProtectedApplicationFormExtraction>;
   /**
    * Performs a fresh exact protected extraction and identity comparison.
-   * `CURRENT` is the authoritative Commit 2A point-in-time proof only for the
+   * `CURRENT` is an authoritative point-in-time proof only for the
    * protected invocation that produced it; it is not a durable lease.
-   *
-   * Future Commit 2C/2D writer invariant: no write may depend solely on a prior
-   * fence or prior Node-visible `CURRENT` result. A future approved mutation
-   * must atomically perform fresh exact protected verification and immediately
-   * perform one approved mutation inside the same protected browser invocation,
-   * with no async or browser round-trip gap. This interface grants no write.
    */
   verifyCandidate(candidate: OpaqueExtractionCandidate): Promise<ProtectedCandidateVerification>;
+  /**
+   * Performs fresh exact candidate/target verification and at most one bounded
+   * supported mutation inside one synchronous protected-world invocation.
+   */
+  writeCandidateField(
+    candidate: OpaqueExtractionCandidate,
+    request: ProtectedCandidateFieldWriteRequest
+  ): Promise<ProtectedCandidateFieldWriteResult>;
   /**
    * Drains the currently retained bounded observer graph and returns an
    * advisory notification fence. The result is not a currentness proof.
@@ -180,6 +230,8 @@ type CandidateState = {
   readonly reportCanonical: string;
   readonly fieldReferences: readonly OpaqueProtectedFieldReference[];
   readonly choiceReferences: readonly OpaqueProtectedChoiceReference[];
+  sealAttempted: boolean;
+  writerTargetsSealed: boolean;
   live: boolean;
   disposePromise: Promise<void> | null;
 };
@@ -263,6 +315,187 @@ function exactKeys(value: ProtocolRecord, keys: readonly string[]): boolean {
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
+const protectedWritableFieldTypes = new Set<string>(PROTECTED_WRITABLE_FIELD_TYPES);
+
+function parseSourceFieldOrdinal(value: unknown): ProtectedSourceFieldOrdinal | null {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, ["form", "section", "field"]) ||
+    !Number.isSafeInteger(value.form) ||
+    !Number.isSafeInteger(value.section) ||
+    !Number.isSafeInteger(value.field) ||
+    (value.form as number) < 0 ||
+    (value.section as number) < 0 ||
+    (value.field as number) < 0
+  ) return null;
+  return Object.freeze({
+    form: value.form as number,
+    section: value.section as number,
+    field: value.field as number
+  });
+}
+
+function parseSourceChoiceOrdinal(value: unknown): ProtectedSourceChoiceOrdinal | null {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, ["form", "section", "field", "choice"]) ||
+    !Number.isSafeInteger(value.form) ||
+    !Number.isSafeInteger(value.section) ||
+    !Number.isSafeInteger(value.field) ||
+    !Number.isSafeInteger(value.choice) ||
+    (value.form as number) < 0 ||
+    (value.section as number) < 0 ||
+    (value.field as number) < 0 ||
+    (value.choice as number) < 0
+  ) return null;
+  return Object.freeze({
+    form: value.form as number,
+    section: value.section as number,
+    field: value.field as number,
+    choice: value.choice as number
+  });
+}
+
+function parseWriterTargetBindings(value: unknown): readonly ProtectedWriterTargetBinding[] | null {
+  if (!Array.isArray(value) || value.length > MAX_FIELDS_TOTAL) return null;
+  const fieldKeys = new Set<string>();
+  const fingerprints = new Set<string>();
+  const fieldOrdinals = new Set<string>();
+  let totalChoices = 0;
+  const parsed: ProtectedWriterTargetBinding[] = [];
+  for (const binding of value) {
+    if (
+      !isRecord(binding) ||
+      !exactKeys(binding, [
+        "normalizedFieldKey",
+        "fieldFingerprint",
+        "fieldType",
+        "sourceOrdinal",
+        "choices"
+      ]) ||
+      typeof binding.normalizedFieldKey !== "string" ||
+      !SHA256_HEX_PATTERN.test(binding.normalizedFieldKey) ||
+      typeof binding.fieldFingerprint !== "string" ||
+      !SHA256_HEX_PATTERN.test(binding.fieldFingerprint) ||
+      typeof binding.fieldType !== "string" ||
+      !protectedWritableFieldTypes.has(binding.fieldType) ||
+      !Array.isArray(binding.choices) ||
+      binding.choices.length > MAX_CHOICES_PER_FIELD
+    ) return null;
+    const sourceOrdinal = parseSourceFieldOrdinal(binding.sourceOrdinal);
+    if (!sourceOrdinal) return null;
+    const ordinalKey = `${sourceOrdinal.form}/${sourceOrdinal.section}/${sourceOrdinal.field}`;
+    if (
+      fieldKeys.has(binding.normalizedFieldKey) ||
+      fingerprints.has(binding.fieldFingerprint) ||
+      fieldOrdinals.has(ordinalKey)
+    ) return null;
+    fieldKeys.add(binding.normalizedFieldKey);
+    fingerprints.add(binding.fieldFingerprint);
+    fieldOrdinals.add(ordinalKey);
+
+    const choiceKeys = new Set<string>();
+    const choiceOrdinals = new Set<number>();
+    const choices: ProtectedWriterChoiceBinding[] = [];
+    for (const choice of binding.choices) {
+      if (
+        !isRecord(choice) ||
+        !exactKeys(choice, ["choiceKey", "sourceOrdinal"]) ||
+        typeof choice.choiceKey !== "string" ||
+        !SHA256_HEX_PATTERN.test(choice.choiceKey)
+      ) return null;
+      const choiceOrdinal = parseSourceChoiceOrdinal(choice.sourceOrdinal);
+      if (
+        !choiceOrdinal ||
+        choiceOrdinal.form !== sourceOrdinal.form ||
+        choiceOrdinal.section !== sourceOrdinal.section ||
+        choiceOrdinal.field !== sourceOrdinal.field ||
+        choiceKeys.has(choice.choiceKey) ||
+        choiceOrdinals.has(choiceOrdinal.choice)
+      ) return null;
+      choiceKeys.add(choice.choiceKey);
+      choiceOrdinals.add(choiceOrdinal.choice);
+      choices.push(Object.freeze({ choiceKey: choice.choiceKey, sourceOrdinal: choiceOrdinal }));
+    }
+    totalChoices += choices.length;
+    if (
+      totalChoices > MAX_CHOICES_TOTAL ||
+      (binding.fieldType === "SELECT_ONE" ? choices.length === 0 : choices.length !== 0)
+    ) return null;
+    parsed.push(Object.freeze({
+      normalizedFieldKey: binding.normalizedFieldKey,
+      fieldFingerprint: binding.fieldFingerprint,
+      fieldType: binding.fieldType as ProtectedWritableFieldType,
+      sourceOrdinal,
+      choices: Object.freeze(choices)
+    }));
+  }
+  return Object.freeze(parsed);
+}
+
+function parseCandidateFieldWriteRequest(value: unknown): ProtectedCandidateFieldWriteRequest | null {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, ["normalizedFieldKey", "fieldFingerprint", "fieldType", "proposal"]) ||
+    typeof value.normalizedFieldKey !== "string" ||
+    !SHA256_HEX_PATTERN.test(value.normalizedFieldKey) ||
+    typeof value.fieldFingerprint !== "string" ||
+    !SHA256_HEX_PATTERN.test(value.fieldFingerprint) ||
+    typeof value.fieldType !== "string" ||
+    !protectedWritableFieldTypes.has(value.fieldType)
+  ) return null;
+  let proposal;
+  try {
+    proposal = parseApplicationAnswerProposal(value.proposal);
+  } catch {
+    return null;
+  }
+  if (value.fieldType === "SELECT_ONE") {
+    if (proposal.kind !== "OPTIONS" || proposal.optionKeys.length !== 1) return null;
+    return Object.freeze({
+      normalizedFieldKey: value.normalizedFieldKey,
+      fieldFingerprint: value.fieldFingerprint,
+      fieldType: "SELECT_ONE",
+      proposal: Object.freeze({
+        kind: "OPTIONS" as const,
+        optionKeys: Object.freeze([proposal.optionKeys[0]]) as readonly [string]
+      })
+    });
+  }
+  if (proposal.kind !== "SCALAR") return null;
+  return Object.freeze({
+    normalizedFieldKey: value.normalizedFieldKey,
+    fieldFingerprint: value.fieldFingerprint,
+    fieldType: value.fieldType as Exclude<ProtectedWritableFieldType, "SELECT_ONE">,
+    proposal: Object.freeze({ kind: "SCALAR" as const, value: proposal.value })
+  });
+}
+
+function parseCandidateFieldWriteResult(value: unknown): ProtectedCandidateFieldWriteResult | null {
+  if (!isRecord(value) || typeof value.status !== "string") return null;
+  if (
+    (value.status === "FILLED" || value.status === "PRESERVED_EXISTING") &&
+    exactKeys(value, ["status"])
+  ) return Object.freeze({ status: value.status });
+  if (
+    value.status === "MANUAL" &&
+    exactKeys(value, ["status", "reason"]) &&
+    value.reason === "UNWRITABLE"
+  ) return Object.freeze({ status: "MANUAL", reason: "UNWRITABLE" });
+  if (
+    value.status === "FAILED" &&
+    exactKeys(value, ["status", "reason"]) &&
+    (
+      value.reason === "CANDIDATE_INVALID" ||
+      value.reason === "TARGET_INVALID" ||
+      value.reason === "UNEXPECTED_ACTIVITY" ||
+      value.reason === "WRITE_FAILED"
+    )
+  ) return Object.freeze({ status: "FAILED", reason: value.reason });
+  return null;
+}
+
 function parseFrameId(value: unknown): string | null {
   if (!isRecord(value) || !exactKeys(value, ["frameTree"]) || !isRecord(value.frameTree)) return null;
   const frame = value.frameTree.frame;
@@ -290,7 +523,7 @@ function parseHandshake(value: unknown): boolean {
   if (!exactKeys(result, ["type", "value"]) || result.type !== "object" || !isRecord(result.value)) return false;
   const handshake = result.value;
   return exactKeys(handshake, ["version", "state", "methods"]) &&
-    handshake.version === 1 && handshake.state === "READY" &&
+    handshake.version === 2 && handshake.state === "READY" &&
     Array.isArray(handshake.methods) &&
     handshake.methods.length === PROTECTED_BROWSER_CAPABILITY_METHODS.length &&
     handshake.methods.every((method, index) => method === PROTECTED_BROWSER_CAPABILITY_METHODS[index]);
@@ -841,6 +1074,8 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
       reportCanonical: JSON.stringify(parsed.data),
       fieldReferences: Object.freeze(fieldReferences),
       choiceReferences: Object.freeze(choiceReferences),
+      sealAttempted: false,
+      writerTargetsSealed: false,
       live: true,
       disposePromise: null
     };
@@ -849,10 +1084,50 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
     for (const reference of choiceReferences) choiceReferenceStates.set(reference, state);
     liveCandidates.add(state);
 
+    const sealWriterTargets = async (
+      bindings: readonly ProtectedWriterTargetBinding[]
+    ): Promise<void> => {
+      if (state.sealAttempted || !state.live) {
+        invalidateCandidate(state);
+        await cleanupBrowserCandidate(state).catch(() => undefined);
+        throw sessionError("PROTECTED_CANDIDATE_INVALID");
+      }
+      state.sealAttempted = true;
+      const parsedBindings = parseWriterTargetBindings(bindings);
+      if (!parsedBindings) {
+        invalidateCandidate(state);
+        await cleanupBrowserCandidate(state).catch(() => undefined);
+        throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
+      }
+      try {
+        await runExclusive(async (sealAuthority, sealDeadline) => {
+          if (sealAuthority !== state.authority || !state.live) {
+            throw sessionError("PROTECTED_CANDIDATE_INVALID");
+          }
+          const result = await protectedCapabilityCall(
+            sealAuthority,
+            "function (input) { return this.sealCandidateWriterTargets(input); }",
+            { candidateId: state.browserCandidateId, bindings: parsedBindings },
+            sealDeadline
+          );
+          if (result !== "SEALED" || !state.live) {
+            throw sessionError("PROTECTED_CANDIDATE_INVALID");
+          }
+          state.writerTargetsSealed = true;
+        });
+      } catch (error) {
+        invalidateCandidate(state);
+        await cleanupBrowserCandidate(state).catch(() => undefined);
+        if (error instanceof ProtectedBrowserSessionError) throw error;
+        throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
+      }
+    };
+
     return Object.freeze({
       candidate: candidateReference,
       report: parsed.data,
       fields: Object.freeze(fields),
+      sealWriterTargets,
       dispose: () => disposeCandidateState(state)
     });
   });
@@ -914,6 +1189,72 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
         report: report.data,
         fence: browserFence(captured, value.fence)
       });
+    });
+  };
+
+  const writeCandidateField = async (
+    candidateReference: OpaqueExtractionCandidate,
+    request: ProtectedCandidateFieldWriteRequest
+  ): Promise<ProtectedCandidateFieldWriteResult> => {
+    if (typeof candidateReference !== "object" || candidateReference === null) {
+      throw sessionError("PROTECTED_CANDIDATE_INVALID");
+    }
+    const candidate = candidateStates.get(candidateReference);
+    if (!candidate) {
+      throw sessionError("PROTECTED_CANDIDATE_INVALID");
+    }
+    if (
+      !candidate.live ||
+      candidate.documentEpoch !== documentEpoch ||
+      candidate.authority !== authority ||
+      candidate.fieldReferences.some((reference) => fieldReferenceStates.get(reference) !== candidate) ||
+      candidate.choiceReferences.some((reference) => choiceReferenceStates.get(reference) !== candidate)
+    ) {
+      invalidateCandidate(candidate);
+      return Object.freeze({ status: "FAILED", reason: "CANDIDATE_INVALID" });
+    }
+    if (!candidate.writerTargetsSealed) {
+      invalidateCandidate(candidate);
+      await cleanupBrowserCandidate(candidate).catch(() => undefined);
+      throw sessionError("PROTECTED_CANDIDATE_INVALID");
+    }
+    const parsedRequest = parseCandidateFieldWriteRequest(request);
+    if (!parsedRequest) {
+      invalidateCandidate(candidate);
+      await cleanupBrowserCandidate(candidate).catch(() => undefined);
+      throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
+    }
+    return runExclusive(async (captured, deadline) => {
+      if (captured !== candidate.authority || !candidate.live) {
+        invalidateCandidate(candidate);
+        return Object.freeze({ status: "FAILED", reason: "CANDIDATE_INVALID" });
+      }
+      let value: unknown;
+      try {
+        value = await protectedCapabilityCall(
+          captured,
+          "function (input) { return this.writeCandidateField(input); }",
+          { candidateId: candidate.browserCandidateId, request: parsedRequest },
+          deadline
+        );
+      } catch (error) {
+        invalidateCandidate(candidate);
+        await cleanupBrowserCandidate(candidate, deadline).catch(() => undefined);
+        if (error instanceof ProtectedBrowserSessionError) throw error;
+        throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
+      }
+      if (!candidate.live || candidate.authority !== authority || candidate.documentEpoch !== documentEpoch) {
+        invalidateCandidate(candidate);
+        return Object.freeze({ status: "FAILED", reason: "CANDIDATE_INVALID" });
+      }
+      const result = parseCandidateFieldWriteResult(value);
+      if (!result) {
+        invalidateCandidate(candidate);
+        await cleanupBrowserCandidate(candidate, deadline).catch(() => undefined);
+        throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
+      }
+      if (result.status === "FAILED") invalidateCandidate(candidate);
+      return result;
     });
   };
 
@@ -1003,6 +1344,7 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
     waitUntilReady,
     extractApplicationForm,
     verifyCandidate,
+    writeCandidateField,
     snapshot,
     waitForChange,
     subscribe(listener: (code: ProtectedSessionLifecycleCode) => void | Promise<void>) {

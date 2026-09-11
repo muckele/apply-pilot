@@ -215,18 +215,21 @@ test("a known protected advisory change retries and accepts the later stable rep
               candidate: extraction.candidate,
               report: extraction.report,
               fields: extraction.fields,
+              sealWriterTargets: async (bindings: Parameters<typeof extraction.sealWriterTargets>[0]) => {
+                await extraction.sealWriterTargets(bindings);
+                if (attempt === 0) {
+                  await page.evaluate(() => {
+                    const label = document.querySelector("label[for='full-name']");
+                    if (label) label.textContent = "Preferred full name";
+                  });
+                }
+              },
               dispose() {
                 disposalCalls[attempt] += 1;
                 disposePromise ??= extraction.dispose();
                 return disposePromise;
               }
             });
-            if (attempt === 0) {
-              await page.evaluate(() => {
-                const label = document.querySelector("label[for='full-name']");
-                if (label) label.textContent = "Preferred full name";
-              });
-            }
             return wrappedExtraction;
           },
           verifyCandidate: (candidate: Parameters<typeof original.verifyCandidate>[0]) => {

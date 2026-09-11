@@ -2,12 +2,19 @@ import type {
   OpaqueExtractionCandidate,
   ProtectedApplicationFormExtraction,
   ProtectedSourceChoiceOrdinal,
-  ProtectedSourceFieldOrdinal
+  ProtectedSourceFieldOrdinal,
+  ProtectedWriterTargetBinding,
+  ProtectedWritableFieldType
 } from "@/lib/application-browser/protected-browser-session";
+import { PROTECTED_WRITABLE_FIELD_TYPES } from "@/lib/application-browser/protected-browser-session";
 import {
   buildNormalizedApplicationFormInspection,
+  canonicalizeFormComparisonText,
+  deriveChoiceKey,
   FormInspectionDomainError,
+  sanitizeFormDisplayText,
   type ApplicationFormInspectionReport,
+  type NormalizedApplicationFormField,
   type NormalizedApplicationFormSnapshot
 } from "@/lib/application-runs/form-inspection";
 
@@ -132,6 +139,118 @@ function validateProtectedSourceGraph(
   return rawFieldCount;
 }
 
+const writableFieldTypes = new Set<string>(PROTECTED_WRITABLE_FIELD_TYPES);
+
+function isWritableFieldType(value: string): value is ProtectedWritableFieldType {
+  return writableFieldTypes.has(value);
+}
+
+function normalizedFieldForSource(input: Readonly<{
+  report: ApplicationFormInspectionReport;
+  sourceOrdinal: ProtectedSourceFieldOrdinal;
+  authoritativeApplyHost: string;
+}>): NormalizedApplicationFormField {
+  const form = input.report.forms[input.sourceOrdinal.form];
+  const section = form?.sections[input.sourceOrdinal.section];
+  const field = section?.fields[input.sourceOrdinal.field];
+  if (!form || !section || !field) throw correlationInvalid();
+  const single = buildNormalizedApplicationFormInspection({
+    authoritativeApplyHost: input.authoritativeApplyHost,
+    report: {
+      schemaVersion: input.report.schemaVersion,
+      forms: [{
+        title: form.title,
+        sections: [{ heading: section.heading, fields: [field] }]
+      }]
+    }
+  });
+  const normalized = single.snapshot.forms[0]?.sections[0]?.fields[0];
+  if (!normalized || single.fieldCount !== 1) throw correlationInvalid();
+  return normalized;
+}
+
+function buildWriterTargetBindings(input: Readonly<{
+  extraction: ProtectedApplicationFormExtraction;
+  normalizedSnapshot: NormalizedApplicationFormSnapshot;
+  authoritativeApplyHost: string;
+}>): readonly ProtectedWriterTargetBinding[] {
+  const normalizedByKey = new Map<string, NormalizedApplicationFormField>();
+  for (const form of input.normalizedSnapshot.forms) {
+    for (const section of form.sections) {
+      for (const field of section.fields) {
+        if (normalizedByKey.has(field.normalizedFieldKey)) throw correlationInvalid();
+        normalizedByKey.set(field.normalizedFieldKey, field);
+      }
+    }
+  }
+
+  const bindings: ProtectedWriterTargetBinding[] = [];
+  const boundKeys = new Set<string>();
+  for (const slot of input.extraction.fields) {
+    const source = slot.sourceOrdinal;
+    const rawField = input.extraction.report.forms[source.form]?.sections[source.section]?.fields[source.field];
+    if (!rawField) throw correlationInvalid();
+    const derived = normalizedFieldForSource({
+      report: input.extraction.report,
+      sourceOrdinal: source,
+      authoritativeApplyHost: input.authoritativeApplyHost
+    });
+    const normalized = normalizedByKey.get(derived.normalizedFieldKey);
+    if (
+      !normalized ||
+      normalized.fieldFingerprint !== derived.fieldFingerprint ||
+      normalized.fieldType !== derived.fieldType
+    ) throw correlationInvalid();
+    if (!isWritableFieldType(normalized.fieldType)) continue;
+    if (boundKeys.has(normalized.normalizedFieldKey) || rawField.fieldType !== normalized.fieldType) {
+      throw correlationInvalid();
+    }
+    boundKeys.add(normalized.normalizedFieldKey);
+
+    const normalizedChoices = new Map(normalized.choices.map((choice) => [choice.key, choice]));
+    const choices = slot.choices
+      .map((choiceSlot) => {
+        const choiceOrdinal = choiceSlot.sourceOrdinal;
+        const rawChoice = rawField.choices[choiceOrdinal.choice];
+        if (!rawChoice) throw correlationInvalid();
+        const choiceKey = deriveChoiceKey({
+          normalizedFieldKey: normalized.normalizedFieldKey,
+          normalizedLabel: canonicalizeFormComparisonText(sanitizeFormDisplayText(rawChoice.label))
+        });
+        const canonicalChoice = normalizedChoices.get(choiceKey);
+        if (!canonicalChoice || canonicalChoice.disabled !== rawChoice.disabled) throw correlationInvalid();
+        return Object.freeze({ choiceKey, sourceOrdinal: choiceOrdinal });
+      })
+      .sort((left, right) => left.sourceOrdinal.choice - right.sourceOrdinal.choice);
+    if (
+      normalized.fieldType === "SELECT_ONE"
+        ? choices.length !== rawField.choices.length || choices.length !== normalized.choices.length
+        : choices.length !== 0
+    ) throw correlationInvalid();
+    bindings.push(Object.freeze({
+      normalizedFieldKey: normalized.normalizedFieldKey,
+      fieldFingerprint: normalized.fieldFingerprint,
+      fieldType: normalized.fieldType,
+      sourceOrdinal: source,
+      choices: Object.freeze(choices)
+    }));
+  }
+
+  const expectedWritableKeys = [...normalizedByKey.values()]
+    .filter((field) => isWritableFieldType(field.fieldType))
+    .map((field) => field.normalizedFieldKey);
+  if (
+    expectedWritableKeys.length !== bindings.length ||
+    expectedWritableKeys.some((key) => !boundKeys.has(key))
+  ) throw correlationInvalid();
+  bindings.sort((left, right) =>
+    left.sourceOrdinal.form - right.sourceOrdinal.form ||
+    left.sourceOrdinal.section - right.sourceOrdinal.section ||
+    left.sourceOrdinal.field - right.sourceOrdinal.field
+  );
+  return Object.freeze(bindings);
+}
+
 function mapCorrelationFailure(error: unknown): Error {
   if (
     error instanceof FormInspectionDomainError &&
@@ -167,6 +286,12 @@ export async function correlateProtectedApplicationFormExtraction(
       report: extraction.report
     });
     if (full.fieldCount !== rawFieldCount) throw correlationInvalid();
+    const writerTargetBindings = buildWriterTargetBindings({
+      extraction,
+      normalizedSnapshot: full.snapshot,
+      authoritativeApplyHost: input.authoritativeApplyHost
+    });
+    await extraction.sealWriterTargets(writerTargetBindings);
 
     const candidate = extraction.candidate;
     const inspectionReport = extraction.report;

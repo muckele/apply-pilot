@@ -68,7 +68,7 @@ function assertSessionCode(code: ProtectedBrowserSessionError["code"]): (error: 
   };
 }
 
-test("the closed session surface exposes only fixed read-only operations", async () => {
+test("the closed session surface exposes only fixed protected V2 operations", async () => {
   const value = await fixture(SIMPLE_FORM);
   try {
     assert.deepEqual(Object.keys(value.session).sort(), [
@@ -78,7 +78,8 @@ test("the closed session surface exposes only fixed read-only operations", async
       "subscribe",
       "verifyCandidate",
       "waitForChange",
-      "waitUntilReady"
+      "waitUntilReady",
+      "writeCandidateField"
     ]);
     assert.equal("evaluate" in value.session, false);
     assert.equal("navigate" in value.session, false);
@@ -458,7 +459,7 @@ test("the per-session world is main-frame authoritative and child-frame inert wi
       hasCapability: true,
       descriptor: { configurable: false, enumerable: false, writable: false },
       frozen: true,
-      version: 1,
+      version: 2,
       enumerableMethods: [],
       ownNames: ["version", ...PROTECTED_BROWSER_CAPABILITY_METHODS].sort()
     });

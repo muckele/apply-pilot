@@ -49,7 +49,7 @@ function strictHandshakeResponse() {
     result: {
       type: "object",
       value: {
-        version: 1,
+        version: 2,
         state: "READY",
         methods: [...PROTECTED_BROWSER_CAPABILITY_METHODS]
       }
@@ -193,6 +193,268 @@ test("registers a fresh isolated bootstrap without experimental options before s
 
   await session.close();
   assert.equal(cdp.detached, true);
+});
+
+test("one extraction seals plain semantic writer targets exactly once", async () => {
+  const cdp = new FakeCdpSession();
+  const session = await readyFakeSession(cdp, (declaration) => {
+    if (declaration.includes("this.extract")) {
+      return byValue({ kind: "OK", candidateId: 17, report: MINIMAL_REPORT });
+    }
+    if (declaration.includes("this.sealCandidateWriterTargets")) {
+      return byValue("SEALED", "string");
+    }
+    return byValue("DISPOSED", "string");
+  });
+  const extraction = await session.extractApplicationForm();
+  const binding = {
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT" as const,
+    sourceOrdinal: { form: 0, section: 0, field: 0 },
+    choices: []
+  };
+
+  await extraction.sealWriterTargets([binding]);
+
+  const calls = cdp.commands.filter((command) =>
+    String(command.params?.functionDeclaration).includes("this.sealCandidateWriterTargets")
+  );
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.params?.arguments, [{
+    value: { candidateId: 17, bindings: [binding] }
+  }]);
+  assert.deepEqual(Object.keys(extraction).sort(), [
+    "candidate",
+    "dispose",
+    "fields",
+    "report",
+    "sealWriterTargets"
+  ]);
+  await assert.rejects(
+    extraction.sealWriterTargets([binding]),
+    sessionCode("PROTECTED_CANDIDATE_INVALID")
+  );
+  assert.equal(cdp.commands.filter((command) =>
+    String(command.params?.functionDeclaration).includes("this.sealCandidateWriterTargets")
+  ).length, 1, "a duplicate seal must not dispatch another browser operation");
+  await session.close();
+});
+
+test("malformed writer target bindings fail before seal dispatch and revoke the candidate", async (context) => {
+  const base = {
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT" as const,
+    sourceOrdinal: { form: 0, section: 0, field: 0 },
+    choices: []
+  };
+  const cases: ReadonlyArray<readonly [string, unknown]> = [
+    ["extra key", [{ ...base, selector: "#private" }]],
+    ["malformed fingerprint", [{ ...base, fieldFingerprint: "NOT-A-HASH" }]],
+    ["wrong family", [{ ...base, fieldType: "NUMBER" }]],
+    ["bad ordinal", [{ ...base, sourceOrdinal: { form: 0, section: 0, field: -1 } }]],
+    ["duplicate semantic key", [base, { ...base, sourceOrdinal: { form: 0, section: 0, field: 1 } }]],
+    ["select without exact choices", [{ ...base, fieldType: "SELECT_ONE", choices: [] }]]
+  ];
+
+  for (const [name, bindings] of cases) {
+    await context.test(name, async () => {
+      const cdp = new FakeCdpSession();
+      const session = await readyFakeSession(cdp, (declaration) => {
+        if (declaration.includes("this.extract")) {
+          return byValue({ kind: "OK", candidateId: 23, report: MINIMAL_REPORT });
+        }
+        return byValue("DISPOSED", "string");
+      });
+      const extraction = await session.extractApplicationForm();
+      await assert.rejects(
+        extraction.sealWriterTargets(bindings as never),
+        sessionCode("PROTECTED_SESSION_INVALID_RESPONSE")
+      );
+      assert.equal(cdp.commands.some((command) =>
+        String(command.params?.functionDeclaration).includes("this.sealCandidateWriterTargets")
+      ), false);
+      assert.deepEqual(await session.verifyCandidate(extraction.candidate), { status: "INVALID" });
+      await session.close();
+    });
+  }
+});
+
+test("a rejected browser seal revokes both candidate and one-use sealing authority", async () => {
+  const cdp = new FakeCdpSession();
+  const session = await readyFakeSession(cdp, (declaration) => {
+    if (declaration.includes("this.extract")) {
+      return byValue({ kind: "OK", candidateId: 29, report: MINIMAL_REPORT });
+    }
+    if (declaration.includes("this.sealCandidateWriterTargets")) return byValue("INVALID", "string");
+    return byValue("DISPOSED", "string");
+  });
+  const extraction = await session.extractApplicationForm();
+  const binding = {
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT" as const,
+    sourceOrdinal: { form: 0, section: 0, field: 0 },
+    choices: []
+  };
+
+  await assert.rejects(
+    extraction.sealWriterTargets([binding]),
+    sessionCode("PROTECTED_CANDIDATE_INVALID")
+  );
+  assert.deepEqual(await session.verifyCandidate(extraction.candidate), { status: "INVALID" });
+  await assert.rejects(
+    extraction.sealWriterTargets([binding]),
+    sessionCode("PROTECTED_CANDIDATE_INVALID")
+  );
+  assert.equal(cdp.commands.filter((command) =>
+    String(command.params?.functionDeclaration).includes("this.sealCandidateWriterTargets")
+  ).length, 1);
+  await session.close();
+});
+
+test("one candidate write dispatches only sealed semantic identity and one canonical proposal", async () => {
+  const cdp = new FakeCdpSession();
+  const session = await readyFakeSession(cdp, (declaration) => {
+    if (declaration.includes("this.extract")) {
+      return byValue({ kind: "OK", candidateId: 31, report: MINIMAL_REPORT });
+    }
+    if (declaration.includes("this.sealCandidateWriterTargets")) return byValue("SEALED", "string");
+    if (declaration.includes("this.writeCandidateField")) return byValue({ status: "FILLED" });
+    return byValue("DISPOSED", "string");
+  });
+  const extraction = await session.extractApplicationForm();
+  const binding = {
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT" as const,
+    sourceOrdinal: { form: 0, section: 0, field: 0 },
+    choices: []
+  };
+  await extraction.sealWriterTargets([binding]);
+  const request = {
+    normalizedFieldKey: binding.normalizedFieldKey,
+    fieldFingerprint: binding.fieldFingerprint,
+    fieldType: binding.fieldType,
+    proposal: { kind: "SCALAR" as const, value: "Exact proposal" }
+  };
+
+  assert.deepEqual(await session.writeCandidateField(extraction.candidate, request), { status: "FILLED" });
+  const calls = cdp.commands.filter((command) =>
+    String(command.params?.functionDeclaration).includes("this.writeCandidateField")
+  );
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0]?.params?.arguments, [{ value: { candidateId: 31, request } }]);
+  const serialized = JSON.stringify(calls[0]?.params?.arguments);
+  for (const prohibited of ["sourceOrdinal", "selector", "xpath", "elementId", "currentValue"]) {
+    assert.equal(serialized.includes(prohibited), false);
+  }
+  await session.close();
+});
+
+test("malformed candidate write requests are rejected before browser dispatch with fixed errors", async (context) => {
+  const baseRequest = {
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT",
+    proposal: { kind: "SCALAR", value: "valid" }
+  };
+  const cases: ReadonlyArray<readonly [string, unknown]> = [
+    ["extra request key", { ...baseRequest, selector: "#SECRET-SELECTOR" }],
+    ["malformed field key", { ...baseRequest, normalizedFieldKey: "bad" }],
+    ["malformed fingerprint", { ...baseRequest, fieldFingerprint: "bad" }],
+    ["blank scalar", { ...baseRequest, proposal: { kind: "SCALAR", value: "   " } }],
+    ["malformed Unicode", { ...baseRequest, proposal: { kind: "SCALAR", value: "\ud800" } }],
+    ["oversized scalar", { ...baseRequest, proposal: { kind: "SCALAR", value: "x".repeat(2_049) } }],
+    ["unsupported family", { ...baseRequest, fieldType: "NUMBER" }],
+    ["wrong proposal kind", { ...baseRequest, proposal: { kind: "OPTIONS", optionKeys: ["3".repeat(64)] } }],
+    ["zero select choices", { ...baseRequest, fieldType: "SELECT_ONE", proposal: { kind: "OPTIONS", optionKeys: [] } }],
+    ["multiple select choices", {
+      ...baseRequest,
+      fieldType: "SELECT_ONE",
+      proposal: { kind: "OPTIONS", optionKeys: ["3".repeat(64), "4".repeat(64)] }
+    }]
+  ];
+
+  for (const [name, request] of cases) {
+    await context.test(name, async () => {
+      const cdp = new FakeCdpSession();
+      const session = await readyFakeSession(cdp, (declaration) => {
+        if (declaration.includes("this.extract")) {
+          return byValue({ kind: "OK", candidateId: 37, report: MINIMAL_REPORT });
+        }
+        if (declaration.includes("this.sealCandidateWriterTargets")) return byValue("SEALED", "string");
+        return byValue("DISPOSED", "string");
+      });
+      const extraction = await session.extractApplicationForm();
+      await extraction.sealWriterTargets([{
+        normalizedFieldKey: "1".repeat(64),
+        fieldFingerprint: "2".repeat(64),
+        fieldType: "TEXT",
+        sourceOrdinal: { form: 0, section: 0, field: 0 },
+        choices: []
+      }]);
+      await assert.rejects(
+        session.writeCandidateField(extraction.candidate, request as never),
+        (error: unknown) => {
+          assert.equal(sessionCode("PROTECTED_SESSION_INVALID_RESPONSE")(error), true);
+          assert.equal((error as Error).message.includes("SECRET-SELECTOR"), false);
+          return true;
+        }
+      );
+      assert.equal(cdp.commands.some((command) =>
+        String(command.params?.functionDeclaration).includes("this.writeCandidateField")
+      ), false);
+      await session.close();
+    });
+  }
+});
+
+test("an uncertain candidate write transport is attempted once, revokes authority, and is never retried", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const cdp = new FakeCdpSession();
+  const writeReply = deferred<unknown>();
+  const session = await readyFakeSession(cdp, (declaration) => {
+    if (declaration.includes("this.extract")) {
+      return byValue({ kind: "OK", candidateId: 41, report: MINIMAL_REPORT });
+    }
+    if (declaration.includes("this.sealCandidateWriterTargets")) return byValue("SEALED", "string");
+    if (declaration.includes("this.writeCandidateField")) return writeReply.promise;
+    return byValue("DISPOSED", "string");
+  });
+  t.after(() => {
+    writeReply.resolve(byValue({ status: "FILLED" }));
+    return session.close();
+  });
+  const extraction = await session.extractApplicationForm();
+  await extraction.sealWriterTargets([{
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT",
+    sourceOrdinal: { form: 0, section: 0, field: 0 },
+    choices: []
+  }]);
+  const pending = observed(session.writeCandidateField(extraction.candidate, {
+    normalizedFieldKey: "1".repeat(64),
+    fieldFingerprint: "2".repeat(64),
+    fieldType: "TEXT",
+    proposal: { kind: "SCALAR", value: "PRIVATE-PROPOSAL" }
+  }));
+  await flushHost();
+  assert.equal(cdp.commands.filter((command) =>
+    String(command.params?.functionDeclaration).includes("this.writeCandidateField")
+  ).length, 1);
+
+  await advanceHost(t, 5_000);
+
+  assert.equal(pending.status, "rejected");
+  assert.equal(sessionCode("PROTECTED_SESSION_STALE_RESPONSE")(pending.error), true);
+  assert.equal((pending.error as Error).message.includes("PRIVATE-PROPOSAL"), false);
+  assert.equal(cdp.commands.filter((command) =>
+    String(command.params?.functionDeclaration).includes("this.writeCandidateField")
+  ).length, 1);
+  await assert.rejects(session.snapshot(), sessionCode("PROTECTED_SESSION_NOT_READY"));
 });
 
 function deferred<T>() {

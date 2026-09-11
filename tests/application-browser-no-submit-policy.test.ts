@@ -36,14 +36,16 @@ const BASELINE_MISMATCH_MESSAGE =
  * included in that reviewed change. Manual editing is intentional friction.
  */
 const SEALED_SOURCE_SHA256: Readonly<Record<ProtectedSourcePath, string>> = {
-  [SESSION_PATH]: "723fd0c48d18b46fb4b97fe14b4e46dceccc2cb0b665ef739a1e31dd036ccc39",
-  [WORLD_PATH]: "c0134dc427848335d7df7e8689bc95bf8d2b74e834e504001e751f10b86997e3"
+  [SESSION_PATH]: "7a700c97bf940796167396c96f1626143e25381dac83e84c33f1652676c76ea7",
+  [WORLD_PATH]: "a84acce8abc338002c4fc0bcf7b21fe7d026ff84ccfb3ecd6a155f1b051c8d0d"
 };
 
 const EXPECTED_CAPABILITY_METHODS = [
   "handshake",
   "extract",
+  "sealCandidateWriterTargets",
   "verifyCandidate",
+  "writeCandidateField",
   "disposeCandidate",
   "snapshot",
   "waitForChange",
@@ -54,6 +56,7 @@ const EXPECTED_PROTECTED_SESSION_METHODS = [
   "waitUntilReady",
   "extractApplicationForm",
   "verifyCandidate",
+  "writeCandidateField",
   "snapshot",
   "waitForChange",
   "subscribe",
@@ -61,8 +64,10 @@ const EXPECTED_PROTECTED_SESSION_METHODS = [
 ] as const;
 
 /*
- * The protected inspection contract exports semantic labels, constraints, and
- * option labels, never live/default control contents or selection/file state.
+ * The protected V2 contract exports semantic labels, constraints, and option
+ * labels, never live/default control contents or selection/file state. The
+ * atomic writer may read current value/selection only through its exact sealed
+ * native-accessor paths; direct control member reads remain prohibited.
  * Contenteditable and role-based applicant text must pass through the world's
  * node-by-node applicant-content filter, so unfiltered bulk text getters are
  * also forbidden. This is a deliberately syntactic, protected-world-only rule;
@@ -356,7 +361,7 @@ function assertExactCapabilityMethods(methods: readonly string[]): void {
   assert.deepEqual(
     [...methods],
     [...EXPECTED_CAPABILITY_METHODS],
-    "Protected browser capability methods must match the exact reviewed read-only allowlist."
+    "Protected browser capability methods must match the exact reviewed V2 allowlist."
   );
 }
 
@@ -413,6 +418,32 @@ function protectedWorldApplicantReadViolations(sourceText: string): string[] {
     if (ts.isElementAccessExpression(node)) return staticName(node.argumentExpression);
     return null;
   };
+  const isInsideAtomicWriter = (node: ts.Node): boolean => {
+    for (let current: ts.Node | undefined = node; current; current = current.parent) {
+      if (ts.isMethodDeclaration(current)) {
+        return staticName(current.name) === "writeCandidateField";
+      }
+    }
+    return false;
+  };
+  const isApprovedProposalValueRead = (node: ts.Expression): boolean => {
+    if (!ts.isPropertyAccessExpression(node) || node.name.text !== "value" || !isInsideAtomicWriter(node)) {
+      return false;
+    }
+    let proposal: ts.Expression = node.expression;
+    while (
+      ts.isAsExpression(proposal) ||
+      ts.isTypeAssertionExpression(proposal) ||
+      ts.isParenthesizedExpression(proposal) ||
+      ts.isNonNullExpression(proposal)
+    ) {
+      proposal = proposal.expression;
+    }
+    return ts.isPropertyAccessExpression(proposal) &&
+      proposal.name.text === "proposal" &&
+      ts.isIdentifier(proposal.expression) &&
+      proposal.expression.text === "request";
+  };
   const addViolation = (node: ts.Node, detail: string): void => {
     const location = source.getLineAndCharacterOfPosition(node.getStart(source));
     violations.add(`${WORLD_PATH}:${location.line + 1}:${location.character + 1}: ${detail}`);
@@ -421,7 +452,7 @@ function protectedWorldApplicantReadViolations(sourceText: string): string[] {
   const visit = (node: ts.Node): void => {
     if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
       const member = memberName(node);
-      if (member && prohibitedMembers.has(member)) {
+      if (member && prohibitedMembers.has(member) && !isApprovedProposalValueRead(node)) {
         addViolation(node, `prohibited applicant-current member read ${member}`);
       }
     } else if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
@@ -463,6 +494,190 @@ function protectedWorldApplicantReadViolations(sourceText: string): string[] {
     ts.forEachChild(node, visit);
   };
   visit(source);
+  return [...violations].sort();
+}
+
+const WRITER_ONLY_CURRENT_INTRINSICS = [
+  "nativeInputValueGet",
+  "nativeInputValueSet",
+  "nativeInputReadOnlyGet",
+  "nativeInputDisabledGet",
+  "nativeInputTypeGet",
+  "nativeTextAreaValueGet",
+  "nativeTextAreaValueSet",
+  "nativeTextAreaReadOnlyGet",
+  "nativeTextAreaDisabledGet",
+  "nativeSelectMultipleGet",
+  "nativeSelectDisabledGet",
+  "nativeOptionSelectedGet",
+  "nativeOptionSelectedSet",
+  "nativeOptionValueGet",
+  "nativeOptionDisabledGet",
+  "nativeMatches"
+] as const;
+
+function protectedWorldAtomicWriterViolations(sourceText: string): string[] {
+  const source = ts.createSourceFile(
+    WORLD_PATH,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS
+  );
+  const violations = new Set<string>();
+  const writers: ts.MethodDeclaration[] = [];
+  const writerOnlyIntrinsics = new Set<string>(WRITER_ONLY_CURRENT_INTRINSICS);
+  const prohibitedCalls = new Set([
+    "assign", "back", "blur", "check", "click", "dispatchEvent", "evaluate",
+    "fill", "focus", "forward", "getElementById", "getElementsByClassName",
+    "getElementsByName", "getElementsByTagName", "getRootNode", "go", "hover",
+    "matches", "navigate", "open", "press", "querySelector", "querySelectorAll",
+    "reload", "replace", "requestSubmit", "selectOption", "setInputFiles",
+    "submit", "tap", "then", "catch", "closest", "dblclick", "finally",
+    "type", "uncheck"
+  ]);
+  const prohibitedIdentifiers = new Set([
+    "BroadcastChannel", "CustomEvent", "Event", "EventSource", "Function",
+    "InputEvent", "KeyboardEvent", "MouseEvent", "PointerEvent", "Promise",
+    "SharedWorker", "TouchEvent", "Worker", "XMLHttpRequest", "WebSocket",
+    "eval", "fetch", "queueMicrotask", "requestAnimationFrame",
+    "requestIdleCallback", "sendBeacon", "setImmediate", "setInterval", "setTimeout"
+  ]);
+  const staticName = (node: ts.Node | undefined): string | null => {
+    if (!node) return null;
+    if (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) return node.text;
+    if (ts.isComputedPropertyName(node)) return staticName(node.expression);
+    return null;
+  };
+  const enclosingWriter = (node: ts.Node): ts.MethodDeclaration | null => {
+    for (let current: ts.Node | undefined = node; current; current = current.parent) {
+      if (ts.isMethodDeclaration(current) && staticName(current.name) === "writeCandidateField") {
+        return current;
+      }
+    }
+    return null;
+  };
+  const memberName = (node: ts.Expression): string | null => {
+    if (ts.isPropertyAccessExpression(node)) return node.name.text;
+    if (ts.isElementAccessExpression(node)) return staticName(node.argumentExpression);
+    return ts.isIdentifier(node) ? node.text : null;
+  };
+  const addViolation = (node: ts.Node, detail: string): void => {
+    const location = source.getLineAndCharacterOfPosition(node.getStart(source));
+    violations.add(`${WORLD_PATH}:${location.line + 1}:${location.character + 1}: ${detail}`);
+  };
+
+  const visit = (node: ts.Node): void => {
+    if (ts.isMethodDeclaration(node) && staticName(node.name) === "writeCandidateField") {
+      writers.push(node);
+      if (node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)) {
+        addViolation(node, "atomic writer must be synchronous");
+      }
+    }
+    const writer = enclosingWriter(node);
+    if (writer) {
+      if (
+        ts.isFunctionLike(node) &&
+        ts.canHaveModifiers(node) &&
+        ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ) {
+        addViolation(node, "atomic writer may not contain an async function");
+      }
+      if (
+        (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isMethodDeclaration(node)) &&
+        node.asteriskToken
+      ) {
+        addViolation(node, "atomic writer may not contain a generator");
+      }
+      if (ts.isAwaitExpression(node) || ts.isYieldExpression(node)) {
+        addViolation(node, "atomic writer may not await or yield");
+      }
+      if (
+        (ts.isNewExpression(node) || ts.isCallExpression(node)) &&
+        ts.isIdentifier(node.expression) &&
+        (node.expression.text === "Promise" || prohibitedIdentifiers.has(node.expression.text))
+      ) {
+        addViolation(node, `atomic writer prohibited call ${node.expression.text}`);
+      }
+      if (ts.isCallExpression(node)) {
+        const called = memberName(node.expression);
+        if (called && prohibitedCalls.has(called)) {
+          addViolation(node, `atomic writer prohibited method ${called}`);
+        }
+        if (
+          ts.isPropertyAccessExpression(node.expression) &&
+          ts.isIdentifier(node.expression.expression) &&
+          node.expression.expression.text === "Promise"
+        ) {
+          addViolation(node, "atomic writer prohibited call Promise");
+        }
+      }
+      if (ts.isIdentifier(node) && prohibitedIdentifiers.has(node.text)) {
+        addViolation(node, `atomic writer prohibited authority ${node.text}`);
+      }
+    }
+    if (ts.isIdentifier(node) && writerOnlyIntrinsics.has(node.text)) {
+      const isDeclaration = ts.isVariableDeclaration(node.parent) && node.parent.name === node;
+      const isAvailabilityCheck = ts.isTypeOfExpression(node.parent);
+      if (!isDeclaration && !isAvailabilityCheck && !writer) {
+        addViolation(node, `writer current-state intrinsic escaped atomic writer: ${node.text}`);
+      }
+      if (writer && !(
+        ts.isCallExpression(node.parent) &&
+        node.parent.arguments[0] === node &&
+        ts.isIdentifier(node.parent.expression) &&
+        node.parent.expression.text === "nativeApply"
+      )) {
+        addViolation(node, `writer current-state intrinsic has non-nativeApply use: ${node.text}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+
+  if (writers.length !== 1) {
+    violations.add(`${WORLD_PATH}: expected exactly one atomic writeCandidateField method`);
+  } else {
+    const writer = writers[0];
+    const setterCounts = new Map<string, number>([
+      ["nativeInputValueSet", 0],
+      ["nativeTextAreaValueSet", 0],
+      ["nativeOptionSelectedSet", 0]
+    ]);
+    let dispatchCount = 0;
+    const eventTypes: string[] = [];
+    const count = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "nativeApply" &&
+        ts.isIdentifier(node.arguments[0])
+      ) {
+        const name = node.arguments[0].text;
+        if (setterCounts.has(name)) setterCounts.set(name, (setterCounts.get(name) ?? 0) + 1);
+        if (name === "nativeDispatchEvent") dispatchCount += 1;
+      }
+      if (
+        ts.isNewExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "NativeEvent"
+      ) {
+        const eventType = node.arguments?.[0];
+        eventTypes.push(eventType && ts.isStringLiteralLike(eventType) ? eventType.text : "<dynamic>");
+      }
+      ts.forEachChild(node, count);
+    };
+    count(writer);
+    for (const [name, countValue] of setterCounts) {
+      if (countValue !== 1) violations.add(`${WORLD_PATH}: atomic writer must contain exactly one ${name} call site`);
+    }
+    if (dispatchCount !== 3) {
+      violations.add(`${WORLD_PATH}: atomic writer must contain exactly three bounded event dispatch call sites`);
+    }
+    if (JSON.stringify(eventTypes) !== JSON.stringify(["input", "input", "change"])) {
+      violations.add(`${WORLD_PATH}: atomic writer event constructors must remain [input,input,change]`);
+    }
+  }
   return [...violations].sort();
 }
 
@@ -566,11 +781,11 @@ test("the exact current protected production sources match their sealed baseline
   }
 });
 
-test("the protected isolated world contains no prohibited applicant-current read", async () => {
+test("the protected isolated world confines applicant-current reads to the atomic writer", async () => {
   assert.deepEqual(
     protectedWorldApplicantReadViolations(await readFile(repositoryPath(WORLD_PATH), "utf8")),
     [],
-    "Protected inspection must not read current/default control state or unfiltered applicant text."
+    "Protected inspection must not read current/default control state outside the reviewed writer-local native-accessor paths."
   );
 });
 
@@ -608,27 +823,115 @@ test("representative protected applicant-current reads are rejected", () => {
       `missing alternate-syntax applicant-current violation for ${member}`
     );
   }
+
+  const writerDirectRead = protectedWorldApplicantReadViolations(`
+    class SyntheticCapability {
+      writeCandidateField(control: HTMLInputElement) {
+        void control.value;
+      }
+    }
+  `);
+  assert.ok(
+    writerDirectRead.some((violation) => violation.includes("member read value")),
+    "the writer may not bypass its reviewed native-accessor path"
+  );
 });
 
-test("protected semantic and filtered text reads remain permitted", () => {
+test("protected semantic, filtered text, and proposal payload reads remain permitted", () => {
   assert.deepEqual(protectedWorldApplicantReadViolations(`
-    function syntheticProtectedInspection(
-      input: HTMLInputElement,
-      option: HTMLOptionElement,
-      node: Node,
-      element: HTMLElement
-    ) {
-      void input.type;
-      void input.required;
-      void input.getAttribute("autocomplete");
-      void option.getAttribute("label");
-      void node.nodeValue;
-      void element.isContentEditable;
+    class SyntheticCapability {
+      writeCandidateField(request: { proposal: { value: string } }) {
+        void (request.proposal as Readonly<{ value: string }>).value;
+      }
+      inspect(
+        input: HTMLInputElement,
+        option: HTMLOptionElement,
+        node: Node,
+        element: HTMLElement
+      ) {
+        void input.type;
+        void input.required;
+        void input.getAttribute("autocomplete");
+        void option.getAttribute("label");
+        void node.nodeValue;
+        void element.isContentEditable;
+      }
     }
   `), []);
 });
 
-test("the protected capability bootstrap exposes exactly the reviewed read-only methods", () => {
+test("the protected world preserves the exact synchronous atomic-writer shape", async () => {
+  assert.deepEqual(
+    protectedWorldAtomicWriterViolations(await readFile(repositoryPath(WORLD_PATH), "utf8")),
+    [],
+    "The protected writer must remain synchronous, selector-free, one-mutation, and bounded to its exact native event paths."
+  );
+});
+
+test("representative asynchronous and generic browser writer authority is rejected", () => {
+  const violations = protectedWorldAtomicWriterViolations(`
+    class SyntheticCapability {
+      async writeCandidateField(control: HTMLElement, form: HTMLFormElement) {
+        await Promise.resolve();
+        setTimeout(() => undefined, 0);
+        void fetch("/");
+        document.querySelector("input");
+        document.getElementById("target");
+        control.click();
+        control.focus();
+        control.dispatchEvent(new MouseEvent("click"));
+        form.submit();
+      }
+    }
+  `);
+
+  for (const expected of [
+    "must be synchronous",
+    "may not await",
+    "prohibited call Promise",
+    "prohibited call setTimeout",
+    "prohibited call fetch",
+    "prohibited method querySelector",
+    "prohibited method getElementById",
+    "prohibited method click",
+    "prohibited method focus",
+    "prohibited method dispatchEvent",
+    "prohibited authority MouseEvent",
+    "prohibited method submit"
+  ]) {
+    assert.ok(
+      violations.some((violation) => violation.includes(expected)),
+      `missing synthetic atomic-writer violation: ${expected}`
+    );
+  }
+});
+
+test("writer current-state intrinsics cannot escape or bypass nativeApply", () => {
+  const violations = protectedWorldAtomicWriterViolations(`
+    const nativeInputValueGet = () => "";
+    const nativeInputValueSet = () => undefined;
+    const nativeTextAreaValueGet = () => "";
+    const nativeTextAreaValueSet = () => undefined;
+    const nativeOptionSelectedGet = () => false;
+    const nativeOptionSelectedSet = () => undefined;
+    const nativeOptionValueGet = () => "";
+    function leak() { void nativeInputValueGet; }
+    class SyntheticCapability {
+      writeCandidateField() { void nativeOptionValueGet; }
+    }
+  `);
+
+  assert.ok(
+    violations.some((violation) => violation.includes("escaped atomic writer: nativeInputValueGet")),
+    "current-state getters must not escape the atomic writer"
+  );
+  assert.ok(
+    violations.some((violation) => violation.includes("non-nativeApply use: nativeOptionValueGet")),
+    "current-state access inside the writer must use nativeApply"
+  );
+});
+
+test("the protected capability bootstrap exposes exactly the reviewed V2 methods", () => {
   assertExactCapabilityMethods(PROTECTED_BROWSER_CAPABILITY_METHODS);
   assert.ok(
     protectedBrowserWorldBootstrapSource().includes(
@@ -641,16 +944,16 @@ test("the protected capability bootstrap exposes exactly the reviewed read-only 
 test("an extra protected capability method is rejected", () => {
   assert.throws(
     () => assertExactCapabilityMethods([...EXPECTED_CAPABILITY_METHODS, "submit"]),
-    /exact reviewed read-only allowlist/u
+    /exact reviewed V2 allowlist/u
   );
 });
 
-test("the protected session public API remains the exact reviewed read-only surface", async () => {
+test("the protected session public API remains the exact reviewed V2 surface", async () => {
   const methods = protectedSessionPublicMethods(await readFile(repositoryPath(SESSION_PATH), "utf8"));
   assert.deepEqual(
     methods,
     [...EXPECTED_PROTECTED_SESSION_METHODS],
-    "Protected session public methods must not add filling, writing, interaction, navigation, submission, upload, keyboard, or caller-supplied evaluation authority."
+    "Protected session public methods must match the exact bounded V2 surface and must not add generic interaction, navigation, submission, upload, keyboard, or caller-supplied evaluation authority."
   );
 });
 

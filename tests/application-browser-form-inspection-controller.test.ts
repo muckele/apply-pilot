@@ -100,6 +100,9 @@ function controlledExtraction(
         reference: fieldReference,
         choices: []
       }],
+      sealWriterTargets() {
+        return Promise.resolve();
+      },
       dispose() {
         disposal ??= Promise.resolve().then(() => {
           disposals += 1;

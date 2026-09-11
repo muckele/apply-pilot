@@ -9,7 +9,8 @@ import {
 import type {
   OpaqueExtractionCandidate,
   ProtectedApplicationFormExtraction,
-  ProtectedFieldSlot
+  ProtectedFieldSlot,
+  ProtectedWriterTargetBinding
 } from "@/lib/application-browser/protected-browser-session";
 import {
   applicationFormInspectionReportSchema,
@@ -82,6 +83,8 @@ type SyntheticExtraction = Readonly<{
   extraction: ProtectedApplicationFormExtraction;
   candidate: OpaqueExtractionCandidate;
   disposeCalls(): number;
+  sealCalls(): number;
+  sealedBindings(): readonly ProtectedWriterTargetBinding[] | null;
 }>;
 
 function syntheticExtraction(
@@ -90,6 +93,7 @@ function syntheticExtraction(
     transformReferences?: (references: ProtectedFieldSlot[]) => readonly ProtectedFieldSlot[];
     disposalError?: Error;
     synchronousDisposalError?: Error;
+    sealingError?: Error;
     referenceFactory?: () => object;
   }> = {}
 ): SyntheticExtraction {
@@ -114,10 +118,17 @@ function syntheticExtraction(
 
   const transformed = input.transformReferences?.(references) ?? references;
   let disposeCallCount = 0;
+  let sealCallCount = 0;
+  let sealedBindings: readonly ProtectedWriterTargetBinding[] | null = null;
   const extraction: ProtectedApplicationFormExtraction = {
     candidate,
     report,
     fields: transformed,
+    sealWriterTargets(bindings) {
+      sealCallCount += 1;
+      sealedBindings = bindings;
+      return input.sealingError ? Promise.reject(input.sealingError) : Promise.resolve();
+    },
     dispose() {
       disposeCallCount += 1;
       if (input.synchronousDisposalError) throw input.synchronousDisposalError;
@@ -127,7 +138,9 @@ function syntheticExtraction(
   return {
     extraction,
     candidate,
-    disposeCalls: () => disposeCallCount
+    disposeCalls: () => disposeCallCount,
+    sealCalls: () => sealCallCount,
+    sealedBindings: () => sealedBindings
   };
 }
 
@@ -219,11 +232,29 @@ test("correlates one protected report through candidate-level authority and owns
   assert.equal(result.requiredFieldCount, 1);
   assert.deepEqual(result.inspectionReport, report);
   assert.deepEqual(result.normalizedSnapshot, expected.snapshot);
+  assert.equal(synthetic.sealCalls(), 1);
+  const normalized = normalizedFields(expected.snapshot)[0];
+  assert.deepEqual(synthetic.sealedBindings(), [{
+    normalizedFieldKey: normalized.normalizedFieldKey,
+    fieldFingerprint: normalized.fieldFingerprint,
+    fieldType: "URL",
+    sourceOrdinal: { form: 0, section: 0, field: 0 },
+    choices: []
+  }]);
   assertNoOpaqueReferenceAuthority(result, synthetic.extraction.fields.map((slot) => slot.reference));
   assert.equal(synthetic.disposeCalls(), 0);
 
   await Promise.all([result.dispose(), result.dispose(), result.dispose()]);
   assert.equal(synthetic.disposeCalls(), 1);
+});
+
+test("a failed writer-target seal is sanitized and disposes transferred candidate ownership", async () => {
+  const synthetic = syntheticExtraction(singleSectionReport([rawField()]), {
+    sealingError: new Error("PRIVATE SELECTOR AND EMPLOYER VALUE")
+  });
+
+  await assertCorrelationInvalid(synthetic, ["PRIVATE SELECTOR", "EMPLOYER VALUE"]);
+  assert.equal(synthetic.sealCalls(), 1);
 });
 
 test("detaches candidate cleanup without later dereferencing the extraction slot container", async (context) => {
@@ -248,6 +279,7 @@ test("detaches candidate cleanup without later dereferencing the extraction slot
         candidate: synthetic.extraction.candidate,
         report: synthetic.extraction.report,
         fields: synthetic.extraction.fields,
+        sealWriterTargets: synthetic.extraction.sealWriterTargets,
         dispose: disposeOwnedCandidate
       };
       const suppliedReferences = extractionTarget.fields.flatMap((slot) => [

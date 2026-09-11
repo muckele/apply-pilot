@@ -9,18 +9,29 @@ import {
   MAX_SECTIONS_PER_FORM
 } from "@/lib/application-runs/form-inspection";
 
-export const PROTECTED_BROWSER_CAPABILITY_PROPERTY = "__applyPilotProtectedBrowserCapabilityV1";
+export const PROTECTED_BROWSER_CAPABILITY_PROPERTY = "__applyPilotProtectedBrowserCapabilityV2";
 
 export const PROTECTED_BROWSER_OPERATION_WORK_LIMIT = 131_072;
 
 export const PROTECTED_BROWSER_CAPABILITY_METHODS = [
   "handshake",
   "extract",
+  "sealCandidateWriterTargets",
   "verifyCandidate",
+  "writeCandidateField",
   "disposeCandidate",
   "snapshot",
   "waitForChange",
   "dispose"
+] as const;
+
+export const PROTECTED_WRITABLE_FIELD_TYPES = [
+  "TEXT",
+  "EMAIL",
+  "TEL",
+  "URL",
+  "TEXTAREA",
+  "SELECT_ONE"
 ] as const;
 
 const PROTECTED_WORLD_LIMITS = {
@@ -32,6 +43,7 @@ const PROTECTED_WORLD_LIMITS = {
   maxChoicesTotal: MAX_CHOICES_TOTAL,
   text: FORM_INSPECTION_TEXT_LIMITS,
   autocomplete: APPLICATION_FORM_AUTOCOMPLETE_VALUES,
+  writableFieldTypes: PROTECTED_WRITABLE_FIELD_TYPES,
   operationWorkLimit: PROTECTED_BROWSER_OPERATION_WORK_LIMIT
 } as const;
 
@@ -49,10 +61,16 @@ function installProtectedBrowserWorld(input: Readonly<{
     const NativeNode = Node;
     const NativeShadowRoot = ShadowRoot;
     const NativeMutationObserver = MutationObserver;
+    const NativeHTMLInputElement = HTMLInputElement;
+    const NativeHTMLTextAreaElement = HTMLTextAreaElement;
+    const NativeHTMLSelectElement = HTMLSelectElement;
+    const NativeHTMLOptionElement = HTMLOptionElement;
+    const NativeEvent = Event;
     const nativeApply = Reflect.apply;
     const nativeCreate = Object.create;
     const nativeDefineProperty = Object.defineProperty;
     const nativeFreeze = Object.freeze;
+    const nativeGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
     const nativeKeys = Object.keys;
     const nativeStringify = JSON.stringify;
     const nativeObserve = NativeMutationObserver.prototype.observe;
@@ -60,7 +78,80 @@ function installProtectedBrowserWorld(input: Readonly<{
     const nativeDisconnect = NativeMutationObserver.prototype.disconnect;
     const nativeAddEventListener = EventTarget.prototype.addEventListener;
     const nativeRemoveEventListener = EventTarget.prototype.removeEventListener;
+    const nativeDispatchEvent = EventTarget.prototype.dispatchEvent;
+    const nativeMatches = Element.prototype.matches;
+    const inputValueDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLInputElement.prototype, "value");
+    const inputReadOnlyDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLInputElement.prototype, "readOnly");
+    const inputDisabledDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLInputElement.prototype, "disabled");
+    const inputTypeDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLInputElement.prototype, "type");
+    const textAreaValueDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLTextAreaElement.prototype, "value");
+    const textAreaReadOnlyDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLTextAreaElement.prototype, "readOnly");
+    const textAreaDisabledDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLTextAreaElement.prototype, "disabled");
+    const selectMultipleDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLSelectElement.prototype, "multiple");
+    const selectDisabledDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLSelectElement.prototype, "disabled");
+    const optionSelectedDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLOptionElement.prototype, "selected");
+    const optionValueDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLOptionElement.prototype, "value");
+    const optionDisabledDescriptor = nativeGetOwnPropertyDescriptor(NativeHTMLOptionElement.prototype, "disabled");
+    if (
+      typeof inputValueDescriptor?.get !== "function" ||
+      typeof inputValueDescriptor.set !== "function" ||
+      typeof inputReadOnlyDescriptor?.get !== "function" ||
+      typeof inputDisabledDescriptor?.get !== "function" ||
+      typeof inputTypeDescriptor?.get !== "function" ||
+      typeof textAreaValueDescriptor?.get !== "function" ||
+      typeof textAreaValueDescriptor.set !== "function" ||
+      typeof textAreaReadOnlyDescriptor?.get !== "function" ||
+      typeof textAreaDisabledDescriptor?.get !== "function" ||
+      typeof selectMultipleDescriptor?.get !== "function" ||
+      typeof selectDisabledDescriptor?.get !== "function" ||
+      typeof optionSelectedDescriptor?.get !== "function" ||
+      typeof optionSelectedDescriptor.set !== "function" ||
+      typeof optionValueDescriptor?.get !== "function" ||
+      typeof optionDisabledDescriptor?.get !== "function" ||
+      typeof nativeDispatchEvent !== "function" ||
+      typeof nativeMatches !== "function"
+    ) throw new NativeError("required protected writer intrinsics are unavailable");
+    const nativeInputValueGet = inputValueDescriptor.get;
+    const nativeInputValueSet = inputValueDescriptor.set;
+    const nativeInputReadOnlyGet = inputReadOnlyDescriptor.get;
+    const nativeInputDisabledGet = inputDisabledDescriptor.get;
+    const nativeInputTypeGet = inputTypeDescriptor.get;
+    const nativeTextAreaValueGet = textAreaValueDescriptor.get;
+    const nativeTextAreaValueSet = textAreaValueDescriptor.set;
+    const nativeTextAreaReadOnlyGet = textAreaReadOnlyDescriptor.get;
+    const nativeTextAreaDisabledGet = textAreaDisabledDescriptor.get;
+    const nativeSelectMultipleGet = selectMultipleDescriptor.get;
+    const nativeSelectDisabledGet = selectDisabledDescriptor.get;
+    const nativeOptionSelectedGet = optionSelectedDescriptor.get;
+    const nativeOptionSelectedSet = optionSelectedDescriptor.set;
+    const nativeOptionValueGet = optionValueDescriptor.get;
+    const nativeOptionDisabledGet = optionDisabledDescriptor.get;
     const limits = input.limits;
+    type ProtectedWriterFieldType = (typeof limits.writableFieldTypes)[number];
+    const classifyNativeWriterFieldType = [(
+      control: Element,
+      inputType: string | null,
+      selectMultiple: boolean | null
+    ): ProtectedWriterFieldType | null => {
+      if (control instanceof NativeHTMLInputElement) {
+        switch (inputType?.toLowerCase()) {
+          case "text":
+          case "search":
+            return "TEXT";
+          case "email":
+            return "EMAIL";
+          case "tel":
+            return "TEL";
+          case "url":
+            return "URL";
+          default:
+            return null;
+        }
+      }
+      if (control instanceof NativeHTMLTextAreaElement) return "TEXTAREA";
+      if (control instanceof NativeHTMLSelectElement && selectMultiple === false) return "SELECT_ONE";
+      return null;
+    }][0];
     // One document plus the existing form/field/choice capacity: 1,205 total
     // roots. This shared retention budget does not add shadow control support.
     const maxObservationRoots = 1 + limits.maxForms + limits.maxFieldsTotal + limits.maxChoicesTotal;
@@ -722,6 +813,9 @@ function installProtectedBrowserWorld(input: Readonly<{
           fail("EMPLOYER_AUTH_REQUIRED_UNSUPPORTED");
         }
         const kind = element instanceof HTMLInputElement ? inputKind(element) : "";
+        // Human-Submit MVP: an initially effectively disabled text/select
+        // control remains outside the candidate. Radio/checkbox members stay
+        // only so their grouped inspection semantics remain truthful.
         const canContribute = !isEffectivelyDisabled(element) || kind === "radio" || kind === "checkbox";
         if (element.form === null) {
           if (canContribute) fail("FORM_STRUCTURE_UNSUPPORTED");
@@ -1002,6 +1096,7 @@ function installProtectedBrowserWorld(input: Readonly<{
           const section = nearestSection(source, form);
 
           if (source instanceof HTMLSelectElement) {
+            const writerFieldType = classifyNativeWriterFieldType(source, null, source.multiple);
             const rawChoices: RawChoice[] = [];
             const choiceElements: Element[] = [];
             let invalidChoice = false;
@@ -1031,7 +1126,7 @@ function installProtectedBrowserWorld(input: Readonly<{
                 field: {
                   question,
                   helpText,
-                  fieldType: source.hasAttribute("multiple") ? "SELECT_MANY" : "SELECT_ONE",
+                  fieldType: writerFieldType ?? "SELECT_MANY",
                   unsupportedReason: null,
                   required,
                   autocomplete,
@@ -1047,11 +1142,13 @@ function installProtectedBrowserWorld(input: Readonly<{
           }
 
           if (source instanceof HTMLTextAreaElement) {
+            const writerFieldType = classifyNativeWriterFieldType(source, null, null);
+            if (writerFieldType !== "TEXTAREA") return fail("FORM_INSPECTION_INVALID");
             const lengths = lengthConstraints(source);
-            const field = lengths ? {
+            const field: RawField = lengths ? {
               question,
               helpText,
-              fieldType: "TEXTAREA",
+              fieldType: writerFieldType,
               unsupportedReason: null,
               required,
               autocomplete,
@@ -1063,13 +1160,13 @@ function installProtectedBrowserWorld(input: Readonly<{
           }
 
           const kind = inputKind(source);
-          if (["text", "search", "email", "tel", "url"].includes(kind)) {
+          const writerFieldType = classifyNativeWriterFieldType(source, kind, null);
+          if (writerFieldType !== null) {
             const lengths = lengthConstraints(source);
-            const mapped = kind === "search" ? "TEXT" : kind.toUpperCase();
-            const field = lengths ? {
+            const field: RawField = lengths ? {
               question,
               helpText,
-              fieldType: mapped,
+              fieldType: writerFieldType,
               unsupportedReason: null,
               required,
               autocomplete,
@@ -1210,9 +1307,26 @@ function installProtectedBrowserWorld(input: Readonly<{
 
     type ExtractedGraph = ReturnType<typeof extractGraph>;
     type FlatField = Readonly<{
+      sourceOrdinal: Readonly<{ form: number; section: number; field: number }>;
+      fieldType: string;
       ownerForm: HTMLFormElement;
       control: Element;
       choices: readonly Element[];
+    }>;
+    type SealedWriterChoice = Readonly<{
+      choiceKey: string;
+      sourceOrdinal: Readonly<{ form: number; section: number; field: number; choice: number }>;
+      option: HTMLOptionElement;
+    }>;
+    type SealedWriterTarget = Readonly<{
+      normalizedFieldKey: string;
+      fieldFingerprint: string;
+      fieldType: string;
+      sourceOrdinal: Readonly<{ form: number; section: number; field: number }>;
+      fieldIndex: number;
+      control: Element;
+      choices: readonly SealedWriterChoice[];
+      choicesByKey: ReadonlyMap<string, SealedWriterChoice>;
     }>;
     type Candidate = Readonly<{
       id: number;
@@ -1225,12 +1339,21 @@ function installProtectedBrowserWorld(input: Readonly<{
       nativeLabelControls: readonly Element[];
       nativeLabels: readonly HTMLLabelElement[];
       stickyDetached: boolean;
+      writerTargets: ReadonlyMap<string, SealedWriterTarget> | null;
+      writerEpoch: number | null;
+    };
+    type OwnedWriterEventWindow = {
+      readonly target: EventTarget;
+      readonly expected: readonly string[];
+      index: number;
+      unexpected: boolean;
     };
 
     let semanticRevision = 0;
     let applicantStateEpoch = 0;
     let disposed = false;
     let nextCandidateId = 1;
+    let ownedWriterEventWindow: OwnedWriterEventWindow | null = null;
     const candidates = new Map<number, Candidate>();
     const waiters = new Set<{
       resolve(value: Readonly<{ semanticRevision: number; applicantStateEpoch: number }>): void;
@@ -1302,6 +1425,8 @@ function installProtectedBrowserWorld(input: Readonly<{
               choices.push(choice);
             }
             fields.push({
+              sourceOrdinal: { form: formIndex, section: sectionIndex, field: fieldIndex },
+              fieldType: reportField.fieldType,
               ownerForm: referenceForm.form,
               control: referenceField.control,
               choices
@@ -1848,7 +1973,21 @@ function installProtectedBrowserWorld(input: Readonly<{
       }
     }][0];
     observeRoot(operationContext(), document);
-    const onApplicantState = [() => bumpApplicant()][0];
+    const onApplicantState = [(event: Event) => {
+      const owned = ownedWriterEventWindow;
+      if (owned) {
+        if (
+          event.target !== owned.target ||
+          owned.index >= owned.expected.length ||
+          event.type !== owned.expected[owned.index]
+        ) {
+          owned.unexpected = true;
+        } else {
+          owned.index += 1;
+        }
+      }
+      bumpApplicant();
+    }][0];
     nativeApply(nativeAddEventListener, protectedWindow, ["input", onApplicantState, true]);
     nativeApply(nativeAddEventListener, protectedWindow, ["change", onApplicantState, true]);
 
@@ -1933,7 +2072,7 @@ function installProtectedBrowserWorld(input: Readonly<{
 
     const methods = {
       handshake() {
-        return plain([["version", 1], ["state", "READY"], ["methods", [...methodNames]]]);
+        return plain([["version", 2], ["state", "READY"], ["methods", [...methodNames]]]);
       },
       extract() {
         const context = operationContext();
@@ -1958,7 +2097,9 @@ function installProtectedBrowserWorld(input: Readonly<{
             semanticReferenceIds: graph.references.semanticReferenceIds,
             nativeLabelControls: graph.references.nativeLabelControls,
             nativeLabels: graph.references.nativeLabels,
-            stickyDetached: false
+            stickyDetached: false,
+            writerTargets: null,
+            writerEpoch: null
           };
           candidates.set(id, candidate);
           insertedCandidateId = id;
@@ -1968,6 +2109,175 @@ function installProtectedBrowserWorld(input: Readonly<{
           if (insertedCandidateId !== null) candidates.delete(insertedCandidateId);
           if (isWorkExhaustion(error)) failClosedWorkExhaustion();
           return plain([["kind", "ERROR"], ["code", codeFor(error)]]);
+        }
+      },
+      sealCandidateWriterTargets(value: unknown) {
+        const context = operationContext();
+        let candidate: Candidate | undefined;
+        const reject = [() => {
+          if (candidate) candidates.delete(candidate.id);
+          refreshAfterCandidateRemoval(context);
+          return "INVALID";
+        }][0];
+        try {
+          drainRecords(context);
+          if (
+            disposed ||
+            !exactInput(value, ["candidateId", "bindings"]) ||
+            !Number.isSafeInteger(value.candidateId) ||
+            (value.candidateId as number) <= 0 ||
+            !Array.isArray(value.bindings) ||
+            value.bindings.length > limits.maxFieldsTotal
+          ) return reject();
+          candidate = candidates.get(value.candidateId as number);
+          if (
+            !candidate ||
+            candidate.stickyDetached ||
+            candidate.writerTargets !== null ||
+            candidate.writerEpoch !== null
+          ) return reject();
+
+          const graph = extractGraph(context);
+          const currentFields = flattened(context, graph);
+          if (!currentFields || !sameGraph(context, candidate, graph, currentFields)) return reject();
+
+          const seenFieldKeys = new Set<string>();
+          const seenFingerprints = new Set<string>();
+          const seenFieldOrdinals = new Set<string>();
+          const targets = new Map<string, SealedWriterTarget>();
+          let choiceCount = 0;
+          for (const rawBinding of value.bindings) {
+            charge(context);
+            if (!exactInput(rawBinding, [
+              "normalizedFieldKey",
+              "fieldFingerprint",
+              "fieldType",
+              "sourceOrdinal",
+              "choices"
+            ])) return reject();
+            if (
+              typeof rawBinding.normalizedFieldKey !== "string" ||
+              !/^[a-f0-9]{64}$/u.test(rawBinding.normalizedFieldKey) ||
+              typeof rawBinding.fieldFingerprint !== "string" ||
+              !/^[a-f0-9]{64}$/u.test(rawBinding.fieldFingerprint) ||
+              typeof rawBinding.fieldType !== "string" ||
+              !(limits.writableFieldTypes as readonly string[]).includes(rawBinding.fieldType) ||
+              !exactInput(rawBinding.sourceOrdinal, ["form", "section", "field"]) ||
+              !Number.isSafeInteger(rawBinding.sourceOrdinal.form) ||
+              !Number.isSafeInteger(rawBinding.sourceOrdinal.section) ||
+              !Number.isSafeInteger(rawBinding.sourceOrdinal.field) ||
+              (rawBinding.sourceOrdinal.form as number) < 0 ||
+              (rawBinding.sourceOrdinal.section as number) < 0 ||
+              (rawBinding.sourceOrdinal.field as number) < 0 ||
+              !Array.isArray(rawBinding.choices) ||
+              rawBinding.choices.length > limits.maxChoicesPerField
+            ) return reject();
+            const fieldOrdinal = `${rawBinding.sourceOrdinal.form}/${rawBinding.sourceOrdinal.section}/${rawBinding.sourceOrdinal.field}`;
+            if (
+              seenFieldKeys.has(rawBinding.normalizedFieldKey) ||
+              seenFingerprints.has(rawBinding.fieldFingerprint) ||
+              seenFieldOrdinals.has(fieldOrdinal)
+            ) return reject();
+            seenFieldKeys.add(rawBinding.normalizedFieldKey);
+            seenFingerprints.add(rawBinding.fieldFingerprint);
+            seenFieldOrdinals.add(fieldOrdinal);
+
+            let fieldIndex = -1;
+            for (let index = 0; index < candidate.fields.length; index += 1) {
+              charge(context);
+              const source = candidate.fields[index].sourceOrdinal;
+              if (
+                source.form === rawBinding.sourceOrdinal.form &&
+                source.section === rawBinding.sourceOrdinal.section &&
+                source.field === rawBinding.sourceOrdinal.field
+              ) {
+                fieldIndex = index;
+                break;
+              }
+            }
+            if (fieldIndex < 0) return reject();
+            const field = candidate.fields[fieldIndex];
+            if (field.fieldType !== rawBinding.fieldType) return reject();
+            const liveFieldType = classifyNativeWriterFieldType(
+              field.control,
+              field.control instanceof NativeHTMLInputElement ? field.control.type : null,
+              field.control instanceof NativeHTMLSelectElement ? field.control.multiple : null
+            );
+            if (liveFieldType !== rawBinding.fieldType) return reject();
+
+            const sealedChoices: SealedWriterChoice[] = [];
+            const choicesByKey = new Map<string, SealedWriterChoice>();
+            if (rawBinding.fieldType === "SELECT_ONE") {
+              if (rawBinding.choices.length !== field.choices.length || rawBinding.choices.length === 0) {
+                return reject();
+              }
+              const choicesByIndex: Array<SealedWriterChoice | undefined> = new Array(field.choices.length);
+              for (const rawChoice of rawBinding.choices) {
+                charge(context);
+                if (
+                  !exactInput(rawChoice, ["choiceKey", "sourceOrdinal"]) ||
+                  typeof rawChoice.choiceKey !== "string" ||
+                  !/^[a-f0-9]{64}$/u.test(rawChoice.choiceKey) ||
+                  choicesByKey.has(rawChoice.choiceKey) ||
+                  !exactInput(rawChoice.sourceOrdinal, ["form", "section", "field", "choice"]) ||
+                  rawChoice.sourceOrdinal.form !== rawBinding.sourceOrdinal.form ||
+                  rawChoice.sourceOrdinal.section !== rawBinding.sourceOrdinal.section ||
+                  rawChoice.sourceOrdinal.field !== rawBinding.sourceOrdinal.field ||
+                  !Number.isSafeInteger(rawChoice.sourceOrdinal.choice) ||
+                  (rawChoice.sourceOrdinal.choice as number) < 0 ||
+                  (rawChoice.sourceOrdinal.choice as number) >= field.choices.length ||
+                  choicesByIndex[rawChoice.sourceOrdinal.choice as number] !== undefined
+                ) return reject();
+                const option = field.choices[rawChoice.sourceOrdinal.choice as number];
+                if (!(option instanceof HTMLOptionElement)) return reject();
+                const sealedChoice: SealedWriterChoice = {
+                  choiceKey: rawChoice.choiceKey,
+                  sourceOrdinal: {
+                    form: rawChoice.sourceOrdinal.form as number,
+                    section: rawChoice.sourceOrdinal.section as number,
+                    field: rawChoice.sourceOrdinal.field as number,
+                    choice: rawChoice.sourceOrdinal.choice as number
+                  },
+                  option
+                };
+                choicesByIndex[rawChoice.sourceOrdinal.choice as number] = sealedChoice;
+                choicesByKey.set(sealedChoice.choiceKey, sealedChoice);
+              }
+              if (choicesByIndex.some((choice) => choice === undefined)) return reject();
+              sealedChoices.push(...choicesByIndex as SealedWriterChoice[]);
+            } else if (rawBinding.choices.length !== 0 || field.choices.length !== 0) {
+              return reject();
+            }
+            choiceCount += sealedChoices.length;
+            if (choiceCount > limits.maxChoicesTotal) return reject();
+
+            const target: SealedWriterTarget = {
+              normalizedFieldKey: rawBinding.normalizedFieldKey,
+              fieldFingerprint: rawBinding.fieldFingerprint,
+              fieldType: rawBinding.fieldType,
+              sourceOrdinal: {
+                form: rawBinding.sourceOrdinal.form as number,
+                section: rawBinding.sourceOrdinal.section as number,
+                field: rawBinding.sourceOrdinal.field as number
+              },
+              fieldIndex,
+              control: field.control,
+              choices: sealedChoices,
+              choicesByKey
+            };
+            targets.set(target.normalizedFieldKey, target);
+          }
+
+          candidate.semanticReferenceIds = graph.references.semanticReferenceIds;
+          candidate.nativeLabelControls = graph.references.nativeLabelControls;
+          candidate.nativeLabels = graph.references.nativeLabels;
+          refreshObservation(context);
+          candidate.writerTargets = targets;
+          candidate.writerEpoch = applicantStateEpoch;
+          return "SEALED";
+        } catch (error) {
+          if (isWorkExhaustion(error)) failClosedWorkExhaustion();
+          return reject();
         }
       },
       verifyCandidate(value: unknown) {
@@ -2011,6 +2321,253 @@ function installProtectedBrowserWorld(input: Readonly<{
             refreshAfterCandidateRemoval(context);
           }
           return plain([["status", "INVALID"]]);
+        }
+      },
+      writeCandidateField(value: unknown) {
+        const context = operationContext();
+        let candidate: Candidate | undefined;
+        let mutationStarted = false;
+        const failed = [(reason: "CANDIDATE_INVALID" | "TARGET_INVALID" | "UNEXPECTED_ACTIVITY" | "WRITE_FAILED") => {
+          ownedWriterEventWindow = null;
+          if (candidate) candidates.delete(candidate.id);
+          refreshAfterCandidateRemoval(context);
+          return plain([["status", "FAILED"], ["reason", reason]]);
+        }][0];
+        try {
+          drainRecords(context);
+          if (
+            disposed ||
+            !exactInput(value, ["candidateId", "request"]) ||
+            !Number.isSafeInteger(value.candidateId) ||
+            (value.candidateId as number) <= 0 ||
+            !exactInput(value.request, ["normalizedFieldKey", "fieldFingerprint", "fieldType", "proposal"])
+          ) return failed("CANDIDATE_INVALID");
+          candidate = candidates.get(value.candidateId as number);
+          if (
+            !candidate ||
+            candidate.stickyDetached ||
+            candidate.writerTargets === null ||
+            candidate.writerEpoch === null ||
+            candidate.writerEpoch !== applicantStateEpoch
+          ) return failed("CANDIDATE_INVALID");
+
+          const request = value.request;
+          if (
+            typeof request.normalizedFieldKey !== "string" ||
+            !/^[a-f0-9]{64}$/u.test(request.normalizedFieldKey) ||
+            typeof request.fieldFingerprint !== "string" ||
+            !/^[a-f0-9]{64}$/u.test(request.fieldFingerprint) ||
+            typeof request.fieldType !== "string" ||
+            !(limits.writableFieldTypes as readonly string[]).includes(request.fieldType)
+          ) return failed("TARGET_INVALID");
+          const isSelect = request.fieldType === "SELECT_ONE";
+          if (
+            isSelect
+              ? !exactInput(request.proposal, ["kind", "optionKeys"]) ||
+                request.proposal.kind !== "OPTIONS" ||
+                !Array.isArray(request.proposal.optionKeys) ||
+                request.proposal.optionKeys.length !== 1 ||
+                typeof request.proposal.optionKeys[0] !== "string" ||
+                !/^[a-f0-9]{64}$/u.test(request.proposal.optionKeys[0])
+              : !exactInput(request.proposal, ["kind", "value"]) ||
+                request.proposal.kind !== "SCALAR" ||
+                typeof request.proposal.value !== "string" ||
+                request.proposal.value.length === 0 ||
+                request.proposal.value.length > 8_192
+          ) return failed("TARGET_INVALID");
+
+          const graph = extractGraph(context);
+          const currentFields = flattened(context, graph);
+          if (!currentFields || !sameGraph(context, candidate, graph, currentFields)) {
+            return failed("CANDIDATE_INVALID");
+          }
+          const target = candidate.writerTargets.get(request.normalizedFieldKey);
+          if (
+            !target ||
+            target.normalizedFieldKey !== request.normalizedFieldKey ||
+            target.fieldFingerprint !== request.fieldFingerprint ||
+            target.fieldType !== request.fieldType ||
+            currentFields[target.fieldIndex]?.control !== target.control
+          ) return failed("TARGET_INVALID");
+          const liveFieldType = classifyNativeWriterFieldType(
+            target.control,
+            target.control instanceof NativeHTMLInputElement
+              ? nativeApply(nativeInputTypeGet, target.control, []) as string
+              : null,
+            target.control instanceof NativeHTMLSelectElement
+              ? Boolean(nativeApply(nativeSelectMultipleGet, target.control, []))
+              : null
+          );
+          if (liveFieldType !== target.fieldType) return failed("TARGET_INVALID");
+          candidate.semanticReferenceIds = graph.references.semanticReferenceIds;
+          candidate.nativeLabelControls = graph.references.nativeLabelControls;
+          candidate.nativeLabels = graph.references.nativeLabels;
+          refreshObservation(context);
+          if (candidate.writerEpoch !== applicantStateEpoch) return failed("CANDIDATE_INVALID");
+
+          if (!isSelect) {
+            const proposalValue = (request.proposal as Readonly<{ value: string }>).value;
+            let currentValue: string;
+            let isUnwritable: boolean;
+            if (target.fieldType === "TEXTAREA") {
+              if (!(target.control instanceof NativeHTMLTextAreaElement)) return failed("TARGET_INVALID");
+              currentValue = nativeApply(nativeTextAreaValueGet, target.control, []) as string;
+              isUnwritable = Boolean(
+                nativeApply(nativeTextAreaReadOnlyGet, target.control, []) ||
+                nativeApply(nativeTextAreaDisabledGet, target.control, []) ||
+                nativeApply(nativeMatches, target.control, [":disabled"])
+              );
+            } else {
+              if (!(target.control instanceof NativeHTMLInputElement)) return failed("TARGET_INVALID");
+              currentValue = nativeApply(nativeInputValueGet, target.control, []) as string;
+              isUnwritable = Boolean(
+                nativeApply(nativeInputReadOnlyGet, target.control, []) ||
+                nativeApply(nativeInputDisabledGet, target.control, []) ||
+                nativeApply(nativeMatches, target.control, [":disabled"])
+              );
+            }
+            if (isUnwritable) return plain([["status", "MANUAL"], ["reason", "UNWRITABLE"]]);
+            if (currentValue.length > 0) return plain([["status", "PRESERVED_EXISTING"]]);
+
+            const owned: OwnedWriterEventWindow = {
+              target: target.control,
+              expected: nativeFreeze(["input"]),
+              index: 0,
+              unexpected: false
+            };
+            if (ownedWriterEventWindow !== null) return failed("UNEXPECTED_ACTIVITY");
+            ownedWriterEventWindow = owned;
+            mutationStarted = true;
+            if (target.fieldType === "TEXTAREA") {
+              nativeApply(nativeTextAreaValueSet, target.control, [proposalValue]);
+            } else {
+              nativeApply(nativeInputValueSet, target.control, [proposalValue]);
+            }
+            const inputEvent = new NativeEvent("input", {
+              bubbles: true,
+              cancelable: false,
+              composed: false
+            });
+            nativeApply(nativeDispatchEvent, target.control, [inputEvent]);
+
+            drainRecords(context);
+            const postGraph = extractGraph(context);
+            const postFields = flattened(context, postGraph);
+            if (
+              ownedWriterEventWindow !== owned ||
+              owned.unexpected ||
+              owned.index !== owned.expected.length ||
+              !postFields ||
+              !sameGraph(context, candidate, postGraph, postFields) ||
+              postFields[target.fieldIndex]?.control !== target.control
+            ) return failed("UNEXPECTED_ACTIVITY");
+            const postValue = target.fieldType === "TEXTAREA"
+              ? nativeApply(nativeTextAreaValueGet, target.control, []) as string
+              : nativeApply(nativeInputValueGet, target.control, []) as string;
+            if (postValue !== proposalValue) return failed("UNEXPECTED_ACTIVITY");
+            candidate.semanticReferenceIds = postGraph.references.semanticReferenceIds;
+            candidate.nativeLabelControls = postGraph.references.nativeLabelControls;
+            candidate.nativeLabels = postGraph.references.nativeLabels;
+            refreshObservation(context);
+            if (owned.unexpected || owned.index !== owned.expected.length) {
+              return failed("UNEXPECTED_ACTIVITY");
+            }
+            candidate.writerEpoch = applicantStateEpoch;
+            ownedWriterEventWindow = null;
+            return plain([["status", "FILLED"]]);
+          }
+
+          if (!(target.control instanceof NativeHTMLSelectElement)) return failed("TARGET_INVALID");
+          if (
+            nativeApply(nativeSelectMultipleGet, target.control, []) ||
+            nativeApply(nativeSelectDisabledGet, target.control, []) ||
+            nativeApply(nativeMatches, target.control, [":disabled"])
+          ) return plain([["status", "MANUAL"], ["reason", "UNWRITABLE"]]);
+          let selectedChoice: SealedWriterChoice | null = null;
+          for (const choice of target.choices) {
+            charge(context);
+            if (!(choice.option instanceof NativeHTMLOptionElement)) return failed("TARGET_INVALID");
+            if (nativeApply(nativeOptionSelectedGet, choice.option, [])) {
+              if (selectedChoice !== null) return failed("TARGET_INVALID");
+              selectedChoice = choice;
+            }
+          }
+          if (selectedChoice === null) return failed("TARGET_INVALID");
+          const selectedIsDisabled = Boolean(
+            nativeApply(nativeOptionDisabledGet, selectedChoice.option, []) ||
+            nativeApply(nativeMatches, selectedChoice.option, [":disabled"])
+          );
+          const selectedRawValue = nativeApply(nativeOptionValueGet, selectedChoice.option, []) as string;
+          if (!selectedIsDisabled || selectedRawValue !== "") {
+            return plain([["status", "PRESERVED_EXISTING"]]);
+          }
+
+          const proposal = request.proposal as Readonly<{ kind: "OPTIONS"; optionKeys: readonly [string] }>;
+          const proposedChoice = target.choicesByKey.get(proposal.optionKeys[0]);
+          if (!proposedChoice || !(proposedChoice.option instanceof NativeHTMLOptionElement)) {
+            return failed("TARGET_INVALID");
+          }
+          if (
+            nativeApply(nativeOptionDisabledGet, proposedChoice.option, []) ||
+            nativeApply(nativeMatches, proposedChoice.option, [":disabled"])
+          ) return plain([["status", "MANUAL"], ["reason", "UNWRITABLE"]]);
+
+          const owned: OwnedWriterEventWindow = {
+            target: target.control,
+            expected: nativeFreeze(["input", "change"]),
+            index: 0,
+            unexpected: false
+          };
+          if (ownedWriterEventWindow !== null) return failed("UNEXPECTED_ACTIVITY");
+          ownedWriterEventWindow = owned;
+          mutationStarted = true;
+          nativeApply(nativeOptionSelectedSet, proposedChoice.option, [true]);
+          const inputEvent = new NativeEvent("input", {
+            bubbles: true,
+            cancelable: false,
+            composed: false
+          });
+          nativeApply(nativeDispatchEvent, target.control, [inputEvent]);
+          const changeEvent = new NativeEvent("change", {
+            bubbles: true,
+            cancelable: false,
+            composed: false
+          });
+          nativeApply(nativeDispatchEvent, target.control, [changeEvent]);
+
+          drainRecords(context);
+          const postGraph = extractGraph(context);
+          const postFields = flattened(context, postGraph);
+          if (
+            ownedWriterEventWindow !== owned ||
+            owned.unexpected ||
+            owned.index !== owned.expected.length ||
+            !postFields ||
+            !sameGraph(context, candidate, postGraph, postFields) ||
+            postFields[target.fieldIndex]?.control !== target.control
+          ) return failed("UNEXPECTED_ACTIVITY");
+          let postSelected: SealedWriterChoice | null = null;
+          for (const choice of target.choices) {
+            charge(context);
+            if (nativeApply(nativeOptionSelectedGet, choice.option, [])) {
+              if (postSelected !== null) return failed("UNEXPECTED_ACTIVITY");
+              postSelected = choice;
+            }
+          }
+          if (postSelected !== proposedChoice) return failed("UNEXPECTED_ACTIVITY");
+          candidate.semanticReferenceIds = postGraph.references.semanticReferenceIds;
+          candidate.nativeLabelControls = postGraph.references.nativeLabelControls;
+          candidate.nativeLabels = postGraph.references.nativeLabels;
+          refreshObservation(context);
+          if (owned.unexpected || owned.index !== owned.expected.length) {
+            return failed("UNEXPECTED_ACTIVITY");
+          }
+          candidate.writerEpoch = applicantStateEpoch;
+          ownedWriterEventWindow = null;
+          return plain([["status", "FILLED"]]);
+        } catch (error) {
+          if (isWorkExhaustion(error)) failClosedWorkExhaustion();
+          return failed(mutationStarted ? "WRITE_FAILED" : "CANDIDATE_INVALID");
         }
       },
       disposeCandidate(value: unknown) {
@@ -2095,7 +2652,7 @@ function installProtectedBrowserWorld(input: Readonly<{
     nativeDefineProperty(capability, "version", {
       configurable: false,
       enumerable: false,
-      value: 1,
+      value: 2,
       writable: false
     });
     for (const name of methodNames) {

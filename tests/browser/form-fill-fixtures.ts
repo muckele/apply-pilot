@@ -16,7 +16,21 @@ export type FormFillTrapSnapshot = Readonly<{
   optionSetter: number;
   eventConstructor: number;
   dispatchEvent: number;
+  beforeinput: number;
+  click: number;
+  focus: number;
+  keyboard: number;
+  pointer: number;
+  mouse: number;
   eventLog: readonly string[];
+  eventDetails: readonly Readonly<{
+    target: string;
+    type: string;
+    bubbles: boolean;
+    cancelable: boolean;
+    composed: boolean;
+    isTrusted: boolean;
+  }>[];
 }>;
 
 declare global {
@@ -27,26 +41,29 @@ declare global {
 
 export function boundedWriterFixture(): string {
   return `<!doctype html><html><body>
-    <form action="https://fixture.invalid/__apply_pilot_submit" method="post">
-      <input id="text-empty" type="text"><input id="text-occupied" type="text" value="SECRET-OCCUPIED-TEXT">
-      <input id="email-empty" type="email"><input id="tel-empty" type="tel"><input id="url-empty" type="url">
-      <textarea id="textarea-empty"></textarea><input id="readonly-empty" readonly><input id="disabled-empty" disabled>
-      <input id="throwing-setter"><input id="mismatch-text"><input id="replace-text">
-      <input id="controlled-text"><input id="controlled-replace-text">
-      <select id="select-empty"><option id="placeholder-a" value="" selected disabled>Choose</option><option id="choice-a" value="SECRET-A">A</option></select>
-      <select id="select-occupied"><option id="choice-b" value="SECRET-B" selected>B</option><option id="choice-c" value="SECRET-C">C</option></select>
-      <select id="select-enabled-empty"><option id="enabled-empty-original" value="" selected>Decline to answer</option><option id="enabled-empty-choice" value="yes">Yes</option></select>
-      <select id="select-enabled-empty-proposed"><option id="enabled-empty-proposed" value="" selected>Decline to answer</option><option id="enabled-empty-other" value="yes">Yes</option></select>
-      <select id="select-disabled-nonempty"><option id="disabled-nonempty-original" value="existing" selected disabled>Unavailable existing choice</option><option id="disabled-nonempty-choice" value="yes">Yes</option></select>
-      <select id="select-disabled-optgroup"><optgroup disabled><option id="disabled-optgroup-original" value="" selected>Unavailable group choice</option></optgroup><option id="disabled-optgroup-choice" value="yes">Yes</option></select>
-      <select id="select-no-selection"><option id="no-selection-placeholder" value="" disabled>Choose</option><option id="no-selection-choice" value="yes">Yes</option></select>
-      <select id="select-disabled" disabled><option id="placeholder-disabled-select" value="" selected disabled>Choose</option><option id="choice-disabled-select">A</option></select>
-      <select id="select-disabled-option"><option id="placeholder-disabled-option" value="" selected disabled>Choose</option><option id="choice-disabled" disabled>A</option></select>
-      <select id="select-mismatch"><option id="placeholder-mismatch" value="" selected disabled>Choose</option><option id="choice-mismatch">A</option></select>
-      <fieldset><input id="radio-a" type="radio" name="radio-empty"><input id="radio-b" type="radio" name="radio-empty"></fieldset>
-      <fieldset><input id="radio-occupied-a" type="radio" name="radio-occupied" checked><input id="radio-occupied-b" type="radio" name="radio-occupied"></fieldset>
-      <input id="radio-disabled" type="radio" name="radio-disabled" disabled>
-      <input id="checkbox-unchecked" type="checkbox"><input id="checkbox-checked" type="checkbox" checked>
+    <form aria-label="Writer test application" action="https://fixture.invalid/__apply_pilot_submit" method="post">
+      <input id="text-empty" aria-label="Empty text" type="text"><input id="text-occupied" aria-label="Occupied text" type="text" value="SECRET-OCCUPIED-TEXT">
+      <input id="text-whitespace" aria-label="Whitespace text" type="text" value="   ">
+      <input id="search-empty" aria-label="Empty search" type="search"><input id="search-occupied" aria-label="Occupied search" type="search" value="SECRET-OCCUPIED-SEARCH">
+      <input id="search-whitespace" aria-label="Whitespace search" type="search" value="   ">
+      <input id="email-empty" aria-label="Empty email" type="email"><input id="tel-empty" aria-label="Empty telephone" type="tel"><input id="url-empty" aria-label="Empty URL" type="url">
+      <textarea id="textarea-empty" aria-label="Empty textarea"></textarea><input id="readonly-empty" aria-label="Read only text" readonly><input id="disabled-empty" aria-label="Disabled text" disabled>
+      <input id="throwing-setter" aria-label="Throwing setter"><input id="mismatch-text" aria-label="Mismatching text"><input id="replace-text" aria-label="Replacing text"><input id="extra-event-text" aria-label="Extra event text">
+      <input id="controlled-text" aria-label="Controlled text"><input id="controlled-replace-text" aria-label="Controlled replacing text">
+      <select id="select-empty" aria-label="Empty select"><option id="placeholder-a" value="" selected disabled>Choose</option><option id="choice-a" value="SECRET-A">A</option></select>
+      <select id="select-occupied" aria-label="Occupied select"><option id="choice-b" value="SECRET-B" selected>B</option><option id="choice-c" value="SECRET-C">C</option></select>
+      <select id="select-enabled-empty" aria-label="Enabled empty select"><option id="enabled-empty-original" value="" selected>Decline to answer</option><option id="enabled-empty-choice" value="yes">Yes</option></select>
+      <select id="select-enabled-empty-proposed" aria-label="Enabled empty proposed select"><option id="enabled-empty-proposed" value="" selected>Decline to answer</option><option id="enabled-empty-other" value="yes">Yes</option></select>
+      <select id="select-disabled-nonempty" aria-label="Disabled nonempty select"><option id="disabled-nonempty-original" value="existing" selected disabled>Unavailable existing choice</option><option id="disabled-nonempty-choice" value="yes">Yes</option></select>
+      <select id="select-disabled-optgroup" aria-label="Disabled optgroup select"><optgroup disabled><option id="disabled-optgroup-original" value="" selected>Unavailable group choice</option></optgroup><option id="disabled-optgroup-choice" value="yes">Yes</option></select>
+      <select id="select-no-selection" aria-label="No selection select"><option id="no-selection-placeholder" value="" disabled>Choose</option><option id="no-selection-choice" value="yes">Yes</option></select>
+      <select id="select-disabled" aria-label="Disabled select" disabled><option id="placeholder-disabled-select" value="" selected disabled>Choose</option><option id="choice-disabled-select">A</option></select>
+      <select id="select-disabled-option" aria-label="Disabled option select"><option id="placeholder-disabled-option" value="" selected disabled>Choose</option><option id="choice-disabled" disabled>A</option></select>
+      <select id="select-mismatch" aria-label="Mismatching select"><option id="placeholder-mismatch" value="" selected disabled>Choose</option><option id="choice-mismatch">A</option></select>
+      <fieldset><legend>Empty radio</legend><input id="radio-a" aria-label="Radio A" type="radio" name="radio-empty"><input id="radio-b" aria-label="Radio B" type="radio" name="radio-empty"></fieldset>
+      <fieldset><legend>Occupied radio</legend><input id="radio-occupied-a" aria-label="Occupied radio A" type="radio" name="radio-occupied" checked><input id="radio-occupied-b" aria-label="Occupied radio B" type="radio" name="radio-occupied"></fieldset>
+      <fieldset><legend>Disabled radio group</legend><input id="radio-disabled" aria-label="Disabled radio" type="radio" name="radio-disabled" disabled></fieldset>
+      <input id="checkbox-unchecked" aria-label="Unchecked checkbox" type="checkbox"><input id="checkbox-checked" aria-label="Checked checkbox" type="checkbox" checked>
       <button id="submit-control" type="submit">Submit application</button>
     </form>
     <script>
@@ -54,16 +71,33 @@ export function boundedWriterFixture(): string {
         const traps = window.__formFillTraps = {
           submit: 0, formdata: 0, requestSubmit: 0, formSubmit: 0, submitControlClick: 0,
           input: 0, change: 0, inputSetter: 0, textAreaSetter: 0, optionSetter: 0,
-          eventConstructor: 0, dispatchEvent: 0, eventLog: []
+          eventConstructor: 0, dispatchEvent: 0, beforeinput: 0, click: 0, focus: 0,
+          keyboard: 0, pointer: 0, mouse: 0, eventLog: [], eventDetails: []
         };
         document.addEventListener('submit', event => { traps.submit += 1; event.preventDefault(); }, true);
         document.addEventListener('formdata', () => { traps.formdata += 1; }, true);
         document.addEventListener('click', event => {
+          traps.click += 1;
           const target = event.target;
           if (target instanceof HTMLButtonElement && target.type === 'submit') traps.submitControlClick += 1;
         }, true);
-        document.addEventListener('input', event => { traps.input += 1; traps.eventLog.push(event.target.id + ':input'); }, true);
-        document.addEventListener('change', event => { traps.change += 1; traps.eventLog.push(event.target.id + ':change'); }, true);
+        const recordWriterEvent = event => {
+          traps.eventLog.push(event.target.id + ':' + event.type);
+          traps.eventDetails.push({
+            target: event.target.id, type: event.type, bubbles: event.bubbles,
+            cancelable: event.cancelable, composed: event.composed, isTrusted: event.isTrusted
+          });
+        };
+        document.addEventListener('input', event => { traps.input += 1; recordWriterEvent(event); }, true);
+        document.addEventListener('change', event => { traps.change += 1; recordWriterEvent(event); }, true);
+        document.addEventListener('beforeinput', () => { traps.beforeinput += 1; }, true);
+        document.addEventListener('focusin', () => { traps.focus += 1; }, true);
+        document.addEventListener('keydown', () => { traps.keyboard += 1; }, true);
+        document.addEventListener('keyup', () => { traps.keyboard += 1; }, true);
+        document.addEventListener('pointerdown', () => { traps.pointer += 1; }, true);
+        document.addEventListener('pointerup', () => { traps.pointer += 1; }, true);
+        document.addEventListener('mousedown', () => { traps.mouse += 1; }, true);
+        document.addEventListener('mouseup', () => { traps.mouse += 1; }, true);
         HTMLFormElement.prototype.requestSubmit = function() { traps.requestSubmit += 1; };
         HTMLFormElement.prototype.submit = function() { traps.formSubmit += 1; };
         const nativeInputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
@@ -166,6 +200,9 @@ export function boundedWriterFixture(): string {
         });
         document.getElementById('replace-text').addEventListener('input', event => {
           const replacement = event.currentTarget.cloneNode(); replacement.id = 'replace-text'; event.currentTarget.replaceWith(replacement);
+        });
+        document.getElementById('extra-event-text').addEventListener('input', event => {
+          nativeDispatchEvent.call(event.currentTarget, new NativeEvent('change', { bubbles: true }));
         });
         document.getElementById('select-mismatch').addEventListener('change', event => {
           nativeOptionSelected.set.call(event.currentTarget.options[0], true);
