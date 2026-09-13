@@ -9,14 +9,18 @@ import { createRoot, type Root } from "react-dom/client";
 import { ApplicationBrowserControl } from "@/components/application-browser-control";
 import {
   applyAuthoritativeBrowserStatus,
+  apparentAutomatableFieldCount,
   bindingRejectionPlan,
   browserCommandAvailability,
   derivePacketFreshness,
+  deriveManualFieldPresentations,
   dispositionMessage,
   inspectionPresentation,
   buildAnswerReviewRequest,
   buildResolveReviewRequest,
   isAnswerReviewEligible,
+  isAnswerReviewMutationEligible,
+  isFillActivationEligible,
   isAnswerReviewPostconditionCurrent,
   isResolveReviewEligible,
   isResolveReviewPostconditionCurrent,
@@ -57,6 +61,7 @@ type MountedControl = {
   fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }>;
   setBinding: (binding: ((command: B1Command) => Promise<B1Status>) | undefined) => void;
   setFetchHandler: (handler: FetchHandler) => void;
+  setFillStatusHandler: (handler: FetchHandler) => void;
   unmount: () => Promise<void>;
   cleanup: () => Promise<void>;
 };
@@ -97,6 +102,33 @@ function answerReviewPath(answerId = "answer-scalar"): string {
 
 function resolveReviewPath(): string {
   return `/api/application-runs/${encodeURIComponent(RUN_ID)}/resolve-review`;
+}
+
+function fillAttemptPath(): string {
+  return `/api/application-runs/${encodeURIComponent(RUN_ID)}/fill-attempt`;
+}
+
+function noAttemptFillStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    state: "READY",
+    stateVersion: 7,
+    fillAttemptId: null,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: null,
+    errorCode: null,
+    steps: [],
+    ...overrides
+  };
+}
+
+function fillStatusResponse(body: unknown = noAttemptFillStatus()): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
 }
 
 function defaultReviewFetchHandler(input: RequestInfo | URL): Promise<Response> {
@@ -141,6 +173,7 @@ async function mountControl(
   }
 
   let fetchHandler = initialFetchHandler;
+  let fillStatusHandler: FetchHandler = async () => fillStatusResponse();
   const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
   const originalFetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   Object.defineProperty(globalThis, "fetch", {
@@ -148,6 +181,7 @@ async function mountControl(
     writable: true,
     value: async (input: RequestInfo | URL, init?: RequestInit) => {
       fetchCalls.push({ input, init });
+      if (String(input) === fillAttemptPath()) return fillStatusHandler(input, init);
       return fetchHandler(input, init);
     }
   });
@@ -155,7 +189,10 @@ async function mountControl(
   const root: Root = createRoot(container);
   let mounted = true;
   await act(async () => {
-    root.render(createElement(ApplicationBrowserControl, { runId: RUN_ID }));
+    root.render(createElement(ApplicationBrowserControl, {
+      runId: RUN_ID,
+      authenticatedOwnerPage: true
+    }));
   });
   await flushComponentWork();
 
@@ -183,6 +220,9 @@ async function mountControl(
     },
     setFetchHandler(handler) {
       fetchHandler = handler;
+    },
+    setFillStatusHandler(handler) {
+      fillStatusHandler = handler;
     },
     unmount,
     async cleanup() {
@@ -333,6 +373,7 @@ const commands: B1Command["type"][] = [
   "GET_STATUS",
   "OPEN_TARGET",
   "INSPECT_FORM",
+  "FILL_APPROVED_FIELDS",
   "CLOSE_WORKFLOW"
 ];
 
@@ -523,6 +564,166 @@ test("answer review eligibility is exactly pending proposable", () => {
   for (const [status, disposition, expected] of cases) {
     assert.equal(isAnswerReviewEligible({ status, disposition }), expected, `${status}/${disposition}`);
   }
+});
+
+test("apparent automatable count requires every public approval signal and only six writable families", () => {
+  const source = validPacket().answers[0];
+  const eligibleTypes = ["TEXT", "EMAIL", "TEL", "URL", "TEXTAREA", "SELECT_ONE"] as const;
+  const eligible = eligibleTypes.map((fieldType, index) => ({
+    ...source,
+    id: `eligible-${index}`,
+    normalizedFieldKey: index.toString(16).padStart(64, "0"),
+    fieldType,
+    proposal: fieldType === "SELECT_ONE"
+      ? { kind: "OPTIONS" as const, optionKeys: ["option"] }
+      : { kind: "SCALAR" as const, value: "approved" },
+    status: "APPROVED" as const,
+    reviewedByUser: true,
+    reviewedAt: "2026-09-11T17:00:00.000Z"
+  }));
+  const ineligible = [
+    { ...eligible[0], id: "radio", fieldType: "RADIO_GROUP" as const },
+    { ...eligible[0], id: "checkbox", fieldType: "CHECKBOX_BOOLEAN" as const },
+    { ...eligible[0], id: "pending", status: "PENDING" as const },
+    { ...eligible[0], id: "rejected", status: "REJECTED" as const },
+    { ...eligible[0], id: "not-reviewed", reviewedByUser: false },
+    { ...eligible[0], id: "no-review-time", reviewedAt: null },
+    { ...eligible[0], id: "sensitive", sensitive: true },
+    { ...eligible[0], id: "redacted", valueRedacted: true },
+    { ...eligible[0], id: "manual", disposition: "MANUAL_ONLY" as const, proposal: null },
+    { ...eligible[0], id: "no-proposal", proposal: null }
+  ];
+  const packet = { ...validPacket(), answers: [...eligible, ...ineligible] };
+  assert.equal(apparentAutomatableFieldCount(packet), 6);
+});
+
+test("manual-field derivation exposes public metadata and closed categories without proposal values", () => {
+  const source = validPacket().answers[0];
+  const answers: AnswerPacket["answers"] = [
+    { ...source, id: "radio", question: "Choose one", fieldType: "RADIO_GROUP" },
+    { ...source, id: "checkbox", question: "Confirm", fieldType: "CHECKBOX_BOOLEAN" },
+    { ...source, id: "manual", question: "Résumé", fieldType: "FILE_UPLOAD", disposition: "MANUAL_ONLY", proposal: null },
+    { ...source, id: "unsupported", question: "Start date", fieldType: "DATE", disposition: "UNSUPPORTED", proposal: null },
+    { ...source, id: "excluded", question: "Demographic", disposition: "EXCLUDED", proposal: null },
+    { ...source, id: "rejected", question: "Portfolio URL", status: "REJECTED", reviewedByUser: true, reviewedAt: "2026-09-11T17:00:00.000Z" },
+    { ...source, id: "outside-six", question: "Years", fieldType: "NUMBER", status: "APPROVED", reviewedByUser: true, reviewedAt: "2026-09-11T17:00:00.000Z" },
+    { ...source, id: "automated", question: "Name", fieldType: "TEXT", status: "APPROVED", reviewedByUser: true, reviewedAt: "2026-09-11T17:00:00.000Z" }
+  ];
+  const manual = deriveManualFieldPresentations({ ...validPacket(), answers });
+  assert.deepEqual(manual, [
+    { question: "Choose one", fieldType: "RADIO_GROUP", required: true, category: "MANUAL_CONTROL_FAMILY" },
+    { question: "Confirm", fieldType: "CHECKBOX_BOOLEAN", required: true, category: "MANUAL_CONTROL_FAMILY" },
+    { question: "Résumé", fieldType: "FILE_UPLOAD", required: true, category: "MANUAL_ONLY" },
+    { question: "Start date", fieldType: "DATE", required: true, category: "UNSUPPORTED" },
+    { question: "Demographic", fieldType: "URL", required: true, category: "INTENTIONALLY_EXCLUDED" },
+    { question: "Portfolio URL", fieldType: "URL", required: true, category: "USER_REJECTED" },
+    { question: "Years", fieldType: "NUMBER", required: true, category: "UNSUPPORTED" }
+  ]);
+  assert.equal(JSON.stringify(manual).includes("https://example.com"), false);
+  assert.equal(manual.some((field) => "proposal" in field), false);
+});
+
+test("review mutation eligibility is run-aware and closed during consumed Fill lifecycle states", () => {
+  const answer = validPacket().answers[0];
+  assert.equal(isAnswerReviewMutationEligible({
+    answer,
+    run: validRunAuthority() as ReviewRunAuthority,
+    trusted: true
+  }), true);
+  for (const state of ["FILLING", "READY_FOR_USER_SUBMISSION", "CANCELLED"] as const) {
+    assert.equal(isAnswerReviewMutationEligible({
+      answer,
+      run: validRunAuthority({ state }) as ReviewRunAuthority,
+      trusted: true
+    }), false, state);
+  }
+  assert.equal(isAnswerReviewMutationEligible({ answer, run: null, trusted: true }), false);
+  assert.equal(isAnswerReviewMutationEligible({ answer, run: validRunAuthority() as ReviewRunAuthority, trusted: false }), false);
+});
+
+test("Fill activation gate requires the complete coherent presentation authority", () => {
+  const packet = validPacket();
+  packet.answers[0] = {
+    ...packet.answers[0],
+    status: "APPROVED",
+    reviewedByUser: true,
+    reviewedAt: "2026-09-11T17:00:00.000Z"
+  };
+  packet.reviewedAt = "2026-09-11T17:01:00.000Z";
+  packet.summary = { ...packet.summary, readyForRunResolution: true };
+  const run = validRunAuthority({ state: "READY", stateVersion: 7 }) as ReviewRunAuthority;
+  const fillStatus = {
+    state: "READY" as const,
+    stateVersion: 7,
+    fillAttemptId: null,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: null,
+    errorCode: null,
+    steps: []
+  };
+  const input = {
+    authenticatedOwnerPage: true,
+    componentActive: true,
+    connection: "CONNECTED" as const,
+    hasAcceptedAuthoritativeStatus: true,
+    browserStatus: {
+      state: "TARGET_OPEN" as const,
+      runId: RUN_ID,
+      inspection: {
+        outcome: "SUCCEEDED" as const,
+        replayed: false,
+        inspectionVersion: packet.inspectionVersion,
+        answerPacketVersion: packet.answerPacketVersion,
+        reinspectionRequired: false
+      }
+    },
+    packetFreshness: "current" as const,
+    reviewLoad: { phase: "loaded" as const, verified: true, run, packet },
+    fillStatusLoad: { phase: "loaded" as const, verified: true, status: fillStatus },
+    pendingBrowserCommand: null,
+    pendingReviewMutation: null,
+    pendingFillActivation: false,
+    fillMayHaveDispatched: false
+  };
+  assert.equal(isFillActivationEligible(input), true);
+
+  const failures = [
+    { ...input, authenticatedOwnerPage: false },
+    { ...input, componentActive: false },
+    { ...input, connection: "UNKNOWN" as const },
+    { ...input, hasAcceptedAuthoritativeStatus: false },
+    { ...input, browserStatus: { ...input.browserStatus, state: "CONTROL_READY" as const } },
+    { ...input, browserStatus: { ...input.browserStatus, fillCommand: { outcome: "IN_PROGRESS" as const } } },
+    { ...input, browserStatus: { ...input.browserStatus, inspection: { ...input.browserStatus.inspection, outcome: "IN_PROGRESS" as const } as never } },
+    { ...input, browserStatus: { ...input.browserStatus, inspection: { ...input.browserStatus.inspection, reinspectionRequired: true } } },
+    { ...input, packetFreshness: "stale" as const },
+    { ...input, reviewLoad: { ...input.reviewLoad, phase: "loading" as const } },
+    { ...input, reviewLoad: { ...input.reviewLoad, verified: false } },
+    { ...input, reviewLoad: { ...input.reviewLoad, run: validRunAuthority({ state: "REVIEW_REQUIRED" }) } },
+    { ...input, reviewLoad: { ...input.reviewLoad, packet: { ...packet, reviewedAt: null } } },
+    { ...input, reviewLoad: { ...input.reviewLoad, packet: { ...packet, summary: { ...packet.summary, readyForRunResolution: false } } } },
+    { ...input, reviewLoad: { ...input.reviewLoad, packet: { ...packet, answers: packet.answers.map((answer) => ({ ...answer, status: "REJECTED" as const })) } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, phase: "loading" as const } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, verified: false } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, state: "FILLING" as const } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, stateVersion: 8 } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, fillAttemptId: "550e8400-e29b-41d4-a716-446655440000" } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, fillLeaseExpiresAt: "2026-09-11T18:00:00.000Z" } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, leaseLive: true } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, expiredRecoveryRequired: true } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, fieldOperationAllowed: true } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, outcome: "COMPLETED" as const } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, errorCode: "FILL_INTERNAL" as const } } },
+    { ...input, fillStatusLoad: { ...input.fillStatusLoad, status: { ...fillStatus, steps: [{ stepKey: "private", result: "FILLED" as const, errorCode: null }] } } },
+    { ...input, pendingBrowserCommand: "GET_STATUS" as const },
+    { ...input, pendingReviewMutation: { type: "RESOLVE" as const } },
+    { ...input, pendingFillActivation: true },
+    { ...input, fillMayHaveDispatched: true }
+  ];
+  for (const value of failures) assert.equal(isFillActivationEligible(value as never), false);
 });
 
 test("answer review request builders use only exact encoded route and body fields", () => {
@@ -769,6 +970,7 @@ test("command authorization covers every workflow state and uses the exact froze
     assert.equal(availability.GET_STATUS, state !== "CLOSED", `${state} GET_STATUS`);
     assert.equal(availability.OPEN_TARGET, state === "CONTROL_READY", `${state} OPEN_TARGET`);
     assert.equal(availability.INSPECT_FORM, state === "TARGET_OPEN", `${state} INSPECT_FORM`);
+    assert.equal(availability.FILL_APPROVED_FIELDS, state === "TARGET_OPEN", `${state} FILL_APPROVED_FIELDS`);
     assert.equal(availability.CLOSE_WORKFLOW, state !== "CLOSED", `${state} CLOSE_WORKFLOW`);
     assert.equal("CLOSE" in availability, false);
   }
@@ -781,7 +983,7 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
       connection: "CONNECTED",
       pendingCommand: null
     }),
-    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, CLOSE_WORKFLOW: false }
+    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
   );
 
   for (const pendingCommand of commands) {
@@ -791,7 +993,7 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
         connection: "CONNECTED",
         pendingCommand
       }),
-      { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, CLOSE_WORKFLOW: false }
+      { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
     );
   }
 
@@ -801,7 +1003,7 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
       connection: "UNKNOWN",
       pendingCommand: null
     }),
-    { GET_STATUS: true, OPEN_TARGET: false, INSPECT_FORM: false, CLOSE_WORKFLOW: false }
+    { GET_STATUS: true, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
   );
   assert.deepEqual(
     browserCommandAvailability({
@@ -809,7 +1011,7 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
       connection: "UNAVAILABLE",
       pendingCommand: null
     }),
-    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, CLOSE_WORKFLOW: false }
+    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
   );
 
   assert.equal(
@@ -839,6 +1041,7 @@ test("binding rejection plans preserve authoritative status and permit at most o
     GET_STATUS: { recoverWithGetStatus: false, packetTrust: "UNCHANGED" },
     OPEN_TARGET: { recoverWithGetStatus: true, packetTrust: "UNCHANGED" },
     INSPECT_FORM: { recoverWithGetStatus: true, packetTrust: "UNVERIFIED" },
+    FILL_APPROVED_FIELDS: { recoverWithGetStatus: false, packetTrust: "UNVERIFIED" },
     CLOSE_WORKFLOW: { recoverWithGetStatus: true, packetTrust: "UNCHANGED" }
   } as const;
 
@@ -985,6 +1188,51 @@ test("authoritative status handling rejects wrong-run and malformed values witho
     });
     assert.deepEqual(result, { accepted: false, connection: "UNAVAILABLE" });
     assert.equal("status" in result, false);
+  }
+});
+
+test("authoritative status accepts only the closed exact fillCommand union", () => {
+  const accepted = [
+    { outcome: "IN_PROGRESS" },
+    { outcome: "FINALIZED" },
+    { outcome: "RECOVERY_PENDING" },
+    { outcome: "CANCELLED" },
+    { outcome: "REJECTED", errorCode: "FILL_POLICY_DENIED" },
+    { outcome: "REJECTED", errorCode: "FILL_REVIEW_REQUIRED" },
+    { outcome: "REJECTED", errorCode: "FILL_ALREADY_IN_PROGRESS" },
+    { outcome: "REJECTED", errorCode: "FILL_NO_ELIGIBLE_FIELDS" },
+    { outcome: "REJECTED", errorCode: "FILL_STALE" }
+  ];
+  for (const fillCommand of accepted) {
+    const value = { state: "TARGET_OPEN", runId: RUN_ID, fillCommand };
+    const result = applyAuthoritativeBrowserStatus({
+      value,
+      expectedRunId: RUN_ID,
+      formInvalidatedSinceVerifiedSuccess: false
+    });
+    assert.equal(result.accepted, true, JSON.stringify(fillCommand));
+    if (result.accepted) assert.deepEqual(result.status, value);
+  }
+
+  for (const fillCommand of [
+    { outcome: "UNKNOWN" },
+    { outcome: "IN_PROGRESS", errorCode: "FILL_STALE" },
+    { outcome: "FINALIZED", errorCode: "FILL_STALE" },
+    { outcome: "RECOVERY_PENDING", errorCode: "FILL_STALE" },
+    { outcome: "CANCELLED", errorCode: "FILL_STALE" },
+    { outcome: "REJECTED" },
+    { outcome: "REJECTED", errorCode: "FILL_INTERNAL" },
+    { outcome: "REJECTED", errorCode: "FILL_STALE", extra: true }
+  ]) {
+    assert.deepEqual(
+      applyAuthoritativeBrowserStatus({
+        value: { state: "TARGET_OPEN", runId: RUN_ID, fillCommand },
+        expectedRunId: RUN_ID,
+        formInvalidatedSinceVerifiedSuccess: false
+      }),
+      { accepted: false, connection: "UNAVAILABLE" },
+      JSON.stringify(fillCommand)
+    );
   }
 });
 
@@ -1379,7 +1627,8 @@ test("mounted control harness renders the real component and completes its initi
 
   assert.match(control.container.textContent ?? "", /Current answer packet/);
   assert.match(control.container.textContent ?? "", /No current answer packet has been published yet/);
-  assert.equal(control.fetchCalls.length, 2);
+  assert.equal(control.fetchCalls.length, 3);
+  assert.equal(control.fetchCalls.filter((call) => String(call.input) === fillAttemptPath()).length, 1);
 });
 
 test("mounted control never presents local STARTING as accepted companion authority", async (t) => {
@@ -1812,14 +2061,15 @@ test("Task 2 mounted review authority load uses paired no-store run and packet r
   const control = await mountControl();
   t.after(() => control.cleanup());
 
-  assert.equal(control.fetchCalls.length, 2);
-  assert.deepEqual(control.fetchCalls.map((call) => String(call.input)), [
+  const reviewCalls = control.fetchCalls.filter((call) => String(call.input) !== fillAttemptPath());
+  assert.equal(reviewCalls.length, 2);
+  assert.deepEqual(reviewCalls.map((call) => String(call.input)), [
     `/api/application-runs/${RUN_ID}`,
     `/api/application-runs/${RUN_ID}/answer-packet`
   ]);
-  assert.equal(control.fetchCalls[0].init?.cache, "no-store");
-  assert.equal(control.fetchCalls[1].init?.cache, "no-store");
-  assert.equal(control.fetchCalls[0].init?.signal, control.fetchCalls[1].init?.signal);
+  assert.equal(reviewCalls[0].init?.cache, "no-store");
+  assert.equal(reviewCalls[1].init?.cache, "no-store");
+  assert.equal(reviewCalls[0].init?.signal, reviewCalls[1].init?.signal);
 });
 
 test("Task 2 mounted pending proposable answer exposes enabled accessible approve and reject controls", async (t) => {
@@ -2882,6 +3132,520 @@ test("Task 3 mounted post-success refresh becomes INACTIVE on unmount without a 
     await flushComponentWork();
     assert.equal(control.fetchCalls.length, before);
     assert.deepEqual(bindingCalls, []);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+function fillReadyPacket(): AnswerPacket {
+  const packet = validPacket();
+  packet.reviewedAt = "2026-09-11T17:01:00.000Z";
+  packet.summary = { ...packet.summary, readyForRunResolution: true };
+  packet.answers = packet.answers.map((answer) =>
+    answer.disposition === "PROPOSABLE" &&
+    ["TEXT", "EMAIL", "TEL", "URL", "TEXTAREA", "SELECT_ONE"].includes(answer.fieldType)
+      ? {
+          ...answer,
+          status: "APPROVED" as const,
+          reviewedByUser: true,
+          reviewedAt: "2026-09-11T17:00:00.000Z"
+        }
+      : answer
+  );
+  return packet;
+}
+
+function trustedTargetStatus(packet: AnswerPacket, fillCommand?: B1Status["fillCommand"]): B1Status {
+  return {
+    state: "TARGET_OPEN",
+    runId: RUN_ID,
+    inspection: {
+      outcome: "SUCCEEDED",
+      replayed: false,
+      inspectionVersion: packet.inspectionVersion,
+      answerPacketVersion: packet.answerPacketVersion,
+      reinspectionRequired: false
+    },
+    ...(fillCommand ? { fillCommand } : {})
+  };
+}
+
+test("mounted control independently reads authenticated Fill status without dispatching Fill", async () => {
+  const control = await mountControl();
+  try {
+    const reads = control.fetchCalls.filter((call) => String(call.input) === fillAttemptPath());
+    assert.equal(reads.length, 1);
+    assert.equal(reads[0].init?.cache, "no-store");
+    assert.ok(reads[0].init?.signal instanceof AbortSignal);
+    const reviewRead = control.fetchCalls.find((call) => String(call.input) === `/api/application-runs/${RUN_ID}`);
+    assert.ok(reviewRead?.init?.signal instanceof AbortSignal);
+    assert.notEqual(reads[0].init?.signal, reviewRead.init?.signal);
+    assert.doesNotMatch(control.container.textContent ?? "", /Application submitted|Successfully applied|Application completed/i);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("unmount aborts only a React-owned Fill-status read", async () => {
+  const response = deferred<Response>();
+  let signal: AbortSignal | null = null;
+  const control = await mountControl();
+  try {
+    control.setFillStatusHandler(async (_input, init) => {
+      signal = init?.signal ?? null;
+      return response.promise;
+    });
+    await clickButton(control, "Refresh Fill status");
+    assert.ok(signal);
+    assert.equal((signal as AbortSignal).aborted, false);
+
+    await control.unmount();
+    assert.equal((signal as AbortSignal).aborted, true);
+    response.resolve(fillStatusResponse());
+    await flushComponentWork();
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("explicit mounted Fill click latches synchronously, locks conflicting UI, and presents durable aggregate terminal status", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const fillResult = deferred<B1Status>();
+  const commandsSeen: B1Command[] = [];
+  let fillFinished = false;
+  let fillReads = 0;
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  control.setFillStatusHandler(async () => {
+    fillReads += 1;
+    return fillStatusResponse(fillFinished
+      ? {
+          state: "READY_FOR_USER_SUBMISSION",
+          stateVersion: 8,
+          fillAttemptId: "550e8400-e29b-41d4-a716-446655440000",
+          fillLeaseExpiresAt: null,
+          leaseLive: false,
+          expiredRecoveryRequired: false,
+          fieldOperationAllowed: false,
+          outcome: "COMPLETED",
+          errorCode: null,
+          steps: [
+            { stepKey: `fill:550e8400-e29b-41d4-a716-446655440000:${"a".repeat(64)}`, result: "FILLED", errorCode: null },
+            { stepKey: `fill:550e8400-e29b-41d4-a716-446655440000:${"b".repeat(64)}`, result: "PRESERVED_EXISTING", errorCode: null }
+          ]
+        }
+      : noAttemptFillStatus());
+  });
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      if (command.type === "FILL_APPROVED_FIELDS") return fillResult.promise;
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    const fill = buttonNamed(control.container, "Fill approved fields");
+    assert.equal(fill.disabled, false);
+
+    await act(async () => {
+      fill.click();
+      fill.click();
+      await Promise.resolve();
+    });
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
+    assert.match(control.container.textContent ?? "", /Fill command is pending/i);
+    assert.doesNotMatch(control.container.textContent ?? "", /Fill has not started/i);
+    assert.doesNotMatch(control.container.textContent ?? "", /No Fill attempt has been consumed/i);
+    for (const name of [
+      "Filling…",
+      "Refresh status",
+      "Open frozen target",
+      "Inspect form",
+      "Close workflow",
+      "Refresh review data",
+      "Refresh Fill status"
+    ]) {
+      assert.equal(buttonNamed(control.container, name).disabled, true, name);
+    }
+
+    fillFinished = true;
+    await act(async () => {
+      fillResult.resolve(trustedTargetStatus(packet, { outcome: "FINALIZED" }));
+      await fillResult.promise;
+    });
+    await flushComponentWork();
+
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
+    assert.ok(fillReads >= 2);
+    assert.match(control.container.textContent ?? "", /Automated Fill attempt finished/);
+    assert.match(control.container.textContent ?? "", /Filled1/);
+    assert.match(control.container.textContent ?? "", /Preserved existing1/);
+    assert.doesNotMatch(control.container.textContent ?? "", /fill:550e8400|private-proposal-sentinel/);
+    assert.match(control.container.textContent ?? "", /personally use the employer site's Submit button/);
+    assert.match(control.container.textContent ?? "", /has not submitted this application/);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("a browser command started in the same turn synchronously prevents Fill dispatch", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const pendingStatus = deferred<B1Status>();
+  const commandsSeen: B1Command[] = [];
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      if (command.type === "GET_STATUS" && commandsSeen.length === 1) {
+        return trustedTargetStatus(packet);
+      }
+      if (command.type === "GET_STATUS") return pendingStatus.promise;
+      return trustedTargetStatus(packet, { outcome: "IN_PROGRESS" });
+    });
+    await clickButton(control, "Refresh status");
+
+    const refresh = buttonNamed(control.container, "Refresh status");
+    const fill = buttonNamed(control.container, "Fill approved fields");
+    assert.equal(fill.disabled, false);
+    await act(async () => {
+      refresh.click();
+      fill.click();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(commandsSeen.map((command) => command.type), ["GET_STATUS", "GET_STATUS"]);
+    pendingStatus.resolve(trustedTargetStatus(packet));
+    await flushComponentWork();
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("unmount leaves a dispatched long-running Fill binding alive and ignores its late settlement", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const fillResult = deferred<B1Status>();
+  const commandsSeen: B1Command[] = [];
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      if (command.type === "FILL_APPROVED_FIELDS") return fillResult.promise;
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    await act(async () => {
+      buttonNamed(control.container, "Fill approved fields").click();
+      await Promise.resolve();
+    });
+    assert.deepEqual(commandsSeen.map((command) => command.type), [
+      "GET_STATUS",
+      "FILL_APPROVED_FIELDS"
+    ]);
+
+    const readsBeforeUnmount = control.fetchCalls.length;
+    await control.unmount();
+    fillResult.resolve(trustedTargetStatus(packet, { outcome: "FINALIZED" }));
+    await flushComponentWork();
+
+    assert.equal(control.fetchCalls.length, readsBeforeUnmount, "late Fill settlement starts no React read");
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("lost Fill binding result performs one read-only paired reconciliation and never replays Fill", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  let fillReads = 0;
+  let fillResultLost = false;
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  control.setFillStatusHandler(async () => {
+    fillReads += 1;
+    if (fillResultLost) return new Response(null, { status: 503 });
+    return fillStatusResponse();
+  });
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      if (command.type === "FILL_APPROVED_FIELDS") {
+        fillResultLost = true;
+        throw new Error("binding result lost");
+      }
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    const beforeFillReads = fillReads;
+    const beforeRunReads = control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length;
+    const beforePacketReads = control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length;
+    await clickButton(control, "Fill approved fields");
+
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
+    assert.equal(commandsSeen.filter((command) => command.type === "GET_STATUS").length, 1);
+    assert.equal(fillReads, beforeFillReads + 1);
+    assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, beforeRunReads + 1);
+    assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, beforePacketReads + 1);
+    assert.match(control.container.textContent ?? "", /Fill mutation outcome is uncertain/i);
+    assert.match(control.container.textContent ?? "", /Fill status is temporarily unavailable/i);
+    assert.doesNotMatch(control.container.textContent ?? "", /Fill has not started/i);
+    assert.doesNotMatch(control.container.textContent ?? "", /No Fill attempt has been consumed/i);
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+
+    await clickButton(control, "Refresh Fill status");
+    assert.equal(fillReads, beforeFillReads + 2);
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("FINALIZED bridge disposition with a failed durable Fill-status refresh remains bounded and unverified", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  let fillReads = 0;
+  let fillDispatched = false;
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  control.setFillStatusHandler(async () => {
+    fillReads += 1;
+    return fillDispatched
+      ? new Response(null, { status: 503 })
+      : fillStatusResponse();
+  });
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      if (command.type === "FILL_APPROVED_FIELDS") {
+        fillDispatched = true;
+        return trustedTargetStatus(packet, { outcome: "FINALIZED" });
+      }
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    const beforeFillReads = fillReads;
+    await clickButton(control, "Fill approved fields");
+
+    assert.deepEqual(commandsSeen.map((command) => command.type), [
+      "GET_STATUS",
+      "FILL_APPROVED_FIELDS"
+    ]);
+    assert.equal(fillReads, beforeFillReads + 1);
+    const text = control.container.textContent ?? "";
+    assert.match(text, /bridge reported a bounded FINALIZED disposition/i);
+    assert.match(text, /durable Fill status is unverified/i);
+    assert.match(text, /Fill status is temporarily unavailable/i);
+    assert.doesNotMatch(text, /authenticated durable Fill status was refreshed/i);
+    assert.doesNotMatch(text, /Fill has not started/i);
+    assert.doesNotMatch(text, /No Fill attempt has been consumed/i);
+    assert.doesNotMatch(text, /Automated Fill attempt finished|Fill stopped early/i);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("FINALIZED bridge disposition cannot re-authorize the pre-dispatch NO_ATTEMPT snapshot", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  let fillReads = 0;
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  control.setFillStatusHandler(async () => {
+    fillReads += 1;
+    return fillStatusResponse();
+  });
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      return command.type === "FILL_APPROVED_FIELDS"
+        ? trustedTargetStatus(packet, { outcome: "FINALIZED" })
+        : trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    const beforeFillReads = fillReads;
+    await clickButton(control, "Fill approved fields");
+
+    assert.deepEqual(commandsSeen.map((command) => command.type), [
+      "GET_STATUS",
+      "FILL_APPROVED_FIELDS"
+    ]);
+    assert.equal(fillReads, beforeFillReads + 1);
+    const text = control.container.textContent ?? "";
+    assert.match(text, /bridge reported a bounded FINALIZED disposition/i);
+    assert.match(text, /durable Fill status is unverified/i);
+    assert.doesNotMatch(text, /authenticated durable Fill status was refreshed/i);
+    assert.doesNotMatch(text, /Fill has not started/i);
+    assert.doesNotMatch(text, /No Fill attempt has been consumed/i);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("a Fill binding response without a bounded command disposition is mutation-uncertain", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  let fillReads = 0;
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  control.setFillStatusHandler(async () => {
+    fillReads += 1;
+    return fillStatusResponse();
+  });
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    const beforeFillReads = fillReads;
+    await clickButton(control, "Fill approved fields");
+
+    assert.deepEqual(commandsSeen.map((command) => command.type), [
+      "GET_STATUS",
+      "FILL_APPROVED_FIELDS"
+    ]);
+    assert.equal(fillReads, beforeFillReads + 1);
+    assert.match(control.container.textContent ?? "", /Fill mutation outcome is uncertain/i);
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("missing binding is definitely not dispatched and permits a later explicit Fill only after resynchronization", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  try {
+    const binding = async (command: B1Command): Promise<B1Status> => {
+      commandsSeen.push(command);
+      return command.type === "FILL_APPROVED_FIELDS"
+        ? trustedTargetStatus(packet, { outcome: "IN_PROGRESS" })
+        : trustedTargetStatus(packet);
+    };
+    control.setBinding(binding);
+    await clickButton(control, "Refresh status");
+    control.setBinding(undefined);
+    await clickButton(control, "Fill approved fields");
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 0);
+    assert.match(control.container.textContent ?? "", /companion is not connected/i);
+
+    control.setBinding(binding);
+    await clickButton(control, "Retry connection");
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+    await clickButton(control, "Fill approved fields");
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("mounted review controls are disabled in consumed Fill states and manual summary omits proposals", async () => {
+  for (const state of ["FILLING", "READY_FOR_USER_SUBMISSION", "CANCELLED"] as const) {
+    const packet = validPacket();
+    const control = await mountControl(async (input) =>
+      String(input).endsWith("/answer-packet")
+        ? packetResponse(packet)
+        : runResponse(validRunAuthority({ state }))
+    );
+    try {
+      assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true, state);
+      assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true, state);
+      const text = control.container.textContent ?? "";
+      assert.match(text, /Manual fields/);
+      assert.match(text, /Résumé/);
+      assert.match(text, /MANUAL_ONLY/);
+      assert.doesNotMatch(text, /private-proposal-sentinel/);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("reload and retained companion Fill status never trigger Fill automatically", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  for (let mount = 0; mount < 2; mount += 1) {
+    const control = await mountControl(async (input) =>
+      String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+    );
+    try {
+      control.setBinding(async (command) => {
+        commandsSeen.push(command);
+        return trustedTargetStatus(packet, { outcome: "IN_PROGRESS" });
+      });
+      await clickButton(control, "Refresh status");
+      assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    } finally {
+      await control.cleanup();
+    }
+  }
+  assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 0);
+});
+
+test("mounted Fill-status refresh ignores older READY authority and rejects same-version contradiction", async () => {
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const terminal = {
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 9,
+    fillAttemptId: attemptId,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{
+      stepKey: `fill:${attemptId}:${"a".repeat(64)}`,
+      result: "FILLED",
+      errorCode: null
+    }]
+  };
+  const control = await mountControl();
+  try {
+    let next: unknown = terminal;
+    control.setFillStatusHandler(async () => fillStatusResponse(next));
+    await clickButton(control, "Refresh Fill status");
+    assert.match(control.container.textContent ?? "", /Automated Fill attempt finished/);
+
+    next = noAttemptFillStatus({ stateVersion: 7 });
+    await clickButton(control, "Refresh Fill status");
+    assert.match(control.container.textContent ?? "", /older Fill status was ignored/i);
+    assert.match(control.container.textContent ?? "", /Automated Fill attempt finished/);
+
+    next = {
+      ...terminal,
+      outcome: "STOPPED_EARLY",
+      errorCode: "FILL_WRITE_FAILED",
+      steps: [{
+        stepKey: `fill:${attemptId}:${"a".repeat(64)}`,
+        result: "FAILED",
+        errorCode: "FILL_WRITE_FAILED"
+      }]
+    };
+    await clickButton(control, "Refresh Fill status");
+    assert.match(control.container.textContent ?? "", /contradictory same-version Fill status was rejected/i);
+    assert.match(control.container.textContent ?? "", /Automated Fill attempt finished/);
+    assert.doesNotMatch(control.container.textContent ?? "", /Fill stopped early/);
   } finally {
     await control.cleanup();
   }

@@ -2,16 +2,23 @@ import type { ApplicationRunState } from "@prisma/client";
 
 import { parseApplyPilotOrigin, parseImmutableRunId } from "@/lib/application-browser/types";
 import {
+  parseFillStatusResponse as parseSharedFillStatusResponse,
+  type BrowserFillAttemptStatus,
+  type BrowserFillStepResult
+} from "@/lib/application-browser/fill-status-presentation";
+export type {
+  BrowserFillAttemptStatus,
+  BrowserFillStepResult
+} from "@/lib/application-browser/fill-status-presentation";
+import {
   parseApplicationAnswerProposal,
   type ApplicationAnswerProposal
 } from "@/lib/application-runs/answer-packet-domain";
 import {
-  FILL_ATTEMPT_OUTCOMES,
   FILL_ELIGIBLE_FIELD_TYPES,
   FILL_ERROR_CODES,
   FILL_STEP_RESULTS,
   reconcileFillFinalization,
-  type FillAttemptOutcome,
   type FillEligibleFieldType,
   type FillErrorCode,
   type FillStepResult,
@@ -136,25 +143,6 @@ export type BrowserFillAcquisition = Readonly<{
   packetHash: string;
   formFingerprint: string;
   eligibleFields: readonly BrowserAcquiredFillField[];
-}>;
-
-export type BrowserFillStepResult = Readonly<{
-  stepKey: string;
-  result: FillStepResult;
-  errorCode: FillErrorCode | null;
-}>;
-
-export type BrowserFillAttemptStatus = Readonly<{
-  state: ApplicationRunState;
-  stateVersion: number;
-  fillAttemptId: string | null;
-  fillLeaseExpiresAt: string | null;
-  leaseLive: boolean;
-  expiredRecoveryRequired: boolean;
-  fieldOperationAllowed: boolean;
-  outcome: FillAttemptOutcome | null;
-  errorCode: FillErrorCode | null;
-  steps: readonly BrowserFillStepResult[];
 }>;
 
 export type BrowserFillAcquireInput = Readonly<{
@@ -283,7 +271,6 @@ const UUID_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3
 const fillEligibleTypes = new Set<string>(FILL_ELIGIBLE_FIELD_TYPES);
 const fillStepResults = new Set<string>(FILL_STEP_RESULTS);
 const fillErrorCodes = new Set<string>(FILL_ERROR_CODES);
-const fillAttemptOutcomes = new Set<string>(FILL_ATTEMPT_OUTCOMES);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -705,77 +692,11 @@ function invalidFillStatusResponse(): SameOriginClientError {
 }
 
 function parseFillStatusResponse(value: unknown): BrowserFillAttemptStatus {
-  if (
-    !isRecord(value) ||
-    !hasExactKeys(value, [
-      "state",
-      "stateVersion",
-      "fillAttemptId",
-      "fillLeaseExpiresAt",
-      "leaseLive",
-      "expiredRecoveryRequired",
-      "fieldOperationAllowed",
-      "outcome",
-      "errorCode",
-      "steps"
-    ]) ||
-    !isKnownRunState(value.state) ||
-    !isSafeNonnegativeInteger(value.stateVersion) ||
-    !(value.fillAttemptId === null || isUuid(value.fillAttemptId)) ||
-    !(value.fillLeaseExpiresAt === null || isCanonicalIsoDate(value.fillLeaseExpiresAt)) ||
-    typeof value.leaseLive !== "boolean" ||
-    typeof value.expiredRecoveryRequired !== "boolean" ||
-    typeof value.fieldOperationAllowed !== "boolean" ||
-    !(value.outcome === null || (
-      typeof value.outcome === "string" && fillAttemptOutcomes.has(value.outcome)
-    )) ||
-    !(value.errorCode === null || isFillErrorCode(value.errorCode)) ||
-    !Array.isArray(value.steps) ||
-    value.steps.length > MAX_FIELDS_TOTAL
-  ) {
+  try {
+    return parseSharedFillStatusResponse(value);
+  } catch {
     throw invalidFillStatusResponse();
   }
-
-  const stepKeys = new Set<string>();
-  const steps = value.steps.map((candidate): BrowserFillStepResult => {
-    if (
-      !isRecord(candidate) ||
-      !hasExactKeys(candidate, ["stepKey", "result", "errorCode"]) ||
-      typeof candidate.stepKey !== "string" ||
-      !isFillStepResult(candidate.result) ||
-      !(candidate.errorCode === null || isFillErrorCode(candidate.errorCode)) ||
-      (candidate.result === "FAILED") !== (candidate.errorCode !== null) ||
-      stepKeys.has(candidate.stepKey) ||
-      (value.fillAttemptId !== null &&
-        (
-          !candidate.stepKey.startsWith(`fill:${value.fillAttemptId}:`) ||
-          !isSha256(candidate.stepKey.slice(`fill:${value.fillAttemptId}:`.length))
-        ))
-    ) {
-      throw invalidFillStatusResponse();
-    }
-    stepKeys.add(candidate.stepKey);
-    return Object.freeze({
-      stepKey: candidate.stepKey,
-      result: candidate.result,
-      errorCode: candidate.errorCode
-    });
-  });
-
-  if (steps.length > 0 && value.fillAttemptId === null) throw invalidFillStatusResponse();
-
-  return Object.freeze({
-    state: value.state,
-    stateVersion: value.stateVersion,
-    fillAttemptId: value.fillAttemptId,
-    fillLeaseExpiresAt: value.fillLeaseExpiresAt,
-    leaseLive: value.leaseLive,
-    expiredRecoveryRequired: value.expiredRecoveryRequired,
-    fieldOperationAllowed: value.fieldOperationAllowed,
-    outcome: value.outcome as FillAttemptOutcome | null,
-    errorCode: value.errorCode,
-    steps: Object.freeze(steps)
-  });
 }
 
 function assertExactInputKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

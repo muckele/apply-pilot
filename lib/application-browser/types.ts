@@ -18,7 +18,26 @@ export type B1Command =
   | { type: "GET_STATUS" }
   | { type: "OPEN_TARGET" }
   | { type: "INSPECT_FORM" }
+  | { type: "FILL_APPROVED_FIELDS" }
   | { type: "CLOSE_WORKFLOW" };
+
+export const B3_FILL_COMMAND_REJECTION_CODES = [
+  "FILL_POLICY_DENIED",
+  "FILL_REVIEW_REQUIRED",
+  "FILL_ALREADY_IN_PROGRESS",
+  "FILL_NO_ELIGIBLE_FIELDS",
+  "FILL_STALE"
+] as const;
+
+export type B3FillCommandRejectionCode =
+  (typeof B3_FILL_COMMAND_REJECTION_CODES)[number];
+
+export type B3FillCommandStatus =
+  | { outcome: "IN_PROGRESS" }
+  | { outcome: "FINALIZED" }
+  | { outcome: "RECOVERY_PENDING" }
+  | { outcome: "CANCELLED" }
+  | { outcome: "REJECTED"; errorCode: B3FillCommandRejectionCode };
 
 export const BROWSER_INSPECTION_RECOVERABLE_CODES = [
   "FORM_INSPECTION_IN_PROGRESS",
@@ -63,6 +82,7 @@ export type B1Status = {
   targetHost?: string;
   errorCode?: string;
   inspection?: B2InspectionCommandStatus;
+  fillCommand?: B3FillCommandStatus;
 };
 
 const immutableRunIdSchema = z.string().cuid();
@@ -119,6 +139,7 @@ export function parseB1Command(value: unknown): B1Command {
     (type !== "GET_STATUS" &&
       type !== "OPEN_TARGET" &&
       type !== "INSPECT_FORM" &&
+      type !== "FILL_APPROVED_FIELDS" &&
       type !== "CLOSE_WORKFLOW")
   ) {
     throw new Error("Invalid B1 command.");
@@ -129,6 +150,7 @@ export function parseB1Command(value: unknown): B1Command {
 export function isB1CommandAllowed(command: B1Command, state: B1WorkflowState): boolean {
   if (command.type === "OPEN_TARGET") return state === "CONTROL_READY";
   if (command.type === "INSPECT_FORM") return state === "TARGET_OPEN";
+  if (command.type === "FILL_APPROVED_FIELDS") return state === "TARGET_OPEN";
   if (command.type === "CLOSE_WORKFLOW") return state !== "CLOSED";
   return state !== "CLOSED";
 }

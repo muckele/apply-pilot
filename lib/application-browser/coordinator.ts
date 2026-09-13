@@ -2,6 +2,7 @@ import type { BrowserContext, Page, Request, Route } from "playwright";
 
 import {
   createGuardedFillOrchestrationService,
+  GuardedFillOrchestrationError,
   type GuardedFillControllerPort,
   type GuardedFillOrchestrationResult
 } from "@/lib/application-browser/fill-orchestration";
@@ -29,10 +30,13 @@ import type {
 import type { ApplicationFormInspectionReport } from "@/lib/application-runs/form-inspection";
 import {
   BROWSER_INSPECTION_RECOVERABLE_CODES,
+  B3_FILL_COMMAND_REJECTION_CODES,
   type B1Command,
   type B1Status,
   type B1WorkflowState,
   type B2InspectionCommandStatus,
+  type B3FillCommandStatus,
+  type B3FillCommandRejectionCode,
   type BrowserInspectionRecoverableCode
 } from "@/lib/application-browser/types";
 
@@ -88,6 +92,7 @@ function errorCode(error: unknown): string {
 }
 
 const RECOVERABLE_INSPECTION_CODES = new Set<string>(BROWSER_INSPECTION_RECOVERABLE_CODES);
+const FILL_COMMAND_REJECTION_CODES = new Set<string>(B3_FILL_COMMAND_REJECTION_CODES);
 const TERMINAL_INSPECTION_CODES = new Set([
   "APPLY_PILOT_AUTH_REQUIRED",
   "EMPLOYER_AUTH_REQUIRED_UNSUPPORTED",
@@ -146,6 +151,7 @@ export class ApplicationBrowserCoordinator {
   private activeFillOperation: symbol | null = null;
   private acquisitionMayHaveDispatchedForRun = false;
   private inspectionStatus: B2InspectionCommandStatus | undefined;
+  private fillCommandStatus: B3FillCommandStatus | undefined;
   private publishedFillAuthority: Readonly<{
     generationId: symbol;
     formInspectionVersion: number;
@@ -172,7 +178,8 @@ export class ApplicationBrowserCoordinator {
       ...(this.workflowErrorCode ? { errorCode: this.workflowErrorCode } : {}),
       ...(this.workflowState === "TARGET_OPEN" && this.inspectionStatus
         ? { inspection: this.inspectionStatus }
-        : {})
+        : {}),
+      ...(this.fillCommandStatus ? { fillCommand: this.fillCommandStatus } : {})
     };
   }
 
@@ -199,6 +206,9 @@ export class ApplicationBrowserCoordinator {
       return this.status();
     }
     if (command.type === "INSPECT_FORM") return this.inspectForm(assertActive);
+    if (command.type === "FILL_APPROVED_FIELDS") {
+      return this.activateApprovedFields(assertActive);
+    }
     return this.openTarget(assertActive);
   }
 
@@ -426,6 +436,7 @@ export class ApplicationBrowserCoordinator {
         reinspectionRequired
       };
       if (!reinspectionRequired && this.inspectionStatus?.outcome === "IN_PROGRESS") {
+        this.fillCommandStatus = undefined;
         this.publishedFillAuthority = Object.freeze({
           generationId: current.generationId,
           formInspectionVersion: published.current.inspectionVersion,
@@ -533,6 +544,45 @@ export class ApplicationBrowserCoordinator {
     } finally {
       if (this.activeFillOperation === fillOperation) this.activeFillOperation = null;
       this.fillInFlight = false;
+    }
+  }
+
+  private async activateApprovedFields(assertActive: () => void): Promise<B1Status> {
+    if (this.workflowState !== "TARGET_OPEN") {
+      throw new ApplicationBrowserError(
+        "FILL_APPROVED_FIELDS is not allowed in this state.",
+        "COMMAND_NOT_ALLOWED"
+      );
+    }
+    if (this.fillCommandStatus !== undefined) return this.status();
+    if (this.publishedFillAuthority === null) {
+      throw new ApplicationBrowserError(
+        "No published protected generation is available for Fill.",
+        "FILL_INTERNAL"
+      );
+    }
+
+    this.fillCommandStatus = Object.freeze({ outcome: "IN_PROGRESS" });
+    try {
+      const result = await this.fillApprovedFields(assertActive);
+      assertActive();
+      this.requireState("TARGET_OPEN");
+      this.fillCommandStatus = Object.freeze({ outcome: result.disposition });
+      return this.status();
+    } catch (error) {
+      if (
+        error instanceof GuardedFillOrchestrationError &&
+        FILL_COMMAND_REJECTION_CODES.has(error.code)
+      ) {
+        assertActive();
+        this.requireState("TARGET_OPEN");
+        this.fillCommandStatus = Object.freeze({
+          outcome: "REJECTED",
+          errorCode: error.code as B3FillCommandRejectionCode
+        });
+        return this.status();
+      }
+      throw error;
     }
   }
 

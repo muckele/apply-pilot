@@ -20,18 +20,25 @@ function fixture() {
   };
   const page = { mainFrame: () => frame };
   const calls: string[] = [];
+  let state: "CONTROL_READY" | "TARGET_OPEN" = "CONTROL_READY";
   const bridge = createControlBridgeInvocationHandler({
     controlPage: page,
     configuredApplyPilotOrigin: ORIGIN,
     immutableRunId: RUN_ID,
-    getState: () => "CONTROL_READY",
+    getState: () => state,
     async execute(command, assertActive) {
       assertActive();
       calls.push(command.type);
       return { state: "CONTROL_READY", runId: RUN_ID };
     }
   });
-  return { bridge, frame, page, calls };
+  return {
+    bridge,
+    frame,
+    page,
+    calls,
+    setState(next: "CONTROL_READY" | "TARGET_OPEN") { state = next; }
+  };
 }
 
 async function terminalInspectionBridgeFixture(input: Readonly<{
@@ -102,15 +109,28 @@ async function terminalInspectionBridgeFixture(input: Readonly<{
   };
 }
 
-test("trusted main-frame invocation accepts only strict B1 commands", async () => {
-  const { bridge, frame, page, calls } = fixture();
+test("trusted main-frame invocation accepts only strict payload-free B1 commands including Fill", async () => {
+  const { bridge, frame, page, calls, setState } = fixture();
   const result = await bridge.invoke({ page, frame }, { type: "GET_STATUS" });
   assert.deepEqual(result, { state: "CONTROL_READY", runId: RUN_ID });
-  assert.deepEqual(calls, ["GET_STATUS"]);
+  setState("TARGET_OPEN");
+  await bridge.invoke({ page, frame }, { type: "FILL_APPROVED_FIELDS" });
+  assert.deepEqual(calls, ["GET_STATUS", "FILL_APPROVED_FIELDS"]);
   await assert.rejects(
     bridge.invoke({ page, frame }, { type: "OPEN_TARGET", url: "https://attacker.example" }),
     /B1 command/i
   );
+  for (const value of [
+    { type: "FILL_APPROVED_FIELDS", runId: RUN_ID },
+    { type: "FILL_APPROVED_FIELDS", proposal: {} },
+    { type: "FILL_APPROVED_FIELDS", answerIds: [] },
+    { type: "FILL_APPROVED_FIELDS", packetHash: "a".repeat(64) },
+    { type: "FILL_APPROVED_FIELDS", formInspectionVersion: 1 },
+    { type: "FILL_APPROVED_FIELDS", selectors: [] }
+  ]) {
+    await assert.rejects(bridge.invoke({ page, frame }, value), /B1 command/i);
+  }
+  assert.deepEqual(calls, ["GET_STATUS", "FILL_APPROVED_FIELDS"]);
 });
 
 test("binding rejects wrong page, child frame, and detached main frame", async () => {

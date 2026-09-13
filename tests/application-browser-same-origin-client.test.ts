@@ -1061,8 +1061,17 @@ test("Fill parsers reject extra, mismatched, duplicate, and malformed authority"
 
   for (const body of [
     fillStatusResponse({ extra: true }),
+    fillStatusResponse({ state: "UNKNOWN" }),
     fillStatusResponse({ stateVersion: -1 }),
+    fillStatusResponse({ stateVersion: Number.MAX_SAFE_INTEGER + 1 }),
+    fillStatusResponse({ fillAttemptId: FILL_ATTEMPT_ID.toUpperCase() }),
     fillStatusResponse({ fillLeaseExpiresAt: "invalid" }),
+    fillStatusResponse({ fillLeaseExpiresAt: "2026-09-10T20:10:00+00:00" }),
+    fillStatusResponse({ leaseLive: 1 }),
+    fillStatusResponse({ expiredRecoveryRequired: 0 }),
+    fillStatusResponse({ fieldOperationAllowed: "true" }),
+    fillStatusResponse({ outcome: "UNKNOWN" }),
+    fillStatusResponse({ errorCode: "PRIVATE_SERVER_MESSAGE" }),
     fillStatusResponse({
       steps: [{
         stepKey: `fill:${FILL_ATTEMPT_ID}:not-a-field-key`,
@@ -1070,7 +1079,21 @@ test("Fill parsers reject extra, mismatched, duplicate, and malformed authority"
         errorCode: null
       }]
     }),
-    fillStatusResponse({ steps: [{ stepKey: STEP_KEY, result: PROPOSAL_SENTINEL, errorCode: null }] })
+    fillStatusResponse({ steps: [{ stepKey: STEP_KEY, result: PROPOSAL_SENTINEL, errorCode: null }] }),
+    fillStatusResponse({ steps: [{ stepKey: STEP_KEY, result: "FAILED", errorCode: null }] }),
+    fillStatusResponse({ steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: "FILL_WRITE_FAILED" }] }),
+    fillStatusResponse({ steps: [
+      { stepKey: STEP_KEY, result: "FILLED", errorCode: null },
+      { stepKey: STEP_KEY, result: "FILLED", errorCode: null }
+    ] }),
+    fillStatusResponse({ fillAttemptId: null, steps: [{ stepKey: STEP_KEY, result: "FILLED", errorCode: null }] }),
+    fillStatusResponse({
+      steps: Array.from({ length: 201 }, (_, index) => ({
+        stepKey: `fill:${FILL_ATTEMPT_ID}:${index.toString(16).padStart(64, "0")}`,
+        result: "FILLED",
+        errorCode: null
+      }))
+    })
   ]) {
     const client = makeClient({ async get(url) { return response(url, 200, body); } });
     await assert.rejects(client.getFillAttemptStatus(RUN_ID), hasCode("INVALID_FILL_STATUS_RESPONSE"));

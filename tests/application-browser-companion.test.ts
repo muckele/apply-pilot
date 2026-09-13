@@ -25,6 +25,24 @@ test("companion owns one protected target inspection controller and closes contr
   let execute!: (command: { type: string }, assertActive: () => void) => Promise<Record<string, unknown>>;
   const report = { schemaVersion: "application-form-inspection.v1", forms: [] } as never;
   const generationId = Symbol("owned-generation");
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const fieldKey = "a".repeat(64);
+  const fieldFingerprint = "b".repeat(64);
+  const formFingerprint = "c".repeat(64);
+  const stepKey = `fill:${attemptId}:${fieldKey}`;
+  let packetReads = 0;
+  const liveFillStatus = {
+    state: "FILLING" as const,
+    stateVersion: 3,
+    fillAttemptId: attemptId,
+    fillLeaseExpiresAt: "2099-09-10T20:10:00.000Z",
+    leaseLive: true,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: true,
+    outcome: null,
+    errorCode: null,
+    steps: []
+  };
 
   const running = runApplicationBrowserCompanion(
     ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
@@ -43,10 +61,57 @@ test("companion owns one protected target inspection controller and closes contr
         async getAutomationPolicy() {
           return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
         },
-        async getCurrentAnswerPacket() { return { runId: RUN_ID, current: null }; },
+        async getCurrentAnswerPacket() {
+          return {
+            runId: RUN_ID,
+            current: packetReads++ === 0
+              ? null
+              : { inspectionVersion: 1, answerPacketVersion: 1 }
+          };
+        },
         async publishFormInspection(_input: unknown, assertReadyToDispatch: () => void) {
           assertReadyToDispatch();
           return { replayed: true, run: { id: RUN_ID, state: "READY", stateVersion: 3 }, current: { inspectionVersion: 1, answerPacketVersion: 1 } };
+        },
+        async acquireFillAttempt(_input: unknown, assertReadyToDispatch: () => void) {
+          calls.push("fill-acquire");
+          assertReadyToDispatch();
+          return {
+            attemptId,
+            runStateVersion: 3,
+            leaseExpiresAt: liveFillStatus.fillLeaseExpiresAt,
+            formInspectionVersion: 1,
+            answerPacketVersion: 1,
+            packetHash: "d".repeat(64),
+            formFingerprint,
+            eligibleFields: [{
+              stepKey,
+              normalizedFieldKey: fieldKey,
+              fieldFingerprint,
+              fieldType: "TEXT" as const,
+              proposal: { kind: "SCALAR" as const, value: "private-proposal-sentinel" }
+            }]
+          };
+        },
+        async getFillAttemptStatus() {
+          return structuredClone(liveFillStatus);
+        },
+        async finalizeFillAttempt(_input: unknown, assertReadyToDispatch: () => void) {
+          calls.push("fill-finalize");
+          assertReadyToDispatch();
+          return {
+            ...liveFillStatus,
+            state: "READY_FOR_USER_SUBMISSION" as const,
+            stateVersion: 4,
+            fillLeaseExpiresAt: null,
+            leaseLive: false,
+            fieldOperationAllowed: false,
+            outcome: "COMPLETED" as const,
+            steps: [{ stepKey, result: "FILLED" as const, errorCode: null }]
+          };
+        },
+        async recoverExpiredFillAttempt(): Promise<never> {
+          throw new Error("unexpected recovery");
         }
       }),
       createTargetController: () => ({
@@ -63,6 +128,15 @@ test("companion owns one protected target inspection controller and closes contr
           async inspect() { return { generationId, inspectionReport: report }; },
           current: () => null,
           async assertCurrent() { return { generationId, inspectionReport: report }; },
+          assertAcquiredFillAuthority(id: symbol) {
+            assert.equal(id, generationId);
+            calls.push("fill-authority-bound");
+          },
+          async writeApprovedField(id: symbol) {
+            assert.equal(id, generationId);
+            calls.push("fill-write");
+            return { status: "FILLED" as const };
+          },
           async close() { calls.push("controller-close"); }
         };
       },
@@ -86,6 +160,13 @@ test("companion owns one protected target inspection controller and closes contr
     answerPacketVersion: 1,
     reinspectionRequired: false
   });
+  const filled = await execute({ type: "FILL_APPROVED_FIELDS" }, () => undefined);
+  assert.deepEqual((filled as { fillCommand?: unknown }).fillCommand, { outcome: "FINALIZED" });
+  assert.equal(calls.filter((call) => call === "fill-acquire").length, 1);
+  assert.deepEqual(
+    calls.filter((call) => call.startsWith("fill-")),
+    ["fill-acquire", "fill-authority-bound", "fill-write", "fill-finalize"]
+  );
   await execute({ type: "CLOSE_WORKFLOW" }, () => undefined);
   await running;
   assert.deepEqual(calls.slice(-3), ["controller-close", "target-close", "runtime-close"]);

@@ -149,6 +149,444 @@ const REACHABILITY_EXCLUDED_SOURCE_DIRECTORIES = new Set([
 
 type SourceFixture = Readonly<{ path: string; source: string }>;
 
+const COMMIT_2E_ACTIVATION_ROOTS = [
+  "components/application-browser-control.tsx",
+  "lib/application-browser/control-bridge.ts",
+  "lib/application-browser/coordinator.ts",
+  "scripts/application-browser-companion.ts"
+] as const;
+
+const COMMIT_2E_PROHIBITED_METHODS = new Map<string, string>([
+  ["click", "employer click or pointer interaction"],
+  ["dblclick", "employer double-click or pointer interaction"],
+  ["focus", "employer focus interaction"],
+  ["press", "keyboard interaction"],
+  ["type", "keyboard interaction"],
+  ["insertText", "keyboard interaction"],
+  ["sendCharacter", "keyboard interaction"],
+  ["down", "keyboard, mouse, or pointer interaction"],
+  ["up", "keyboard, mouse, or pointer interaction"],
+  ["move", "mouse or pointer interaction"],
+  ["wheel", "mouse interaction"],
+  ["tap", "touchscreen or pointer interaction"],
+  ["hover", "mouse or pointer interaction"],
+  ["dragTo", "mouse or pointer interaction"],
+  ["check", "employer control interaction"],
+  ["uncheck", "employer control interaction"],
+  ["fill", "generic employer-page mutation"],
+  ["selectOption", "generic employer-page mutation"],
+  ["dispatchEvent", "generic employer-page event mutation"],
+  ["setContent", "generic employer-page mutation"],
+  ["addScriptTag", "generic employer-page evaluation or mutation"],
+  ["addStyleTag", "generic employer-page mutation"],
+  ["setInputFiles", "file upload interaction"],
+  ["setFiles", "file chooser upload interaction"],
+  ["goto", "browser navigation"],
+  ["goBack", "browser navigation"],
+  ["goForward", "browser navigation"],
+  ["reload", "browser navigation"],
+  ["newPage", "browser page or popup expansion"],
+  ["evaluate", "generic employer-page evaluation"],
+  ["evaluateHandle", "generic employer-page evaluation"],
+  ["$eval", "generic employer-page evaluation"],
+  ["$$eval", "generic employer-page evaluation"],
+  ["requestSubmit", "form submission"],
+  ["submit", "form submission"]
+]);
+
+type ActivationAlias = Readonly<{ method: string; capability: string }>;
+
+function commit2EActivationAuthorityViolations(
+  fixtures: readonly SourceFixture[],
+  rootPaths: readonly string[] = COMMIT_2E_ACTIVATION_ROOTS
+): string[] {
+  const sources = new Map(fixtures.map((fixture) => [fixture.path, fixture.source]));
+  const violations = new Set<string>();
+  const reachable = new Set<string>();
+
+  const normalizedRepositoryPath = (value: string): string =>
+    value.replaceAll("\\", "/").replace(/^\.\//u, "");
+  const isRepositoryLocalSpecifier = (specifier: string): boolean =>
+    specifier.startsWith("@/") || specifier.startsWith(".");
+  const resolveLocalModule = (importer: string, specifier: string): string | null => {
+    let base: string;
+    if (specifier.startsWith("@/")) {
+      base = specifier.slice(2);
+    } else if (specifier.startsWith(".")) {
+      base = normalizedRepositoryPath(join(dirname(importer), specifier));
+    } else {
+      return null;
+    }
+    if (base === ".." || base.startsWith("../") || base.startsWith("/")) return null;
+    const withoutRuntimeExtension = base.replace(/\.[cm]?js$/u, "");
+    const candidates = /\.[cm]?[jt]sx?$/u.test(base)
+      ? [base]
+      : [
+          ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"
+        ].flatMap((extension) => [
+          `${withoutRuntimeExtension}${extension}`,
+          `${withoutRuntimeExtension}/index${extension}`
+        ]);
+    return candidates.map(normalizedRepositoryPath).find((candidate) => sources.has(candidate)) ?? null;
+  };
+  const runtimeImportSpecifiers = (path: string, sourceText: string): string[] => {
+    const sourceFile = ts.createSourceFile(
+      path,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    );
+    const specifiers: string[] = [];
+    const isDirectLiteralRequireCallee = (node: ts.Identifier): boolean =>
+      ts.isCallExpression(node.parent) &&
+      node.parent.expression === node &&
+      node.parent.arguments.length === 1 &&
+      ts.isStringLiteralLike(node.parent.arguments[0]);
+    const isNonValueRequireName = (node: ts.Identifier): boolean => {
+      const parent = node.parent;
+      if (ts.isShorthandPropertyAssignment(parent) && parent.name === node) return false;
+      const namedParent = parent as ts.Node & {
+        readonly name?: ts.Node;
+        readonly propertyName?: ts.Node;
+      };
+      return (
+        namedParent.name === node ||
+        namedParent.propertyName === node ||
+        (ts.isQualifiedName(parent) && parent.right === node) ||
+        (ts.isLabeledStatement(parent) && parent.label === node) ||
+        (ts.isBreakOrContinueStatement(parent) && parent.label === node)
+      );
+    };
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isIdentifier(node) &&
+        node.text === "require" &&
+        !isDirectLiteralRequireCallee(node) &&
+        !isNonValueRequireName(node)
+      ) {
+        const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        violations.add(
+          `${path}:${location.line + 1}:${location.character + 1}: ` +
+          "CommonJS require loader alias/escape is not permitted"
+        );
+      }
+      if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+        const clause = node.importClause;
+        const hasRuntimeBinding = clause === undefined || (
+          !clause.isTypeOnly && (
+            clause.name !== undefined ||
+            clause.namedBindings === undefined ||
+            ts.isNamespaceImport(clause.namedBindings) ||
+            clause.namedBindings.elements.some((element) => !element.isTypeOnly)
+          )
+        );
+        if (hasRuntimeBinding) specifiers.push(node.moduleSpecifier.text);
+        return;
+      }
+      if (
+        ts.isExportDeclaration(node) &&
+        node.moduleSpecifier &&
+        ts.isStringLiteralLike(node.moduleSpecifier)
+      ) {
+        const hasRuntimeBinding = !node.isTypeOnly && (
+          node.exportClause === undefined ||
+          ts.isNamespaceExport(node.exportClause) ||
+          node.exportClause.elements.some((element) => !element.isTypeOnly)
+        );
+        if (hasRuntimeBinding) specifiers.push(node.moduleSpecifier.text);
+        return;
+      }
+      if (
+        ts.isImportEqualsDeclaration(node) &&
+        !node.isTypeOnly &&
+        ts.isExternalModuleReference(node.moduleReference) &&
+        node.moduleReference.expression &&
+        ts.isStringLiteralLike(node.moduleReference.expression)
+      ) {
+        specifiers.push(node.moduleReference.expression.text);
+        return;
+      }
+      if (
+        ts.isCallExpression(node) &&
+        node.arguments.length >= 1 &&
+        ts.isStringLiteralLike(node.arguments[0]) &&
+        (
+          node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+          (node.arguments.length === 1 && ts.isIdentifier(node.expression) && node.expression.text === "require")
+        )
+      ) {
+        specifiers.push(node.arguments[0].text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return specifiers;
+  };
+  const visitReachability = (path: string): void => {
+    if (reachable.has(path)) return;
+    reachable.add(path);
+    const sourceText = sources.get(path);
+    if (sourceText === undefined) return;
+    for (const specifier of runtimeImportSpecifiers(path, sourceText)) {
+      const resolved = resolveLocalModule(path, specifier);
+      if (resolved !== null) {
+        visitReachability(resolved);
+      } else if (isRepositoryLocalSpecifier(specifier)) {
+        violations.add(`${path}: unresolved repository-local runtime import ${specifier}`);
+      }
+    }
+  };
+
+  for (const path of rootPaths) {
+    if (!sources.has(path)) violations.add(`${path}: activation authority root is missing`);
+    visitReachability(path);
+  }
+
+  const unwrapExpression = (expression: ts.Expression): ts.Expression => {
+    let current = expression;
+    while (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+    }
+    return current;
+  };
+  const staticName = (node: ts.Node | undefined): string | null => {
+    if (!node) return null;
+    if (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) return node.text;
+    if (ts.isComputedPropertyName(node)) return staticName(node.expression);
+    return null;
+  };
+  const memberName = (expression: ts.Expression): string | null => {
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isPropertyAccessExpression(unwrapped)) return unwrapped.name.text;
+    if (ts.isElementAccessExpression(unwrapped)) return staticName(unwrapped.argumentExpression);
+    return null;
+  };
+  const memberReceiver = (expression: ts.Expression): ts.Expression | null => {
+    const unwrapped = unwrapExpression(expression);
+    return ts.isPropertyAccessExpression(unwrapped) || ts.isElementAccessExpression(unwrapped)
+      ? unwrapExpression(unwrapped.expression)
+      : null;
+  };
+  const directAlias = (expression: ts.Expression, aliases: ReadonlyMap<string, ActivationAlias>): ActivationAlias | null => {
+    const unwrapped = unwrapExpression(expression);
+    if (ts.isIdentifier(unwrapped)) return aliases.get(unwrapped.text) ?? null;
+    const method = memberName(unwrapped);
+    if (method !== null) {
+      const capability = COMMIT_2E_PROHIBITED_METHODS.get(method);
+      if (capability !== undefined) return { method, capability };
+      if (method === "open") {
+        const receiver = memberReceiver(unwrapped);
+        if (receiver && ts.isIdentifier(receiver) && ["globalThis", "self", "window"].includes(receiver.text)) {
+          return { method, capability: "browser popup expansion" };
+        }
+      }
+      if (method === "bind" || method === "call" || method === "apply") {
+        const receiver = memberReceiver(unwrapped);
+        return receiver === null ? null : directAlias(receiver, aliases);
+      }
+    }
+    return null;
+  };
+  const enclosingFunctionName = (node: ts.Node): string | null => {
+    for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+      if (ts.isFunctionDeclaration(current)) return current.name?.text ?? null;
+      if (ts.isMethodDeclaration(current)) return staticName(current.name);
+    }
+    return null;
+  };
+  const exactReviewedCallSite = (path: string, call: ts.CallExpression, method: string): string | null => {
+    const callee = unwrapExpression(call.expression).getText();
+    const firstArgument = call.arguments[0]?.getText() ?? "";
+    if (
+      path === "scripts/application-browser-companion.ts" &&
+      method === "goto" &&
+      callee === "controlPage.goto" &&
+      firstArgument === "trustedUrl" &&
+      enclosingFunctionName(call) === "runApplicationBrowserCompanion"
+    ) return "companion controlPage.goto(trustedUrl)";
+    if (
+      path === "lib/application-browser/coordinator.ts" &&
+      method === "goto" &&
+      callee === "openingPage.goto" &&
+      firstArgument === "openInput.target.url.toString()" &&
+      enclosingFunctionName(call) === "open"
+    ) return "coordinator openingPage.goto(frozen target)";
+    if (
+      path === "lib/application-browser/coordinator.ts" &&
+      method === "newPage" &&
+      callee === "input.context.newPage" &&
+      call.arguments.length === 0 &&
+      enclosingFunctionName(call) === "open"
+    ) return "coordinator input.context.newPage()";
+    if (
+      path === "lib/application-browser/browser-runtime.ts" &&
+      method === "newPage" &&
+      callee === "context.newPage" &&
+      call.arguments.length === 0 &&
+      enclosingFunctionName(call) === "launchApplicationBrowserRuntimeWithLauncherForTest"
+    ) return "browser runtime context.newPage()";
+    return null;
+  };
+  const protocolCapability = (method: string): string | null => {
+    if (method === "Runtime.evaluate" || method === "Runtime.callFunctionOn") {
+      return "generic employer-page CDP evaluation";
+    }
+    if (method === "DOM.setFileInputFiles") return "CDP file upload interaction";
+    if (method === "Page.navigate" || method === "Page.reload" || method === "Target.createTarget") {
+      return "CDP navigation or page expansion";
+    }
+    if (method.startsWith("Input.dispatch")) return "CDP keyboard, mouse, pointer, or touch interaction";
+    return null;
+  };
+  const isExactReviewedProtocolCall = (path: string, call: ts.CallExpression, protocolMethod: string): boolean =>
+    path === "lib/application-browser/protected-browser-session.ts" &&
+    unwrapExpression(call.expression).getText() === "exactCdp.send" &&
+    (protocolMethod === "Runtime.evaluate" || protocolMethod === "Runtime.callFunctionOn");
+  const reviewedCallSiteCounts = new Map<string, number>();
+
+  for (const path of [...reachable].sort()) {
+    const sourceText = sources.get(path);
+    if (sourceText === undefined) continue;
+    const sourceFile = ts.createSourceFile(
+      path,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true,
+      path.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+    );
+    const aliases = new Map<string, ActivationAlias>();
+    const addViolation = (node: ts.Node, detail: string): void => {
+      const location = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+      violations.add(`${path}:${location.line + 1}:${location.character + 1}: ${detail}`);
+    };
+    const rememberAlias = (name: ts.BindingName | ts.Expression, alias: ActivationAlias | null): void => {
+      if (alias !== null && ts.isIdentifier(name)) aliases.set(name.text, alias);
+    };
+    const visit = (node: ts.Node): void => {
+      if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+        const method = node.propertyName
+          ? staticName(node.propertyName)
+          : !node.dotDotDotToken && ts.isIdentifier(node.name)
+            ? node.name.text
+            : null;
+        if (method !== null) {
+          const capability = COMMIT_2E_PROHIBITED_METHODS.get(method);
+          if (capability !== undefined) rememberAlias(node.name, { method, capability });
+        }
+      } else if (ts.isVariableDeclaration(node) && node.initializer) {
+        rememberAlias(node.name, directAlias(node.initializer, aliases));
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isIdentifier(node.left)
+      ) {
+        rememberAlias(node.left, directAlias(node.right, aliases));
+      }
+
+      if (ts.isCallExpression(node)) {
+        const expression = unwrapExpression(node.expression);
+        let alias: ActivationAlias | null = null;
+        if (ts.isIdentifier(expression)) {
+          alias = aliases.get(expression.text) ?? null;
+          if (expression.text === "eval" || expression.text === "Function") {
+            alias = { method: expression.text, capability: "generic employer-page evaluation" };
+          } else if (expression.text === "open") {
+            alias = { method: expression.text, capability: "browser popup expansion" };
+          }
+        } else {
+          const method = memberName(expression);
+          if (method !== null && (method === "call" || method === "apply" || method === "bind")) {
+            const receiver = memberReceiver(expression);
+            alias = receiver === null ? null : directAlias(receiver, aliases);
+          } else {
+            alias = directAlias(expression, aliases);
+          }
+        }
+
+        const method = alias?.method ?? memberName(expression);
+        if (alias !== null) {
+          const reviewedCallSite = exactReviewedCallSite(path, node, method ?? alias.method);
+          if (reviewedCallSite === null) {
+            addViolation(node, `prohibited ${alias.capability} via ${alias.method}`);
+          } else {
+            const count = (reviewedCallSiteCounts.get(reviewedCallSite) ?? 0) + 1;
+            reviewedCallSiteCounts.set(reviewedCallSite, count);
+            if (count > 1) {
+              addViolation(node, `reviewed navigation call site may appear only once: ${reviewedCallSite}`);
+            }
+          }
+        }
+
+        const directMethod = memberName(expression);
+        const receiver = memberReceiver(expression);
+        if (
+          directMethod === "get" &&
+          receiver &&
+          ts.isIdentifier(receiver) &&
+          receiver.text === "Reflect"
+        ) {
+          const reflectedMethod = staticName(node.arguments[1]);
+          const capability = reflectedMethod === null
+            ? undefined
+            : COMMIT_2E_PROHIBITED_METHODS.get(reflectedMethod);
+          if (reflectedMethod !== null && capability !== undefined) {
+            addViolation(node, `prohibited reflected ${capability} via ${reflectedMethod}`);
+          }
+        }
+        if (
+          directMethod === "apply" &&
+          receiver &&
+          ts.isIdentifier(receiver) &&
+          receiver.text === "Reflect" &&
+          node.arguments[0]
+        ) {
+          const reflectedAlias = directAlias(node.arguments[0], aliases);
+          if (reflectedAlias !== null) {
+            addViolation(node, `prohibited reflected ${reflectedAlias.capability} via ${reflectedAlias.method}`);
+          }
+        }
+        if (
+          directMethod === "on" ||
+          directMethod === "once" ||
+          directMethod === "waitForEvent" ||
+          directMethod === "expectEvent"
+        ) {
+          const eventName = staticName(node.arguments[0]);
+          if (eventName === "filechooser") addViolation(node, "prohibited file chooser authority");
+          if (eventName === "popup") addViolation(node, "prohibited popup authority");
+        }
+        if (
+          directMethod === "send" &&
+          node.arguments[0] &&
+          ts.isStringLiteralLike(node.arguments[0])
+        ) {
+          const protocolMethod = node.arguments[0].text;
+          const capability = protocolCapability(protocolMethod);
+          if (capability !== null && !isExactReviewedProtocolCall(path, node, protocolMethod)) {
+            addViolation(node, `prohibited ${capability} via ${protocolMethod}`);
+          }
+        }
+      } else if (ts.isNewExpression(node)) {
+        const constructor = unwrapExpression(node.expression);
+        if (ts.isIdentifier(constructor) && constructor.text === "Function") {
+          addViolation(node, "prohibited generic employer-page evaluation via Function");
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
+  return [...violations].sort();
+}
+
 function productionInspectionAuthorityViolations(
   fixtures: readonly SourceFixture[],
   rootPath = "scripts/application-browser-companion.ts"
@@ -954,6 +1392,159 @@ test("the protected session public API remains the exact reviewed V2 surface", a
     methods,
     [...EXPECTED_PROTECTED_SESSION_METHODS],
     "Protected session public methods must match the exact bounded V2 surface and must not add generic interaction, navigation, submission, upload, keyboard, or caller-supplied evaluation authority."
+  );
+});
+
+test("Commit 2E activation adds no employer interaction, upload, or submission primitive", async () => {
+  const paths = COMMIT_2E_ACTIVATION_ROOTS;
+  const graphSources = await productionReachabilityFixtures();
+  const sourceByPath = new Map(graphSources.map((fixture) => [fixture.path, fixture.source]));
+  const sources = paths.map((path) => ({ path, source: sourceByPath.get(path) ?? "" }));
+
+  assert.deepEqual(
+    commit2EActivationAuthorityViolations(graphSources),
+    [],
+    "the Commit 2E activation graph must not gain employer action authority"
+  );
+
+  const component = sources.find((fixture) => fixture.path === "components/application-browser-control.tsx")!.source;
+  const coordinator = sources.find((fixture) => fixture.path === "lib/application-browser/coordinator.ts")!.source;
+  const bridge = sources.find((fixture) => fixture.path === "lib/application-browser/control-bridge.ts")!.source;
+  const companion = sources.find((fixture) => fixture.path === "scripts/application-browser-companion.ts")!.source;
+  assert.equal(
+    component.match(/binding\(\{ type: "FILL_APPROVED_FIELDS" \}\)/gu)?.length,
+    1,
+    "the explicit control action must invoke the existing binding exactly once"
+  );
+  assert.equal(
+    coordinator.match(/this\.fillApprovedFields\(assertActive\)/gu)?.length,
+    1,
+    "the coordinator command must reuse exactly one guarded Fill orchestration entry"
+  );
+  assert.equal(bridge.includes("FILL_APPROVED_FIELDS"), false, "the generic trusted bridge needs no Fill-specific authority");
+  assert.equal(companion.includes("FILL_APPROVED_FIELDS"), false, "the existing companion needs no second Fill path");
+});
+
+test("Commit 2E activation authority scanner detects representative indirect and transitive variants", () => {
+  const cases: ReadonlyArray<Readonly<{
+    name: string;
+    fixtures: readonly SourceFixture[];
+  }>> = [
+    { name: "direct dot call", fixtures: [{ path: "root.ts", source: "employer.click();" }] },
+    { name: "bracket property call", fixtures: [{ path: "root.ts", source: 'employer["click"]();' }] },
+    { name: "aliased destructured call", fixtures: [{ path: "root.ts", source: "const { focus: takeFocus } = employer; takeFocus();" }] },
+    {
+      name: "transitive imported helper",
+      fixtures: [
+        { path: "root.ts", source: 'import { interact } from "./helper"; interact();' },
+        { path: "helper.ts", source: "export function interact() { employer.dblclick(); }" }
+      ]
+    },
+    { name: "keyboard alternate method", fixtures: [{ path: "root.ts", source: "page.keyboard.insertText('private');" }] },
+    { name: "mouse pointer alternate method", fixtures: [{ path: "root.ts", source: "page.mouse.move(10, 20);" }] },
+    { name: "navigation", fixtures: [{ path: "root.ts", source: "page.goForward();" }] },
+    { name: "generic evaluation", fixtures: [{ path: "root.ts", source: "page.evaluate(() => employer.mutate());" }] },
+    { name: "prototype submit", fixtures: [{ path: "root.ts", source: "HTMLFormElement.prototype.submit.call(form);" }] },
+    { name: "reflected prototype submit", fixtures: [{ path: "root.ts", source: "Reflect.apply(HTMLFormElement.prototype.submit, form, []);" }] },
+    { name: "reflected submit", fixtures: [{ path: "root.ts", source: 'Reflect.get(form, "requestSubmit").call(form);' }] },
+    { name: "submit event dispatch", fixtures: [{ path: "root.ts", source: 'form.dispatchEvent(new Event("formdata"));' }] },
+    { name: "popup", fixtures: [{ path: "root.ts", source: 'window["open"]("https://employer.invalid");' }] },
+    { name: "file chooser", fixtures: [{ path: "root.ts", source: 'page.waitForEvent("filechooser");' }] },
+    { name: "upload", fixtures: [{ path: "root.ts", source: 'input["setInputFiles"]("private.pdf");' }] },
+    { name: "CDP upload", fixtures: [{ path: "root.ts", source: 'cdp.send("DOM.setFileInputFiles", {});' }] }
+  ];
+
+  const missed = cases
+    .filter((fixtureCase) => commit2EActivationAuthorityViolations(fixtureCase.fixtures, ["root.ts"]).length === 0)
+    .map((fixtureCase) => fixtureCase.name);
+  assert.deepEqual(missed, []);
+});
+
+test("Commit 2E activation authority scanner rejects an escaped CommonJS require loader", () => {
+  const violations = commit2EActivationAuthorityViolations([
+    { path: "root.ts", source: 'const load = require; load("./helper");' },
+    { path: "helper.ts", source: "export function interact() { employer.click(); }" }
+  ], ["root.ts"]);
+
+  assert.ok(
+    violations.some((violation) => violation.includes("CommonJS require loader alias/escape is not permitted")),
+    `expected an escaped-require violation; observed ${JSON.stringify(violations)}`
+  );
+});
+
+test("Commit 2E activation authority scanner rejects representative bare require escapes", () => {
+  const cases = [
+    { name: "const alias", source: "const load = require;" },
+    { name: "assignment alias", source: "let load; load = require;" },
+    { name: "argument escape", source: "someFn(require);" },
+    { name: "object escape", source: "const loaders = { load: require };" },
+    { name: "bound alias", source: "const load = require.bind(null);" }
+  ] as const;
+
+  const missed = cases
+    .filter(({ source }) => !commit2EActivationAuthorityViolations(
+      [{ path: "root.ts", source }],
+      ["root.ts"]
+    ).some((violation) => violation.includes("CommonJS require loader alias/escape is not permitted")))
+    .map(({ name }) => name);
+
+  assert.deepEqual(missed, []);
+});
+
+test("Commit 2E activation authority scanner preserves direct literal require traversal", () => {
+  for (const source of [
+    'require("./helper");',
+    'const helper = require("./helper");',
+    'const { helper } = require("./helper");'
+  ]) {
+    const violations = commit2EActivationAuthorityViolations([
+      { path: "root.ts", source },
+      { path: "helper.ts", source: "employer.click();" }
+    ], ["root.ts"]);
+
+    assert.ok(
+      violations.some((violation) => violation.includes("helper.ts:1:1: prohibited employer click")),
+      `expected direct require traversal into helper.ts; observed ${JSON.stringify(violations)}`
+    );
+    assert.equal(
+      violations.some((violation) => violation.includes("CommonJS require loader alias/escape is not permitted")),
+      false,
+      `direct literal require must not be rejected; observed ${JSON.stringify(violations)}`
+    );
+  }
+});
+
+test("Commit 2E activation authority scanner does not confuse require names with loader escapes", () => {
+  for (const source of [
+    'obj.require("./helper");',
+    'something["require"]("./helper");',
+    "function require(input: string) { return input; }",
+    "const require = (input: string) => input;",
+    "const object = { require: localLoader };"
+  ]) {
+    const violations = commit2EActivationAuthorityViolations([{ path: "root.ts", source }], ["root.ts"]);
+    assert.equal(
+      violations.some((violation) => violation.includes("CommonJS require loader alias/escape is not permitted")),
+      false,
+      `non-loader require syntax must not be rejected; observed ${JSON.stringify(violations)}`
+    );
+  }
+});
+
+test("Commit 2E activation authority scanner allows each reviewed navigation site at most once", () => {
+  const violations = commit2EActivationAuthorityViolations([{
+    path: "scripts/application-browser-companion.ts",
+    source: `
+      export async function runApplicationBrowserCompanion() {
+        await controlPage.goto(trustedUrl, { waitUntil: "domcontentloaded" });
+        await controlPage.goto(trustedUrl, { waitUntil: "domcontentloaded" });
+      }
+    `
+  }], ["scripts/application-browser-companion.ts"]);
+
+  assert.ok(
+    violations.some((violation) => violation.includes("reviewed navigation call site may appear only once")),
+    "duplicating an exact allowlisted navigation call must not expand authority"
   );
 });
 

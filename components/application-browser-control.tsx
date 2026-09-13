@@ -5,14 +5,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
 import {
   applyAuthoritativeBrowserStatus,
+  apparentAutomatableFieldCount,
   bindingRejectionPlan,
   browserCommandAvailability,
   buildAnswerReviewRequest,
   buildResolveReviewRequest,
   derivePacketFreshness,
+  deriveManualFieldPresentations,
   dispositionMessage,
   isAnswerReviewEligible,
   isAnswerReviewPostconditionCurrent,
+  isAnswerReviewMutationEligible,
+  isFillActivationEligible,
   isResolveReviewEligible,
   isResolveReviewPostconditionCurrent,
   parseApplicationRunReviewResponse,
@@ -31,6 +35,13 @@ import {
   type PendingBrowserCommand,
   type ResolveReviewMutationSnapshot
 } from "@/lib/application-browser/control-presentation";
+import {
+  fillStatusPresentation,
+  parseFillStatusResponse,
+  reconcileFillStatusSnapshot,
+  stoppedFillErrorDescription,
+  type BrowserFillAttemptStatus
+} from "@/lib/application-browser/fill-status-presentation";
 import {
   APPLICATION_BROWSER_BINDING_NAME,
   type B1Command,
@@ -57,12 +68,32 @@ type ReviewAuthorityRefreshResult =
   | Readonly<{ outcome: "SUPERSEDED" }>
   | Readonly<{ outcome: "INACTIVE" }>;
 
+type FillStatusLoad = {
+  phase: "idle" | "loading" | "loaded" | "error";
+  status: BrowserFillAttemptStatus | null;
+  verified: boolean;
+  notice: CommandNotice | null;
+};
+
+type FillStatusRefreshResult =
+  | Readonly<{ outcome: "COMMITTED"; verified: boolean }>
+  | Readonly<{ outcome: "FAILED" }>
+  | Readonly<{ outcome: "SUPERSEDED" }>
+  | Readonly<{ outcome: "INACTIVE" }>;
+
 const initialReviewLoad: ReviewLoad = {
   phase: "idle",
   run: null,
   packet: null,
   latestResponseWasNull: false,
   unverified: false,
+  notice: null
+};
+
+const initialFillStatusLoad: FillStatusLoad = {
+  phase: "idle",
+  status: null,
+  verified: false,
   notice: null
 };
 
@@ -102,7 +133,13 @@ function displayDate(value: string | null): string {
   return value === null ? "Not acknowledged" : new Date(value).toLocaleString();
 }
 
-export function ApplicationBrowserControl({ runId }: { runId: string }) {
+export function ApplicationBrowserControl({
+  runId,
+  authenticatedOwnerPage
+}: {
+  runId: string;
+  authenticatedOwnerPage: boolean;
+}) {
   const [status, setStatus] = useState<B1Status>({ state: "STARTING", runId });
   const [controlConnection, setControlConnection] = useState<ControlConnection>("UNKNOWN");
   const [hasAcceptedAuthoritativeStatus, setHasAcceptedAuthoritativeStatus] = useState(false);
@@ -112,16 +149,25 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     text: "Start the local companion, then refresh status."
   });
   const [reviewLoad, setReviewLoad] = useState<ReviewLoad>(initialReviewLoad);
+  const [fillStatusLoad, setFillStatusLoad] = useState<FillStatusLoad>(initialFillStatusLoad);
   const [pendingReviewMutation, setPendingReviewMutation] = useState<PendingReviewMutation>(null);
+  const [pendingFillActivation, setPendingFillActivation] = useState(false);
+  const [fillMayHaveDispatched, setFillMayHaveDispatched] = useState(false);
   const [lastAcceptedInspection, setLastAcceptedInspection] = useState<B2InspectionCommandStatus | null>(null);
   const [formInvalidatedSinceVerifiedSuccess, setFormInvalidatedSinceVerifiedSuccess] = useState(false);
 
   const statusRef = useRef(status);
   const reviewLoadRef = useRef(reviewLoad);
+  const fillStatusLoadRef = useRef(fillStatusLoad);
   const formInvalidatedRef = useRef(formInvalidatedSinceVerifiedSuccess);
   const reviewRequestSequenceRef = useRef(0);
   const reviewAbortControllerRef = useRef<AbortController | null>(null);
+  const fillStatusRequestSequenceRef = useRef(0);
+  const fillStatusAbortControllerRef = useRef<AbortController | null>(null);
+  const pendingCommandRef = useRef<PendingBrowserCommand>(null);
   const pendingReviewMutationRef = useRef<PendingReviewMutation>(null);
+  const pendingFillActivationRef = useRef(false);
+  const fillMayHaveDispatchedRef = useRef(false);
   const mutationAbortControllerRef = useRef<AbortController | null>(null);
   const lastAutoRefreshAttemptKeyRef = useRef<string | null>(null);
   const componentGenerationRef = useRef(0);
@@ -132,6 +178,19 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     reviewLoadRef.current = next;
     setReviewLoad(next);
   }, []);
+
+  const updateFillStatusLoad = useCallback((update: (current: FillStatusLoad) => FillStatusLoad) => {
+    const next = update(fillStatusLoadRef.current);
+    fillStatusLoadRef.current = next;
+    setFillStatusLoad(next);
+  }, []);
+
+  const invalidateFillStatusAuthority = useCallback(() => {
+    fillStatusRequestSequenceRef.current += 1;
+    fillStatusAbortControllerRef.current?.abort();
+    fillStatusAbortControllerRef.current = null;
+    updateFillStatusLoad((current) => ({ ...current, verified: false }));
+  }, [updateFillStatusLoad]);
 
   const invalidateReviewAuthority = useCallback(() => {
     reviewRequestSequenceRef.current += 1;
@@ -230,7 +289,106 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     }
   }, [runId, updateReviewLoad]);
 
-  const acceptAuthoritativeStatus = useCallback((value: unknown, expectedGeneration: number) => {
+  const fetchFillStatus = useCallback(async (
+    expectedGeneration = activeComponentGenerationRef.current
+  ): Promise<FillStatusRefreshResult> => {
+    if (expectedGeneration === null || activeComponentGenerationRef.current !== expectedGeneration) {
+      return { outcome: "INACTIVE" };
+    }
+    fillStatusAbortControllerRef.current?.abort();
+    const requestId = fillStatusRequestSequenceRef.current + 1;
+    fillStatusRequestSequenceRef.current = requestId;
+    const controller = new AbortController();
+    fillStatusAbortControllerRef.current = controller;
+    const inactiveOrSuperseded = (): FillStatusRefreshResult | null => {
+      if (activeComponentGenerationRef.current !== expectedGeneration) return { outcome: "INACTIVE" };
+      if (fillStatusRequestSequenceRef.current !== requestId || controller.signal.aborted) {
+        return { outcome: "SUPERSEDED" };
+      }
+      return null;
+    };
+    const currentResult = inactiveOrSuperseded();
+    if (currentResult !== null) return currentResult;
+
+    updateFillStatusLoad((current) => ({ ...current, phase: "loading", notice: null }));
+    const fail = (notice: CommandNotice, clear = false): FillStatusRefreshResult => {
+      const result = inactiveOrSuperseded();
+      if (result !== null) return result;
+      updateFillStatusLoad((current) => clear
+        ? { phase: "error", status: null, verified: false, notice }
+        : { ...current, phase: "error", verified: false, notice }
+      );
+      return { outcome: "FAILED" };
+    };
+
+    try {
+      const response = await fetch(
+        `/api/application-runs/${encodeURIComponent(runId)}/fill-attempt`,
+        { cache: "no-store", signal: controller.signal }
+      );
+      const afterResponse = inactiveOrSuperseded();
+      if (afterResponse !== null) return afterResponse;
+      if (!response.ok) {
+        if (response.status === 401) {
+          return fail({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read Fill status." }, true);
+        }
+        if (response.status === 403) {
+          return fail({ tone: "ERROR", text: "You are not authorized to read Fill status for this application run." }, true);
+        }
+        if (response.status === 404) {
+          return fail({ tone: "ERROR", text: "This application run is unavailable for Fill status." }, true);
+        }
+        if (response.status === 429) {
+          return fail({ tone: "WARNING", text: "Fill-status reads are temporarily limited. Wait before refreshing." });
+        }
+        return fail({ tone: "ERROR", text: "Fill status is temporarily unavailable. Use Refresh Fill status for a read-only retry." });
+      }
+
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        return fail({ tone: "ERROR", text: "Apply Pilot could not safely read the Fill-status response." });
+      }
+      const afterJson = inactiveOrSuperseded();
+      if (afterJson !== null) return afterJson;
+
+      try {
+        const incoming = parseFillStatusResponse(value);
+        const current = fillStatusLoadRef.current;
+        const reconciled = reconcileFillStatusSnapshot({
+          current: current.status,
+          currentVerified: current.verified,
+          incoming
+        });
+        const notice: CommandNotice | null = reconciled.decision === "CONTRADICTION"
+          ? { tone: "ERROR", text: "A contradictory same-version Fill status was rejected. Fill authority is unverified." }
+          : reconciled.decision === "IGNORED_OLDER"
+            ? { tone: "WARNING", text: "An older Fill status was ignored; the newer accepted status is preserved." }
+            : reconciled.decision === "ACCEPTED_UNAVAILABLE"
+              ? { tone: "ERROR", text: "The Fill-status combination could not be verified safely." }
+              : null;
+        updateFillStatusLoad(() => ({
+          phase: "loaded",
+          status: reconciled.status,
+          verified: reconciled.verified,
+          notice
+        }));
+        return { outcome: "COMMITTED", verified: reconciled.verified };
+      } catch {
+        return fail({ tone: "ERROR", text: "Apply Pilot could not safely read the Fill-status response." });
+      }
+    } catch {
+      return fail({ tone: "ERROR", text: "Apply Pilot could not reach the Fill-status service. Use Refresh Fill status for a read-only retry." });
+    }
+  }, [runId, updateFillStatusLoad]);
+
+  const acceptAuthoritativeStatus = useCallback((
+    value: unknown,
+    expectedGeneration: number,
+    refreshFillStatus = true,
+    requireFillDisposition = false
+  ) => {
     if (activeComponentGenerationRef.current !== expectedGeneration) {
       return { active: false, accepted: false, suppliedNotice: false };
     }
@@ -239,7 +397,11 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
       expectedRunId: runId,
       formInvalidatedSinceVerifiedSuccess: formInvalidatedRef.current
     });
-    if (!result.accepted) {
+    if (
+      !result.accepted ||
+      (requireFillDisposition &&
+        (result.status.state !== "TARGET_OPEN" || result.status.fillCommand === undefined))
+    ) {
       setControlConnection("UNAVAILABLE");
       return { active: true, accepted: false, suppliedNotice: false };
     }
@@ -252,6 +414,7 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     formInvalidatedRef.current = result.formInvalidatedSinceVerifiedSuccess;
     setFormInvalidatedSinceVerifiedSuccess(result.formInvalidatedSinceVerifiedSuccess);
     if (result.notice) setCommandNotice(result.notice);
+    if (refreshFillStatus) void fetchFillStatus(expectedGeneration);
 
     const refreshKey = result.automaticPacketRefreshKey;
     if (refreshKey !== null) {
@@ -270,11 +433,15 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
       }
     }
     return { active: true, accepted: true, suppliedNotice: result.notice !== null };
-  }, [fetchReviewAuthority, runId]);
+  }, [fetchFillStatus, fetchReviewAuthority, runId]);
 
-  const invoke = useCallback(async (command: B1Command) => {
+  const invoke = useCallback(async (
+    command: Exclude<B1Command, { type: "FILL_APPROVED_FIELDS" }>
+  ) => {
+    if (pendingCommandRef.current !== null || pendingFillActivationRef.current) return;
     const expectedGeneration = activeComponentGenerationRef.current;
     if (expectedGeneration === null) return;
+    pendingCommandRef.current = command.type;
     setPendingCommand(command.type);
     setCommandNotice(null);
     try {
@@ -352,11 +519,161 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
         }
       }
     } finally {
-      if (activeComponentGenerationRef.current === expectedGeneration) {
+      if (
+        activeComponentGenerationRef.current === expectedGeneration &&
+        pendingCommandRef.current === command.type
+      ) {
+        pendingCommandRef.current = null;
         setPendingCommand(null);
       }
     }
   }, [acceptAuthoritativeStatus, controlConnection, invalidateReviewAuthority, lastAcceptedInspection, updateReviewLoad]);
+
+  const activateFill = useCallback(async () => {
+    if (
+      pendingCommandRef.current !== null ||
+      pendingFillActivationRef.current ||
+      fillMayHaveDispatchedRef.current
+    ) return;
+    const expectedGeneration = activeComponentGenerationRef.current;
+    if (expectedGeneration === null) return;
+    const currentStatus = statusRef.current;
+    const currentReview = reviewLoadRef.current;
+    const currentFillStatus = fillStatusLoadRef.current;
+    const freshness = derivePacketFreshness({
+      packet: currentReview.packet,
+      latestPacketResponseWasNull: currentReview.latestResponseWasNull,
+      packetLoadUnverified: currentReview.unverified,
+      connection: controlConnection,
+      workflowState: currentStatus.state,
+      lastAcceptedInspection,
+      formInvalidatedSinceVerifiedSuccess: formInvalidatedRef.current
+    });
+    if (!isFillActivationEligible({
+      authenticatedOwnerPage,
+      componentActive: true,
+      connection: controlConnection,
+      hasAcceptedAuthoritativeStatus,
+      browserStatus: currentStatus,
+      packetFreshness: freshness,
+      reviewLoad: {
+        phase: currentReview.phase,
+        verified: !currentReview.unverified,
+        run: currentReview.run,
+        packet: currentReview.packet
+      },
+      fillStatusLoad: currentFillStatus,
+      pendingBrowserCommand: pendingCommandRef.current,
+      pendingReviewMutation: pendingReviewMutationRef.current,
+      pendingFillActivation: false,
+      fillMayHaveDispatched: false
+    })) return;
+
+    const binding = (window as ControlWindow)[APPLICATION_BROWSER_BINDING_NAME];
+    if (typeof binding !== "function") {
+      setControlConnection("UNAVAILABLE");
+      setCommandNotice({
+        tone: "WARNING",
+        text: "Local browser companion is not connected to this control page. Fill definitely did not dispatch."
+      });
+      return;
+    }
+
+    pendingFillActivationRef.current = true;
+    setPendingFillActivation(true);
+    setCommandNotice(null);
+    const markMutationUncertainAndReconcile = async () => {
+      if (activeComponentGenerationRef.current !== expectedGeneration) return;
+      invalidateReviewAuthority();
+      updateReviewLoad((current) => ({
+        ...current,
+        phase: current.phase === "loading" ? "error" : current.phase,
+        unverified: true
+      }));
+      invalidateFillStatusAuthority();
+      setControlConnection("UNAVAILABLE");
+      await Promise.all([
+        fetchFillStatus(expectedGeneration),
+        fetchReviewAuthority(expectedGeneration)
+      ]);
+      if (activeComponentGenerationRef.current === expectedGeneration) {
+        setCommandNotice({
+          tone: "WARNING",
+          text: "Fill mutation outcome is uncertain because the binding result was unavailable. Apply Pilot did not replay Fill. Review every employer field manually and use Refresh Fill status only for read-only updates."
+        });
+      }
+    };
+
+    try {
+      fillMayHaveDispatchedRef.current = true;
+      setFillMayHaveDispatched(true);
+      invalidateFillStatusAuthority();
+      const nextStatus = await binding({ type: "FILL_APPROVED_FIELDS" });
+      if (activeComponentGenerationRef.current !== expectedGeneration) return;
+      const accepted = acceptAuthoritativeStatus(nextStatus, expectedGeneration, false, true);
+      if (!accepted.active) return;
+      if (!accepted.accepted) {
+        await markMutationUncertainAndReconcile();
+        return;
+      }
+
+      const [fillStatusRefresh] = await Promise.all([
+        fetchFillStatus(expectedGeneration),
+        fetchReviewAuthority(expectedGeneration)
+      ]);
+      if (activeComponentGenerationRef.current !== expectedGeneration) return;
+      const commandStatus = statusRef.current.fillCommand;
+      if (fillStatusRefresh.outcome !== "COMMITTED" || !fillStatusRefresh.verified) {
+        setCommandNotice({
+          tone: "WARNING",
+          text: `The bridge reported a bounded ${commandStatus?.outcome ?? "Fill-command"} disposition, but the authenticated durable Fill status is unverified. Review every employer field manually and use Refresh Fill status only for read-only updates.`
+        });
+      } else if (commandStatus?.outcome === "REJECTED") {
+        setCommandNotice(commandStatus.errorCode === "FILL_NO_ELIGIBLE_FIELDS"
+          ? {
+              tone: "WARNING",
+              text: "No approved automatable fields remained when Fill authority was checked. Complete the employer form manually. Fill was not retried."
+            }
+          : {
+              tone: "WARNING",
+              text: "Fill was not started because current trusted authority rejected the request. Review the current run and complete the employer form manually if needed."
+            });
+      } else if (commandStatus?.outcome === "RECOVERY_PENDING") {
+        setCommandNotice({
+          tone: "WARNING",
+          text: "Fill recovery is pending. Do not start Fill again; use read-only Fill-status refreshes."
+        });
+      } else if (commandStatus?.outcome === "CANCELLED") {
+        setCommandNotice({
+          tone: "WARNING",
+          text: "The application run was cancelled. Fill cannot be started again."
+        });
+      } else {
+        setCommandNotice({
+          tone: "INFO",
+          text: "Fill command settled. The authenticated durable Fill status was refreshed."
+        });
+      }
+    } catch {
+      await markMutationUncertainAndReconcile();
+    } finally {
+      pendingFillActivationRef.current = false;
+      if (activeComponentGenerationRef.current === expectedGeneration) {
+        setPendingFillActivation(false);
+      }
+    }
+  }, [
+    acceptAuthoritativeStatus,
+    authenticatedOwnerPage,
+    controlConnection,
+    fetchFillStatus,
+    fetchReviewAuthority,
+    hasAcceptedAuthoritativeStatus,
+    invalidateFillStatusAuthority,
+    invalidateReviewAuthority,
+    lastAcceptedInspection,
+    updateReviewLoad
+  ]);
 
   const reviewAnswer = useCallback(async (
     answer: AnswerPacket["answers"][number],
@@ -365,12 +682,17 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     const current = reviewLoadRef.current;
     const currentAnswer = current.packet?.answers.find((entry) => entry.id === answer.id);
     if (
+      pendingFillActivationRef.current ||
       pendingReviewMutationRef.current !== null ||
       current.phase !== "loaded" ||
       current.unverified ||
       current.packet === null ||
       currentAnswer !== answer ||
-      !isAnswerReviewEligible(currentAnswer)
+      !isAnswerReviewMutationEligible({
+        answer: currentAnswer,
+        run: current.run,
+        trusted: true
+      })
     ) return;
     const expectedGeneration = activeComponentGenerationRef.current;
     if (expectedGeneration === null) return;
@@ -471,6 +793,7 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     const current = reviewLoadRef.current;
     const expectedGeneration = activeComponentGenerationRef.current;
     if (
+      pendingFillActivationRef.current ||
       pendingReviewMutationRef.current !== null ||
       expectedGeneration === null ||
       current.phase !== "loaded" ||
@@ -549,6 +872,7 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
         snapshot
       })) {
         updateReviewLoad((loaded) => ({ ...loaded, notice: { tone: "SUCCESS", text: "Review resolved." } }));
+        await fetchFillStatus(expectedGeneration);
       } else {
         updateReviewLoad((loaded) => ({
           ...loaded,
@@ -567,25 +891,29 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
       }
       if (mutationAbortControllerRef.current === controller) mutationAbortControllerRef.current = null;
     }
-  }, [fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
+  }, [fetchFillStatus, fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
 
   useEffect(() => {
     const generation = componentGenerationRef.current + 1;
     componentGenerationRef.current = generation;
     activeComponentGenerationRef.current = generation;
     void fetchReviewAuthority(generation);
+    void fetchFillStatus(generation);
     return () => {
       if (activeComponentGenerationRef.current === generation) {
         activeComponentGenerationRef.current = null;
       }
       componentGenerationRef.current += 1;
+      pendingCommandRef.current = null;
       pendingReviewMutationRef.current = null;
       mutationAbortControllerRef.current?.abort();
       mutationAbortControllerRef.current = null;
       reviewRequestSequenceRef.current += 1;
       reviewAbortControllerRef.current?.abort();
+      fillStatusRequestSequenceRef.current += 1;
+      fillStatusAbortControllerRef.current?.abort();
     };
-  }, [fetchReviewAuthority]);
+  }, [fetchFillStatus, fetchReviewAuthority]);
 
   const availability = browserCommandAvailability({ status, connection: controlConnection, pendingCommand });
   const freshness = useMemo(() => derivePacketFreshness({
@@ -603,6 +931,44 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
     packet: reviewLoad.packet,
     trusted: reviewLoad.phase === "loaded" && !reviewLoad.unverified
   });
+  const apparentEligibleCount = apparentAutomatableFieldCount(reviewLoad.packet);
+  const manualFields = deriveManualFieldPresentations(reviewLoad.packet);
+  const storedFillPresentation = fillStatusLoad.status === null
+    ? null
+    : fillStatusPresentation(fillStatusLoad.status);
+  const fillPresentation = storedFillPresentation?.category === "NO_ATTEMPT" &&
+      fillMayHaveDispatched &&
+      !fillStatusLoad.verified
+    ? null
+    : storedFillPresentation;
+  const fillStatusPendingCopy = pendingFillActivation
+    ? "Fill command is pending. Durable Fill status will be checked after the command settles."
+    : fillMayHaveDispatched && !fillStatusLoad.verified
+      ? "Durable Fill status is unverified. Do not start Fill again; use Refresh Fill status only for a read-only update."
+      : "Fill status has not been verified yet.";
+  const stoppedErrorCopy = fillStatusLoad.status === null
+    ? null
+    : stoppedFillErrorDescription(fillStatusLoad.status.errorCode);
+  const fillActivationEligible = isFillActivationEligible({
+    authenticatedOwnerPage,
+    componentActive: true,
+    connection: controlConnection,
+    hasAcceptedAuthoritativeStatus,
+    browserStatus: status,
+    packetFreshness: freshness,
+    reviewLoad: {
+      phase: reviewLoad.phase,
+      verified: !reviewLoad.unverified,
+      run: reviewLoad.run,
+      packet: reviewLoad.packet
+    },
+    fillStatusLoad,
+    pendingBrowserCommand: pendingCommand,
+    pendingReviewMutation,
+    pendingFillActivation,
+    fillMayHaveDispatched
+  });
+  const fillUiLocked = pendingFillActivation;
 
   return (
     <div className="space-y-5 p-5">
@@ -615,20 +981,75 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
       </dl>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <SecondaryButton type="button" disabled={!availability.GET_STATUS} onClick={() => void invoke({ type: "GET_STATUS" })}>Refresh status</SecondaryButton>
-        <PrimaryButton type="button" disabled={!availability.OPEN_TARGET} onClick={() => void invoke({ type: "OPEN_TARGET" })}>Open frozen target</PrimaryButton>
-        <PrimaryButton type="button" disabled={!availability.INSPECT_FORM} onClick={() => void invoke({ type: "INSPECT_FORM" })}>{pendingCommand === "INSPECT_FORM" ? "Inspecting…" : "Inspect form"}</PrimaryButton>
-        <SecondaryButton type="button" disabled={!availability.CLOSE_WORKFLOW} onClick={() => void invoke({ type: "CLOSE_WORKFLOW" })}>Close workflow</SecondaryButton>
-        {shouldOfferRetryConnection(controlConnection, status, pendingCommand) ? <SecondaryButton type="button" onClick={() => void invoke({ type: "GET_STATUS" })}>Retry connection</SecondaryButton> : null}
+        <SecondaryButton type="button" disabled={fillUiLocked || !availability.GET_STATUS} onClick={() => void invoke({ type: "GET_STATUS" })}>Refresh status</SecondaryButton>
+        <PrimaryButton type="button" disabled={fillUiLocked || !availability.OPEN_TARGET} onClick={() => void invoke({ type: "OPEN_TARGET" })}>Open frozen target</PrimaryButton>
+        <PrimaryButton type="button" disabled={fillUiLocked || !availability.INSPECT_FORM} onClick={() => void invoke({ type: "INSPECT_FORM" })}>{pendingCommand === "INSPECT_FORM" ? "Inspecting…" : "Inspect form"}</PrimaryButton>
+        <SecondaryButton type="button" disabled={fillUiLocked || !availability.CLOSE_WORKFLOW} onClick={() => void invoke({ type: "CLOSE_WORKFLOW" })}>Close workflow</SecondaryButton>
+        {!fillUiLocked && shouldOfferRetryConnection(controlConnection, status, pendingCommand) ? <SecondaryButton type="button" onClick={() => void invoke({ type: "GET_STATUS" })}>Retry connection</SecondaryButton> : null}
       </div>
 
       {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
       {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
 
+      <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="fill-heading">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 id="fill-heading" className="font-semibold text-slate-950">Fill approved fields</h2>
+            <p className="mt-1 text-sm text-slate-600">One explicit Fill attempt may process reviewed supported fields. You remain responsible for reviewing and submitting the employer form.</p>
+          </div>
+          <SecondaryButton
+            type="button"
+            disabled={fillUiLocked || pendingCommand !== null || pendingReviewMutation !== null || fillStatusLoad.phase === "loading"}
+            onClick={() => {
+              if (!pendingFillActivationRef.current) void fetchFillStatus();
+            }}
+          >
+            {fillStatusLoad.phase === "loading" ? "Refreshing Fill status…" : "Refresh Fill status"}
+          </SecondaryButton>
+        </div>
+
+        {fillStatusLoad.notice ? <p aria-live="polite" role={fillStatusLoad.notice.tone === "ERROR" ? "alert" : undefined} className={`rounded-lg px-3 py-2 text-sm ${noticeClass(fillStatusLoad.notice.tone)}`}>{fillStatusLoad.notice.text}</p> : null}
+        {fillPresentation ? <div className={`rounded-lg px-4 py-3 text-sm ${noticeClass(fillPresentation.tone)}`}>
+          <h3 className="font-semibold">{fillPresentation.title}</h3>
+          <p className="mt-2 leading-6">{fillPresentation.text}</p>
+          {stoppedErrorCopy ? <p className="mt-2">{stoppedErrorCopy}</p> : null}
+          {fillStatusLoad.status && fillStatusLoad.status.steps.length > 0 ? <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
+            {[
+              ["Filled", fillPresentation.counts.filled],
+              ["Preserved existing", fillPresentation.counts.preservedExisting],
+              ["Runtime manual", fillPresentation.counts.runtimeManual],
+              ["Failed", fillPresentation.counts.failed],
+              ["Not attempted", fillPresentation.counts.notAttempted]
+            ].map(([label, count]) => <div key={label}><dt className="text-xs font-medium">{label}</dt><dd className="mt-1 font-semibold">{count}</dd></div>)}
+          </dl> : null}
+        </div> : <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">{fillStatusPendingCopy}</p>}
+
+        {apparentEligibleCount > 0 ? <PrimaryButton
+          type="button"
+          disabled={!fillActivationEligible}
+          onClick={() => void activateFill()}
+        >
+          {pendingFillActivation ? "Filling…" : "Fill approved fields"}
+        </PrimaryButton> : <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">No approved automatable fields are apparent in the current packet. Complete the employer form manually; no Fill attempt will be consumed from this page.</p>}
+
+        {manualFields.length > 0 ? <div className="rounded-lg border border-slate-200 p-4">
+          <h3 className="font-medium text-slate-950">Manual fields</h3>
+          <p className="mt-1 text-sm text-slate-600">These packet fields remain for you to complete or confirm manually.</p>
+          <ul className="mt-3 space-y-2 text-sm text-slate-800">
+            {manualFields.map((field, index) => <li key={`${field.question}:${field.fieldType}:${index}`}>
+              <span className="font-medium">{field.question || "Unlabeled field"}</span>
+              {` — ${field.fieldType} — ${field.required ? "Required" : "Optional"} — ${field.category}`}
+            </li>)}
+          </ul>
+        </div> : null}
+      </section>
+
       <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="answer-packet-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div><h2 id="answer-packet-heading" className="font-semibold text-slate-950">Current answer packet</h2><p className="mt-1 text-sm text-slate-600">Read-only proposed answers from the authenticated ApplicationRun packet API.</p></div>
-          <SecondaryButton type="button" disabled={reviewLoad.phase === "loading" || pendingReviewMutation !== null} onClick={() => void fetchReviewAuthority()}>{reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data"}</SecondaryButton>
+          <SecondaryButton type="button" disabled={fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null} onClick={() => {
+            if (!pendingFillActivationRef.current) void fetchReviewAuthority();
+          }}>{reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data"}</SecondaryButton>
         </div>
         {reviewLoad.notice ? <p aria-live="polite" role={reviewLoad.notice.tone === "ERROR" ? "alert" : undefined} className={`rounded-lg px-3 py-2 text-sm ${noticeClass(reviewLoad.notice.tone)}`}>{reviewLoad.notice.text}</p> : null}
         <p className={`rounded-lg border px-3 py-2 text-sm ${freshnessStatus.className}`}>{freshnessStatus.text}</p>
@@ -668,7 +1089,7 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
               <PrimaryButton
                 type="button"
                 aria-describedby="review-readiness review-reasons"
-                disabled={!resolveReviewEligible || pendingReviewMutation !== null}
+                disabled={fillUiLocked || !resolveReviewEligible || pendingReviewMutation !== null}
                 onClick={() => void resolveReview()}
               >
                 {pendingReviewMutation?.type === "RESOLVE" ? "Resolving…" : "Resolve review"}
@@ -695,8 +1116,8 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
                 {answer.choices.length > 0 ? <div className="mt-4"><h4 className="text-xs font-semibold uppercase text-slate-500">Public choices</h4><ul className="mt-2 space-y-1 text-sm text-slate-700">{answer.choices.map((choice, index) => <li key={`${choice.key}:${index}`}>{choice.label}{choice.disabled ? " — Disabled option" : ""}</li>)}</ul></div> : null}
                 {proposal ? <div className="mt-4 rounded-lg bg-slate-50 p-3"><h4 className="text-sm font-medium text-slate-900">{proposal.label}</h4><ul className="mt-2 space-y-1 text-sm text-slate-800">{proposal.values.map((value, index) => <li key={`${value.text}:${index}`} className="break-words">{value.text}{value.annotation ? ` — ${value.annotation}` : ""}</li>)}</ul></div> : null}
                 {isAnswerReviewEligible(answer) ? <div className="mt-4 flex gap-2">
-                  <PrimaryButton type="button" aria-label={`Approve proposed answer for ${answer.question}`} disabled={pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer} onClick={() => void reviewAnswer(answer, "APPROVED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "APPROVED" ? "Approving…" : "Approve"}</PrimaryButton>
-                  <SecondaryButton type="button" aria-label={`Reject proposed answer for ${answer.question}`} disabled={pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer} onClick={() => void reviewAnswer(answer, "REJECTED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "REJECTED" ? "Rejecting…" : "Reject"}</SecondaryButton>
+                  <PrimaryButton type="button" aria-label={`Approve proposed answer for ${answer.question}`} disabled={fillUiLocked || pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer || !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true })} onClick={() => void reviewAnswer(answer, "APPROVED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "APPROVED" ? "Approving…" : "Approve"}</PrimaryButton>
+                  <SecondaryButton type="button" aria-label={`Reject proposed answer for ${answer.question}`} disabled={fillUiLocked || pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer || !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true })} onClick={() => void reviewAnswer(answer, "REJECTED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "REJECTED" ? "Rejecting…" : "Reject"}</SecondaryButton>
                 </div> : null}
               </article>;
             })}
@@ -704,7 +1125,7 @@ export function ApplicationBrowserControl({ runId }: { runId: string }) {
         </div> : null}
       </section>
 
-      <p className="text-xs leading-5 text-slate-500">Apply Pilot inspects the frozen employer form and presents proposed answers for review. It does not fill fields, upload documents, click employer controls, or submit the application.</p>
+      <p className="text-xs leading-5 text-slate-500">Apply Pilot may fill reviewed supported fields only after your explicit action. It does not upload documents, click employer controls, or submit the application. Review every employer field, complete all remaining manual work, and personally click the employer&apos;s Submit button.</p>
     </div>
   );
 }

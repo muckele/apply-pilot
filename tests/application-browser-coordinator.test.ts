@@ -1241,13 +1241,15 @@ test("the B1 command parser accepts only the closed no-payload union", () => {
   assert.deepEqual(parseB1Command({ type: "OPEN_TARGET" }), { type: "OPEN_TARGET" });
   assert.deepEqual(parseB1Command({ type: "CLOSE_WORKFLOW" }), { type: "CLOSE_WORKFLOW" });
   assert.deepEqual(parseB1Command({ type: "INSPECT_FORM" }), { type: "INSPECT_FORM" });
+  assert.deepEqual(parseB1Command({ type: "FILL_APPROVED_FIELDS" }), {
+    type: "FILL_APPROVED_FIELDS"
+  });
 
   for (const invalid of [
     { type: "CLICK" },
     { type: "SUBMIT" },
     { type: "FILL" },
     { type: "FILL_FORM" },
-    { type: "FILL_APPROVED_FIELDS" },
     { type: "UPLOAD" },
     { type: "REQUEST" },
     { type: "KEYBOARD" },
@@ -1261,6 +1263,12 @@ test("the B1 command parser accepts only the closed no-payload union", () => {
     { type: "INSPECT_FORM", expectedStateVersion: 1 },
     { type: "INSPECT_FORM", inspectionReport: {} },
     { type: "INSPECT_FORM", fields: [] },
+    { type: "FILL_APPROVED_FIELDS", runId: RUN_ID },
+    { type: "FILL_APPROVED_FIELDS", proposal: {} },
+    { type: "FILL_APPROVED_FIELDS", answerIds: [] },
+    { type: "FILL_APPROVED_FIELDS", packetHash: "a".repeat(64) },
+    { type: "FILL_APPROVED_FIELDS", formInspectionVersion: 1 },
+    { type: "FILL_APPROVED_FIELDS", selectors: [] },
     { type: 1 },
     null
   ]) {
@@ -1278,8 +1286,18 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+type AcquisitionHarnessBehavior =
+  | "UNCERTAIN"
+  | "DEFINITIVE_REJECTION"
+  | "STALE_REJECTION"
+  | "FILL_POLICY_DENIED"
+  | "FILL_REVIEW_REQUIRED"
+  | "FILL_ALREADY_IN_PROGRESS"
+  | "FILL_NO_ELIGIBLE_FIELDS"
+  | "FILL_STALE";
+
 function acquisitionUncertaintyHarness(
-  acquireBehavior: "UNCERTAIN" | "DEFINITIVE_REJECTION" | "STALE_REJECTION" = "UNCERTAIN"
+  acquireBehavior: AcquisitionHarnessBehavior = "UNCERTAIN"
 ) {
   const targetUrl = "https://jobs.example.test/apply";
   const attemptId = "550e8400-e29b-41d4-a716-446655440000";
@@ -1290,6 +1308,7 @@ function acquisitionUncertaintyHarness(
   let statusReads = 0;
   let writes = 0;
   let closeCalls = 0;
+  let beforeStatusReturn: (() => Promise<void>) | null = null;
   let status: Record<string, unknown> = {
     state: "READY",
     stateVersion: 7,
@@ -1351,18 +1370,15 @@ function acquisitionUncertaintyHarness(
       async acquireFillAttempt(_input: unknown, assertReadyToDispatch: () => void): Promise<never> {
         assertReadyToDispatch();
         acquisitionDispatches += 1;
-        if (acquireBehavior === "DEFINITIVE_REJECTION") {
+        if (acquireBehavior !== "UNCERTAIN") {
+          const code = acquireBehavior === "DEFINITIVE_REJECTION"
+            ? "FILL_POLICY_DENIED"
+            : acquireBehavior === "STALE_REJECTION"
+              ? "FILL_STALE"
+              : acquireBehavior;
           throw new SameOriginClientError(
             "bounded rejection",
-            "FILL_POLICY_DENIED",
-            "MAY_HAVE_DISPATCHED",
-            true
-          );
-        }
-        if (acquireBehavior === "STALE_REJECTION") {
-          throw new SameOriginClientError(
-            "stale version rejection",
-            "FILL_STALE",
+            code,
             "MAY_HAVE_DISPATCHED",
             true
           );
@@ -1375,6 +1391,7 @@ function acquisitionUncertaintyHarness(
       },
       async getFillAttemptStatus() {
         statusReads += 1;
+        await beforeStatusReturn?.();
         return structuredClone(status);
       },
       async finalizeFillAttempt(): Promise<never> {
@@ -1399,6 +1416,9 @@ function acquisitionUncertaintyHarness(
     inspect: () => coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined),
     setStatus(next: Record<string, unknown>) {
       status = next;
+    },
+    setBeforeStatusReturn(next: (() => Promise<void>) | null) {
+      beforeStatusReturn = next;
     },
     liveAttemptStatus: {
       state: "FILLING",
@@ -1533,6 +1553,162 @@ test("a response-backed stale acquisition rejection does not create the uncertai
   });
 });
 
+test("Fill command maps only closed acquisition rejections and retains them for the consumed generation", async () => {
+  for (const code of [
+    "FILL_POLICY_DENIED",
+    "FILL_REVIEW_REQUIRED",
+    "FILL_ALREADY_IN_PROGRESS",
+    "FILL_NO_ELIGIBLE_FIELDS",
+    "FILL_STALE"
+  ] as const) {
+    const value = acquisitionUncertaintyHarness(code);
+    value.coordinator.markControlReady();
+    await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+    await value.inspect();
+
+    const rejected = await value.coordinator.handleCommand(
+      { type: "FILL_APPROVED_FIELDS" },
+      () => undefined
+    );
+    assert.deepEqual(rejected.fillCommand, { outcome: "REJECTED", errorCode: code }, code);
+
+    const repeated = await value.coordinator.handleCommand(
+      { type: "FILL_APPROVED_FIELDS" },
+      () => undefined
+    );
+    assert.deepEqual(repeated.fillCommand, rejected.fillCommand, code);
+    assert.equal(value.counts().acquisitionDispatches, 1, code);
+
+    const inspected = await value.inspect();
+    assert.equal(inspected.inspection?.outcome, "SUCCEEDED", code);
+    assert.equal(inspected.fillCommand, undefined, code);
+  }
+});
+
+test("Fill command maps uncertainty reconciliation to closed command dispositions", async () => {
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const stepKey = `fill:${attemptId}:${"a".repeat(64)}`;
+  const cases = [
+    {
+      expected: "RECOVERY_PENDING",
+      status: {
+        state: "FILLING",
+        stateVersion: 8,
+        fillAttemptId: attemptId,
+        fillLeaseExpiresAt: "2099-09-10T20:10:00.000Z",
+        leaseLive: true,
+        expiredRecoveryRequired: false,
+        fieldOperationAllowed: true,
+        outcome: null,
+        errorCode: null,
+        steps: []
+      }
+    },
+    {
+      expected: "CANCELLED",
+      status: {
+        state: "CANCELLED",
+        stateVersion: 8,
+        fillAttemptId: attemptId,
+        fillLeaseExpiresAt: null,
+        leaseLive: false,
+        expiredRecoveryRequired: false,
+        fieldOperationAllowed: false,
+        outcome: null,
+        errorCode: null,
+        steps: []
+      }
+    },
+    {
+      expected: "FINALIZED",
+      status: {
+        state: "READY_FOR_USER_SUBMISSION",
+        stateVersion: 9,
+        fillAttemptId: attemptId,
+        fillLeaseExpiresAt: null,
+        leaseLive: false,
+        expiredRecoveryRequired: false,
+        fieldOperationAllowed: false,
+        outcome: "COMPLETED",
+        errorCode: null,
+        steps: [{ stepKey, result: "FILLED", errorCode: null }]
+      }
+    }
+  ] as const;
+
+  for (const fixture of cases) {
+    const value = acquisitionUncertaintyHarness();
+    value.coordinator.markControlReady();
+    await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+    await value.inspect();
+    value.setStatus(fixture.status);
+    const result = await value.coordinator.handleCommand(
+      { type: "FILL_APPROVED_FIELDS" },
+      () => undefined
+    );
+    assert.deepEqual(result.fillCommand, { outcome: fixture.expected });
+    assert.equal(value.counts().acquisitionDispatches, 1);
+  }
+});
+
+test("Fill command rechecks control-page trust before accepting a late closed result", async () => {
+  const value = acquisitionUncertaintyHarness();
+  const statusReadEntered = deferred<void>();
+  const releaseStatus = deferred<void>();
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  value.setStatus({
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 9,
+    fillAttemptId: attemptId,
+    fillLeaseExpiresAt: null,
+    leaseLive: false,
+    expiredRecoveryRequired: false,
+    fieldOperationAllowed: false,
+    outcome: "COMPLETED",
+    errorCode: null,
+    steps: [{
+      stepKey: `fill:${attemptId}:${"a".repeat(64)}`,
+      result: "FILLED",
+      errorCode: null
+    }]
+  });
+  value.setBeforeStatusReturn(async () => {
+    statusReadEntered.resolve();
+    await releaseStatus.promise;
+  });
+  value.coordinator.markControlReady();
+  await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+  await value.inspect();
+
+  let trusted = true;
+  const filling = value.coordinator.handleCommand(
+    { type: "FILL_APPROVED_FIELDS" },
+    () => {
+      if (!trusted) throw new Error("late control-page trust lost");
+    }
+  );
+  await statusReadEntered.promise;
+  trusted = false;
+  releaseStatus.resolve();
+
+  await assert.rejects(filling, /late control-page trust lost/);
+  assert.deepEqual(value.coordinator.status().fillCommand, { outcome: "IN_PROGRESS" });
+  assert.equal(value.counts().acquisitionDispatches, 1);
+});
+
+test("Fill command does not retain benign status without published protected authority", async () => {
+  const value = acquisitionUncertaintyHarness();
+  value.coordinator.markControlReady();
+  await value.coordinator.handleCommand({ type: "OPEN_TARGET" }, () => undefined);
+
+  await assert.rejects(
+    value.coordinator.handleCommand({ type: "FILL_APPROVED_FIELDS" }, () => undefined),
+    (error: unknown) => error instanceof ApplicationBrowserError && error.code === "FILL_INTERNAL"
+  );
+  assert.equal(value.coordinator.status().fillCommand, undefined);
+  assert.equal(value.counts().acquisitionDispatches, 0);
+});
+
 test("INSPECT_FORM is single-flight, privately sequenced, and publishes fresh authority", async () => {
   const calls: string[] = [];
   const generationId = Symbol("private-generation");
@@ -1655,7 +1831,7 @@ test("INSPECT_FORM is single-flight, privately sequenced, and publishes fresh au
   assert.equal(JSON.stringify(result).includes("posting=123"), false);
 });
 
-test("dormant guarded Fill uses only published generation authority and excludes Fill or Inspect overlap", async () => {
+test("explicit Fill command uses one published generation exactly once and retains its closed status", async () => {
   const generationId = Symbol("published-generation");
   const fieldKey = "1".repeat(64);
   const fieldFingerprint = "2".repeat(64);
@@ -1814,8 +1990,13 @@ test("dormant guarded Fill uses only published generation authority and excludes
   await coordinator.handleCommand({ type: "INSPECT_FORM" }, () => undefined);
   assert.equal(calls.includes("acquire"), false, "inspection must not activate Fill");
 
-  const filling = coordinator.fillApprovedFields(() => undefined);
+  const filling = coordinator.handleCommand({ type: "FILL_APPROVED_FIELDS" }, () => undefined);
   await writeEntered.promise;
+  const duplicate = await coordinator.handleCommand(
+    { type: "FILL_APPROVED_FIELDS" },
+    () => undefined
+  );
+  assert.deepEqual(duplicate.fillCommand, { outcome: "IN_PROGRESS" });
   const inspectionWhileFilling = await coordinator.handleCommand(
     { type: "INSPECT_FORM" },
     () => undefined
@@ -1834,7 +2015,7 @@ test("dormant guarded Fill uses only published generation authority and excludes
 
   releaseWrite.resolve();
   const fillResult = await filling;
-  assert.equal(fillResult.disposition, "FINALIZED");
+  assert.deepEqual(fillResult.fillCommand, { outcome: "FINALIZED" });
   assert.equal(calls.filter((call) => call === "acquire").length, 1);
   assert.equal(calls.filter((call) => call === "write").length, 1);
   assert.equal(calls.filter((call) => call === "finalize").length, 1);
@@ -1846,10 +2027,12 @@ test("dormant guarded Fill uses only published generation authority and excludes
     errorCode: null,
     steps: [{ stepKey, result: "FILLED", errorCode: null }]
   }]);
-  await assert.rejects(
-    coordinator.fillApprovedFields(() => undefined),
-    (error: unknown) => error instanceof ApplicationBrowserError && error.code === "FILL_INTERNAL"
+  const repeated = await coordinator.handleCommand(
+    { type: "FILL_APPROVED_FIELDS" },
+    () => undefined
   );
+  assert.deepEqual(repeated.fillCommand, { outcome: "FINALIZED" });
+  assert.equal(calls.filter((call) => call === "acquire").length, 1);
 });
 
 test("a workflow stop during the final status GET synchronously revokes the active Fill operation", async () => {
@@ -2067,6 +2250,23 @@ test("INSPECT_FORM authorization is closed to TARGET_OPEN and recoverable codes 
     "SAME_ORIGIN_RATE_LIMITED",
     "SAME_ORIGIN_REQUEST_FAILED"
   ]);
+});
+
+test("FILL_APPROVED_FIELDS authorization is closed to TARGET_OPEN", () => {
+  for (const state of [
+    "STARTING",
+    "APPLY_PILOT_AUTH_REQUIRED",
+    "CONTROL_READY",
+    "OPENING_TARGET",
+    "ERROR",
+    "CLOSED"
+  ] as const) {
+    assert.equal(isB1CommandAllowed({ type: "FILL_APPROVED_FIELDS" }, state), false, state);
+  }
+  assert.equal(
+    isB1CommandAllowed({ type: "FILL_APPROVED_FIELDS" }, "TARGET_OPEN"),
+    true
+  );
 });
 
 function createInspectionErrorFixture(publicationError?: Error, publicationWait?: Promise<void>) {

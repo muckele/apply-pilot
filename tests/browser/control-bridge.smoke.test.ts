@@ -156,6 +156,14 @@ test("real Chromium enforces the B1 control boundary and performs no employer mu
       runId: BROWSER_SMOKE_RUN_ID,
       targetHost: "employer.example.test"
     });
+    await assert.rejects(
+      invoke(success.controlPage, {
+        type: "FILL_APPROVED_FIELDS",
+        proposal: { kind: "SCALAR", value: "must-not-cross-the-bridge" }
+      }),
+      /Invalid B1 command/i
+    );
+    assert.equal(success.coordinator.status().fillCommand, undefined);
     const employerPage = success.targetController.page();
     assert.ok(employerPage);
     assert.notEqual(new URL(employerPage.url()).origin, fixtures.controlOrigin);

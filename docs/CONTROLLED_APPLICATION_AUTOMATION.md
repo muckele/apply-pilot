@@ -4,18 +4,20 @@ Canonical developer and operator reference for Apply Pilot's current controlled 
 
 ## Current status
 
-The authenticated backend foundation for controlled application preparation exists. It includes per-user policy, preparation, deterministic review, cancellation, execution-token, audit, application-timeline, and PostgreSQL concurrency controls.
+The authenticated backend supports controlled application preparation and a narrow Human-Submit Fill workflow. It includes per-user policy, preparation, deterministic review, guarded one-attempt Fill, cancellation, execution-token, audit, application-timeline, and PostgreSQL concurrency controls.
 
 The current capability is deliberately narrow:
 
-- `PREPARE_ONLY` is the only `AutomationMode`.
+- `PREPARE_ONLY` is the default `AutomationMode`; `FILL_AND_REVIEW` is an explicit opt-in required for Fill acquisition.
 - `APPLICATION_READ` is the only execution-token scope that can be issued.
 - The per-user policy has an authenticated API at `/api/application-automation-policy`; there is no user-facing policy-management UI.
 - Preparation produces an evidence-grounded advisory plan and review state.
-- The local browser companion can open a frozen anonymous employer target, inspect its visible form on explicit request, publish or replay the correlated inspection, and present the authenticated owner-scoped answer packet read only.
-- Browser form filling, employer-control operation, document upload, and application submission are not implemented.
+- The local browser companion can open a frozen anonymous employer target, inspect its visible form on explicit request, publish or replay the correlated inspection, and support owner-scoped answer review.
+- After review resolves to `READY`, one explicit user click can invoke the guarded Fill path for reviewed `TEXT`, `EMAIL`, `TEL`, `URL`, `TEXTAREA`, and `SELECT_ONE` fields. Occupied writable values are preserved.
+- Radio groups, checkbox booleans, manual-only, excluded, unsupported, rejected, and runtime-ineligible fields remain manual.
+- Employer-control clicking, document upload, application submission, and auto-submit are not implemented.
 
-This is not a completed Human-Submit workflow. Forward-compatible schema names do not make future execution behavior operational.
+This is a Human-Submit workflow: Apply Pilot may fill reviewed supported fields, but the user reviews the employer page, completes all remaining manual work, and personally submits. It is not auto-apply, broad ATS automation, or a claim of Greenhouse application-form support.
 
 ## Safety boundaries and current non-goals
 
@@ -27,25 +29,36 @@ The current system has:
 - no anti-bot evasion;
 - no automation against statically restricted job boards;
 - bounded employer application-form inspection only after an explicit `INSPECT_FORM` command;
-- authenticated, owner-scoped read-only presentation of the published answer packet;
-- no browser form fill;
+- authenticated, owner-scoped packet review and guarded Fill presentation;
+- one payload-free `FILL_APPROVED_FIELDS` activation only after an explicit user click and coherent reviewed authority;
+- one permanent backend Fill attempt, with no automatic mutation replay;
 - no employer document upload or employer-control clicking;
 - no Greenhouse application-form adapter;
 - no generic ATS application-form adapter;
 - no automated application submission or auto-submit; and
-- no current replacement for a human submit action.
+- no replacement for a human submit action.
 
 The existing Greenhouse integration under `lib/job-sources/greenhouse.ts` is for job discovery. A future Greenhouse application-form adapter would be a separate capability requiring its own design, safety review, and implementation.
 
 The manual browser capture extension is also separate. It performs a user-initiated, review-before-save capture workflow with its own credentials; it does not execute an ApplicationRun, fill a form, or submit an application.
 
-### Browser inspection and answer-packet presentation
+### Browser inspection, answer review, and Fill presentation
 
 Start the headed local companion with the canonical Apply Pilot origin and immutable run ID, then use the authenticated route `/application-runs/<run-id>/browser`. `OPEN_TARGET` opens only the frozen anonymous employer URL. Once the workflow reaches `TARGET_OPEN`, the user may explicitly invoke payload-free `INSPECT_FORM` and see bounded progress.
 
 A successful material inspection publishes a new current packet version; a replay confirms that the verified inspection already matches the current packet without creating another version. A changed form produces reinspection-required and marks the prior displayed packet stale. Recoverable outcomes provide bounded retry or manual-handling guidance. Connection and command rejection preserve the last authoritative browser status and stop safely.
 
-The control binding remains status-only. Packet contents are read separately through the authenticated owner-scoped answer-packet API and displayed read only, including version metadata, summary counts, questions, proposed values, manual/excluded/unsupported outcomes, review status, and freshness. The page does not mutate answer review, resolve run review, transition the run, fill fields, upload documents, click employer controls, or submit. No execution token or browser bearer token is required for this authenticated packet read.
+The existing trusted control-page binding accepts exactly five payload-free commands: `GET_STATUS`, `OPEN_TARGET`, `INSPECT_FORM`, `FILL_APPROVED_FIELDS`, and `CLOSE_WORKFLOW`. Packet contents and Fill material never cross that binding. Packet reads, answer approval/rejection, review resolution, and durable Fill-status reads use the authenticated owner-scoped web APIs. No execution token or browser bearer token is required for these authenticated owner-page operations.
+
+The **Fill approved fields** control is available only when the authenticated owner page has a connected companion, accepted `TARGET_OPEN` status, a current successful inspection, a verified reviewed packet and `READY` run with matching versions, a verified no-attempt Fill status, no conflicting pending work, and at least one apparently eligible reviewed field. This client gate grants no authority. The coordinator and backend recheck current run, policy, host, packet, attempt, lease, generation, target, and writer authority.
+
+One user activation invokes the existing binding once. The coordinator records bounded `IN_PROGRESS` command state before calling the guarded Fill orchestration. Duplicate activation while active, or after a result is retained for the same published generation, cannot invoke a second orchestration or acquisition. Only definite closed acquisition rejections are presented as `REJECTED`; unexpected trust or internal failures retain the existing bridge invalidation and safe-stop behavior.
+
+The payload-free command returns the existing bounded outer `B1Status` used by the trusted owner control page. That outer status may contain its existing workflow state, run ID, target host, and inspection metadata or versions. Its nested `fillCommand` member is deliberately disposition-only: it contains no attempt ID, lease, answer or proposal, candidate, field or step identity, fingerprint, selector, employer value, raw response body, or arbitrary exception text. Durable status comes from read-only `GET /api/application-runs/<run-id>/fill-attempt` with `Cache-Control: no-store`. Reads use independent request supersession and state-version monotonicity: older responses cannot erase newer state, and contradictory same-version responses make presentation unverified without replacing a previously safe terminal snapshot.
+
+If a dispatched binding result is lost, the page never replays Fill and does not use automatic bridge `GET_STATUS` as its primary recovery. It preserves the last accepted browser status, marks review and Fill presentation unverified, performs one authenticated Fill-status GET plus one paired run/packet refresh, and displays mutation-uncertain guidance. There is no polling loop, background mutation, client timeout, retry button, or React `RECOVER_EXPIRED` surface.
+
+Terminal presentation shows aggregate counts only: filled, preserved existing, runtime manual, failed, and not attempted. It does not render step keys or derive UI identity from step order. Manual-field guidance uses only public question, field type, requiredness, and a closed manual category. After completion, safe stop, recovery uncertainty, rejection, or cancellation, the user reviews every employer field, completes remaining manual work, verifies preserved values, and personally clicks the employer site's Submit button. Apply Pilot never submits the application.
 
 ## Control planes
 
@@ -75,6 +88,7 @@ Only exact lowercase `"true"` enables the global capability. Missing values, `"f
 | DRAFT run creation | Allowed because the run is inert. Normal ownership, safe-target, idempotency, and active-run constraints still apply. |
 | Preparation acquisition | Capability is not acquired. An otherwise acquirable run is recorded `BLOCKED` with `automation_disabled`; a conflicting live preparation owner retains precedence. |
 | In-flight provider/local planning | If the attempt remains authoritative at TX2, its output is discarded and the run is recorded `BLOCKED` with `automation_disabled_during_preparation`. A stale or cancelled fence is resolved first. |
+| Fill acquisition | Denied before an attempt or field step is created. `FILL_AND_REVIEW` never bypasses the global stop. An already-acquired orchestration rechecks policy through its guarded pre-field status reads and stops within the existing one-attempt semantics. |
 | Execution-token issuance | Blocked before a new credential is created. |
 | Reusable authorization | Input structure and expected binding are validated first; the global stop is then enforced before clock access, hashing, `lastUsedAt`, or any capability-side database mutation. |
 | Single-use consumption | The same global-stop principle applies before hashing or capability-side database mutation. An internal atomic primitive exists, but no public issuance path currently creates a single-use execution token. |
@@ -106,13 +120,13 @@ Those persisted changes remain effective after global re-enablement.
 | Field | Default | PATCH validation | Current effect |
 | --- | --- | --- | --- |
 | `enabled` | `false` | Boolean | Per-user half of the capability gate. |
-| `mode` | `PREPARE_ONLY` | `PREPARE_ONLY` only | Persisted and snapshotted. There is no alternate current execution mode. |
+| `mode` | `PREPARE_ONLY` | Exact `PREPARE_ONLY` or `FILL_AND_REVIEW` | Persisted and snapshotted. `FILL_AND_REVIEW` is required, in addition to the enabled global and user gates, for guarded Fill acquisition. |
 | `minimumFitScore` | `85` | Integer from 0 through 100 | Required before preparation planning begins. |
 | `minimumConfidenceScore` | `85` | Integer from 0 through 100 | Applied to existing match confidence before planning and to deterministic review reasoning after planning. |
 | `dailyApplicationCap` | `5` | Integer from 0 through 25 | Rolling 24-hour cap on first successful preparation acquisitions. |
 | `allowedHosts` | `[]` | At most 50 canonical hostname entries; each input entry is at most 253 characters | Applied at token issuance. Empty denies every execution-token host. It is not a preparation allowlist. |
 | `blockedHosts` | `[]` | At most 50 canonical hostname entries; each input entry is at most 253 characters | Applied during preparation and issuance. Blocking wins. |
-| `permittedAdapters` | `[]` | At most 25 values matching `[a-z0-9-]{1,64}` | Persisted and snapshotted; no executable form-adapter path exists today. |
+| `permittedAdapters` | `[]` | At most 25 values matching `[a-z0-9-]{1,64}` | Persisted and snapshotted; there is no reviewed ATS-specific application-form adapter today. |
 | `coverLetterRequired` | `true` | Boolean | Preparation requires a selectable cover letter when true. |
 | `sensitiveAnswerPolicy` | `EXCLUDE` | `EXCLUDE` only | Persisted and snapshotted; sensitive fields remain excluded from proposed answers. |
 | `finalReviewRequired` | `true` | Only `true` is accepted | Persisted, snapshotted, and cannot be disabled. Current successful state is driven by deterministic review reasons, not by a generic always-`REVIEW_REQUIRED` branch. |
@@ -155,15 +169,14 @@ Preparation enforces safe targets, configured blocks, and the static restricted-
 
 | Kind | Name | Status |
 | --- | --- | --- |
-| Automation mode | `PREPARE_ONLY` | Current and the only schema value. |
-| Roadmap mode | `FILL_AND_REVIEW` | Future prose only; not a current schema value or selectable mode. |
+| Automation mode | `PREPARE_ONLY` | Current default; preparation/review only and cannot acquire Fill. |
+| Automation mode | `FILL_AND_REVIEW` | Current explicit opt-in required for the guarded user-triggered Fill operation. It never grants submit authority. |
 | Roadmap mode | `AUTO_SUBMIT_ALLOWLISTED` | Future prose only; not a current schema value or selectable mode. Auto-submit is not implemented. |
 | Execution scope | `APPLICATION_READ` | Current schema value and the only issuable scope. |
-| Execution scope | `APPLICATION_FILL` | Reserved schema value with no current issuance or form-execution path. |
+| Execution scope | `APPLICATION_FILL` | Reserved schema value with no current issuance path. The current owner-session browser Fill does not issue this token. |
 | Execution scope | `APPLICATION_EVENT_WRITE` | Reserved schema value with no current issuance or event-write execution path. |
 | Submit scope | None | No submit scope exists. |
-| Run state | `DRAFT`, `PREPARING`, `READY`, `REVIEW_REQUIRED`, `BLOCKED`, `FAILED`, `CANCELLED` | Used by the current preparation/review/cancellation lifecycle. |
-| Forward-compatible run state | `FILLING`, `READY_FOR_USER_SUBMISSION`, `COMPLETED_BY_USER` | Present in the schema but without current inbound automation transitions; not operational. |
+| Run state | `DRAFT`, `PREPARING`, `READY`, `REVIEW_REQUIRED`, `FILLING`, `READY_FOR_USER_SUBMISSION`, `COMPLETED_BY_USER`, `BLOCKED`, `FAILED`, `CANCELLED` | Current lifecycle states. Fill acquisition moves authoritative `READY` to `FILLING`; guarded finalization/recovery moves to `READY_FOR_USER_SUBMISSION`. The user, not Apply Pilot, performs employer submission. |
 
 There is no `SUBMITTING` or `SUBMITTED` state.
 
@@ -237,9 +250,11 @@ Stable lock ordering is deliberately narrow:
 | Cancellation | Run |
 | Review resolution | Run |
 | Answer review | Run → answer |
+| Fill acquisition | Policy → run → inspection/packet/answers → Fill steps |
+| Fill finalization/recovery | Run → Fill steps |
 | Preparation failure finalization | Run |
 
-Real PostgreSQL 16 tests at `READ COMMITTED` protect policy first-persistence behavior, preparation lease/fence/cap ownership, lifecycle cancellation/review races, execution-token replacement/authorization/revocation, and stable lock ordering. Test-only barriers and instrumentation are not runtime features.
+Real PostgreSQL 16 tests at `READ COMMITTED` protect policy first-persistence behavior, preparation lease/fence/cap ownership, lifecycle cancellation/review races, permanent one-attempt Fill acquisition/finalization/recovery, execution-token replacement/authorization/revocation, and stable lock ordering. Test-only barriers and instrumentation are not runtime features.
 
 ## Audit log versus application timeline
 
@@ -335,19 +350,20 @@ CI has a separate PostgreSQL concurrency job using Node.js 24 and PostgreSQL 16.
 - Deploy with `APPLICATION_AUTOMATION_ENABLED=false`.
 - Configure and inspect each intended user's automation policy.
 - Configure reviewed execution hosts before token issuance.
-- Enable the global capability only when controlled preparation is intended.
+- Keep `PREPARE_ONLY` as the default. Select `FILL_AND_REVIEW` only for a user who is intended to access the guarded Fill workflow.
+- Enable the global capability only when controlled preparation or guarded Fill is intended.
 - For an emergency pause, set the global flag false and ensure every runtime instance receives the environment change and restarts or redeploys.
 - Remember that the global pause is not persistent revocation.
 - Use real policy changes, cancellation, replacement, or explicit revocation when durable invalidation is required.
 - Keep AI provider credentials server-only.
-- Keep employer-form writing, uploads, control clicking, and submission unavailable; those capabilities do not exist today.
+- Treat each Fill as one explicit, permanent attempt: do not replay uncertain results or add a recovery mutation to the control page.
+- Keep employer-control clicking, uploads, and submission unavailable. The user reviews the employer form and personally submits.
 
 ## Roadmap-only work
 
-The following work remains parked and must not be inferred from current schema placeholders:
+The following work remains parked and must not be inferred from the bounded current Fill path:
 
-- `FILL_AND_REVIEW`: future browser-assisted form review with explicit human control;
-- ATS application-form adapters, each requiring individual review and terms-of-service analysis;
+- Greenhouse and other real-employer/ATS application-form hardening, each requiring individual review and terms-of-service analysis;
 - a durable worker for persisted retry-safe execution; and
 - `AUTO_SUBMIT_ALLOWLISTED`, which is not implemented and is not a current `AutomationMode`.
 

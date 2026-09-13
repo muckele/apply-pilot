@@ -27,14 +27,14 @@ export default async function ApplicationBrowserPage({ params }: Props) {
     <>
       <PageHeader
         title="Local application browser"
-        description="Inspect the frozen employer form and review the resulting answer packet from this authenticated, run-owned page."
+        description="Inspect the frozen employer form, review its answer packet, and explicitly Fill reviewed supported fields from this authenticated, run-owned page."
       />
       <Panel>
         <PanelHeader
           title="Browser companion"
           description="The companion independently reads the run's frozen target through the authenticated session."
         />
-        <ApplicationBrowserControl runId={parsed.data.id} />
+        <ApplicationBrowserControl runId={parsed.data.id} authenticatedOwnerPage />
       </Panel>
     </>
   );
