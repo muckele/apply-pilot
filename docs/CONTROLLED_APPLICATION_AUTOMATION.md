@@ -4,7 +4,7 @@ Canonical developer and operator reference for Apply Pilot's current controlled 
 
 ## Current status
 
-The authenticated backend supports controlled application preparation and a narrow Human-Submit Fill workflow. It includes per-user policy, preparation, deterministic review, guarded one-attempt Fill, cancellation, execution-token, audit, application-timeline, and PostgreSQL concurrency controls.
+The authenticated backend supports controlled application preparation and a narrow Human-Submit Fill workflow. It includes per-user policy, preparation, deterministic review, guarded one-attempt Fill, explicit post-submit user attestation, cancellation, execution-token, audit, application-timeline, and PostgreSQL concurrency controls.
 
 The current capability is deliberately narrow:
 
@@ -16,6 +16,7 @@ The current capability is deliberately narrow:
 - After review resolves to `READY`, one explicit user click can invoke the guarded Fill path for reviewed `TEXT`, `EMAIL`, `TEL`, `URL`, `TEXTAREA`, and `SELECT_ONE` fields. Occupied writable values are preserved.
 - Radio groups, checkbox booleans, manual-only, excluded, unsupported, rejected, and runtime-ineligible fields remain manual.
 - Employer-control clicking, document upload, application submission, and auto-submit are not implemented.
+- After personally submitting on the employer site, the authenticated owner may explicitly record that claim. This same-origin action does not inspect or verify the employer submission.
 
 This is a Human-Submit workflow: Apply Pilot may fill reviewed supported fields, but the user reviews the employer page, completes all remaining manual work, and personally submits. It is not auto-apply, broad ATS automation, or a claim of Greenhouse application-form support.
 
@@ -32,6 +33,7 @@ The current system has:
 - authenticated, owner-scoped packet review and guarded Fill presentation;
 - one payload-free `FILL_APPROVED_FIELDS` activation only after an explicit user click and coherent reviewed authority;
 - one permanent backend Fill attempt, with no automatic mutation replay;
+- one explicit owner-session post-submit attestation, with no inferred completion or automatic mutation replay;
 - no employer document upload or employer-control clicking;
 - no Greenhouse application-form adapter;
 - no generic ATS application-form adapter;
@@ -59,6 +61,14 @@ The payload-free command returns the existing bounded outer `B1Status` used by t
 If a dispatched binding result is lost, the page never replays Fill and does not use automatic bridge `GET_STATUS` as its primary recovery. It preserves the last accepted browser status, marks review and Fill presentation unverified, performs one authenticated Fill-status GET plus one paired run/packet refresh, and displays mutation-uncertain guidance. There is no polling loop, background mutation, client timeout, retry button, or React `RECOVER_EXPIRED` surface.
 
 Terminal presentation shows aggregate counts only: filled, preserved existing, runtime manual, failed, and not attempted. It does not render step keys or derive UI identity from step order. Manual-field guidance uses only public question, field type, requiredness, and a closed manual category. After completion, safe stop, recovery uncertainty, rejection, or cancellation, the user reviews every employer field, completes remaining manual work, verifies preserved values, and personally clicks the employer site's Submit button. Apply Pilot never submits the application.
+
+### Personal-submission completion
+
+After the user has personally clicked the employer site's Submit control, the authenticated owner page offers a separate two-step confirmation for a verified run in `READY` or `READY_FOR_USER_SUBMISSION`. This control does not require a companion connection, `TARGET_OPEN`, a current inspection, packet freshness, or Fill eligibility. It uses same-origin HTTP only and is not a browser-bridge command.
+
+The confirmation sends exactly `POST /api/application-runs/<run-id>/complete-by-user` with `{"attestation":"USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE"}`. In one owner-scoped transaction, the server moves the run to `COMPLETED_BY_USER`, increments `stateVersion`, records authoritative `completedAt`, clears `activeRunKey` and any Fill lease, preserves the permanent `fillAttemptId`, sets the owning Application status to `APPLIED`, and sets `dateApplied` only when it was previously null. One bounded audit and one application timeline event record the user's attestation. They do not assert that Apply Pilot observed or verified an employer submission.
+
+If the POST response is lost after dispatch, the page never automatically POSTs again. It performs one no-store GET of the authenticated run only. A fresh `COMPLETED_BY_USER` run confirms the recorded attestation; a fresh still-eligible run leaves bounded uncertainty and requires another future explicit user decision; an unverifiable result remains refresh-only. Reloading or remounting a terminal run does not trigger a mutation.
 
 ## Control planes
 
@@ -94,6 +104,7 @@ Only exact lowercase `"true"` enables the global capability. Missing values, `"f
 | Single-use consumption | The same global-stop principle applies before hashing or capability-side database mutation. An internal atomic primitive exists, but no public issuance path currently creates a single-use execution token. |
 | Policy GET/PATCH | Available so operators and users can inspect or manage policy while the global capability remains paused. |
 | Cancellation | Available, including its internal run-token invalidation. |
+| Personal-submission completion | Available only as an explicit authenticated user attestation from `READY` or `READY_FOR_USER_SUBMISSION`; it grants no employer-browser authority and does not depend on the global automation switch. |
 | Review resolution and answer review | Available, subject to their normal state, version, reason, and ownership checks. |
 | Individual token revocation | Available and idempotent. |
 | Run-wide/user-wide revocation | Internal transactional helpers remain available to operations such as cancellation and real policy changes. They are not standalone public bulk endpoints. |
@@ -176,7 +187,7 @@ Preparation enforces safe targets, configured blocks, and the static restricted-
 | Execution scope | `APPLICATION_FILL` | Reserved schema value with no current issuance path. The current owner-session browser Fill does not issue this token. |
 | Execution scope | `APPLICATION_EVENT_WRITE` | Reserved schema value with no current issuance or event-write execution path. |
 | Submit scope | None | No submit scope exists. |
-| Run state | `DRAFT`, `PREPARING`, `READY`, `REVIEW_REQUIRED`, `FILLING`, `READY_FOR_USER_SUBMISSION`, `COMPLETED_BY_USER`, `BLOCKED`, `FAILED`, `CANCELLED` | Current lifecycle states. Fill acquisition moves authoritative `READY` to `FILLING`; guarded finalization/recovery moves to `READY_FOR_USER_SUBMISSION`. The user, not Apply Pilot, performs employer submission. |
+| Run state | `DRAFT`, `PREPARING`, `READY`, `REVIEW_REQUIRED`, `FILLING`, `READY_FOR_USER_SUBMISSION`, `COMPLETED_BY_USER`, `BLOCKED`, `FAILED`, `CANCELLED` | Current lifecycle states. Fill acquisition moves authoritative `READY` to `FILLING`; guarded finalization/recovery moves to `READY_FOR_USER_SUBMISSION`. Only the user's explicit post-submit attestation moves `READY` or `READY_FOR_USER_SUBMISSION` to `COMPLETED_BY_USER`. The user, not Apply Pilot, performs employer submission. |
 
 There is no `SUBMITTING` or `SUBMITTED` state.
 
@@ -358,6 +369,7 @@ CI has a separate PostgreSQL concurrency job using Node.js 24 and PostgreSQL 16.
 - Keep AI provider credentials server-only.
 - Treat each Fill as one explicit, permanent attempt: do not replay uncertain results or add a recovery mutation to the control page.
 - Keep employer-control clicking, uploads, and submission unavailable. The user reviews the employer form and personally submits.
+- Treat personal-submission completion as the user's explicit claim after submission, never as product verification; reconcile a lost response with the run GET only and never replay the POST automatically.
 
 ## Roadmap-only work
 

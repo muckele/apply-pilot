@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
-import type { ApplicationRunAnswerStatus, ApplicationRunState } from "@prisma/client";
+import type {
+  ApplicationRunAnswerStatus,
+  ApplicationRunState,
+  ApplicationStatus
+} from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
 import { computeApplicationAnswerProposalHash } from "@/lib/application-runs/answer-packet-domain";
@@ -33,6 +37,7 @@ const PACKET_ID = "clz8w7m9a0006qwer1234tyui";
 const NORMALIZED_FIELD_KEY = "b".repeat(64);
 const FIELD_FINGERPRINT = "c".repeat(64);
 const PACKET_HASH = "d".repeat(64);
+const PERSONAL_SUBMISSION_ATTESTATION = "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE";
 
 type FakePolicy = AutomationPolicyValues & {
   id: string;
@@ -45,6 +50,8 @@ type FakeApplication = {
   id: string;
   userId: string;
   jobPostingId: string;
+  status: ApplicationStatus;
+  dateApplied: Date | null;
   jobPosting: {
     id: string;
     userId: string;
@@ -156,6 +163,8 @@ function fakeApplication(overrides: Partial<FakeApplication> = {}): FakeApplicat
     id: APPLICATION_ID,
     userId: USER_ID,
     jobPostingId: JOB_ID,
+    status: "INTERESTED",
+    dateApplied: null,
     jobPosting: {
       id: JOB_ID,
       userId: USER_ID,
@@ -182,6 +191,7 @@ function fakeRun(overrides: Partial<FakeRun> = {}): FakeRun {
     blockingReason: null,
     errorCategory: null,
     preparedAt: null,
+    completedAt: null,
     cancelledAt: null,
     createdAt: new Date(NOW),
     updatedAt: new Date(NOW),
@@ -298,6 +308,13 @@ function nested(value: unknown, key: string): Record<string, unknown> {
   return object(object(value)[key]);
 }
 
+function fakeDatabaseValueEquals(actual: unknown, expected: unknown): boolean {
+  if (actual instanceof Date && expected instanceof Date) {
+    return actual.getTime() === expected.getTime();
+  }
+  return actual === expected;
+}
+
 function tokenMatches(token: FakeToken, where: Record<string, unknown>): boolean {
   for (const [key, expected] of Object.entries(where)) {
     if (key === "OR") {
@@ -341,6 +358,7 @@ class FakeApplicationRunDatabase {
   failTokenUpdate = false;
   failPacketUpdate = false;
   failRunUpdate = false;
+  failApplicationUpdate = false;
   onEventCreate: (() => void) | null = null;
   verifiedPacket: VerifiedCurrentAnswerPacket | null = null;
   verificationError: Error | null = null;
@@ -405,8 +423,12 @@ class FakeApplicationRunDatabase {
     return state.policy?.userId === userId ? structuredClone(state.policy) : null;
   }
 
-  private findApplication(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
-    this.operations.push("application.findFirst");
+  private findApplication(
+    args: unknown,
+    state: FakeApplicationRunDatabaseState = this.committedState(),
+    operation = "application.findFirst"
+  ) {
+    this.operations.push(operation);
     const where = nested(args, "where");
     const found = state.applications.find(
       (application) => application.id === where.id && application.userId === where.userId
@@ -523,6 +545,13 @@ class FakeApplicationRunDatabase {
           const run = state.runs.find((candidate) => candidate.id === values[0] && candidate.userId === values[1]);
           return (run ? [{ id: run.id }] : []) as T;
         }
+        if (query.includes('FROM "Application"')) {
+          this.operations.push("application.lock");
+          const application = state.applications.find(
+            (candidate) => candidate.id === values[0] && candidate.userId === values[1]
+          );
+          return (application ? [{ id: application.id }] : []) as T;
+        }
         this.operations.push("policy.lock");
         const policy = state.policy;
         if (policy && policy.userId === values[0]) return [{ id: policy.id }] as T;
@@ -549,6 +578,24 @@ class FakeApplicationRunDatabase {
           return structuredClone(state.policy);
         }
       },
+      application: {
+        findFirst: async (args: unknown) =>
+          this.findApplication(args, state, "application.findFirst.tx"),
+        updateMany: async (args: unknown) => {
+          this.operations.push("application.updateMany");
+          if (this.failApplicationUpdate) return { count: 0 };
+          const where = nested(args, "where");
+          const data = nested(args, "data");
+          const matches = state.applications.filter((application) =>
+            Object.entries(where).every(
+              ([key, expected]) =>
+                fakeDatabaseValueEquals(application[key as keyof FakeApplication], expected)
+            )
+          );
+          for (const application of matches) Object.assign(application, structuredClone(data));
+          return { count: matches.length };
+        }
+      },
       applicationRun: {
         findFirst: async (args: unknown) => this.findRunFirst(args, state),
         updateMany: async (args: unknown) => {
@@ -557,7 +604,9 @@ class FakeApplicationRunDatabase {
           const where = nested(args, "where");
           const data = nested(args, "data");
           const matches = state.runs.filter((run) =>
-            Object.entries(where).every(([key, expected]) => run[key as keyof FakeRun] === expected)
+            Object.entries(where).every(([key, expected]) =>
+              fakeDatabaseValueEquals(run[key as keyof FakeRun], expected)
+            )
           );
           for (const run of matches) {
             for (const [key, value] of Object.entries(data)) {
@@ -686,6 +735,17 @@ function serviceFor(
       database.loadVerifiedCurrentPacket(tx),
     ...overrides
   });
+}
+
+async function completeRunByUser(
+  database: FakeApplicationRunDatabase,
+  input: { userId: unknown; runId: unknown; attestation: unknown },
+  overrides: Partial<ApplicationRunServiceDependencies> = {}
+): Promise<ApplicationRunDto> {
+  const service = serviceFor(database, false, overrides) as unknown as Record<string, unknown>;
+  const complete = service.completeApplicationRunByUser;
+  assert.equal(typeof complete, "function", "expected completeApplicationRunByUser service operation");
+  return (complete as (value: typeof input) => Promise<ApplicationRunDto>)(input);
 }
 
 function packetReviewDatabase(input: {
@@ -1024,6 +1084,7 @@ test("DRAFT creation derives owner, job, target URL, host, state, and active key
     blockingReason: null,
     errorCategory: null,
     preparedAt: null,
+    completedAt: null,
     cancelledAt: null,
     createdAt: NOW,
     updatedAt: NOW
@@ -1206,6 +1267,7 @@ test("owned run GET returns only the narrow DTO and wrong/missing users share 40
     "applyUrlSnapshot",
     "blockingReason",
     "cancelledAt",
+    "completedAt",
     "createdAt",
     "detectedAdapter",
     "errorCategory",
@@ -1381,6 +1443,190 @@ test("cancellation rolls back run and token invalidation if token, audit, or eve
     assert.equal(database.tokens[0].revokedAt, null, failure);
     assert.equal(database.audits.length, 0, failure);
     assert.equal(database.events.length, 0, failure);
+  }
+});
+
+test("personal completion atomically records both allowed Human-Submit paths with one bounded side-effect set", async () => {
+  const existingDateApplied = new Date("2026-08-01T12:00:00.000Z");
+  const cases: Array<{
+    state: "READY" | "READY_FOR_USER_SUBMISSION";
+    fillAttemptId: string | null;
+    dateApplied: Date | null;
+    expectedDateApplied: Date;
+  }> = [
+    {
+      state: "READY",
+      fillAttemptId: null,
+      dateApplied: null,
+      expectedDateApplied: NOW
+    },
+    {
+      state: "READY_FOR_USER_SUBMISSION",
+      fillAttemptId: "550e8400-e29b-41d4-a716-446655440000",
+      dateApplied: existingDateApplied,
+      expectedDateApplied: existingDateApplied
+    }
+  ];
+
+  for (const testCase of cases) {
+    const database = new FakeApplicationRunDatabase();
+    database.applications[0] = fakeApplication({
+      status: "INTERESTED",
+      dateApplied: testCase.dateApplied
+    });
+    database.runs.push(fakeRun({
+      state: testCase.state,
+      stateVersion: 11,
+      fillAttemptId: testCase.fillAttemptId,
+      fillLeaseExpiresAt: new Date("2026-09-12T17:59:00.000Z")
+    }));
+
+    const result = await completeRunByUser(database, {
+      userId: USER_ID,
+      runId: RUN_ID,
+      attestation: PERSONAL_SUBMISSION_ATTESTATION
+    }, {
+      clock: () => {
+        throw new Error("JavaScript clock must not supply completion authority");
+      }
+    });
+
+    assert.equal(result.state, "COMPLETED_BY_USER", testCase.state);
+    assert.equal(result.stateVersion, 12, testCase.state);
+    assert.deepEqual(result.completedAt, NOW, testCase.state);
+    assert.equal(database.runs[0].activeRunKey, null, testCase.state);
+    assert.equal(database.runs[0].fillAttemptId, testCase.fillAttemptId, testCase.state);
+    assert.equal(database.runs[0].fillLeaseExpiresAt, null, testCase.state);
+    assert.equal(database.applications[0].status, "APPLIED", testCase.state);
+    assert.deepEqual(database.applications[0].dateApplied, testCase.expectedDateApplied, testCase.state);
+    assert.equal(database.operations.filter((operation) => operation === "run.updateMany").length, 1);
+    assert.equal(database.operations.filter((operation) => operation === "application.updateMany").length, 1);
+    assert.equal(database.operations.filter((operation) => operation === "audit.create").length, 1);
+    assert.equal(database.operations.filter((operation) => operation === "event.create").length, 1);
+    assert.equal(database.operations.includes("token.updateMany"), false);
+    assert.equal(database.operations.includes("answer.updateMany"), false);
+    assert.equal(database.operations.includes("packet.updateMany"), false);
+    assert.equal(database.operations.some((operation) => operation.startsWith("policy.")), false);
+    assert.ok(database.operations.indexOf("run.lock") < database.operations.indexOf("application.lock"));
+    assert.ok(database.operations.indexOf("application.lock") < database.operations.indexOf("database.now"));
+    assert.ok(database.operations.indexOf("run.updateMany") < database.operations.indexOf("application.updateMany"));
+    assert.deepEqual(database.audits, [{
+      userId: USER_ID,
+      action: "application-run.complete-by-user",
+      resource: "ApplicationRun",
+      resourceId: RUN_ID,
+      metadata: {
+        runId: RUN_ID,
+        applicationId: APPLICATION_ID,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION,
+        previousState: testCase.state,
+        nextState: "COMPLETED_BY_USER",
+        previousStateVersion: 11,
+        nextStateVersion: 12,
+        completedAt: NOW.toISOString()
+      }
+    }]);
+    assert.deepEqual(database.events, [{
+      userId: USER_ID,
+      applicationId: APPLICATION_ID,
+      type: "STATUS_CHANGED",
+      title: "Personal submission recorded",
+      metadata: {
+        runId: RUN_ID,
+        previousState: testCase.state,
+        nextState: "COMPLETED_BY_USER",
+        previousStateVersion: 11,
+        nextStateVersion: 12,
+        completedAt: NOW.toISOString()
+      }
+    }]);
+  }
+});
+
+test("personal completion rejects every non-authorized state without application, audit, or timeline mutation", async () => {
+  const rejectedStates: ApplicationRunState[] = [
+    "DRAFT",
+    "PREPARING",
+    "REVIEW_REQUIRED",
+    "BLOCKED",
+    "FAILED",
+    "FILLING",
+    "COMPLETED_BY_USER",
+    "CANCELLED"
+  ];
+
+  for (const state of rejectedStates) {
+    const database = new FakeApplicationRunDatabase();
+    database.runs.push(fakeRun({ state, stateVersion: 3 }));
+    await assert.rejects(
+      completeRunByUser(database, {
+        userId: USER_ID,
+        runId: RUN_ID,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      }),
+      (error) => assertPublicError(error, 409, "RUN_INVALID_STATE"),
+      state
+    );
+    assert.equal(database.runs[0].state, state);
+    assert.equal(database.applications[0].status, "INTERESTED");
+    assert.equal(database.audits.length, 0);
+    assert.equal(database.events.length, 0);
+  }
+});
+
+test("personal completion validates exact attestation and keeps missing or cross-owner runs non-enumerating", async () => {
+  const invalidAttestation = new FakeApplicationRunDatabase();
+  invalidAttestation.runs.push(fakeRun({ state: "READY" }));
+  await assert.rejects(completeRunByUser(invalidAttestation, {
+    userId: USER_ID,
+    runId: RUN_ID,
+    attestation: "USER_SUBMITTED"
+  }));
+  assert.equal(invalidAttestation.operations.length, 0);
+
+  for (const [userId, runId] of [
+    [OTHER_USER_ID, RUN_ID],
+    [USER_ID, "clz8w7m9a0099qwer1234tyui"]
+  ]) {
+    const database = new FakeApplicationRunDatabase();
+    database.runs.push(fakeRun({ state: "READY" }));
+    await assert.rejects(
+      completeRunByUser(database, {
+        userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      }),
+      (error) => assertPublicError(error, 404, "RUN_NOT_FOUND")
+    );
+    assert.equal(database.applications[0].status, "INTERESTED");
+    assert.equal(database.audits.length, 0);
+    assert.equal(database.events.length, 0);
+  }
+});
+
+test("personal completion rolls back every lifecycle write when a fenced update or record fails", async () => {
+  for (const failure of ["run", "application", "audit", "event"] as const) {
+    const database = new FakeApplicationRunDatabase();
+    database.runs.push(fakeRun({ state: "READY", stateVersion: 6 }));
+    database.failRunUpdate = failure === "run";
+    database.failApplicationUpdate = failure === "application";
+    database.failAudit = failure === "audit";
+    database.failEvent = failure === "event";
+
+    await assert.rejects(completeRunByUser(database, {
+      userId: USER_ID,
+      runId: RUN_ID,
+      attestation: PERSONAL_SUBMISSION_ATTESTATION
+    }));
+    assert.equal(database.runs[0].state, "READY", failure);
+    assert.equal(database.runs[0].stateVersion, 6, failure);
+    assert.equal(database.runs[0].completedAt, null, failure);
+    assert.equal(database.runs[0].activeRunKey, APPLICATION_ID, failure);
+    assert.equal(database.applications[0].status, "INTERESTED", failure);
+    assert.equal(database.applications[0].dateApplied, null, failure);
+    assert.equal(database.audits.length, 0, failure);
+    assert.equal(database.events.length, 0, failure);
+    assert.equal(database.operations.at(-1), "transaction.rollback", failure);
   }
 });
 

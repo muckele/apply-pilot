@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import { ApplicationRunState } from "@prisma/client";
 
+import * as applicationRunStateMachine from "@/lib/application-runs/state-machine";
+
 import {
   ALLOWED_RUN_TRANSITIONS,
   assertRunTransition,
@@ -15,6 +17,20 @@ import {
   RunTransitionError
 } from "@/lib/application-runs/state-machine";
 import { PublicApiError } from "@/lib/api-errors";
+
+type CompletionDataBuilder = (now: Date) => {
+  state: ApplicationRunState;
+  stateVersion: { increment: number };
+  completedAt: Date;
+  activeRunKey: null;
+  fillLeaseExpiresAt: null;
+};
+
+function completionDataBuilder(): CompletionDataBuilder {
+  const builder = (applicationRunStateMachine as Record<string, unknown>).buildCompleteRunByUserData;
+  assert.equal(typeof builder, "function", "expected buildCompleteRunByUserData to be exported");
+  return builder as CompletionDataBuilder;
+}
 
 const APPROVED_TRANSITIONS: Array<[ApplicationRunState, ApplicationRunState]> = [
   ["DRAFT", "PREPARING"],
@@ -141,6 +157,23 @@ test("cancellation clears preparation ownership and the Fill lease while retaini
   assert.equal(data.fillLeaseExpiresAt, null);
   assert.equal("fillAttemptId" in data, false);
   assert.deepEqual(data.stateVersion, { increment: 1 });
+});
+
+test("personal completion builds the exact terminal run update and permanently retains Fill history", () => {
+  const now = new Date("2026-09-12T18:00:00.000Z");
+  const data = completionDataBuilder()(now);
+
+  assert.deepEqual(data, {
+    state: "COMPLETED_BY_USER",
+    stateVersion: { increment: 1 },
+    completedAt: now,
+    activeRunKey: null,
+    fillLeaseExpiresAt: null
+  });
+  assert.equal("fillAttemptId" in data, false);
+  assert.equal("cancelledAt" in data, false);
+  assert.equal("prepareAttemptId" in data, false);
+  assert.equal("prepareLeaseExpiresAt" in data, false);
 });
 
 test("Fill state builders use only supplied authority and retain the permanent attempt fence by omission", () => {

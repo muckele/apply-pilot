@@ -35,6 +35,7 @@ const ANSWER_ROW_LOCK = {
 
 const SYNTHETIC_HOST = "jobs.example.test";
 const GLOBAL_AUTOMATION_ENABLED = { APPLICATION_AUTOMATION_ENABLED: "true" } as const;
+const PERSONAL_SUBMISSION_ATTESTATION = "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE" as const;
 const OPERATION_TIMEOUT_MS = 12_000;
 const CLEANUP_OPERATION_TIMEOUT_MS = 5_000;
 const CLEANUP_DISCONNECT_TIMEOUT_MS = 3_000;
@@ -50,6 +51,8 @@ const RUN_SELECT = {
   stateVersion: true,
   prepareAttemptId: true,
   prepareLeaseExpiresAt: true,
+  fillAttemptId: true,
+  fillLeaseExpiresAt: true,
   firstPreparingAt: true,
   applyHost: true,
   reviewReasons: true,
@@ -57,6 +60,7 @@ const RUN_SELECT = {
   blockingReason: true,
   errorCategory: true,
   preparedAt: true,
+  completedAt: true,
   cancelledAt: true,
   createdAt: true,
   updatedAt: true
@@ -539,11 +543,13 @@ async function createLifecycleRun(
   fixture: BaseFixture,
   input: {
     idempotencyKey: string;
-    state: "READY" | "REVIEW_REQUIRED";
+    state: "READY" | "REVIEW_REQUIRED" | "READY_FOR_USER_SUBMISSION";
     stateVersion: number;
     firstPreparingAt: Date;
     preparedAt: Date;
     reviewReasons?: string[];
+    fillAttemptId?: string | null;
+    fillLeaseExpiresAt?: Date | null;
   }
 ): Promise<string> {
   const run = await observer.client.applicationRun.create({
@@ -559,6 +565,8 @@ async function createLifecycleRun(
       applyHost: SYNTHETIC_HOST,
       prepareAttemptId: null,
       prepareLeaseExpiresAt: null,
+      fillAttemptId: input.fillAttemptId ?? null,
+      fillLeaseExpiresAt: input.fillLeaseExpiresAt ?? null,
       firstPreparingAt: input.firstPreparingAt,
       preparedAt: input.preparedAt,
       reviewReasons: input.reviewReasons ?? []
@@ -1080,6 +1088,73 @@ function extendCancellationMutationPause(
   }) as unknown as PostgresTestActor["client"];
   return {
     prismaClient: extended,
+    assertMatches: () => assert.equal(matches, 1, name + " matches")
+  };
+}
+
+function extendCompletionMutationPause(
+  prismaClient: PostgresTestActor["client"],
+  name: string,
+  expected: {
+    userId: string;
+    runId: string;
+    state: "READY" | "READY_FOR_USER_SUBMISSION";
+    stateVersion: number;
+    fillAttemptId: string | null;
+    fillLeaseExpiresAt: Date | null;
+  },
+  reached: Deferred<void>,
+  release: Deferred<void>
+): {
+  prismaClient: PostgresTestActor["client"];
+  completedAt: () => Date;
+  assertMatches: () => void;
+} {
+  let matches = 0;
+  let authoritativeTime: Date | null = null;
+  const extended = prismaClient.$extends({
+    name,
+    query: {
+      applicationRun: {
+        async updateMany({ args, query }) {
+          const where = requireRecord(args.where, "personal completion mutation where");
+          const data = requireRecord(args.data, "personal completion mutation data");
+          const fillLeaseMatches = expected.fillLeaseExpiresAt === null
+            ? where.fillLeaseExpiresAt === null
+            : sameDate(where.fillLeaseExpiresAt, expected.fillLeaseExpiresAt);
+          const matchesTarget =
+            where.id === expected.runId &&
+            where.userId === expected.userId &&
+            where.state === expected.state &&
+            where.stateVersion === expected.stateVersion &&
+            where.fillAttemptId === expected.fillAttemptId &&
+            fillLeaseMatches &&
+            where.completedAt === null &&
+            data.state === "COMPLETED_BY_USER" &&
+            isIncrementOne(data.stateVersion) &&
+            data.activeRunKey === null &&
+            data.fillLeaseExpiresAt === null &&
+            !("fillAttemptId" in data) &&
+            data.completedAt instanceof Date;
+          const result = await query(args);
+          if (matchesTarget) {
+            assert.equal(result.count, 1);
+            matches += 1;
+            authoritativeTime = data.completedAt as Date;
+            reached.resolve();
+            await release.wait();
+          }
+          return result;
+        }
+      }
+    }
+  }) as unknown as PostgresTestActor["client"];
+  return {
+    prismaClient: extended,
+    completedAt: () => {
+      assert.ok(authoritativeTime instanceof Date);
+      return authoritativeTime;
+    },
     assertMatches: () => assert.equal(matches, 1, name + " matches")
   };
 }
@@ -1766,6 +1841,472 @@ test("concurrent double cancellation performs one physical lifecycle transition"
     winnerPause.assertMatches();
     winnerHooks.assertExpectedHooksReached();
     contenderHooks.assertExpectedHooksReached();
+    await assertScenarioSessionsPinned(scenario, "complete");
+  });
+});
+
+test("personal completion persists both Human-Submit origins with exact bounded side effects", async () => {
+  const scenario = await createScenario("personal-completion-origins");
+  await runScenarioBody(scenario, async () => {
+    const variants = [
+      {
+        label: "ready-null-date",
+        state: "READY" as const,
+        stateVersion: 6,
+        existingDateApplied: null,
+        fillAttemptId: null,
+        fillLeaseExpiresAt: null
+      },
+      {
+        label: "post-fill-preserved-date",
+        state: "READY_FOR_USER_SUBMISSION" as const,
+        stateVersion: 11,
+        existingDateApplied: new Date("2038-04-02T10:11:12.000Z"),
+        fillAttemptId: randomUUID(),
+        fillLeaseExpiresAt: new Date("2038-04-02T11:11:12.000Z")
+      }
+    ];
+
+    for (const variant of variants) {
+      const fixture = await createBaseFixture(scenario, variant.label);
+      const firstPreparingAt = new Date("2038-04-01T10:00:00.000Z");
+      const preparedAt = new Date("2038-04-01T10:00:01.000Z");
+      const followUpDueAt = new Date("2038-04-15T12:00:00.000Z");
+      await scenario.observer.client.application.update({
+        where: { id: fixture.applicationId },
+        data: {
+          dateApplied: variant.existingDateApplied,
+          followUpDueAt,
+          nextAction: "Preserve this explicit next action",
+          notes: "Preserve these application notes"
+        }
+      });
+      const runId = await createLifecycleRun(scenario.observer, fixture, {
+        idempotencyKey: "personal-completion:" + randomUUID(),
+        state: variant.state,
+        stateVersion: variant.stateVersion,
+        firstPreparingAt,
+        preparedAt,
+        fillAttemptId: variant.fillAttemptId,
+        fillLeaseExpiresAt: variant.fillLeaseExpiresAt
+      });
+      if (variant.fillAttemptId) {
+        await scenario.observer.client.applicationRunStep.create({
+          data: {
+            runId,
+            userId: fixture.userId,
+            stepKey: `fill:${variant.fillAttemptId}:preserved-field`,
+            sequence: 0,
+            action: "FILL_FIELD",
+            semanticFieldKey: "preserved-field",
+            status: "SUCCEEDED",
+            completedAt: preparedAt
+          }
+        });
+      }
+      await scenario.observer.client.task.create({
+        data: {
+          userId: fixture.userId,
+          jobPostingId: fixture.jobPostingId,
+          applicationId: fixture.applicationId,
+          title: "Preserved next-action task",
+          description: "Must not be changed by personal completion",
+          dueAt: followUpDueAt
+        }
+      });
+      await scenario.observer.client.followUpReminder.create({
+        data: {
+          userId: fixture.userId,
+          jobPostingId: fixture.jobPostingId,
+          applicationId: fixture.applicationId,
+          title: "Preserved follow-up reminder",
+          dueAt: followUpDueAt
+        }
+      });
+
+      const jobBefore = await scenario.observer.client.jobPosting.findUniqueOrThrow({
+        where: { id: fixture.jobPostingId }
+      });
+      const applicationBefore = await scenario.observer.client.application.findUniqueOrThrow({
+        where: { id: fixture.applicationId }
+      });
+      const stepsBefore = await scenario.observer.client.applicationRunStep.findMany({
+        where: { runId },
+        orderBy: { sequence: "asc" }
+      });
+      const tasksBefore = await scenario.observer.client.task.findMany({
+        where: { applicationId: fixture.applicationId }
+      });
+      const remindersBefore = await scenario.observer.client.followUpReminder.findMany({
+        where: { applicationId: fixture.applicationId }
+      });
+
+      const completed = await createService(scenario.actorA.client).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      });
+      assert.equal(completed.state, "COMPLETED_BY_USER");
+      assert.equal(completed.stateVersion, variant.stateVersion + 1);
+      assert.ok(completed.completedAt instanceof Date);
+
+      const run = await requireRun(scenario.observer, fixture, runId);
+      assert.equal(run.state, "COMPLETED_BY_USER");
+      assert.equal(run.stateVersion, variant.stateVersion + 1);
+      assert.equal(run.activeRunKey, null);
+      assert.equal(run.fillAttemptId, variant.fillAttemptId);
+      assert.equal(run.fillLeaseExpiresAt, null);
+      assert.equal(run.completedAt?.getTime(), completed.completedAt.getTime());
+      assert.equal(run.firstPreparingAt?.getTime(), firstPreparingAt.getTime());
+      assert.equal(run.preparedAt?.getTime(), preparedAt.getTime());
+      assert.equal(run.cancelledAt, null);
+
+      const applicationAfter = await scenario.observer.client.application.findUniqueOrThrow({
+        where: { id: fixture.applicationId }
+      });
+      assert.equal(applicationAfter.status, "APPLIED");
+      assert.equal(
+        applicationAfter.dateApplied?.getTime(),
+        variant.existingDateApplied?.getTime() ?? completed.completedAt.getTime()
+      );
+      assert.equal(applicationAfter.followUpDueAt?.getTime(), applicationBefore.followUpDueAt?.getTime());
+      assert.equal(applicationAfter.nextAction, applicationBefore.nextAction);
+      assert.equal(applicationAfter.notes, applicationBefore.notes);
+      assert.deepEqual(
+        await scenario.observer.client.jobPosting.findUniqueOrThrow({ where: { id: fixture.jobPostingId } }),
+        jobBefore
+      );
+      assert.deepEqual(
+        await scenario.observer.client.applicationRunStep.findMany({ where: { runId }, orderBy: { sequence: "asc" } }),
+        stepsBefore
+      );
+      assert.deepEqual(
+        await scenario.observer.client.task.findMany({ where: { applicationId: fixture.applicationId } }),
+        tasksBefore
+      );
+      assert.deepEqual(
+        await scenario.observer.client.followUpReminder.findMany({ where: { applicationId: fixture.applicationId } }),
+        remindersBefore
+      );
+      assert.equal(
+        await scenario.observer.client.applicationRunAnswerPacket.count({ where: { runId } }),
+        0
+      );
+      assert.equal(
+        await scenario.observer.client.applicationRunFormInspection.count({ where: { runId } }),
+        0
+      );
+
+      const audits = await readAudits(scenario.observer, fixture.userId);
+      assert.equal(audits.length, 1);
+      const audit = requireSingleAudit(
+        audits,
+        "application-run.complete-by-user",
+        "ApplicationRun",
+        runId
+      );
+      assert.deepEqual(jsonRecord(audit.metadata), {
+        runId,
+        applicationId: fixture.applicationId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION,
+        previousState: variant.state,
+        nextState: "COMPLETED_BY_USER",
+        previousStateVersion: variant.stateVersion,
+        nextStateVersion: variant.stateVersion + 1,
+        completedAt: completed.completedAt.toISOString()
+      });
+      const events = await readEvents(scenario.observer, fixture.userId);
+      assert.equal(events.length, 1);
+      const event = requireSingleEvent(events, fixture.applicationId, "Personal submission recorded");
+      assert.equal(event.type, "STATUS_CHANGED");
+      assert.deepEqual(jsonRecord(event.metadata), {
+        runId,
+        previousState: variant.state,
+        nextState: "COMPLETED_BY_USER",
+        previousStateVersion: variant.stateVersion,
+        nextStateVersion: variant.stateVersion + 1,
+        completedAt: completed.completedAt.toISOString()
+      });
+    }
+    await assertScenarioSessionsPinned(scenario, "complete");
+  });
+});
+
+test("personal completion rejects wrong-state and cross-owner requests without writes", async () => {
+  const scenario = await createScenario("personal-completion-rejections");
+  await runScenarioBody(scenario, async () => {
+    const fixture = await createBaseFixture(scenario, "owner");
+    const other = await createBaseFixture(scenario, "other-owner");
+    const runId = await createLifecycleRun(scenario.observer, fixture, {
+      idempotencyKey: "personal-completion-rejected:" + randomUUID(),
+      state: "REVIEW_REQUIRED",
+      stateVersion: 8,
+      firstPreparingAt: new Date("2038-05-01T10:00:00.000Z"),
+      preparedAt: new Date("2038-05-01T10:00:01.000Z"),
+      reviewReasons: ["evidence_gaps_present"]
+    });
+
+    await assert.rejects(
+      createService(scenario.actorA.client).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      }),
+      (error) => {
+        assertPublicError(error, {
+          code: "RUN_INVALID_STATE",
+          status: 409,
+          details: { code: "RUN_INVALID_STATE", from: "REVIEW_REQUIRED", to: "COMPLETED_BY_USER" }
+        });
+        return true;
+      }
+    );
+    await assert.rejects(
+      createService(scenario.actorB.client).completeApplicationRunByUser({
+        userId: other.userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      }),
+      (error) => {
+        assertPublicError(error, { code: "RUN_NOT_FOUND", status: 404 });
+        return true;
+      }
+    );
+
+    const run = await requireRun(scenario.observer, fixture, runId);
+    assert.equal(run.state, "REVIEW_REQUIRED");
+    assert.equal(run.stateVersion, 8);
+    assert.equal(run.completedAt, null);
+    const application = await scenario.observer.client.application.findUniqueOrThrow({
+      where: { id: fixture.applicationId }
+    });
+    assert.equal(application.status, "SAVED");
+    assert.equal(application.dateApplied, null);
+    assert.deepEqual(await readAudits(scenario.observer, fixture.userId), []);
+    assert.deepEqual(await readEvents(scenario.observer, fixture.userId), []);
+    assert.deepEqual(await readAudits(scenario.observer, other.userId), []);
+    assert.deepEqual(await readEvents(scenario.observer, other.userId), []);
+    await assertScenarioSessionsPinned(scenario, "complete");
+  });
+});
+
+test("concurrent duplicate personal completion commits exactly one transition, audit, event, and date", async () => {
+  const scenario = await createScenario("personal-completion-duplicate");
+  await runScenarioBody(scenario, async () => {
+    const fixture = await createBaseFixture(scenario, "user");
+    const runId = await createLifecycleRun(scenario.observer, fixture, {
+      idempotencyKey: "personal-completion-duplicate:" + randomUUID(),
+      state: "READY",
+      stateVersion: 5,
+      firstPreparingAt: new Date("2038-06-01T10:00:00.000Z"),
+      preparedAt: new Date("2038-06-01T10:00:01.000Z")
+    });
+    const winnerMutationCompleted = deferred("personal completion winner mutation completed");
+    const releaseWinner = trackRelease(scenario, deferred("release personal completion winner"));
+    const contenderRunLockAttempted = deferred("personal completion contender run lock attempted");
+    let contenderRunLockCompleted = false;
+    const winnerHooks = createHookedPrismaClient(scenario.actorA, [{
+      name: "personal completion winner run lock",
+      match: RUN_ROW_LOCK
+    }]);
+    const winnerPause = extendCompletionMutationPause(
+      winnerHooks.prismaClient,
+      "personalCompletionDuplicateWinner",
+      {
+        userId: fixture.userId,
+        runId,
+        state: "READY",
+        stateVersion: 5,
+        fillAttemptId: null,
+        fillLeaseExpiresAt: null
+      },
+      winnerMutationCompleted,
+      releaseWinner
+    );
+    const contenderHooks = createHookedPrismaClient(scenario.actorB, [
+      {
+        name: "personal completion contender run lock",
+        match: RUN_ROW_LOCK,
+        before: () => contenderRunLockAttempted.resolve(),
+        after: () => {
+          contenderRunLockCompleted = true;
+        }
+      },
+      {
+        name: "personal completion contender run mutation",
+        match: { kind: "model", model: "applicationRun", method: "updateMany" },
+        expectedMatches: 0
+      },
+      {
+        name: "personal completion contender application mutation",
+        match: { kind: "model", model: "application", method: "updateMany" },
+        expectedMatches: 0
+      }
+    ]);
+
+    const winnerOperation = trackOperation(
+      scenario,
+      createService(winnerPause.prismaClient).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      })
+    );
+    await winnerMutationCompleted.wait();
+    const contenderOperation = trackOperation(
+      scenario,
+      createService(contenderHooks.prismaClient).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      })
+    );
+    await contenderRunLockAttempted.wait();
+    await assertObservedLockWait(scenario.observer, scenario.actorB, scenario.actorA);
+    assert.equal(contenderRunLockCompleted, false);
+
+    releaseWinner.resolve();
+    const [winnerSettled, contenderSettled] = await settlePair(
+      winnerOperation,
+      contenderOperation,
+      "duplicate personal completion operations"
+    );
+    const winner = requireFulfilled(winnerSettled, scenario.actorA, "personal completion winner");
+    assert.ok(winner.completedAt instanceof Date);
+    assertPublicError(
+      requireRejected(contenderSettled, scenario.actorB, "personal completion contender"),
+      {
+        code: "RUN_INVALID_STATE",
+        status: 409,
+        details: { code: "RUN_INVALID_STATE", from: "COMPLETED_BY_USER", to: "COMPLETED_BY_USER" }
+      }
+    );
+    assert.equal(contenderRunLockCompleted, true);
+    assert.equal(winner.completedAt.getTime(), winnerPause.completedAt().getTime());
+
+    const run = await requireRun(scenario.observer, fixture, runId);
+    assert.equal(run.state, "COMPLETED_BY_USER");
+    assert.equal(run.stateVersion, 6);
+    assert.equal(run.completedAt?.getTime(), winner.completedAt.getTime());
+    const application = await scenario.observer.client.application.findUniqueOrThrow({
+      where: { id: fixture.applicationId }
+    });
+    assert.equal(application.status, "APPLIED");
+    assert.equal(application.dateApplied?.getTime(), winner.completedAt.getTime());
+    assert.equal(
+      matchingAudits(
+        await readAudits(scenario.observer, fixture.userId),
+        "application-run.complete-by-user",
+        "ApplicationRun",
+        runId
+      ).length,
+      1
+    );
+    assert.equal(
+      (await readEvents(scenario.observer, fixture.userId)).filter(
+        (event) => event.applicationId === fixture.applicationId && event.title === "Personal submission recorded"
+      ).length,
+      1
+    );
+    winnerPause.assertMatches();
+    winnerHooks.assertExpectedHooksReached();
+    contenderHooks.assertExpectedHooksReached();
+    await assertScenarioSessionsPinned(scenario, "complete");
+  });
+});
+
+test("personal completion wins a row-locked race against cancellation", async () => {
+  const scenario = await createScenario("personal-completion-versus-cancel");
+  await runScenarioBody(scenario, async () => {
+    const fixture = await createBaseFixture(scenario, "user");
+    const runId = await createLifecycleRun(scenario.observer, fixture, {
+      idempotencyKey: "personal-completion-versus-cancel:" + randomUUID(),
+      state: "READY",
+      stateVersion: 2,
+      firstPreparingAt: new Date("2038-07-01T10:00:00.000Z"),
+      preparedAt: new Date("2038-07-01T10:00:01.000Z")
+    });
+    const completionMutationCompleted = deferred("completion-versus-cancel mutation completed");
+    const releaseCompletion = trackRelease(scenario, deferred("release completion versus cancellation"));
+    const cancellationLockAttempted = deferred("queued cancellation run lock attempted");
+    const completionHooks = createHookedPrismaClient(scenario.actorA, [{
+      name: "completion-versus-cancel run lock",
+      match: RUN_ROW_LOCK
+    }]);
+    const completionPause = extendCompletionMutationPause(
+      completionHooks.prismaClient,
+      "personalCompletionVersusCancellation",
+      {
+        userId: fixture.userId,
+        runId,
+        state: "READY",
+        stateVersion: 2,
+        fillAttemptId: null,
+        fillLeaseExpiresAt: null
+      },
+      completionMutationCompleted,
+      releaseCompletion
+    );
+    const cancellationHooks = createHookedPrismaClient(scenario.actorB, [
+      {
+        name: "queued cancellation run lock",
+        match: RUN_ROW_LOCK,
+        before: () => cancellationLockAttempted.resolve()
+      },
+      {
+        name: "queued cancellation run mutation",
+        match: { kind: "model", model: "applicationRun", method: "updateMany" },
+        expectedMatches: 0
+      }
+    ]);
+
+    const completionOperation = trackOperation(
+      scenario,
+      createService(completionPause.prismaClient).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      })
+    );
+    await completionMutationCompleted.wait();
+    const cancellationOperation = trackOperation(
+      scenario,
+      createService(cancellationHooks.prismaClient).cancelApplicationRun({
+        userId: fixture.userId,
+        runId
+      })
+    );
+    await cancellationLockAttempted.wait();
+    await assertObservedLockWait(scenario.observer, scenario.actorB, scenario.actorA);
+
+    releaseCompletion.resolve();
+    const [completionSettled, cancellationSettled] = await settlePair(
+      completionOperation,
+      cancellationOperation,
+      "personal completion versus cancellation"
+    );
+    const completed = requireFulfilled(completionSettled, scenario.actorA, "completion before cancellation");
+    assert.ok(completed.completedAt instanceof Date);
+    assertPublicError(
+      requireRejected(cancellationSettled, scenario.actorB, "queued cancellation"),
+      {
+        code: "RUN_INVALID_STATE",
+        status: 409,
+        details: { code: "RUN_INVALID_STATE", from: "COMPLETED_BY_USER", to: "CANCELLED" }
+      }
+    );
+    const run = await requireRun(scenario.observer, fixture, runId);
+    assert.equal(run.state, "COMPLETED_BY_USER");
+    assert.equal(run.stateVersion, 3);
+    assert.equal(run.completedAt?.getTime(), completed.completedAt.getTime());
+    assert.equal(run.cancelledAt, null);
+    const audits = await readAudits(scenario.observer, fixture.userId);
+    assert.equal(audits.length, 1);
+    requireSingleAudit(audits, "application-run.complete-by-user", "ApplicationRun", runId);
+    assert.equal((await readEvents(scenario.observer, fixture.userId)).length, 1);
+    completionPause.assertMatches();
+    completionHooks.assertExpectedHooksReached();
+    cancellationHooks.assertExpectedHooksReached();
     await assertScenarioSessionsPinned(scenario, "complete");
   });
 });

@@ -1349,6 +1349,7 @@ function acquisitionUncertaintyHarness(
           id: RUN_ID,
           state: "READY" as const,
           stateVersion: 7,
+          completedAt: null,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: targetUrl
         };
@@ -1733,6 +1734,7 @@ test("INSPECT_FORM is single-flight, privately sequenced, and publishes fresh au
           id: RUN_ID,
           state: "READY",
           stateVersion: runRead === 1 ? 7 : 8,
+          completedAt: null,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: "https://jobs.example.test/apply?posting=123#fresh"
         };
@@ -1893,6 +1895,7 @@ test("explicit Fill command uses one published generation exactly once and retai
           id: RUN_ID,
           state: "READY",
           stateVersion: runReads >= 4 ? 9 : 7,
+          completedAt: null,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: "https://jobs.example.test/apply"
         };
@@ -2088,6 +2091,7 @@ test("a workflow stop during the final status GET synchronously revokes the acti
           id: RUN_ID,
           state: "READY" as const,
           stateVersion: 7,
+          completedAt: null,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: targetUrl
         };
@@ -2286,7 +2290,7 @@ function createInspectionErrorFixture(publicationError?: Error, publicationWait?
     immutableRunId: RUN_ID,
     client: {
       async getApplicationRun() {
-        return { id: RUN_ID, state: "READY", stateVersion: 3, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply#fresh" };
+        return { id: RUN_ID, state: "READY", stateVersion: 3, completedAt: null, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply#fresh" };
       },
       async getAutomationPolicy() {
         return { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] };
@@ -2439,6 +2443,7 @@ test("coordinator opens only the immutable run's frozen, policy-allowed READY ta
           id: RUN_ID,
           state: "READY",
           stateVersion: 0,
+          completedAt: null,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: "https://jobs.example.test/apply?posting=123#intro"
         };
@@ -2479,19 +2484,19 @@ test("coordinator rejects alternate run data, invalid state, disabled policy, an
   const scenarios = [
     {
       name: "alternate run",
-      run: { id: "clz8w7m9a0003qwer1234tyui", state: "READY", stateVersion: 0, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
+      run: { id: "clz8w7m9a0003qwer1234tyui", state: "READY", stateVersion: 0, completedAt: null, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
       policy: { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] },
       code: "RUN_IDENTITY_MISMATCH"
     },
     {
       name: "invalid state",
-      run: { id: RUN_ID, state: "DRAFT", stateVersion: 0, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
+      run: { id: RUN_ID, state: "DRAFT", stateVersion: 0, completedAt: null, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
       policy: { effectiveEnabled: true, allowedHosts: ["jobs.example.test"], blockedHosts: [] },
       code: "RUN_INVALID_STATE"
     },
     {
       name: "disabled policy",
-      run: { id: RUN_ID, state: "READY", stateVersion: 0, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
+      run: { id: RUN_ID, state: "READY", stateVersion: 0, completedAt: null, applyHost: "jobs.example.test", applyUrlSnapshot: "https://jobs.example.test/apply" },
       policy: { effectiveEnabled: false, allowedHosts: ["jobs.example.test"], blockedHosts: [] },
       code: "AUTOMATION_DISABLED"
     }

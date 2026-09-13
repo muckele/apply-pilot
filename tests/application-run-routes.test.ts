@@ -53,6 +53,7 @@ function runDto() {
     blockingReason: null,
     errorCategory: null,
     preparedAt: null,
+    completedAt: null,
     cancelledAt: null,
     createdAt: NOW,
     updatedAt: NOW

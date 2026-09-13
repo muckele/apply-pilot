@@ -176,6 +176,7 @@ test("guarded orchestration uses the exact private generation and server order w
           id: RUN_ID,
           state: "READY" as const,
           stateVersion: 7,
+          completedAt: null,
           applyHost: TARGET_HOST,
           applyUrlSnapshot: TARGET_URL
         };

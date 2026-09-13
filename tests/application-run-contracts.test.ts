@@ -105,6 +105,32 @@ test("strict empty bodies reject authoritative-looking properties", () => {
   assert.equal(strictEmptyBodySchema.safeParse({ state: "READY" }).success, false);
 });
 
+test("personal-submission completion accepts only the exact user attestation object", () => {
+  const schema = contractSchema("completeApplicationRunByUserBodySchema");
+  const valid = { attestation: "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE" };
+
+  assert.deepEqual(schema.parse(valid), valid);
+  for (const invalid of [
+    {},
+    { attestation: "" },
+    { attestation: "USER_SUBMITTED" },
+    { attestation: null },
+    { attestation: true },
+    { attestation: [] },
+    { attestation: valid.attestation, completedAt: "2026-09-12T18:00:00.000Z" },
+    { attestation: valid.attestation, runId: CUID },
+    { attestation: valid.attestation, applicationId: CUID },
+    { attestation: valid.attestation, employerConfirmation: "confirmed" },
+    { attestation: valid.attestation, url: "https://jobs.example.com/confirmation" },
+    { attestation: valid.attestation, notes: "submitted" },
+    null,
+    [],
+    "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE"
+  ]) {
+    assert.equal(schema.safeParse(invalid).success, false, JSON.stringify(invalid));
+  }
+});
+
 test("review resolution requires packet fences correlated to legacy or packet-backed review", () => {
   const valid = {
     stateVersion: 7,

@@ -7,6 +7,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { ApplicationBrowserControl } from "@/components/application-browser-control";
+import * as applicationBrowserControlPresentation from "@/lib/application-browser/control-presentation";
 import {
   applyAuthoritativeBrowserStatus,
   apparentAutomatableFieldCount,
@@ -32,6 +33,7 @@ import {
   readinessMessage,
   shouldOfferRetryConnection,
   type AnswerReviewMutationSnapshot,
+  type PersonalSubmissionCompletionAuthority,
   type ResolveReviewMutationSnapshot,
   type ReviewRunAuthority,
   type AnswerPacket,
@@ -106,6 +108,36 @@ function resolveReviewPath(): string {
 
 function fillAttemptPath(): string {
   return `/api/application-runs/${encodeURIComponent(RUN_ID)}/fill-attempt`;
+}
+
+function completeByUserPath(): string {
+  return `/api/application-runs/${encodeURIComponent(RUN_ID)}/complete-by-user`;
+}
+
+function completedRunAuthority() {
+  return validRunAuthority({
+    state: "COMPLETED_BY_USER",
+    stateVersion: 8,
+    completedAt: "2026-09-12T18:00:00.000Z",
+    reviewReasons: []
+  });
+}
+
+function boundedCompletionAuthority() {
+  const run = completedRunAuthority();
+  return {
+    id: run.id,
+    state: run.state,
+    stateVersion: run.stateVersion,
+    completedAt: run.completedAt
+  };
+}
+
+function completionResponse(run = boundedCompletionAuthority()): Response {
+  return new Response(JSON.stringify({ run }), {
+    status: 200,
+    headers: { "content-type": "application/json" }
+  });
 }
 
 function noAttemptFillStatus(overrides: Record<string, unknown> = {}) {
@@ -252,6 +284,23 @@ function buttonNamed(container: HTMLElement, name: string): HTMLButtonElement {
   );
   assert.ok(button, `Expected button named ${name}.`);
   return button;
+}
+
+function optionalButtonNamed(container: HTMLElement, name: string): HTMLButtonElement | null {
+  return [...container.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent?.trim() === name
+  ) ?? null;
+}
+
+function retainButtonClickHandler(button: HTMLButtonElement): () => void {
+  const propsKey = Object.keys(button).find((key) => key.startsWith("__reactProps$"));
+  assert.ok(propsKey, "Expected React props on the mounted button.");
+  const props = (button as unknown as Record<string, {
+    onClick?: (event: MouseEvent) => void;
+  } | undefined>)[propsKey];
+  const onClick = props?.onClick;
+  if (typeof onClick !== "function") assert.fail("Expected a mounted React click handler.");
+  return () => onClick(new MouseEvent("click", { bubbles: true }));
 }
 
 function reviewButton(container: HTMLElement, action: "Approve" | "Reject", question: string): HTMLButtonElement {
@@ -530,6 +579,7 @@ function validRunAuthority(overrides: Record<string, unknown> = {}) {
     id: RUN_ID,
     state: "REVIEW_REQUIRED",
     stateVersion: 7,
+    completedAt: null,
     reviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
     applicationId: "application-extra",
     applyHost: "jobs.example.com",
@@ -757,6 +807,7 @@ test("run review parser projects strict current authority and preserves canonica
     id: RUN_ID,
     state: "REVIEW_REQUIRED",
     stateVersion: 7,
+    completedAt: null,
     reviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"]
   });
   for (const value of [
@@ -767,6 +818,11 @@ test("run review parser projects strict current authority and preserves canonica
     { run: validRunAuthority({ stateVersion: -1 }) },
     { run: validRunAuthority({ stateVersion: 1.5 }) },
     { run: validRunAuthority({ stateVersion: Number.MAX_SAFE_INTEGER + 1 }) },
+    { run: validRunAuthority({ completedAt: undefined }) },
+    { run: validRunAuthority({ completedAt: "not-a-date" }) },
+    { run: validRunAuthority({ completedAt: "2026-09-12T18:00:00Z" }) },
+    { run: validRunAuthority({ state: "COMPLETED_BY_USER", completedAt: null }) },
+    { run: validRunAuthority({ state: "READY", completedAt: "2026-09-12T18:00:00.000Z" }) },
     { run: validRunAuthority({ reviewReasons: ["unknown_requirement_ids", "unknown_requirement_ids"] }) },
     { run: validRunAuthority({ reviewReasons: ["unknown_requirement_ids", "not-a-reason"] }) },
     { run: validRunAuthority({ reviewReasons: ["evidence_gaps_present", "unknown_requirement_ids"] }) },
@@ -780,6 +836,104 @@ test("run review parser projects strict current authority and preserves canonica
   const projected = parseApplicationRunReviewResponse({ run: source }, RUN_ID);
   assert.equal("applicationId" in projected, false);
   assert.equal("applyHost" in projected, false);
+
+  const completedAt = "2026-09-12T18:00:00.000Z";
+  assert.deepEqual(
+    parseApplicationRunReviewResponse({
+      run: validRunAuthority({ state: "COMPLETED_BY_USER", completedAt })
+    }, RUN_ID),
+    {
+      id: RUN_ID,
+      state: "COMPLETED_BY_USER",
+      stateVersion: 7,
+      completedAt,
+      reviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"]
+    }
+  );
+});
+
+test("personal-submission request contains only the fixed attestation and its parser requires terminal authority", () => {
+  const presentationModule = applicationBrowserControlPresentation as unknown as Record<string, unknown>;
+  const build = presentationModule.buildCompleteApplicationRunByUserRequest;
+  const parse = presentationModule.parseCompleteApplicationRunByUserResponse;
+  assert.equal(typeof build, "function", "expected completion request builder");
+  assert.equal(typeof parse, "function", "expected completion response parser");
+
+  const request = (build as (input: { runId: string }) => {
+    url: string;
+    init: { method: string; cache: string; headers: Record<string, string>; body: string };
+  })({
+    runId: "run/sentinel",
+    applicationId: "must-not-enter-body",
+    completedAt: "must-not-enter-body"
+  } as never);
+  assert.equal(request.url, "/api/application-runs/run%2Fsentinel/complete-by-user");
+  assert.equal(request.init.method, "POST");
+  assert.equal(request.init.cache, "no-store");
+  assert.deepEqual(request.init.headers, { "Content-Type": "application/json" });
+  assert.deepEqual(JSON.parse(request.init.body), {
+    attestation: "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE"
+  });
+
+  const parseCompletion = parse as (
+    value: unknown,
+    runId: string
+  ) => PersonalSubmissionCompletionAuthority;
+  assert.deepEqual(parseCompletion({ run: boundedCompletionAuthority() }, RUN_ID), {
+    id: RUN_ID,
+    state: "COMPLETED_BY_USER",
+    stateVersion: 8,
+    completedAt: "2026-09-12T18:00:00.000Z"
+  });
+  assert.throws(() => parseCompletion({ run: validRunAuthority({ state: "READY" }) }, RUN_ID));
+  assert.throws(() => parseCompletion({ run: boundedCompletionAuthority() }, OTHER_RUN_ID));
+  assert.throws(() => parseCompletion({ run: completedRunAuthority() }, RUN_ID));
+});
+
+test("personal-submission eligibility depends only on trusted owner run state and local completion pending", () => {
+  const eligible = (applicationBrowserControlPresentation as unknown as Record<string, unknown>)
+    .isPersonalSubmissionCompletionEligible;
+  assert.equal(typeof eligible, "function", "expected personal-submission eligibility helper");
+  const check = eligible as (input: {
+    authenticatedOwnerPage: boolean;
+    componentActive: boolean;
+    run: ReviewRunAuthority | null;
+    runVerified: boolean;
+    completionPending: boolean;
+  }) => boolean;
+  const base = {
+    authenticatedOwnerPage: true,
+    componentActive: true,
+    run: validRunAuthority({ state: "READY" }) as ReviewRunAuthority,
+    runVerified: true,
+    completionPending: false
+  };
+  assert.equal(check(base), true);
+  assert.equal(check({
+    ...base,
+    run: validRunAuthority({ state: "READY_FOR_USER_SUBMISSION" }) as ReviewRunAuthority
+  }), true);
+
+  for (const state of [
+    "DRAFT",
+    "PREPARING",
+    "REVIEW_REQUIRED",
+    "FILLING",
+    "COMPLETED_BY_USER",
+    "BLOCKED",
+    "FAILED",
+    "CANCELLED"
+  ] as const) {
+    const run = state === "COMPLETED_BY_USER"
+      ? completedRunAuthority()
+      : validRunAuthority({ state });
+    assert.equal(check({ ...base, run: run as ReviewRunAuthority }), false, state);
+  }
+  assert.equal(check({ ...base, authenticatedOwnerPage: false }), false);
+  assert.equal(check({ ...base, componentActive: false }), false);
+  assert.equal(check({ ...base, run: null }), false);
+  assert.equal(check({ ...base, runVerified: false }), false);
+  assert.equal(check({ ...base, completionPending: true }), false);
 });
 
 test("review reason labels contain exactly the six canonical strings in server order", () => {
@@ -2790,13 +2944,16 @@ test("Task 3 mounted resolve success waits for paired refresh and only confirms 
     const url = String(input);
     if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
     if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(readyReviewPacket()) : refreshPacket.promise;
-    return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ state: "READY" }));
+    return runResponse(runReads++ === 0
+      ? validRunAuthority()
+      : validRunAuthority({ state: "READY", stateVersion: 8 }));
   });
   t.after(() => control.cleanup());
 
   await clickResolveReview(control);
   assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
-  assert.match(control.container.textContent ?? "", /Run stateREVIEW_REQUIRED/);
+  assert.match(control.container.textContent ?? "", /Run stateREADY/);
+  assert.match(control.container.textContent ?? "", /State version8/);
   assert.match(control.container.textContent ?? "", /Review timeNot acknowledged/);
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
   assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
@@ -2820,7 +2977,17 @@ test("Task 3 mounted committed resolve mismatch renders trusted authority and ex
       const url = String(input);
       if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
       if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? readyReviewPacket() : packet);
-      return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ state }));
+      return runResponse(
+        runReads++ === 0
+          ? validRunAuthority()
+          : validRunAuthority({
+              state,
+              stateVersion: 8,
+              ...(state === "COMPLETED_BY_USER"
+                ? { completedAt: "2026-08-30T00:00:00.000Z" }
+                : {})
+            })
+      );
     });
     try {
       await clickResolveReview(control);
@@ -2903,7 +3070,9 @@ test("Task 3 mounted resolve never invokes or serializes review authority throug
     const url = String(input);
     if (url === resolveReviewPath()) return new Response(JSON.stringify({ run: validRunAuthority({ state: "READY" }) }), { status: 200 });
     if (url.endsWith("/answer-packet")) return packetResponse(packetReads++ === 0 ? readyReviewPacket() : readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" }));
-    return runResponse(runReads++ === 0 ? validRunAuthority() : validRunAuthority({ state: "READY" }));
+    return runResponse(runReads++ === 0
+      ? validRunAuthority()
+      : validRunAuthority({ state: "READY", stateVersion: 8 }));
   });
   t.after(() => control.cleanup());
   control.setBinding(async (command) => { bindingCalls.push(command); return { state: "TARGET_OPEN", runId: RUN_ID }; });
@@ -3648,5 +3817,905 @@ test("mounted Fill-status refresh ignores older READY authority and rejects same
     assert.doesNotMatch(control.container.textContent ?? "", /Fill stopped early/);
   } finally {
     await control.cleanup();
+  }
+});
+
+test("mounted personal-submission action is state-gated and independent of companion, target, inspection, packet, and Fill status", async () => {
+  for (const state of ["READY", "READY_FOR_USER_SUBMISSION"] as const) {
+    const control = await mountControl(async (input) =>
+      String(input).endsWith("/answer-packet")
+        ? packetResponse(null)
+        : runResponse(validRunAuthority({ state, reviewReasons: [] }))
+    );
+    try {
+      assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false, state);
+      assert.match(control.container.textContent ?? "", /Only confirm after you personally used the employer site's Submit control/i);
+      assert.match(control.container.textContent ?? "", /Apply Pilot does not submit the application for you/i);
+      assert.match(control.container.textContent ?? "", /Local connectionUNKNOWN/);
+      assert.match(control.container.textContent ?? "", /No current answer packet/i);
+    } finally {
+      await control.cleanup();
+    }
+  }
+
+  for (const state of [
+    "DRAFT",
+    "PREPARING",
+    "REVIEW_REQUIRED",
+    "FILLING",
+    "COMPLETED_BY_USER",
+    "BLOCKED",
+    "FAILED",
+    "CANCELLED"
+  ] as const) {
+    const run = state === "COMPLETED_BY_USER"
+      ? completedRunAuthority()
+      : validRunAuthority({ state, reviewReasons: [] });
+    const control = await mountControl(async (input) =>
+      String(input).endsWith("/answer-packet") ? packetResponse(null) : runResponse(run)
+    );
+    try {
+      assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null, state);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("mounted personal-submission flow requires confirmation and sends the exact same-origin attestation", async () => {
+  let completionPosts = 0;
+  const control = await mountControl(async (input, init) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      assert.equal(init?.method, "POST");
+      assert.equal(init?.cache, "no-store");
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        attestation: "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE"
+      });
+      assert.equal("signal" in (init ?? {}), false, "completion POST must not be aborted after dispatch");
+      return completionResponse();
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    return runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }));
+  });
+  try {
+    assert.equal(completionPosts, 0);
+    await clickButton(control, "I personally submitted this application");
+    assert.equal(completionPosts, 0);
+    assert.match(control.container.textContent ?? "", /Confirm only if you personally submitted on the employer site/i);
+    await clickButton(control, "Confirm personal submission");
+
+    assert.equal(completionPosts, 1);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null);
+    assert.match(control.container.textContent ?? "", /Personal submission recorded/);
+    assert.match(control.container.textContent ?? "", /Apply Pilot did not submit or independently verify the employer submission/i);
+    assert.match(control.container.textContent ?? "", /9\/12\/2026|2026/);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("rapid repeated confirmation synchronously dispatches one POST and exposes a disabled pending action", async () => {
+  const post = deferred<Response>();
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return post.promise;
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    return runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }));
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    const confirm = buttonNamed(control.container, "Confirm personal submission");
+    await act(async () => {
+      confirm.click();
+      confirm.click();
+      await Promise.resolve();
+    });
+
+    assert.equal(completionPosts, 1);
+    assert.equal(buttonNamed(control.container, "Recording personal submission…").disabled, true);
+
+    post.resolve(completionResponse());
+    await flushComponentWork();
+    assert.equal(completionPosts, 1);
+    assert.match(control.container.textContent ?? "", /Personal submission recorded/);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("a retained cancellation callback cannot erase a dispatched completion outcome", async () => {
+  const post = deferred<Response>();
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return post.promise;
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    return runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }));
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    const confirm = retainButtonClickHandler(
+      buttonNamed(control.container, "Confirm personal submission")
+    );
+    const staleCancellation = retainButtonClickHandler(buttonNamed(control.container, "Not yet"));
+    await act(async () => {
+      confirm();
+      staleCancellation();
+      await Promise.resolve();
+    });
+
+    assert.equal(completionPosts, 1);
+    assert.equal(
+      optionalButtonNamed(control.container, "Recording personal submission…")?.disabled === true,
+      true,
+      "stale cancellation must not erase the synchronously latched pending presentation"
+    );
+
+    post.resolve(completionResponse());
+    await flushComponentWork();
+    assert.match(control.container.textContent ?? "", /Personal submission is recorded from your explicit attestation/);
+
+    staleCancellation();
+    await Promise.resolve();
+    assert.match(
+      control.container.textContent ?? "",
+      /Personal submission is recorded from your explicit attestation/,
+      "stale cancellation must not clear a confirmed mutation outcome"
+    );
+    assert.equal(completionPosts, 1);
+  } finally {
+    post.resolve(completionResponse());
+    await flushComponentWork();
+    await control.cleanup();
+  }
+});
+
+test("lost completion response performs one run GET only and confirms terminal state without POST replay", async () => {
+  let runReads = 0;
+  let packetReads = 0;
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      throw new Error("completion response lost");
+    }
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetResponse(null);
+    }
+    runReads += 1;
+    return runReads === 1
+      ? runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }))
+      : runResponse(completedRunAuthority());
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    await clickButton(control, "Confirm personal submission");
+
+    assert.equal(completionPosts, 1);
+    assert.equal(runReads, 2);
+    assert.equal(packetReads, 1);
+    assert.match(control.container.textContent ?? "", /Personal submission recorded/);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("lost completion response with a still-eligible fresh run keeps bounded uncertainty and requires a future explicit action", async () => {
+  let runReads = 0;
+  let completionPosts = 0;
+  const ready = validRunAuthority({ state: "READY", reviewReasons: [] });
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      throw new Error("completion response lost");
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    runReads += 1;
+    return runResponse(ready);
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    await clickButton(control, "Confirm personal submission");
+
+    assert.equal(completionPosts, 1);
+    assert.equal(runReads, 2);
+    assert.match(control.container.textContent ?? "", /could not verify whether the attestation was recorded/i);
+    const futureExplicitAction = buttonNamed(control.container, "I personally submitted this application");
+    assert.equal(futureExplicitAction.disabled, false);
+    await flushComponentWork();
+    assert.equal(completionPosts, 1, "reconciliation must never automatically repeat POST");
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("unmount after completion dispatch leaves POST alive, ignores late settlement, and starts no replay or reconciliation", async () => {
+  const post = deferred<Response>();
+  let runReads = 0;
+  let completionPosts = 0;
+  let completionSignal: AbortSignal | null | undefined;
+  const control = await mountControl(async (input, init) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      completionSignal = init?.signal;
+      return post.promise;
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    runReads += 1;
+    return runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }));
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    await act(async () => {
+      buttonNamed(control.container, "Confirm personal submission").click();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 1);
+    assert.equal(completionSignal, undefined);
+
+    await control.unmount();
+    post.reject(new Error("late lost response"));
+    await flushComponentWork();
+
+    assert.equal(completionPosts, 1);
+    assert.equal(runReads, 1, "late settlement after unmount must not start reconciliation");
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("unmount consumes an unsubmitted confirmation intent and leaves its retained callback inert", async () => {
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return completionResponse();
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    return runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }));
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    const staleConfirmation = retainButtonClickHandler(
+      buttonNamed(control.container, "Confirm personal submission")
+    );
+
+    await control.unmount();
+    staleConfirmation();
+    await Promise.resolve();
+
+    assert.equal(completionPosts, 0, "an unmounted confirmation intent must not remain reusable");
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("remount from COMPLETED_BY_USER shows terminal recorded status and never exposes or dispatches completion", async () => {
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return completionResponse();
+    }
+    if (url.endsWith("/answer-packet")) return packetResponse(null);
+    return runResponse(completedRunAuthority());
+  });
+  try {
+    assert.equal(completionPosts, 0);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null);
+    assert.match(control.container.textContent ?? "", /Personal submission recorded/);
+    await flushComponentWork();
+    assert.equal(completionPosts, 0);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human-submit repair keeps terminal completion dominant over a review refresh whose run settled before its packet", async () => {
+  const stalePacket = deferred<Response>();
+  const packet = fillReadyPacket();
+  const ready = validRunAuthority({ state: "READY", reviewReasons: [] });
+  let runReads = 0;
+  let packetReads = 0;
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return completionResponse();
+    }
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetReads === 1 ? packetResponse(packet) : stalePacket.promise;
+    }
+    runReads += 1;
+    return runResponse(ready);
+  });
+  try {
+    control.setBinding(async () => trustedTargetStatus(packet));
+    await clickButton(control, "Refresh status");
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+
+    await clickButton(control, "Refresh review data");
+    assert.equal(runReads, 2);
+    assert.equal(packetReads, 2);
+
+    await clickButton(control, "I personally submitted this application");
+    await clickButton(control, "Confirm personal submission");
+    assert.equal(completionPosts, 1);
+    assert.match(control.container.textContent ?? "", /Recorded at/);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null);
+
+    stalePacket.resolve(packetResponse(packet));
+    await flushComponentWork();
+
+    assert.match(control.container.textContent ?? "", /Recorded at/);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null);
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human-submit repair synchronously blocks review refresh dispatch after completion latches pending", async () => {
+  const post = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return post.promise;
+    }
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetResponse(null);
+    }
+    runReads += 1;
+    return runResponse(validRunAuthority({ state: "READY", reviewReasons: [] }));
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    const confirm = buttonNamed(control.container, "Confirm personal submission");
+    const refresh = buttonNamed(control.container, "Refresh review data");
+    await act(async () => {
+      confirm.click();
+      refresh.click();
+      await Promise.resolve();
+    });
+
+    assert.equal(completionPosts, 1);
+    assert.equal(runReads, 1, "the synchronously latched completion must block a new run refresh");
+    assert.equal(packetReads, 1, "the synchronously latched completion must block a new packet refresh");
+    assert.equal(buttonNamed(control.container, "Recording personal submission…").disabled, true);
+
+    post.resolve(completionResponse());
+    await flushComponentWork();
+    assert.match(control.container.textContent ?? "", /Recorded at/);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human-submit repair retains verified READY completion when a packet refresh returns 503 and keeps packet operations closed", async () => {
+  const packet = fillReadyPacket();
+  const ready = validRunAuthority({ state: "READY", reviewReasons: [] });
+  let packetUnavailable = false;
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) {
+      return packetUnavailable
+        ? new Response("{}", { status: 503 })
+        : packetResponse(packet);
+    }
+    return runResponse(ready);
+  });
+  try {
+    control.setBinding(async () => trustedTargetStatus(packet));
+    await clickButton(control, "Refresh status");
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+
+    packetUnavailable = true;
+    await clickButton(control, "Refresh review data");
+
+    assert.match(control.container.textContent ?? "", /Review data is temporarily unavailable/i);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false);
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    assert.equal(resolveReviewButton(control.container).disabled, true);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human-submit repair retains verified READY_FOR_USER_SUBMISSION completion when the packet body is malformed", async () => {
+  const packet = validPacket();
+  const readyForUserSubmission = validRunAuthority({
+    state: "READY_FOR_USER_SUBMISSION",
+    stateVersion: 9,
+    reviewReasons: []
+  });
+  let packetMalformed = false;
+  const control = await mountControl(async (input) => {
+    if (String(input).endsWith("/answer-packet")) {
+      return packetMalformed
+        ? new Response("{", { status: 200, headers: { "content-type": "application/json" } })
+        : packetResponse(packet);
+    }
+    return runResponse(readyForUserSubmission);
+  });
+  try {
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false);
+
+    packetMalformed = true;
+    await clickButton(control, "Refresh review data");
+
+    assert.match(control.container.textContent ?? "", /could not safely read the review authority response/i);
+    assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false);
+    assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+    assert.equal(resolveReviewButton(control.container).disabled, true);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human-submit repair rejects older and contradictory equal-version lifecycle snapshots after terminal completion", async () => {
+  for (const [name, incoming, notice] of [
+    [
+      "older",
+      validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] }),
+      /older run response was ignored/i
+    ],
+    [
+      "equal-version contradiction",
+      validRunAuthority({ state: "READY", stateVersion: 8, reviewReasons: [] }),
+      /contradictory same-version run response was rejected/i
+    ]
+  ] as const) {
+    let completionAccepted = false;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url === completeByUserPath()) {
+        completionAccepted = true;
+        return completionResponse();
+      }
+      if (url.endsWith("/answer-packet")) return packetResponse(null);
+      return runResponse(completionAccepted
+        ? incoming
+        : validRunAuthority({ state: "READY", reviewReasons: [] }));
+    });
+    try {
+      await clickButton(control, "I personally submitted this application");
+      await clickButton(control, "Confirm personal submission");
+      assert.match(control.container.textContent ?? "", /Recorded at/, `${name} precondition`);
+
+      await clickButton(control, "Refresh review data");
+
+      assert.match(control.container.textContent ?? "", /Recorded at/, name);
+      assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null, name);
+      assert.match(control.container.textContent ?? "", notice, name);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("run-verification freshness blocks both completion entry points while an eligible refresh remains pending", async () => {
+  for (const state of ["READY", "READY_FOR_USER_SUBMISSION"] as const) {
+    for (const entryPoint of ["initial-action", "open-confirmation"] as const) {
+      const refreshRun = deferred<Response>();
+      const refreshPacket = deferred<Response>();
+      const completion = deferred<Response>();
+      const acceptedRun = validRunAuthority({ state, stateVersion: 8, reviewReasons: [] });
+      let runReads = 0;
+      let packetReads = 0;
+      let completionPosts = 0;
+      const control = await mountControl(async (input) => {
+        const url = String(input);
+        if (url === completeByUserPath()) {
+          completionPosts += 1;
+          return completion.promise;
+        }
+        if (url.endsWith("/answer-packet")) {
+          packetReads += 1;
+          return packetReads === 1 ? packetResponse(null) : refreshPacket.promise;
+        }
+        runReads += 1;
+        return runReads === 1 ? runResponse(acceptedRun) : refreshRun.promise;
+      });
+      try {
+        const initialAction = buttonNamed(control.container, "I personally submitted this application");
+        if (entryPoint === "open-confirmation") {
+          await clickButton(control, "I personally submitted this application");
+        }
+        const staleEntryPoint = retainButtonClickHandler(entryPoint === "initial-action"
+          ? initialAction
+          : buttonNamed(control.container, "Confirm personal submission"));
+
+        await act(async () => {
+          buttonNamed(control.container, "Refresh review data").click();
+          staleEntryPoint();
+          assert.equal(completionPosts, 0, `${state}/${entryPoint} same-turn stale action must block POST`);
+          await Promise.resolve();
+        });
+        await flushComponentWork();
+
+        assert.equal(runReads, 2, `${state}/${entryPoint} run refresh`);
+        assert.equal(packetReads, 2, `${state}/${entryPoint} packet refresh`);
+        assert.equal(
+          optionalButtonNamed(control.container, "Confirm personal submission") === null,
+          true,
+          `${state}/${entryPoint} stale confirmation intent must be discarded`
+        );
+        assert.equal(completionPosts, 0, `${state}/${entryPoint} pending refresh must block POST`);
+      } finally {
+        refreshRun.resolve(runResponse(acceptedRun));
+        refreshPacket.resolve(packetResponse(null));
+        completion.resolve(completionResponse());
+        await flushComponentWork();
+        await control.cleanup();
+      }
+    }
+  }
+});
+
+test("run-verification freshness fails closed on a known run 503 without waiting for its packet sibling", async () => {
+  const heldPacket = deferred<Response>();
+  const completion = deferred<Response>();
+  const acceptedRun = validRunAuthority({ state: "READY", stateVersion: 8, reviewReasons: [] });
+  let runReads = 0;
+  let packetReads = 0;
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return completion.promise;
+    }
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetReads === 1 ? packetResponse(null) : heldPacket.promise;
+    }
+    runReads += 1;
+    return runReads === 1
+      ? runResponse(acceptedRun)
+      : new Response("{}", { status: 503 });
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    const staleConfirmation = retainButtonClickHandler(
+      buttonNamed(control.container, "Confirm personal submission")
+    );
+    await clickButton(control, "Refresh review data");
+
+    assert.equal(runReads, 2);
+    assert.equal(packetReads, 2);
+    assert.equal(
+      optionalButtonNamed(control.container, "Confirm personal submission") === null,
+      true,
+      "accepted refresh must discard the confirmation intent before either sibling settles"
+    );
+    await act(async () => {
+      staleConfirmation();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 0, "known run failure must close completion before packet settlement");
+    assert.equal(
+      optionalButtonNamed(control.container, "Confirm personal submission") === null,
+      true,
+      "a retained stale callback must not restore the discarded intent"
+    );
+  } finally {
+    heldPacket.resolve(packetResponse(null));
+    completion.resolve(completionResponse());
+    await flushComponentWork();
+    await control.cleanup();
+  }
+});
+
+test("run-verification freshness rejects an older eligible run and recovers from a fresh identical read before packet settlement", async () => {
+  const recoveryPacket = deferred<Response>();
+  const completion = deferred<Response>();
+  const currentRun = validRunAuthority({ state: "READY", stateVersion: 8, reviewReasons: [] });
+  const olderRun = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const packet = validPacket();
+  let runReads = 0;
+  let packetReads = 0;
+  let completionPosts = 0;
+  const control = await mountControl(async (input) => {
+    const url = String(input);
+    if (url === completeByUserPath()) {
+      completionPosts += 1;
+      return completion.promise;
+    }
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      if (packetReads === 1) return packetResponse(packet);
+      if (packetReads === 2) return packetResponse(packet);
+      return recoveryPacket.promise;
+    }
+    runReads += 1;
+    if (runReads === 1) return runResponse(currentRun);
+    if (runReads === 2) return runResponse(olderRun);
+    return runResponse(currentRun);
+  });
+  try {
+    await clickButton(control, "I personally submitted this application");
+    const staleConfirmation = retainButtonClickHandler(
+      buttonNamed(control.container, "Confirm personal submission")
+    );
+    await clickButton(control, "Refresh review data");
+
+    assert.match(control.container.textContent ?? "", /older run response was ignored/i);
+    assert.deepEqual(
+      [...control.container.querySelectorAll("#review-reasons dd")].map((entry) => entry.textContent?.trim()),
+      ["READY", "8"]
+    );
+    await act(async () => {
+      staleConfirmation();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 0);
+    assert.equal(optionalButtonNamed(control.container, "Confirm personal submission") === null, true);
+
+    await clickButton(control, "Refresh review data");
+    assert.equal(runReads, 3);
+    assert.equal(packetReads, 3);
+    assert.equal(
+      buttonNamed(control.container, "I personally submitted this application").disabled,
+      false,
+      "fresh identical run must restore verification before packet settles"
+    );
+    assert.equal(optionalButtonNamed(control.container, "Confirm personal submission") === null, true);
+    assert.equal(completionPosts, 0, "verification recovery must not automatically POST");
+
+    await act(async () => {
+      staleConfirmation();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 0, "the pre-revocation confirmation cannot POST after recovery");
+
+    await clickButton(control, "I personally submitted this application");
+    const cancelledConfirmation = retainButtonClickHandler(
+      buttonNamed(control.container, "Confirm personal submission")
+    );
+    await clickButton(control, "Not yet");
+    await act(async () => {
+      cancelledConfirmation();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 0, "cancellation consumes the unsubmitted confirmation intent");
+
+    await clickButton(control, "I personally submitted this application");
+    const currentConfirmation = retainButtonClickHandler(
+      buttonNamed(control.container, "Confirm personal submission")
+    );
+    await act(async () => {
+      staleConfirmation();
+      cancelledConfirmation();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 0, "old callbacks cannot consume a newly opened confirmation");
+
+    recoveryPacket.resolve(new Response("{}", { status: 503 }));
+    await flushComponentWork();
+    assert.equal(buttonNamed(control.container, "Confirm personal submission").disabled, false);
+    assert.equal(completionPosts, 0);
+
+    await act(async () => {
+      currentConfirmation();
+      currentConfirmation();
+      await Promise.resolve();
+    });
+    assert.equal(completionPosts, 1, "the current confirmation dispatches exactly once");
+  } finally {
+    completion.resolve(completionResponse());
+    await control.cleanup();
+  }
+});
+
+test("run-verification freshness accepts identical and higher responses independently of packet settlement", async () => {
+  for (const [name, incoming, terminal] of [
+    ["equal READY", validRunAuthority({ state: "READY", stateVersion: 8, reviewReasons: [] }), false],
+    ["higher READY_FOR_USER_SUBMISSION", validRunAuthority({ state: "READY_FOR_USER_SUBMISSION", stateVersion: 9, reviewReasons: [] }), false],
+    ["higher COMPLETED_BY_USER", validRunAuthority({ state: "COMPLETED_BY_USER", stateVersion: 9, completedAt: "2026-09-13T07:33:00.000Z", reviewReasons: [] }), true]
+  ] as const) {
+    const heldPacket = deferred<Response>();
+    const initialRun = validRunAuthority({ state: "READY", stateVersion: 8, reviewReasons: [] });
+    let runReads = 0;
+    let packetReads = 0;
+    let completionPosts = 0;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url === completeByUserPath()) {
+        completionPosts += 1;
+        return completionResponse();
+      }
+      if (url.endsWith("/answer-packet")) {
+        packetReads += 1;
+        return packetReads === 1 ? packetResponse(null) : heldPacket.promise;
+      }
+      runReads += 1;
+      return runReads === 1 ? runResponse(initialRun) : runResponse(incoming);
+    });
+    try {
+      await clickButton(control, "I personally submitted this application");
+      const staleConfirmation = retainButtonClickHandler(
+        buttonNamed(control.container, "Confirm personal submission")
+      );
+      await clickButton(control, "Refresh review data");
+      assert.equal(runReads, 2, name);
+      assert.equal(packetReads, 2, name);
+      assert.equal(
+        optionalButtonNamed(control.container, "Confirm personal submission") === null,
+        true,
+        `${name} accepted refresh must discard the old confirmation identity`
+      );
+      await act(async () => {
+        staleConfirmation();
+        await Promise.resolve();
+      });
+      assert.equal(completionPosts, 0, `${name} stale confirmation must not POST after run recovery`);
+      if (terminal) {
+        assert.match(control.container.textContent ?? "", /Personal submission recorded/, name);
+        assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null, name);
+      } else {
+        assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false, name);
+        await clickButton(control, "I personally submitted this application");
+        assert.equal(
+          buttonNamed(control.container, "Confirm personal submission").disabled,
+          false,
+          `${name} only a new first step may open confirmation`
+        );
+      }
+      assert.equal(completionPosts, 0, `${name} must not automatically POST`);
+
+      heldPacket.resolve(new Response("{", {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+      await flushComponentWork();
+      if (terminal) {
+        assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null, name);
+      } else {
+        assert.equal(
+          buttonNamed(control.container, "Confirm personal submission").disabled,
+          false,
+          `${name} packet failure must not invalidate the new confirmation`
+        );
+      }
+      assert.equal(completionPosts, 0, name);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("run-verification freshness keeps failed or malformed runs closed with a successful packet and permits later recovery", async () => {
+  for (const [name, failedRun] of [
+    ["http 503", new Response("{}", { status: 503 })],
+    ["malformed authority", new Response(JSON.stringify({
+      run: validRunAuthority({ stateVersion: -1 })
+    }), { status: 200, headers: { "content-type": "application/json" } })]
+  ] as const) {
+    const currentRun = validRunAuthority({ state: "READY", stateVersion: 8, reviewReasons: [] });
+    let runReads = 0;
+    let completionPosts = 0;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url === completeByUserPath()) {
+        completionPosts += 1;
+        return completionResponse();
+      }
+      if (url.endsWith("/answer-packet")) return packetResponse(null);
+      runReads += 1;
+      if (runReads === 1 || runReads === 3) return runResponse(currentRun);
+      return failedRun.clone();
+    });
+    try {
+      await clickButton(control, "Refresh review data");
+      assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null, name);
+      assert.equal(completionPosts, 0, name);
+
+      await clickButton(control, "Refresh review data");
+      assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false, name);
+      assert.equal(completionPosts, 0, `${name} recovery must not automatically POST`);
+    } finally {
+      await control.cleanup();
+    }
+  }
+});
+
+test("confirmation intent rejects a stale first-step callback and requires a new two-step action after recovery", async () => {
+  for (const state of ["READY", "READY_FOR_USER_SUBMISSION"] as const) {
+    const recoveryPacket = deferred<Response>();
+    const completion = deferred<Response>();
+    const currentRun = validRunAuthority({ state, stateVersion: 8, reviewReasons: [] });
+    const olderRun = validRunAuthority({ state, stateVersion: 7, reviewReasons: [] });
+    let runReads = 0;
+    let packetReads = 0;
+    let completionPosts = 0;
+    const control = await mountControl(async (input) => {
+      const url = String(input);
+      if (url === completeByUserPath()) {
+        completionPosts += 1;
+        return completion.promise;
+      }
+      if (url.endsWith("/answer-packet")) {
+        packetReads += 1;
+        return packetReads === 3 ? recoveryPacket.promise : packetResponse(null);
+      }
+      runReads += 1;
+      if (runReads === 1) return runResponse(currentRun);
+      if (runReads === 2) return runResponse(olderRun);
+      return runResponse(currentRun);
+    });
+
+    try {
+      const staleFirstStep = retainButtonClickHandler(
+        buttonNamed(control.container, "I personally submitted this application")
+      );
+      await act(async () => {
+        buttonNamed(control.container, "Refresh review data").click();
+        staleFirstStep();
+        assert.equal(completionPosts, 0, `${state} stale first step must not POST`);
+        await Promise.resolve();
+      });
+      await flushComponentWork();
+
+      assert.match(control.container.textContent ?? "", /older run response was ignored/i, state);
+      assert.equal(
+        optionalButtonNamed(control.container, "Confirm personal submission") === null,
+        true,
+        `${state} stale first step must not install confirmation intent`
+      );
+      assert.equal(completionPosts, 0, state);
+
+      await clickButton(control, "Refresh review data");
+      assert.equal(runReads, 3, state);
+      assert.equal(packetReads, 3, state);
+      assert.equal(
+        buttonNamed(control.container, "I personally submitted this application").disabled,
+        false,
+        `${state} current run recovery restores only the first step`
+      );
+      assert.equal(optionalButtonNamed(control.container, "Confirm personal submission") === null, true, state);
+      assert.equal(completionPosts, 0, `${state} recovery must not automatically POST`);
+
+      await clickButton(control, "I personally submitted this application");
+      assert.equal(buttonNamed(control.container, "Confirm personal submission").disabled, false, state);
+
+      recoveryPacket.resolve(new Response("{}", { status: 503 }));
+      await flushComponentWork();
+      assert.equal(
+        buttonNamed(control.container, "Confirm personal submission").disabled,
+        false,
+        `${state} packet failure must not invalidate fresh owner-run confirmation intent`
+      );
+      assert.equal(completionPosts, 0, state);
+
+      await clickButton(control, "Confirm personal submission");
+      assert.equal(completionPosts, 1, `${state} fresh two-step confirmation dispatches once`);
+    } finally {
+      recoveryPacket.resolve(packetResponse(null));
+      completion.resolve(completionResponse());
+      await flushComponentWork();
+      await control.cleanup();
+    }
   }
 });

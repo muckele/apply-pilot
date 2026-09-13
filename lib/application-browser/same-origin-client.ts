@@ -61,6 +61,7 @@ export type BrowserApplicationRun = Readonly<{
   id: string;
   state: ApplicationRunState;
   stateVersion: number;
+  completedAt: string | null;
   applyHost: string;
   applyUrlSnapshot: string;
 }>;
@@ -506,6 +507,8 @@ function parseRunResponse(value: unknown, immutableRunId: string): BrowserApplic
     run.id !== immutableRunId ||
     !isKnownRunState(run.state) ||
     !isSafeNonnegativeInteger(run.stateVersion) ||
+    !(run.completedAt === null || isCanonicalIsoDate(run.completedAt)) ||
+    (run.state === "COMPLETED_BY_USER") !== (run.completedAt !== null) ||
     typeof run.applyHost !== "string" ||
     !run.applyHost ||
     typeof run.applyUrlSnapshot !== "string" ||
@@ -517,6 +520,7 @@ function parseRunResponse(value: unknown, immutableRunId: string): BrowserApplic
     id: run.id,
     state: run.state,
     stateVersion: run.stateVersion,
+    completedAt: run.completedAt,
     applyHost: run.applyHost,
     applyUrlSnapshot: run.applyUrlSnapshot
   };

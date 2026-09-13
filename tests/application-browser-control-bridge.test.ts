@@ -60,6 +60,7 @@ async function terminalInspectionBridgeFixture(input: Readonly<{
           id: RUN_ID,
           state: "READY",
           stateVersion: 1,
+          completedAt: null,
           applyHost: "jobs.example.test",
           applyUrlSnapshot: "https://jobs.example.test/apply"
         };

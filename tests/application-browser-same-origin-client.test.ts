@@ -53,6 +53,7 @@ function runResponse(overrides: Record<string, unknown> = {}) {
       id: RUN_ID,
       state: "READY",
       stateVersion: 0,
+      completedAt: null,
       applyHost: "jobs.example.test",
       applyUrlSnapshot: "https://jobs.example.test/apply",
       ...overrides
@@ -253,6 +254,7 @@ test("run and policy GETs use exact fixed routes and retain strict run stateVers
     id: RUN_ID,
     state: "READY",
     stateVersion: 12,
+    completedAt: null,
     applyHost: "jobs.example.test",
     applyUrlSnapshot: "https://jobs.example.test/apply"
   });
@@ -294,7 +296,11 @@ test("run parser accepts every known state and zero or positive safe stateVersio
   for (const [index, state] of states.entries()) {
     const client = makeClient({
       async get(url) {
-        return response(url, 200, runResponse({ state, stateVersion: index }));
+        return response(url, 200, runResponse({
+          state,
+          stateVersion: index,
+          completedAt: state === "COMPLETED_BY_USER" ? "2026-09-12T18:00:00.000Z" : null
+        }));
       }
     });
     const run = await client.getApplicationRun(RUN_ID);
@@ -315,6 +321,36 @@ test("run parser rejects unknown state and every malformed stateVersion", async 
     ["missing", { stateVersion: undefined }]
   ];
   for (const [name, overrides] of invalid) {
+    const client = makeClient({
+      async get(url) {
+        return response(url, 200, runResponse(overrides));
+      }
+    });
+    await assert.rejects(client.getApplicationRun(RUN_ID), hasCode("INVALID_RUN_RESPONSE"), name);
+  }
+});
+
+test("run parser requires canonical completedAt semantics and projects the terminal timestamp", async () => {
+  const completedAt = "2026-09-12T18:00:00.000Z";
+  const completedClient = makeClient({
+    async get(url) {
+      return response(url, 200, runResponse({
+        state: "COMPLETED_BY_USER",
+        stateVersion: 8,
+        completedAt
+      }));
+    }
+  });
+  assert.equal((await completedClient.getApplicationRun(RUN_ID)).completedAt, completedAt);
+
+  for (const [name, overrides] of [
+    ["missing", { completedAt: undefined }],
+    ["malformed", { completedAt: "not-a-date" }],
+    ["noncanonical", { completedAt: "2026-09-12T18:00:00Z" }],
+    ["wrong type", { completedAt: 1 }],
+    ["completed without timestamp", { state: "COMPLETED_BY_USER", completedAt: null }],
+    ["ready with completion timestamp", { state: "READY", completedAt }]
+  ] as const) {
     const client = makeClient({
       async get(url) {
         return response(url, 200, runResponse(overrides));

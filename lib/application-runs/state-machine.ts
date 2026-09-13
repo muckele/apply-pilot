@@ -65,6 +65,19 @@ export function buildCancelRunData(now: Date) {
   };
 }
 
+// Deterministic Human-Submit completion update. The caller supplies the
+// authoritative transaction time and retains permanent Fill-attempt provenance
+// by omitting fillAttemptId from this update.
+export function buildCompleteRunByUserData(now: Date) {
+  return {
+    state: "COMPLETED_BY_USER" as ApplicationRunState,
+    stateVersion: { increment: 1 },
+    completedAt: now,
+    activeRunKey: null,
+    fillLeaseExpiresAt: null
+  };
+}
+
 // These builders consume caller-supplied authority facts only. They do not generate
 // attempt IDs, read a clock/database, or decide whether acquisition/finalization is
 // authorized. Future services must call assertRunTransition around their mutations.

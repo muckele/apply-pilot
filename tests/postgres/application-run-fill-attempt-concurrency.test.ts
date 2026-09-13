@@ -59,6 +59,7 @@ const APPLY_HOST = "jobs.example.test";
 const AUTOMATION_ENV = { APPLICATION_AUTOMATION_ENABLED: "true" } as const;
 const REVIEW_REASONS = ["evidence_gaps_present"] as const;
 const INITIAL_STATE_VERSION = 4;
+const PERSONAL_SUBMISSION_ATTESTATION = "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE" as const;
 
 const RUN_ROW_LOCK = {
   kind: "queryRaw",
@@ -2113,6 +2114,177 @@ test("repeated production GET with a missing policy remains strictly read only",
     assert.deepEqual(after.steps, before.steps);
     assert.deepEqual(after.audits, before.audits);
     assert.deepEqual(after.events, before.events);
+    await assertHealthy(scenario, "complete");
+  });
+});
+
+test("personal completion excludes a queued production Fill acquisition", {
+  timeout: TEST_TIMEOUT_MS
+}, async () => {
+  await runScenario("personal-completion-first-fill", async (scenario) => {
+    const fixture = await createReadyFixture(scenario, "user");
+    const baselineEvents = await eventCount(scenario, fixture);
+    const completionAuditsBefore = await actionCount(
+      scenario,
+      fixture,
+      "application-run.complete-by-user"
+    );
+    const acquisitionAuditsBefore = await actionCount(
+      scenario,
+      fixture,
+      "application-run-fill-attempt.acquire"
+    );
+    const completionPause = pauseAfter(
+      scenario,
+      scenario.actorA,
+      "personal completion before Fill run mutation",
+      { kind: "model", model: "applicationRun", method: "updateMany" }
+    );
+    const completion = trackOperation(
+      scenario,
+      runService(completionPause.hooks.prismaClient).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId: fixture.runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      })
+    );
+    await completionPause.reached.wait();
+    const acquisition = trackOperation(
+      scenario,
+      fillService(scenario.actorB.client, randomUUID()).acquireFillAttempt({
+        userId: fixture.userId,
+        runId: fixture.runId,
+        expectedStateVersion: fixture.stateVersion
+      })
+    );
+    await assertObservedWait(scenario, scenario.actorB, scenario.actorA);
+
+    completionPause.release.resolve();
+    const [completionSettled, acquisitionSettled] = await settlePair(
+      completion,
+      acquisition,
+      "personal completion before Fill acquisition"
+    );
+    const completed = fulfilled(completionSettled, scenario.actorA, "completion before Fill");
+    assertPublicError(
+      rejected(acquisitionSettled, scenario.actorB, "queued Fill after completion"),
+      409,
+      "FILL_STALE"
+    );
+    completionPause.hooks.assertExpectedHooksReached();
+
+    const run = await scenario.observer.client.applicationRun.findUniqueOrThrow({
+      where: { id: fixture.runId }
+    });
+    const application = await scenario.observer.client.application.findUniqueOrThrow({
+      where: { id: fixture.applicationId }
+    });
+    assert.equal(completed.state, "COMPLETED_BY_USER");
+    assert.equal(run.state, "COMPLETED_BY_USER");
+    assert.equal(run.stateVersion, fixture.stateVersion + 1);
+    assert.equal(run.activeRunKey, null);
+    assert.equal(run.fillAttemptId, null);
+    assert.equal(run.fillLeaseExpiresAt, null);
+    assert.ok(run.completedAt instanceof Date);
+    assert.equal(application.status, "APPLIED");
+    assert.equal(application.dateApplied?.getTime(), run.completedAt.getTime());
+    assert.equal(
+      await scenario.observer.client.applicationRunStep.count({ where: { runId: fixture.runId } }),
+      0
+    );
+    assert.equal(
+      await actionCount(scenario, fixture, "application-run.complete-by-user"),
+      completionAuditsBefore + 1
+    );
+    assert.equal(
+      await actionCount(scenario, fixture, "application-run-fill-attempt.acquire"),
+      acquisitionAuditsBefore
+    );
+    assert.equal(await eventCount(scenario, fixture), baselineEvents + 1);
+    await assertHealthy(scenario, "complete");
+  });
+});
+
+test("personal completion excludes queued material reinspection", {
+  timeout: TEST_TIMEOUT_MS
+}, async () => {
+  await runScenario("personal-completion-first-material", async (scenario) => {
+    const fixture = await createReadyFixture(scenario, "user");
+    const baselineEvents = await eventCount(scenario, fixture);
+    const publicationAuditsBefore = await actionCount(
+      scenario,
+      fixture,
+      "application-run-answer-packet.publish"
+    );
+    const packetCountBefore = await scenario.observer.client.applicationRunAnswerPacket.count({
+      where: { runId: fixture.runId }
+    });
+    const inspectionCountBefore = await scenario.observer.client.applicationRunFormInspection.count({
+      where: { runId: fixture.runId }
+    });
+    const completionPause = pauseAfter(
+      scenario,
+      scenario.actorA,
+      "personal completion before material run mutation",
+      { kind: "model", model: "applicationRun", method: "updateMany" }
+    );
+    const completion = trackOperation(
+      scenario,
+      runService(completionPause.hooks.prismaClient).completeApplicationRunByUser({
+        userId: fixture.userId,
+        runId: fixture.runId,
+        attestation: PERSONAL_SUBMISSION_ATTESTATION
+      })
+    );
+    await completionPause.reached.wait();
+    const material = trackOperation(
+      scenario,
+      publishPacket(fixture, scenario.actorB, {
+        stateVersion: fixture.stateVersion,
+        inspectionVersion: fixture.packet.inspectionVersion,
+        packetVersion: fixture.packet.packetVersion,
+        variant: "personal-completion-first-material"
+      })
+    );
+    await assertObservedWait(scenario, scenario.actorB, scenario.actorA);
+
+    completionPause.release.resolve();
+    const [completionSettled, materialSettled] = await settlePair(
+      completion,
+      material,
+      "personal completion before material reinspection"
+    );
+    fulfilled(completionSettled, scenario.actorA, "completion before material reinspection");
+    assertPublicError(
+      rejected(materialSettled, scenario.actorB, "queued material reinspection after completion"),
+      409,
+      "RUN_INVALID_STATE"
+    );
+    completionPause.hooks.assertExpectedHooksReached();
+
+    const run = await scenario.observer.client.applicationRun.findUniqueOrThrow({
+      where: { id: fixture.runId }
+    });
+    assert.equal(run.state, "COMPLETED_BY_USER");
+    assert.equal(run.stateVersion, fixture.stateVersion + 1);
+    assert.equal(run.activeRunKey, null);
+    assert.equal(run.fillAttemptId, null);
+    assert.equal(run.fillLeaseExpiresAt, null);
+    assert.ok(run.completedAt instanceof Date);
+    assert.equal(
+      await scenario.observer.client.applicationRunAnswerPacket.count({ where: { runId: fixture.runId } }),
+      packetCountBefore
+    );
+    assert.equal(
+      await scenario.observer.client.applicationRunFormInspection.count({ where: { runId: fixture.runId } }),
+      inspectionCountBefore
+    );
+    assert.equal(
+      await actionCount(scenario, fixture, "application-run-answer-packet.publish"),
+      publicationAuditsBefore
+    );
+    assert.equal(await actionCount(scenario, fixture, "application-run.complete-by-user"), 1);
+    assert.equal(await eventCount(scenario, fixture), baselineEvents + 1);
     await assertHealthy(scenario, "complete");
   });
 });

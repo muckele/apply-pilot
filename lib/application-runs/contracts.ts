@@ -53,6 +53,12 @@ export const createApplicationRunBodySchema = z
 
 export const strictEmptyBodySchema = z.object({}).strict();
 
+export const completeApplicationRunByUserBodySchema = z
+  .object({
+    attestation: z.literal("USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE")
+  })
+  .strict();
+
 const nonnegativeSafeVersionSchema = z.number().int().safe().nonnegative();
 
 export const acquireApplicationRunFillAttemptBodySchema = z
@@ -220,6 +226,9 @@ export const applicationRunDocumentExportBodySchema = z
 export const automationPolicyPatchContract = applicationAutomationPolicyPatchSchema;
 
 export type CreateApplicationRunBody = z.infer<typeof createApplicationRunBodySchema>;
+export type CompleteApplicationRunByUserBody = z.infer<
+  typeof completeApplicationRunByUserBodySchema
+>;
 export type AcquireApplicationRunFillAttemptBody = z.infer<
   typeof acquireApplicationRunFillAttemptBodySchema
 >;
@@ -274,6 +283,7 @@ export type ApplicationRunDto = Pick<
   | "blockingReason"
   | "errorCategory"
   | "preparedAt"
+  | "completedAt"
   | "cancelledAt"
   | "createdAt"
   | "updatedAt"

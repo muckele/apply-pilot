@@ -14,6 +14,7 @@ import {
 import {
   applicationRunPathSchema,
   applicationRunAnswerPathSchema,
+  completeApplicationRunByUserBodySchema,
   createApplicationRunBodySchema,
   resolveApplicationRunReviewBodySchema,
   reviewApplicationRunAnswerBodySchema,
@@ -37,6 +38,7 @@ import { PLAN_REVIEW_REASONS, type PlanReviewReason } from "@/lib/application-ru
 import {
   assertRunTransition,
   buildCancelRunData,
+  buildCompleteRunByUserData,
   buildResolveRunReviewData
 } from "@/lib/application-runs/state-machine";
 import { prisma } from "@/lib/prisma";
@@ -74,6 +76,7 @@ export const APPLICATION_RUN_OPERATIONAL_SELECT = {
   blockingReason: true,
   errorCategory: true,
   preparedAt: true,
+  completedAt: true,
   cancelledAt: true,
   createdAt: true,
   updatedAt: true
@@ -82,6 +85,7 @@ export const APPLICATION_RUN_OPERATIONAL_SELECT = {
 const APPLICATION_RUN_LIFECYCLE_SELECT = {
   ...APPLICATION_RUN_OPERATIONAL_SELECT,
   userId: true,
+  activeRunKey: true,
   prepareAttemptId: true,
   fillAttemptId: true,
   fillLeaseExpiresAt: true,
@@ -240,6 +244,7 @@ export function toApplicationRunDto(run: ApplicationRunDto): ApplicationRunDto {
     blockingReason: run.blockingReason,
     errorCategory: run.errorCategory,
     preparedAt: run.preparedAt,
+    completedAt: run.completedAt,
     cancelledAt: run.cancelledAt,
     createdAt: run.createdAt,
     updatedAt: run.updatedAt
@@ -676,6 +681,114 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     });
   }
 
+  async function completeApplicationRunByUser(input: {
+    userId: unknown;
+    runId: unknown;
+    attestation: unknown;
+  }): Promise<ApplicationRunDto> {
+    validateUserId(input?.userId);
+    const userId = input.userId;
+    const { id: runId } = applicationRunPathSchema.parse({ id: input?.runId });
+    const { attestation } = completeApplicationRunByUserBodySchema.parse({
+      attestation: input?.attestation
+    });
+
+    return prismaClient.$transaction(async (tx) => {
+      const run = await lockOwnedApplicationRun(tx, userId, runId);
+      assertTransition(run.state, "COMPLETED_BY_USER");
+
+      const lockedApplications = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Application"
+        WHERE "id" = ${run.applicationId} AND "userId" = ${userId}
+        FOR UPDATE
+      `;
+      if (lockedApplications.length !== 1) throw runNotFound();
+      const application = await tx.application.findFirst({
+        where: { id: run.applicationId, userId },
+        select: { id: true, status: true, dateApplied: true }
+      });
+      if (!application || application.id !== run.applicationId) throw runNotFound();
+
+      const databaseTimes = await tx.$queryRaw<Array<{ now: Date }>>`
+        SELECT CURRENT_TIMESTAMP AS "now"
+      `;
+      if (
+        databaseTimes.length !== 1 ||
+        !(databaseTimes[0].now instanceof Date) ||
+        !Number.isFinite(databaseTimes[0].now.getTime())
+      ) {
+        throw new PublicApiError("The request could not be completed.", 500);
+      }
+      const now = databaseTimes[0].now;
+
+      const updatedRun = await tx.applicationRun.updateMany({
+        where: {
+          id: run.id,
+          userId,
+          state: run.state,
+          stateVersion: run.stateVersion,
+          activeRunKey: run.activeRunKey,
+          completedAt: null,
+          fillAttemptId: run.fillAttemptId,
+          fillLeaseExpiresAt: run.fillLeaseExpiresAt
+        },
+        data: buildCompleteRunByUserData(now)
+      });
+      if (updatedRun.count !== 1) throw staleRunLifecycle();
+
+      const updatedApplication = await tx.application.updateMany({
+        where: { id: application.id, userId },
+        data: {
+          status: "APPLIED",
+          ...(application.dateApplied === null ? { dateApplied: now } : {})
+        }
+      });
+      if (updatedApplication.count !== 1) throw staleRunLifecycle();
+
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: "application-run.complete-by-user",
+          resource: "ApplicationRun",
+          resourceId: run.id,
+          metadata: {
+            runId: run.id,
+            applicationId: run.applicationId,
+            attestation,
+            previousState: run.state,
+            nextState: "COMPLETED_BY_USER",
+            previousStateVersion: run.stateVersion,
+            nextStateVersion: run.stateVersion + 1,
+            completedAt: now.toISOString()
+          } as Prisma.InputJsonValue
+        }
+      });
+      await tx.applicationEvent.create({
+        data: {
+          userId,
+          applicationId: run.applicationId,
+          type: "STATUS_CHANGED",
+          title: "Personal submission recorded",
+          metadata: {
+            runId: run.id,
+            previousState: run.state,
+            nextState: "COMPLETED_BY_USER",
+            previousStateVersion: run.stateVersion,
+            nextStateVersion: run.stateVersion + 1,
+            completedAt: now.toISOString()
+          }
+        }
+      });
+
+      const completed = await tx.applicationRun.findFirst({
+        where: { id: run.id, userId },
+        select: APPLICATION_RUN_OPERATIONAL_SELECT
+      });
+      if (!completed) throw staleRunLifecycle();
+      return toApplicationRunDto(completed);
+    });
+  }
+
   async function resolveApplicationRunReview(input: {
     userId: unknown;
     runId: unknown;
@@ -1044,6 +1157,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     createApplicationRun,
     getApplicationRun,
     cancelApplicationRun,
+    completeApplicationRunByUser,
     resolveApplicationRunReview,
     reviewApplicationRunAnswer
   };
@@ -1056,5 +1170,6 @@ export const updateAutomationPolicy = defaultApplicationRunService.updateAutomat
 export const createApplicationRun = defaultApplicationRunService.createApplicationRun;
 export const getApplicationRun = defaultApplicationRunService.getApplicationRun;
 export const cancelApplicationRun = defaultApplicationRunService.cancelApplicationRun;
+export const completeApplicationRunByUser = defaultApplicationRunService.completeApplicationRunByUser;
 export const resolveApplicationRunReview = defaultApplicationRunService.resolveApplicationRunReview;
 export const reviewApplicationRunAnswer = defaultApplicationRunService.reviewApplicationRunAnswer;

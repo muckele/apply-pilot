@@ -9,6 +9,7 @@ import {
   bindingRejectionPlan,
   browserCommandAvailability,
   buildAnswerReviewRequest,
+  buildCompleteApplicationRunByUserRequest,
   buildResolveReviewRequest,
   derivePacketFreshness,
   deriveManualFieldPresentations,
@@ -17,11 +18,13 @@ import {
   isAnswerReviewPostconditionCurrent,
   isAnswerReviewMutationEligible,
   isFillActivationEligible,
+  isPersonalSubmissionCompletionEligible,
   isResolveReviewEligible,
   isResolveReviewPostconditionCurrent,
   parseApplicationRunReviewResponse,
   parseAnswerPacketResponse,
   parseAnswerReviewResponse,
+  parseCompleteApplicationRunByUserResponse,
   presentProposal,
   REVIEW_REASON_LABELS,
   readinessMessage,
@@ -31,8 +34,10 @@ import {
   type CommandNotice,
   type ControlConnection,
   type PacketFreshness,
+  type PersonalSubmissionCompletionAuthority,
   type PendingReviewMutation,
   type PendingBrowserCommand,
+  type ReviewRunAuthority,
   type ResolveReviewMutationSnapshot
 } from "@/lib/application-browser/control-presentation";
 import {
@@ -55,7 +60,8 @@ type ControlWindow = Window & {
 
 type ReviewLoad = {
   phase: "idle" | "loading" | "loaded" | "error";
-  run: import("@/lib/application-browser/control-presentation").ReviewRunAuthority | null;
+  run: ReviewRunAuthority | null;
+  runVerified: boolean;
   packet: AnswerPacket | null;
   latestResponseWasNull: boolean;
   unverified: boolean;
@@ -81,9 +87,29 @@ type FillStatusRefreshResult =
   | Readonly<{ outcome: "SUPERSEDED" }>
   | Readonly<{ outcome: "INACTIVE" }>;
 
+type PersonalSubmissionCompletion = {
+  phase: "idle" | "confirming" | "pending" | "confirmed" | "uncertain";
+  notice: CommandNotice | null;
+};
+
+type PersonalSubmissionConfirmationIntent = Readonly<{
+  componentGeneration: number;
+  reviewRequestId: number;
+  runId: string;
+  runState: "READY" | "READY_FOR_USER_SUBMISSION";
+  runStateVersion: number;
+}>;
+
+type ReviewRunReconciliation = Readonly<{
+  run: ReviewRunAuthority;
+  verified: boolean;
+  decision: "ACCEPTED_INITIAL" | "ACCEPTED_NEWER" | "UNCHANGED" | "IGNORED_OLDER" | "CONTRADICTION";
+}>;
+
 const initialReviewLoad: ReviewLoad = {
   phase: "idle",
   run: null,
+  runVerified: false,
   packet: null,
   latestResponseWasNull: false,
   unverified: false,
@@ -96,6 +122,64 @@ const initialFillStatusLoad: FillStatusLoad = {
   verified: false,
   notice: null
 };
+
+const initialPersonalSubmissionCompletion: PersonalSubmissionCompletion = {
+  phase: "idle",
+  notice: null
+};
+
+function sameReviewRunAuthority(
+  left: ReviewRunAuthority,
+  right: ReviewRunAuthority
+): boolean {
+  return left.id === right.id &&
+    left.state === right.state &&
+    left.stateVersion === right.stateVersion &&
+    left.completedAt === right.completedAt &&
+    left.reviewReasons.length === right.reviewReasons.length &&
+    left.reviewReasons.every((reason, index) => reason === right.reviewReasons[index]);
+}
+
+function reconcileReviewRunAuthority(input: Readonly<{
+  current: ReviewRunAuthority | null;
+  incoming: ReviewRunAuthority;
+}>): ReviewRunReconciliation {
+  if (input.current === null) {
+    return { run: input.incoming, verified: true, decision: "ACCEPTED_INITIAL" };
+  }
+  if (input.incoming.stateVersion < input.current.stateVersion) {
+    return {
+      run: input.current,
+      verified: false,
+      decision: "IGNORED_OLDER"
+    };
+  }
+  if (input.incoming.stateVersion === input.current.stateVersion) {
+    if (sameReviewRunAuthority(input.current, input.incoming)) {
+      return { run: input.current, verified: true, decision: "UNCHANGED" };
+    }
+    return { run: input.current, verified: false, decision: "CONTRADICTION" };
+  }
+  return { run: input.incoming, verified: true, decision: "ACCEPTED_NEWER" };
+}
+
+function reviewRunReconciliationNotice(
+  decision: ReviewRunReconciliation["decision"]
+): CommandNotice | null {
+  if (decision === "IGNORED_OLDER") {
+    return {
+      tone: "WARNING",
+      text: "An older run response was ignored; the newer accepted lifecycle state is preserved."
+    };
+  }
+  if (decision === "CONTRADICTION") {
+    return {
+      tone: "ERROR",
+      text: "A contradictory same-version run response was rejected. Run authority is unverified."
+    };
+  }
+  return null;
+}
 
 function noticeClass(tone: CommandNotice["tone"]): string {
   if (tone === "SUCCESS") return "bg-emerald-50 text-emerald-800";
@@ -153,6 +237,8 @@ export function ApplicationBrowserControl({
   const [pendingReviewMutation, setPendingReviewMutation] = useState<PendingReviewMutation>(null);
   const [pendingFillActivation, setPendingFillActivation] = useState(false);
   const [fillMayHaveDispatched, setFillMayHaveDispatched] = useState(false);
+  const [personalSubmissionCompletion, setPersonalSubmissionCompletion] =
+    useState<PersonalSubmissionCompletion>(initialPersonalSubmissionCompletion);
   const [lastAcceptedInspection, setLastAcceptedInspection] = useState<B2InspectionCommandStatus | null>(null);
   const [formInvalidatedSinceVerifiedSuccess, setFormInvalidatedSinceVerifiedSuccess] = useState(false);
 
@@ -168,6 +254,8 @@ export function ApplicationBrowserControl({
   const pendingReviewMutationRef = useRef<PendingReviewMutation>(null);
   const pendingFillActivationRef = useRef(false);
   const fillMayHaveDispatchedRef = useRef(false);
+  const personalSubmissionCompletionPendingRef = useRef(false);
+  const personalSubmissionConfirmationIntentRef = useRef<PersonalSubmissionConfirmationIntent | null>(null);
   const mutationAbortControllerRef = useRef<AbortController | null>(null);
   const lastAutoRefreshAttemptKeyRef = useRef<string | null>(null);
   const componentGenerationRef = useRef(0);
@@ -183,6 +271,29 @@ export function ApplicationBrowserControl({
     const next = update(fillStatusLoadRef.current);
     fillStatusLoadRef.current = next;
     setFillStatusLoad(next);
+  }, []);
+
+  const invalidatePersonalSubmissionConfirmationIntent = useCallback(() => {
+    if (personalSubmissionConfirmationIntentRef.current === null) return;
+    personalSubmissionConfirmationIntentRef.current = null;
+    setPersonalSubmissionCompletion((current) => current.phase === "confirming"
+      ? { phase: "idle", notice: current.notice }
+      : current
+    );
+  }, []);
+
+  const cancelPersonalSubmissionConfirmation = useCallback((
+    confirmationIntent: PersonalSubmissionConfirmationIntent
+  ) => {
+    if (
+      personalSubmissionCompletionPendingRef.current ||
+      personalSubmissionConfirmationIntentRef.current !== confirmationIntent
+    ) return;
+    personalSubmissionConfirmationIntentRef.current = null;
+    setPersonalSubmissionCompletion((current) => current.phase === "confirming"
+      ? initialPersonalSubmissionCompletion
+      : current
+    );
   }, []);
 
   const invalidateFillStatusAuthority = useCallback(() => {
@@ -204,6 +315,9 @@ export function ApplicationBrowserControl({
     if (expectedGeneration === null || activeComponentGenerationRef.current !== expectedGeneration) {
       return { outcome: "INACTIVE" };
     }
+    if (personalSubmissionCompletionPendingRef.current) {
+      return { outcome: "SUPERSEDED" };
+    }
     reviewAbortControllerRef.current?.abort();
     const requestId = reviewRequestSequenceRef.current + 1;
     reviewRequestSequenceRef.current = requestId;
@@ -217,64 +331,148 @@ export function ApplicationBrowserControl({
     const currentResult = resultForInactiveOrSuperseded();
     if (currentResult !== null) return currentResult;
 
-    updateReviewLoad((current) => ({ ...current, phase: "loading", unverified: true, notice: null }));
-    const fail = (notice: CommandNotice, clear = false): ReviewAuthorityRefreshResult => {
+    invalidatePersonalSubmissionConfirmationIntent();
+    updateReviewLoad((current) => ({
+      ...current,
+      phase: "loading",
+      runVerified: false,
+      unverified: true,
+      notice: null
+    }));
+    const failRun = (notice: CommandNotice, clear = false): ReviewAuthorityRefreshResult => {
       const result = resultForInactiveOrSuperseded();
       if (result !== null) return result;
       updateReviewLoad((current) => clear
-        ? { phase: "error", run: null, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        ? { phase: "error", run: null, runVerified: false, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        : { ...current, phase: "error", runVerified: false, unverified: true, notice }
+      );
+      return { outcome: "FAILED" };
+    };
+    const failPacket = (notice: CommandNotice, clear = false): ReviewAuthorityRefreshResult => {
+      const result = resultForInactiveOrSuperseded();
+      if (result !== null) return result;
+      updateReviewLoad((current) => clear
+        ? { ...current, phase: "error", packet: null, latestResponseWasNull: false, unverified: true, notice }
         : { ...current, phase: "error", unverified: true, notice }
       );
       return { outcome: "FAILED" };
     };
     try {
-      const [runResult, packetResult] = await Promise.allSettled([
-        fetch(`/api/application-runs/${encodeURIComponent(runId)}`, { cache: "no-store", signal: controller.signal }),
-        fetch(`/api/application-runs/${encodeURIComponent(runId)}/answer-packet`, { cache: "no-store", signal: controller.signal })
-      ]);
-      const afterResponses = resultForInactiveOrSuperseded();
-      if (afterResponses !== null) return afterResponses;
-      const runResponse = runResult.status === "fulfilled" ? runResult.value : null;
-      const packetResponse = packetResult.status === "fulfilled" ? packetResult.value : null;
-      const fulfilledResponses = [runResponse, packetResponse].filter((response): response is Response => response !== null);
-      const authFailure = fulfilledResponses.find((response) =>
-        !response.ok && (response.status === 401 || response.status === 403 || response.status === 404)
-      );
-      if (authFailure !== undefined) {
-        if (authFailure.status === 401) return fail({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read review data." }, true);
-        if (authFailure.status === 403) return fail({ tone: "ERROR", text: "You are not authorized to read review data for this application run." }, true);
-        return fail({ tone: "ERROR", text: "This application run or answer packet is unavailable." }, true);
+      const runResponsePromise = fetch(`/api/application-runs/${encodeURIComponent(runId)}`, {
+        cache: "no-store",
+        signal: controller.signal
+      }).then((response) => response, () => null);
+      const packetResponsePromise = fetch(`/api/application-runs/${encodeURIComponent(runId)}/answer-packet`, {
+        cache: "no-store",
+        signal: controller.signal
+      }).then((response) => response, () => null);
+
+      const runResponse = await runResponsePromise;
+      const afterRunResponse = resultForInactiveOrSuperseded();
+      if (afterRunResponse !== null) return afterRunResponse;
+      if (runResponse === null || !runResponse.ok) {
+        const packetResponse = await packetResponsePromise;
+        const afterPacketSibling = resultForInactiveOrSuperseded();
+        if (afterPacketSibling !== null) return afterPacketSibling;
+        const authFailure = [runResponse, packetResponse].find((response): response is Response =>
+          response !== null && !response.ok &&
+          (response.status === 401 || response.status === 403 || response.status === 404)
+        );
+        if (authFailure?.status === 401) return failRun({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read review data." }, true);
+        if (authFailure?.status === 403) return failRun({ tone: "ERROR", text: "You are not authorized to read review data for this application run." }, true);
+        if (authFailure?.status === 404) return failRun({ tone: "ERROR", text: "This application run or answer packet is unavailable." }, true);
+        if (runResponse === null) {
+          return failRun({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
+        }
+        if (runResponse.status === 429) return failRun({ tone: "WARNING", text: "Review data reads are temporarily limited. Wait a moment, then refresh review data." });
+        return failRun({ tone: "ERROR", text: "Review data is temporarily unavailable. Refresh review data before another action." });
       }
-      if (runResponse === null || packetResponse === null) {
-        return fail({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
-      }
-      const failedResponses = [runResponse, packetResponse].filter((response) => !response.ok);
-      const failedResponse = failedResponses[0] ?? null;
-      if (failedResponse !== null) {
-        const status = failedResponse.status;
-        if (status === 401) return fail({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read review data." }, true);
-        if (status === 403) return fail({ tone: "ERROR", text: "You are not authorized to read review data for this application run." }, true);
-        if (status === 404) return fail({ tone: "ERROR", text: "This application run or answer packet is unavailable." }, true);
-        if (status === 429) return fail({ tone: "WARNING", text: "Review data reads are temporarily limited. Wait a moment, then refresh review data." });
-        return fail({ tone: "ERROR", text: "Review data is temporarily unavailable. Refresh review data before another action." });
-      }
+
       let runValue: unknown;
+      try {
+        runValue = await runResponse.json();
+      } catch {
+        return failRun({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
+      }
+      const afterRunJson = resultForInactiveOrSuperseded();
+      if (afterRunJson !== null) return afterRunJson;
+
+      let run: ReviewRunAuthority;
+      try {
+        run = parseApplicationRunReviewResponse(runValue, runId);
+      } catch {
+        return failRun({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
+      }
+      const afterRunParse = resultForInactiveOrSuperseded();
+      if (afterRunParse !== null) return afterRunParse;
+      const runReconciliation = reconcileReviewRunAuthority({
+        current: reviewLoadRef.current.run,
+        incoming: run
+      });
+      const runReconciliationNotice = reviewRunReconciliationNotice(runReconciliation.decision);
+      updateReviewLoad((current) => runReconciliationNotice === null
+        ? { ...current, run: runReconciliation.run, runVerified: runReconciliation.verified }
+        : {
+            ...current,
+            phase: "error",
+            run: runReconciliation.run,
+            runVerified: runReconciliation.verified,
+            unverified: true,
+            notice: runReconciliationNotice
+          }
+      );
+      if (runReconciliationNotice !== null) {
+        controller.abort();
+        if (reviewAbortControllerRef.current === controller) reviewAbortControllerRef.current = null;
+        return { outcome: "FAILED" };
+      }
+
+      const packetResponse = await packetResponsePromise;
+      const afterPacketResponse = resultForInactiveOrSuperseded();
+      if (afterPacketResponse !== null) return afterPacketResponse;
+      if (packetResponse === null) {
+        return failPacket({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
+      }
+      if (!packetResponse.ok) {
+        if (packetResponse.status === 401) return failPacket({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to read review data." }, true);
+        if (packetResponse.status === 403) return failPacket({ tone: "ERROR", text: "You are not authorized to read review data for this application run." }, true);
+        if (packetResponse.status === 404) return failPacket({ tone: "ERROR", text: "This application run or answer packet is unavailable." }, true);
+        if (packetResponse.status === 429) return failPacket({ tone: "WARNING", text: "Review data reads are temporarily limited. Wait a moment, then refresh review data." });
+        return failPacket({ tone: "ERROR", text: "Review data is temporarily unavailable. Refresh review data before another action." });
+      }
+
       let packetValue: unknown;
       try {
-        [runValue, packetValue] = await Promise.all([runResponse.json(), packetResponse.json()]);
+        packetValue = await packetResponse.json();
       } catch {
-        return fail({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
+        return failPacket({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
       }
-      const afterJson = resultForInactiveOrSuperseded();
-      if (afterJson !== null) return afterJson;
+      const afterPacketJson = resultForInactiveOrSuperseded();
+      if (afterPacketJson !== null) return afterPacketJson;
       try {
-        const run = parseApplicationRunReviewResponse(runValue, runId);
         const packet = parseAnswerPacketResponse(packetValue, runId).current;
-        const afterParse = resultForInactiveOrSuperseded();
-        if (afterParse !== null) return afterParse;
+        const afterPacketParse = resultForInactiveOrSuperseded();
+        if (afterPacketParse !== null) return afterPacketParse;
+        const finalRunReconciliation = reconcileReviewRunAuthority({
+          current: reviewLoadRef.current.run,
+          incoming: run
+        });
+        const finalRunNotice = reviewRunReconciliationNotice(finalRunReconciliation.decision);
+        if (finalRunNotice !== null) {
+          updateReviewLoad((current) => ({
+            ...current,
+            phase: "error",
+            run: finalRunReconciliation.run,
+            runVerified: finalRunReconciliation.verified,
+            unverified: true,
+            notice: finalRunNotice
+          }));
+          return { outcome: "FAILED" };
+        }
         updateReviewLoad(() => ({
           phase: "loaded",
-          run,
+          run: finalRunReconciliation.run,
+          runVerified: finalRunReconciliation.verified,
           packet,
           latestResponseWasNull: packet === null,
           unverified: false,
@@ -282,12 +480,12 @@ export function ApplicationBrowserControl({
         }));
         return { outcome: "COMMITTED" };
       } catch {
-        return fail({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
+        return failPacket({ tone: "ERROR", text: "Apply Pilot could not safely read the review authority response." });
       }
     } catch {
-      return fail({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
+      return failRun({ tone: "ERROR", text: "Apply Pilot could not reach the review authority service. Refresh review data before another action." });
     }
-  }, [runId, updateReviewLoad]);
+  }, [invalidatePersonalSubmissionConfirmationIntent, runId, updateReviewLoad]);
 
   const fetchFillStatus = useCallback(async (
     expectedGeneration = activeComponentGenerationRef.current
@@ -712,8 +910,8 @@ export function ApplicationBrowserControl({
       if (!active()) return;
       invalidateReviewAuthority();
       updateReviewLoad((loaded) => clear
-        ? { phase: "error", run: null, packet: null, latestResponseWasNull: false, unverified: true, notice }
-        : { ...loaded, phase: "error", unverified: true, notice }
+        ? { phase: "error", run: null, runVerified: false, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        : { ...loaded, phase: "error", runVerified: false, unverified: true, notice }
       );
     };
     try {
@@ -819,8 +1017,8 @@ export function ApplicationBrowserControl({
       if (!active()) return;
       invalidateReviewAuthority();
       updateReviewLoad((loaded) => clear
-        ? { phase: "error", run: null, packet: null, latestResponseWasNull: false, unverified: true, notice }
-        : { ...loaded, phase: "error", unverified: true, notice }
+        ? { phase: "error", run: null, runVerified: false, packet: null, latestResponseWasNull: false, unverified: true, notice }
+        : { ...loaded, phase: "error", runVerified: false, unverified: true, notice }
       );
     };
     try {
@@ -893,6 +1091,292 @@ export function ApplicationBrowserControl({
     }
   }, [fetchFillStatus, fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
 
+  const reconcilePersonalSubmissionCompletion = useCallback(async (
+    expectedGeneration: number
+  ): Promise<void> => {
+    const active = () => activeComponentGenerationRef.current === expectedGeneration;
+    if (!active()) return;
+
+    const markUncertain = (notice: CommandNotice, clearRun = false) => {
+      if (!active()) return;
+      updateReviewLoad((current) => clearRun
+        ? {
+            phase: "error",
+            run: null,
+            runVerified: false,
+            packet: current.packet,
+            latestResponseWasNull: current.latestResponseWasNull,
+            unverified: true,
+            notice: current.notice
+          }
+        : { ...current, runVerified: false, unverified: true }
+      );
+      setPersonalSubmissionCompletion({ phase: "uncertain", notice });
+    };
+
+    try {
+      const response = await fetch(`/api/application-runs/${encodeURIComponent(runId)}`, {
+        cache: "no-store"
+      });
+      if (!active()) return;
+      if (!response.ok) {
+        if (response.status === 401) {
+          markUncertain({
+            tone: "ERROR",
+            text: "Your session is no longer authenticated. Sign in again before checking personal-submission status."
+          }, true);
+        } else if (response.status === 403) {
+          markUncertain({
+            tone: "ERROR",
+            text: "You are not authorized to check personal-submission status for this application run."
+          }, true);
+        } else if (response.status === 404) {
+          markUncertain({
+            tone: "ERROR",
+            text: "This application run is unavailable for personal-submission status."
+          }, true);
+        } else if (response.status === 429) {
+          markUncertain({
+            tone: "WARNING",
+            text: "Personal-submission status checks are temporarily limited. Wait before refreshing status."
+          });
+        } else {
+          markUncertain({
+            tone: "WARNING",
+            text: "Apply Pilot could not verify whether the attestation was recorded. Refresh personal-submission status before deciding whether to act again."
+          });
+        }
+        return;
+      }
+
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        markUncertain({
+          tone: "WARNING",
+          text: "Apply Pilot could not safely read personal-submission status. Refresh status before deciding whether to act again."
+        });
+        return;
+      }
+      if (!active()) return;
+
+      let run: ReviewRunAuthority;
+      try {
+        run = parseApplicationRunReviewResponse(value, runId);
+      } catch {
+        markUncertain({
+          tone: "WARNING",
+          text: "Apply Pilot could not safely verify personal-submission status. Refresh status before deciding whether to act again."
+        });
+        return;
+      }
+      if (!active()) return;
+
+      const runReconciliation = reconcileReviewRunAuthority({
+        current: reviewLoadRef.current.run,
+        incoming: run
+      });
+      const runNotice = reviewRunReconciliationNotice(runReconciliation.decision);
+      updateReviewLoad((current) => ({
+        ...current,
+        phase: runNotice === null ? current.phase : "error",
+        run: runReconciliation.run,
+        runVerified: runReconciliation.verified,
+        unverified: true,
+        notice: runNotice ?? current.notice
+      }));
+      if (!runReconciliation.verified) {
+        setPersonalSubmissionCompletion({
+          phase: "uncertain",
+          notice: {
+            tone: "WARNING",
+            text: "Apply Pilot received contradictory run authority while checking personal-submission status. No completion request was repeated."
+          }
+        });
+      } else if (runReconciliation.run.state === "COMPLETED_BY_USER") {
+        setPersonalSubmissionCompletion({
+          phase: "confirmed",
+          notice: {
+            tone: "SUCCESS",
+            text: "Personal submission is recorded from your explicit attestation."
+          }
+        });
+      } else if (
+        runReconciliation.run.state === "READY" ||
+        runReconciliation.run.state === "READY_FOR_USER_SUBMISSION"
+      ) {
+        setPersonalSubmissionCompletion({
+          phase: "uncertain",
+          notice: {
+            tone: "WARNING",
+            text: "Apply Pilot could not verify whether the attestation was recorded. The latest run is still eligible; any future completion attempt must be another explicit user action."
+          }
+        });
+      } else {
+        setPersonalSubmissionCompletion({
+          phase: "uncertain",
+          notice: {
+            tone: "WARNING",
+            text: "The application run changed state while personal-submission status was being reconciled. No completion request was repeated."
+          }
+        });
+      }
+    } catch {
+      markUncertain({
+        tone: "WARNING",
+        text: "Apply Pilot could not verify whether the attestation was recorded. Refresh personal-submission status before deciding whether to act again."
+      });
+    }
+  }, [runId, updateReviewLoad]);
+
+  const openPersonalSubmissionConfirmation = useCallback(() => {
+    const expectedGeneration = activeComponentGenerationRef.current;
+    const current = reviewLoadRef.current;
+    const currentRun = current.run;
+    if (
+      expectedGeneration === null ||
+      personalSubmissionCompletionPendingRef.current ||
+      !isPersonalSubmissionCompletionEligible({
+        authenticatedOwnerPage,
+        componentActive: true,
+        run: currentRun,
+        runVerified: current.runVerified,
+        completionPending: false
+      }) ||
+      currentRun === null ||
+      (currentRun.state !== "READY" && currentRun.state !== "READY_FOR_USER_SUBMISSION")
+    ) return;
+
+    personalSubmissionConfirmationIntentRef.current = {
+      componentGeneration: expectedGeneration,
+      reviewRequestId: reviewRequestSequenceRef.current,
+      runId: currentRun.id,
+      runState: currentRun.state,
+      runStateVersion: currentRun.stateVersion
+    };
+    setPersonalSubmissionCompletion((currentCompletion) => ({
+      phase: "confirming",
+      notice: currentCompletion.notice
+    }));
+  }, [authenticatedOwnerPage]);
+
+  const completeApplicationRunByUserFromControl = useCallback(async (
+    confirmationIntent: PersonalSubmissionConfirmationIntent
+  ) => {
+    const expectedGeneration = activeComponentGenerationRef.current;
+    const current = reviewLoadRef.current;
+    const currentRun = current.run;
+    if (
+      expectedGeneration === null ||
+      personalSubmissionConfirmationIntentRef.current !== confirmationIntent ||
+      confirmationIntent.componentGeneration !== expectedGeneration ||
+      confirmationIntent.reviewRequestId !== reviewRequestSequenceRef.current ||
+      currentRun === null ||
+      currentRun.id !== confirmationIntent.runId ||
+      currentRun.state !== confirmationIntent.runState ||
+      currentRun.stateVersion !== confirmationIntent.runStateVersion ||
+      personalSubmissionCompletionPendingRef.current ||
+      !isPersonalSubmissionCompletionEligible({
+        authenticatedOwnerPage,
+        componentActive: true,
+        run: currentRun,
+        runVerified: current.runVerified,
+        completionPending: false
+      })
+    ) return;
+
+    personalSubmissionCompletionPendingRef.current = true;
+    personalSubmissionConfirmationIntentRef.current = null;
+    invalidateReviewAuthority();
+    updateReviewLoad((loaded) => ({
+      ...loaded,
+      phase: loaded.phase === "loading" ? "error" : loaded.phase,
+      unverified: true
+    }));
+    setPersonalSubmissionCompletion({ phase: "pending", notice: null });
+    const active = () => activeComponentGenerationRef.current === expectedGeneration;
+
+    try {
+      const request = buildCompleteApplicationRunByUserRequest({ runId });
+      const response = await fetch(request.url, request.init);
+      if (!active()) return;
+      if (!response.ok) {
+        await reconcilePersonalSubmissionCompletion(expectedGeneration);
+        return;
+      }
+
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        await reconcilePersonalSubmissionCompletion(expectedGeneration);
+        return;
+      }
+      if (!active()) return;
+
+      let completion: PersonalSubmissionCompletionAuthority;
+      try {
+        completion = parseCompleteApplicationRunByUserResponse(value, runId);
+      } catch {
+        await reconcilePersonalSubmissionCompletion(expectedGeneration);
+        return;
+      }
+      if (!active()) return;
+
+      const completionRun: ReviewRunAuthority = {
+        id: completion.id,
+        state: completion.state,
+        stateVersion: completion.stateVersion,
+        completedAt: completion.completedAt,
+        reviewReasons: reviewLoadRef.current.run?.id === completion.id
+          ? reviewLoadRef.current.run.reviewReasons
+          : []
+      };
+      const runReconciliation = reconcileReviewRunAuthority({
+        current: reviewLoadRef.current.run,
+        incoming: completionRun
+      });
+      const runNotice = reviewRunReconciliationNotice(runReconciliation.decision);
+      updateReviewLoad((loaded) => ({
+        ...loaded,
+        phase: runNotice === null ? loaded.phase : "error",
+        run: runReconciliation.run,
+        runVerified: runReconciliation.verified,
+        unverified: true,
+        notice: runNotice ?? loaded.notice
+      }));
+      if (!runReconciliation.verified || runReconciliation.run.state !== "COMPLETED_BY_USER") {
+        await reconcilePersonalSubmissionCompletion(expectedGeneration);
+        return;
+      }
+      setPersonalSubmissionCompletion({
+        phase: "confirmed",
+        notice: {
+          tone: "SUCCESS",
+          text: "Personal submission is recorded from your explicit attestation."
+        }
+      });
+    } catch {
+      if (active()) await reconcilePersonalSubmissionCompletion(expectedGeneration);
+    } finally {
+      personalSubmissionCompletionPendingRef.current = false;
+      if (active()) {
+        setPersonalSubmissionCompletion((currentCompletion) =>
+          currentCompletion.phase === "pending"
+            ? {
+                phase: "uncertain",
+                notice: {
+                  tone: "WARNING",
+                  text: "Apply Pilot could not verify whether the attestation was recorded. Refresh personal-submission status before deciding whether to act again."
+                }
+              }
+            : currentCompletion
+        );
+      }
+    }
+  }, [authenticatedOwnerPage, invalidateReviewAuthority, reconcilePersonalSubmissionCompletion, runId, updateReviewLoad]);
+
   useEffect(() => {
     const generation = componentGenerationRef.current + 1;
     componentGenerationRef.current = generation;
@@ -906,6 +1390,7 @@ export function ApplicationBrowserControl({
       componentGenerationRef.current += 1;
       pendingCommandRef.current = null;
       pendingReviewMutationRef.current = null;
+      personalSubmissionConfirmationIntentRef.current = null;
       mutationAbortControllerRef.current?.abort();
       mutationAbortControllerRef.current = null;
       reviewRequestSequenceRef.current += 1;
@@ -931,6 +1416,22 @@ export function ApplicationBrowserControl({
     packet: reviewLoad.packet,
     trusted: reviewLoad.phase === "loaded" && !reviewLoad.unverified
   });
+  const personalSubmissionCompletionPending = personalSubmissionCompletion.phase === "pending";
+  const personalSubmissionRunVerified = reviewLoad.runVerified;
+  const personalSubmissionCompletionEligible = isPersonalSubmissionCompletionEligible({
+    authenticatedOwnerPage,
+    componentActive: true,
+    run: reviewLoad.run,
+    runVerified: personalSubmissionRunVerified,
+    completionPending: personalSubmissionCompletionPending
+  });
+  const personalSubmissionConfirmationIntent = personalSubmissionConfirmationIntentRef.current;
+  const personalSubmissionRecorded =
+    reviewLoad.run?.state === "COMPLETED_BY_USER" && reviewLoad.run.completedAt !== null;
+  const showPersonalSubmissionSection =
+    personalSubmissionRecorded ||
+    personalSubmissionCompletionEligible ||
+    personalSubmissionCompletion.phase !== "idle";
   const apparentEligibleCount = apparentAutomatableFieldCount(reviewLoad.packet);
   const manualFields = deriveManualFieldPresentations(reviewLoad.packet);
   const storedFillPresentation = fillStatusLoad.status === null
@@ -968,7 +1469,7 @@ export function ApplicationBrowserControl({
     pendingFillActivation,
     fillMayHaveDispatched
   });
-  const fillUiLocked = pendingFillActivation;
+  const fillUiLocked = pendingFillActivation || personalSubmissionCompletionPending;
 
   return (
     <div className="space-y-5 p-5">
@@ -990,6 +1491,66 @@ export function ApplicationBrowserControl({
 
       {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
       {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
+
+      {showPersonalSubmissionSection ? <section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="personal-submission-heading">
+        <div>
+          <h2 id="personal-submission-heading" className="font-semibold text-slate-950">Personal submission</h2>
+          {personalSubmissionRecorded
+            ? <p className="mt-1 text-sm text-slate-600">Personal submission recorded from your explicit attestation. Apply Pilot did not submit or independently verify the employer submission.</p>
+            : <p className="mt-1 text-sm text-slate-600">Only confirm after you personally used the employer site&apos;s Submit control. Apply Pilot does not submit the application for you.</p>}
+        </div>
+
+        {personalSubmissionCompletion.notice ? <p
+          aria-live="polite"
+          role={personalSubmissionCompletion.notice.tone === "ERROR" ? "alert" : undefined}
+          className={`rounded-lg px-3 py-2 text-sm ${noticeClass(personalSubmissionCompletion.notice.tone)}`}
+        >{personalSubmissionCompletion.notice.text}</p> : null}
+
+        {personalSubmissionRecorded ? <dl className="rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <div>
+            <dt className="font-semibold">Personal submission recorded</dt>
+            <dd className="mt-1">Recorded at {displayDate(reviewLoad.run?.completedAt ?? null)}</dd>
+          </div>
+        </dl> : null}
+
+        {!personalSubmissionRecorded && personalSubmissionCompletionEligible && personalSubmissionCompletion.phase !== "confirming" ? <PrimaryButton
+          type="button"
+          onClick={openPersonalSubmissionConfirmation}
+        >I personally submitted this application</PrimaryButton> : null}
+
+        {!personalSubmissionRecorded && (personalSubmissionCompletion.phase === "confirming" || personalSubmissionCompletionPending) ? <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
+          <p className="text-sm font-medium text-amber-950">Confirm only if you personally submitted on the employer site. This records your attestation; it does not verify the employer&apos;s submission result.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <PrimaryButton
+              type="button"
+              disabled={personalSubmissionCompletionPending || !personalSubmissionCompletionEligible}
+              onClick={() => {
+                if (personalSubmissionConfirmationIntent !== null) {
+                  void completeApplicationRunByUserFromControl(personalSubmissionConfirmationIntent);
+                }
+              }}
+            >{personalSubmissionCompletionPending ? "Recording personal submission…" : "Confirm personal submission"}</PrimaryButton>
+            <SecondaryButton
+              type="button"
+              disabled={personalSubmissionCompletionPending}
+              onClick={() => {
+                if (personalSubmissionConfirmationIntent !== null) {
+                  cancelPersonalSubmissionConfirmation(personalSubmissionConfirmationIntent);
+                }
+              }}
+            >Not yet</SecondaryButton>
+          </div>
+        </div> : null}
+
+        {!personalSubmissionRecorded && personalSubmissionCompletion.phase === "uncertain" && !personalSubmissionRunVerified ? <SecondaryButton
+          type="button"
+          disabled={personalSubmissionCompletionPending}
+          onClick={() => {
+            const generation = activeComponentGenerationRef.current;
+            if (generation !== null) void reconcilePersonalSubmissionCompletion(generation);
+          }}
+        >Refresh personal-submission status</SecondaryButton> : null}
+      </section> : null}
 
       <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="fill-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1048,7 +1609,10 @@ export function ApplicationBrowserControl({
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div><h2 id="answer-packet-heading" className="font-semibold text-slate-950">Current answer packet</h2><p className="mt-1 text-sm text-slate-600">Read-only proposed answers from the authenticated ApplicationRun packet API.</p></div>
           <SecondaryButton type="button" disabled={fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null} onClick={() => {
-            if (!pendingFillActivationRef.current) void fetchReviewAuthority();
+            if (
+              !pendingFillActivationRef.current &&
+              !personalSubmissionCompletionPendingRef.current
+            ) void fetchReviewAuthority();
           }}>{reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data"}</SecondaryButton>
         </div>
         {reviewLoad.notice ? <p aria-live="polite" role={reviewLoad.notice.tone === "ERROR" ? "alert" : undefined} className={`rounded-lg px-3 py-2 text-sm ${noticeClass(reviewLoad.notice.tone)}`}>{reviewLoad.notice.text}</p> : null}

@@ -57,7 +57,15 @@ export type ReviewRunAuthority = Readonly<{
   id: string;
   state: ApplicationRunState;
   stateVersion: number;
+  completedAt: string | null;
   reviewReasons: readonly PlanReviewReason[];
+}>;
+
+export type PersonalSubmissionCompletionAuthority = Readonly<{
+  id: string;
+  state: "COMPLETED_BY_USER";
+  stateVersion: number;
+  completedAt: string;
 }>;
 
 export const REVIEW_REASON_LABELS: Record<PlanReviewReason, string> = {
@@ -96,6 +104,9 @@ export type SameOriginReviewRequest = Readonly<{
     body: string;
   }>;
 }>;
+
+const PERSONAL_SUBMISSION_ATTESTATION =
+  "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE" as const;
 
 type CommandAvailability = Record<Exclude<PendingBrowserCommand, null>, boolean>;
 
@@ -211,6 +222,10 @@ const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
 const nonnegativeSafeInteger = z.number().int().nonnegative().safe();
 const positiveSafeInteger = z.number().int().positive().safe();
 const isoDateTime = z.string().datetime({ offset: true });
+const canonicalIsoDateTime = z.string().refine((value) => {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+});
 
 const inspectionSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("IN_PROGRESS") }).strict(),
@@ -381,12 +396,35 @@ const runAuthoritySchema = z
     id: boundedText,
     state: z.enum(APPLICATION_RUN_STATES),
     stateVersion: nonnegativeSafeInteger,
+    completedAt: canonicalIsoDateTime.nullable(),
     reviewReasons: reviewReasonsSchema
   })
-  .strip();
+  .strip()
+  .superRefine((run, context) => {
+    if ((run.state === "COMPLETED_BY_USER") !== (run.completedAt !== null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["completedAt"],
+        message: "Run completion state and timestamp must agree."
+      });
+    }
+  });
 
 const applicationRunReviewResponseSchema = z
   .object({ run: runAuthoritySchema })
+  .strict();
+
+const personalSubmissionCompletionResponseSchema = z
+  .object({
+    run: z
+      .object({
+        id: boundedText,
+        state: z.literal("COMPLETED_BY_USER"),
+        stateVersion: nonnegativeSafeInteger,
+        completedAt: canonicalIsoDateTime
+      })
+      .strict()
+  })
   .strict();
 
 const answerReviewResponseSchema = z
@@ -790,8 +828,48 @@ export function parseApplicationRunReviewResponse(
     id: parsed.run.id,
     state: parsed.run.state,
     stateVersion: parsed.run.stateVersion,
+    completedAt: parsed.run.completedAt,
     reviewReasons: [...parsed.run.reviewReasons]
   };
+}
+
+export function buildCompleteApplicationRunByUserRequest(input: {
+  runId: string;
+}): SameOriginReviewRequest {
+  return {
+    url: `/api/application-runs/${encodeURIComponent(input.runId)}/complete-by-user`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ attestation: PERSONAL_SUBMISSION_ATTESTATION })
+    }
+  };
+}
+
+export function parseCompleteApplicationRunByUserResponse(
+  value: unknown,
+  expectedRunId: string
+): PersonalSubmissionCompletionAuthority {
+  const parsed = personalSubmissionCompletionResponseSchema.parse(value);
+  if (parsed.run.id !== expectedRunId) {
+    throw new Error("Application run completion response belongs to another run.");
+  }
+  return parsed.run;
+}
+
+export function isPersonalSubmissionCompletionEligible(input: Readonly<{
+  authenticatedOwnerPage: boolean;
+  componentActive: boolean;
+  run: ReviewRunAuthority | null;
+  runVerified: boolean;
+  completionPending: boolean;
+}>): boolean {
+  return input.authenticatedOwnerPage &&
+    input.componentActive &&
+    input.runVerified &&
+    !input.completionPending &&
+    (input.run?.state === "READY" || input.run?.state === "READY_FOR_USER_SUBMISSION");
 }
 
 export function buildAnswerReviewRequest(input: {

@@ -305,6 +305,7 @@ async function openProductionControlPage(input: Readonly<{
             id: RUN_ID,
             state: serverState.fillStatus.state,
             stateVersion: serverState.fillStatus.stateVersion,
+            completedAt: null,
             reviewReasons: []
           }
         })
@@ -573,6 +574,7 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
         id: RUN_ID,
         state: "READY" as const,
         stateVersion: 7,
+        completedAt: null,
         applyHost: TARGET_HOST,
         applyUrlSnapshot: TARGET_URL
       };
