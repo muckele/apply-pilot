@@ -140,14 +140,15 @@ test("public layout owns the exact public pages, scoped CSS, and shell without A
   assert.doesNotMatch(source, /<AppShell\b/);
 });
 
-test("checkpoint root stays a dashboard redirect instead of rendering the landing page", () => {
+test("public root renders the landing page instead of redirecting into the product", () => {
   const publicRootPath = "app/(public)/page.tsx";
 
   assert.equal(existsSync(absolutePath(publicRootPath)), true, "public root route must exist");
   const source = readSource(publicRootPath);
 
-  assert.match(source, /redirect\("\/dashboard"\)/);
-  assert.doesNotMatch(source, /components\/landing|<LandingPage\b/);
+  assert.match(source, /@\/components\/landing\/landing-page/);
+  assert.match(source, /<LandingPage\b/);
+  assert.doesNotMatch(source, /redirect\("\/dashboard"\)|next\/navigation/);
 });
 
 test("product layout owns AppShell and every current authenticated product page", () => {
