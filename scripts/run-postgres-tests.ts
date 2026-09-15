@@ -4,6 +4,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import {
+  PostgresTestSuiteSelectionError,
+  SYNTHETIC_FULL_WORKFLOW_E2E_MARKER,
+  assertPostgresTestSuiteFilesExist,
+  configurePostgresTestSuiteEnvironment,
+  selectPostgresTestSuite
+} from "./postgres-test-suite";
+
+import {
   POSTGRES_TEST_NODE_TIMEOUT_MS,
   PostgresTestSafetyError,
   assertPostgresTestMajorVersion,
@@ -71,6 +79,10 @@ async function discoverPostgresTests(): Promise<string[]> {
 }
 
 async function main(): Promise<void> {
+  const testFiles = await discoverPostgresTests();
+  const suite = selectPostgresTestSuite(process.argv.slice(2), testFiles, POSTGRES_TEST_NODE_TIMEOUT_MS);
+  await assertPostgresTestSuiteFilesExist(repositoryRoot, suite);
+
   const config = validatePostgresTestEnvironment(process.env);
   const liveDatabase = await verifyLivePostgresTestDatabase(config);
   assertPostgresTestMajorVersion(liveDatabase);
@@ -79,12 +91,15 @@ async function main(): Promise<void> {
       `version_num=${liveDatabase.serverVersionNum} isolation=${liveDatabase.isolation}`
   );
 
-  const environment = safeChildEnvironment(config.url);
+  const resetEnvironment = safeChildEnvironment(config.url);
+  delete resetEnvironment[SYNTHETIC_FULL_WORKFLOW_E2E_MARKER];
+  const testEnvironment = { ...resetEnvironment };
+  configurePostgresTestSuiteEnvironment(testEnvironment, suite);
   const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
   const migrationExitCode = await runCommand(
     npxCommand,
     ["prisma", "migrate", "reset", "--force", "--skip-seed"],
-    environment
+    resetEnvironment
   );
   if (migrationExitCode !== 0) {
     throw new PostgresTestRunnerError(
@@ -92,7 +107,6 @@ async function main(): Promise<void> {
     );
   }
 
-  const testFiles = await discoverPostgresTests();
   const testExitCode = await runCommand(
     process.execPath,
     [
@@ -100,16 +114,20 @@ async function main(): Promise<void> {
       "tsx",
       "--test",
       "--test-concurrency=1",
-      `--test-timeout=${POSTGRES_TEST_NODE_TIMEOUT_MS}`,
-      ...testFiles
+      `--test-timeout=${suite.timeoutMs}`,
+      ...suite.testFiles
     ],
-    environment
+    testEnvironment
   );
   if (testExitCode !== 0) process.exitCode = testExitCode;
 }
 
 main().catch((error: unknown) => {
-  if (error instanceof PostgresTestSafetyError || error instanceof PostgresTestRunnerError) {
+  if (
+    error instanceof PostgresTestSafetyError ||
+    error instanceof PostgresTestRunnerError ||
+    error instanceof PostgresTestSuiteSelectionError
+  ) {
     console.error(`[postgres-test] ${error.message}`);
   } else {
     const diagnostic = normalizePostgresTestError(error, "runner", "pre-reset-or-test-launch");

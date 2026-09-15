@@ -13,7 +13,7 @@ const neonUrl = "postgresql://user:SUBPROCESS_SECRET@ep-example.us-east-1.aws.ne
 
 const approvedSourceHashes = {
   "scripts/run-local-prisma-migrate.ts": "9dd734a6a59519ff788735c67570bb95c5414e343af49ee35b1e3d44a40e6d78",
-  "scripts/run-postgres-tests.ts": "824337659cfde24eea93d4680a42972ea39993f298f36a9200024f98c97cfbe1"
+  "scripts/run-postgres-tests.ts": "ac7168f8a4b773a81611ea4707dfc83ae8a61cac52caf100ba0c0a03819aaec7"
 } as const;
 
 type ApprovedSourcePath = keyof typeof approvedSourceHashes;
@@ -292,6 +292,16 @@ function findCalls(node: ts.Node, name: string): ts.CallExpression[] {
   return calls;
 }
 
+function findDeleteExpressions(node: ts.Node): ts.DeleteExpression[] {
+  const deletes: ts.DeleteExpression[] = [];
+  function visit(child: ts.Node): void {
+    if (ts.isDeleteExpression(child)) deletes.push(child);
+    ts.forEachChild(child, visit);
+  }
+  visit(node);
+  return deletes;
+}
+
 function returnedObject(functionDeclaration: ts.FunctionDeclaration): ts.ObjectLiteralExpression {
   let result: ts.ObjectLiteralExpression | undefined;
   function visit(node: ts.Node): void {
@@ -334,6 +344,47 @@ function assertRunCommandSpawnSafety(sourceFile: ts.SourceFile): void {
   assert.equal(objectPropertyInitializer(options, "shell")?.kind, ts.SyntaxKind.FalseKeyword);
 }
 
+type DirectFunctionStatement = ts.ExpressionStatement | ts.VariableStatement;
+
+function directFunctionStatement(
+  node: ts.Node,
+  functionDeclaration: ts.FunctionDeclaration,
+  label: string
+): DirectFunctionStatement {
+  assert.ok(functionDeclaration.body, `Expected ${functionDeclaration.name?.text ?? "function"} to have a body.`);
+  let current = node;
+  while (current.parent !== functionDeclaration.body) {
+    const parent = current.parent;
+    assert.ok(parent, `${label} must be a direct top-level statement.`);
+    assert.ok(
+      ts.isAwaitExpression(parent) ||
+        ts.isVariableDeclaration(parent) ||
+        ts.isVariableDeclarationList(parent) ||
+        ts.isVariableStatement(parent) ||
+        ts.isExpressionStatement(parent),
+      `${label} must be a direct top-level statement without conditional or nested control flow.`
+    );
+    current = parent;
+  }
+  assert.ok(
+    ts.isExpressionStatement(current) || ts.isVariableStatement(current),
+    `${label} must be a direct top-level statement.`
+  );
+  return current as DirectFunctionStatement;
+}
+
+function assertStatementOrder(
+  functionDeclaration: ts.FunctionDeclaration,
+  first: DirectFunctionStatement,
+  second: DirectFunctionStatement,
+  message: string
+): void {
+  assert.ok(functionDeclaration.body, `Expected ${functionDeclaration.name?.text ?? "function"} to have a body.`);
+  const firstIndex = functionDeclaration.body.statements.indexOf(first);
+  const secondIndex = functionDeclaration.body.statements.indexOf(second);
+  assert.ok(firstIndex >= 0 && secondIndex >= 0 && firstIndex < secondIndex, message);
+}
+
 function verifyOfficialResetRunner(source: string): void {
   const filename = "scripts/run-postgres-tests.ts";
   const sourceFile = ts.createSourceFile(filename, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -346,7 +397,7 @@ function verifyOfficialResetRunner(source: string): void {
   assert.equal(reset.functionName, "main");
   assert.equal(reset.calleeName, "runCommand");
   assert.deepEqual(reset.tokens, ["prisma", "migrate", "reset", "--force", "--skip-seed"]);
-  assert.equal(dottedName(reset.environment), "environment");
+  assert.equal(dottedName(reset.environment), "resetEnvironment");
 
   const safeEnvironment = findFunction(sourceFile, "safeChildEnvironment");
   assert.deepEqual(safeEnvironment.parameters.map((parameter) => dottedName(parameter.name as ts.Expression)), [
@@ -357,10 +408,192 @@ function verifyOfficialResetRunner(source: string): void {
   assert.equal(dottedName(objectPropertyInitializer(safeEnvironmentObject, "DIRECT_URL")), "testDatabaseUrl");
 
   const main = findFunction(sourceFile, "main");
+  assert.ok(main.body, "Expected main to have a body.");
+
+  const testFiles = findVariableDeclaration(main, "testFiles");
+  assert.ok(testFiles.initializer && ts.isAwaitExpression(testFiles.initializer));
+  const discoverTestsCall = testFiles.initializer.expression;
+  assert.ok(ts.isCallExpression(discoverTestsCall));
+  assert.equal(calleeName(discoverTestsCall.expression), "discoverPostgresTests");
+  assert.equal(discoverTestsCall.arguments.length, 0);
+  const testFilesStatement = directFunctionStatement(discoverTestsCall, main, "PostgreSQL test discovery");
+
+  const suite = findVariableDeclaration(main, "suite");
+  assert.ok(suite.initializer && ts.isCallExpression(suite.initializer));
+  assert.equal(calleeName(suite.initializer.expression), "selectPostgresTestSuite");
+  assert.equal(suite.initializer.arguments.length, 3);
+  assert.equal(suite.initializer.arguments[0]?.getText(sourceFile), "process.argv.slice(2)");
+  assert.equal(dottedName(suite.initializer.arguments[1]), "testFiles");
+  assert.equal(dottedName(suite.initializer.arguments[2]), "POSTGRES_TEST_NODE_TIMEOUT_MS");
+  const suiteStatement = directFunctionStatement(suite.initializer, main, "Suite selection");
+
+  const selectedFileChecks = findCalls(main, "assertPostgresTestSuiteFilesExist");
+  assert.equal(selectedFileChecks.length, 1, "main must check the closed selected-file set exactly once.");
+  assert.ok(
+    ts.isAwaitExpression(selectedFileChecks[0].parent),
+    "Selected-file validation must settle before database preparation."
+  );
+  assert.equal(dottedName(selectedFileChecks[0]?.arguments[0]), "repositoryRoot");
+  assert.equal(dottedName(selectedFileChecks[0]?.arguments[1]), "suite");
+  const selectedFileStatement = directFunctionStatement(
+    selectedFileChecks[0],
+    main,
+    "Selected-file validation"
+  );
+  assert.ok(ts.isExpressionStatement(selectedFileStatement));
+  assert.equal(
+    selectedFileStatement.expression,
+    selectedFileChecks[0].parent,
+    "Selected-file validation must be directly awaited as its own statement."
+  );
+
+  assert.equal(main.body.statements[0], testFilesStatement, "Test discovery must be main's first statement.");
+  assert.equal(main.body.statements[1], suiteStatement, "Suite selection must be main's second statement.");
+  assert.equal(
+    main.body.statements[2],
+    selectedFileStatement,
+    "Selected-file validation must be main's third statement, before database authority or preparation."
+  );
+
   const config = findVariableDeclaration(main, "config");
   assertCall(config.initializer, "validatePostgresTestEnvironment", "process.env");
-  const environment = findVariableDeclaration(main, "environment");
-  assertCall(environment.initializer, "safeChildEnvironment", "config.url");
+  const validateCalls = findCalls(main, "validatePostgresTestEnvironment");
+  const liveDatabaseCalls = findCalls(main, "verifyLivePostgresTestDatabase");
+  const mainRunCommandCalls = findCalls(main, "runCommand");
+  assert.equal(validateCalls.length, 1);
+  assert.equal(liveDatabaseCalls.length, 1);
+  assert.equal(mainRunCommandCalls.length, 2);
+  assert.equal(dottedName(liveDatabaseCalls[0].arguments[0]), "config");
+  assert.ok(ts.isAwaitExpression(liveDatabaseCalls[0].parent), "Live DB verification must be awaited.");
+
+  const validateStatement = directFunctionStatement(validateCalls[0], main, "Database-environment validation");
+  const liveDatabaseStatement = directFunctionStatement(liveDatabaseCalls[0], main, "Live DB verification");
+  const resetCall = mainRunCommandCalls[0];
+  const testCall = mainRunCommandCalls[1];
+  assert.ok(ts.isAwaitExpression(resetCall.parent), "Destructive reset must be awaited.");
+  assert.ok(ts.isAwaitExpression(testCall.parent), "The PostgreSQL test child must be awaited.");
+  const resetStatement = directFunctionStatement(resetCall, main, "Destructive reset");
+  const testStatement = directFunctionStatement(testCall, main, "PostgreSQL test child");
+
+  assert.equal(dottedName(resetCall.arguments[0]), "npxCommand");
+  assert.ok(ts.isArrayLiteralExpression(resetCall.arguments[1]));
+  assert.deepEqual(
+    resetCall.arguments[1].elements.map((element) => stringValue(element as ts.Expression)),
+    ["prisma", "migrate", "reset", "--force", "--skip-seed"]
+  );
+  assert.equal(dottedName(resetCall.arguments[2]), "resetEnvironment");
+
+  assert.equal(dottedName(testCall.arguments[0]), "process.execPath");
+  assert.ok(ts.isArrayLiteralExpression(testCall.arguments[1]));
+  assert.equal(testCall.arguments[1].elements.length, 6);
+  assert.deepEqual(
+    testCall.arguments[1].elements.slice(0, 4).map((element) => stringValue(element as ts.Expression)),
+    ["--import", "tsx", "--test", "--test-concurrency=1"]
+  );
+  const timeoutArgument = testCall.arguments[1].elements[4];
+  assert.ok(ts.isTemplateExpression(timeoutArgument));
+  assert.equal(timeoutArgument.head.text, "--test-timeout=");
+  assert.equal(timeoutArgument.templateSpans.length, 1);
+  assert.equal(dottedName(timeoutArgument.templateSpans[0].expression), "suite.timeoutMs");
+  assert.equal(timeoutArgument.templateSpans[0].literal.text, "");
+  const selectedFilesArgument = testCall.arguments[1].elements[5];
+  assert.ok(ts.isSpreadElement(selectedFilesArgument));
+  assert.equal(dottedName(selectedFilesArgument.expression), "suite.testFiles");
+  assert.equal(dottedName(testCall.arguments[2]), "testEnvironment");
+
+  assertStatementOrder(
+    main,
+    selectedFileStatement,
+    validateStatement,
+    "Selected-file validation must precede database-environment validation."
+  );
+  assertStatementOrder(main, validateStatement, liveDatabaseStatement, "Environment validation must precede live DB access.");
+  assertStatementOrder(
+    main,
+    selectedFileStatement,
+    resetStatement,
+    "Selected-file validation must precede destructive reset."
+  );
+  assertStatementOrder(
+    main,
+    liveDatabaseStatement,
+    resetStatement,
+    "Live database verification must precede destructive reset."
+  );
+  assertStatementOrder(
+    main,
+    resetStatement,
+    testStatement,
+    "The destructive reset must settle before the PostgreSQL test child starts."
+  );
+
+  const resetEnvironment = findVariableDeclaration(main, "resetEnvironment");
+  assertCall(resetEnvironment.initializer, "safeChildEnvironment", "config.url");
+  const resetEnvironmentStatement = directFunctionStatement(
+    resetEnvironment.initializer as ts.Expression,
+    main,
+    "Reset environment creation"
+  );
+  const markerDeletes = findDeleteExpressions(main).filter((expression) => {
+    if (!ts.isElementAccessExpression(expression.expression)) return false;
+    return (
+      dottedName(expression.expression.expression) === "resetEnvironment" &&
+      dottedName(expression.expression.argumentExpression) === "SYNTHETIC_FULL_WORKFLOW_E2E_MARKER"
+    );
+  });
+  assert.equal(markerDeletes.length, 1, "The reset environment must strip the synthetic marker exactly once.");
+  const markerDeleteStatement = directFunctionStatement(
+    markerDeletes[0],
+    main,
+    "Reset-environment marker removal"
+  );
+
+  const testEnvironment = findVariableDeclaration(main, "testEnvironment");
+  assert.ok(testEnvironment.initializer && ts.isObjectLiteralExpression(testEnvironment.initializer));
+  assert.equal(testEnvironment.initializer.properties.length, 1);
+  const resetEnvironmentSpread = testEnvironment.initializer.properties[0];
+  assert.ok(ts.isSpreadAssignment(resetEnvironmentSpread));
+  assert.equal(dottedName(resetEnvironmentSpread.expression), "resetEnvironment");
+  const testEnvironmentStatement = directFunctionStatement(
+    testEnvironment.initializer,
+    main,
+    "Test-child environment creation"
+  );
+  const markerCalls = findCalls(main, "configurePostgresTestSuiteEnvironment");
+  assert.equal(markerCalls.length, 1, "main must shape the internal synthetic marker exactly once.");
+  assert.equal(dottedName(markerCalls[0]?.arguments[0]), "testEnvironment");
+  assert.equal(dottedName(markerCalls[0]?.arguments[1]), "suite");
+  const markerStatement = directFunctionStatement(markerCalls[0], main, "Synthetic-suite marker shaping");
+  assertStatementOrder(
+    main,
+    validateStatement,
+    resetEnvironmentStatement,
+    "The reset environment may be created only after DB authority is validated."
+  );
+  assertStatementOrder(
+    main,
+    resetEnvironmentStatement,
+    markerDeleteStatement,
+    "The inherited synthetic marker must be removed after the reset environment is created."
+  );
+  assertStatementOrder(
+    main,
+    markerDeleteStatement,
+    testEnvironmentStatement,
+    "The test-child environment must derive from the marker-free reset environment."
+  );
+  assertStatementOrder(
+    main,
+    testEnvironmentStatement,
+    markerStatement,
+    "The selected suite may shape only the derived test-child environment."
+  );
+  assertStatementOrder(
+    main,
+    markerStatement,
+    resetStatement,
+    "The separate child environments must be fully shaped before destructive reset."
+  );
   assertRunCommandSpawnSafety(sourceFile);
 }
 
@@ -427,9 +660,13 @@ function replaceOnce(source: string, search: string, replacement: string): strin
   return source.replace(search, replacement);
 }
 
-async function runTypeScriptEntry(entry: string, environment: NodeJS.ProcessEnv): Promise<CapturedProcess> {
+async function runTypeScriptEntry(
+  entry: string,
+  environment: NodeJS.ProcessEnv,
+  args: readonly string[] = []
+): Promise<CapturedProcess> {
   return new Promise<CapturedProcess>((resolve, reject) => {
-    const child = spawn(process.execPath, ["--import", "tsx", entry], {
+    const child = spawn(process.execPath, ["--import", "tsx", entry, ...args], {
       cwd: repositoryRoot,
       env: environment,
       shell: false,
@@ -581,7 +818,7 @@ test("approved source integrity rejects every in-memory runner mutation", async 
   assert.doesNotThrow(() => assertApprovedSourceIntegrity(approvedPath, runner));
   assert.doesNotThrow(() => assertApprovedSourceIntegrity(approvedPath, withCrlfLineEndings(runner)));
 
-  const afterEnvironmentCreation = "  const environment = safeChildEnvironment(config.url);\n";
+  const afterEnvironmentCreation = "  const resetEnvironment = safeChildEnvironment(config.url);\n";
   const runnerMutations: Array<[string, string]> = [
     ["comment", `${runner}\n// unreviewed runner change`],
     [
@@ -597,7 +834,7 @@ test("approved source integrity rejects every in-memory runner mutation", async 
       replaceOnce(
         runner,
         afterEnvironmentCreation,
-        `${afterEnvironmentCreation}  environment.DATABASE_URL = process.env.DATABASE_URL;\n`
+        `${afterEnvironmentCreation}  resetEnvironment.DATABASE_URL = process.env.DATABASE_URL;\n`
       )
     ],
     [
@@ -605,7 +842,7 @@ test("approved source integrity rejects every in-memory runner mutation", async 
       replaceOnce(
         runner,
         afterEnvironmentCreation,
-        `${afterEnvironmentCreation}  environment.DIRECT_URL = process.env.DIRECT_URL;\n`
+        `${afterEnvironmentCreation}  resetEnvironment.DIRECT_URL = process.env.DIRECT_URL;\n`
       )
     ],
     [
@@ -613,7 +850,7 @@ test("approved source integrity rejects every in-memory runner mutation", async 
       replaceOnce(
         runner,
         afterEnvironmentCreation,
-        `${afterEnvironmentCreation}  Object.assign(environment, process.env);\n`
+        `${afterEnvironmentCreation}  Object.assign(resetEnvironment, process.env);\n`
       )
     ],
     [
@@ -773,12 +1010,12 @@ test("official runner structural policy rejects unsafe in-memory mutations", asy
     `${runner}\nspawn("npx", ["prisma", "migrate", "reset", "--force"], { env: process.env, shell: false });`,
     replaceOnce(
       runner,
-      "    environment\n  );\n  if (migrationExitCode",
+      "    resetEnvironment\n  );\n  if (migrationExitCode",
       "    process.env\n  );\n  if (migrationExitCode"
     ),
     replaceOnce(
       runner,
-      "    environment\n  );\n  if (migrationExitCode",
+      "    resetEnvironment\n  );\n  if (migrationExitCode",
       "    otherEnvironment\n  );\n  if (migrationExitCode"
     ),
     replaceOnce(runner, "    DATABASE_URL: testDatabaseUrl,\n", ""),
@@ -788,9 +1025,155 @@ test("official runner structural policy rejects unsafe in-memory mutations", asy
       runner,
       '["prisma", "migrate", "reset", "--force", "--skip-seed"]',
       '["prisma", "db", "push"]'
+    ),
+    replaceOnce(
+      runner,
+      "  await assertPostgresTestSuiteFilesExist(repositoryRoot, suite);",
+      "  assertPostgresTestSuiteFilesExist(repositoryRoot, suite);"
     )
   ];
   for (const mutation of mutations) assert.throws(() => verifyOfficialResetRunner(mutation));
+});
+
+test("official runner structural policy rejects control-flow and test-child argument bypasses", async () => {
+  const runner = await readFile(path.join(repositoryRoot, "scripts", "run-postgres-tests.ts"), "utf8");
+  const mutations: Array<readonly [string, string]> = [
+    [
+      "selected-file validation nested in a dead branch",
+      replaceOnce(
+        runner,
+        "  await assertPostgresTestSuiteFilesExist(repositoryRoot, suite);\n\n  const config",
+        "  if (false) {\n    await assertPostgresTestSuiteFilesExist(repositoryRoot, suite);\n  }\n\n  const config"
+      )
+    ],
+    [
+      "selected-file validation no longer awaited",
+      replaceOnce(
+        runner,
+        "  await assertPostgresTestSuiteFilesExist(repositoryRoot, suite);",
+        "  assertPostgresTestSuiteFilesExist(repositoryRoot, suite);"
+      )
+    ],
+    [
+      "caller-controlled arguments replace the selected suite files",
+      replaceOnce(runner, "      ...suite.testFiles\n", "      ...process.argv.slice(2)\n")
+    ],
+    [
+      "test timeout no longer comes from the selected suite",
+      replaceOnce(
+        runner,
+        '      `--test-timeout=${suite.timeoutMs}`,\n',
+        '      `--test-timeout=${POSTGRES_TEST_NODE_TIMEOUT_MS}`,\n'
+      )
+    ],
+    [
+      "test child no longer uses the fixed Node executable",
+      replaceOnce(
+        runner,
+        "  const testExitCode = await runCommand(\n    process.execPath,",
+        "  const testExitCode = await runCommand(\n    npxCommand,"
+      )
+    ],
+    [
+      "fixed Node test arguments are changed",
+      replaceOnce(runner, '      "--test-concurrency=1",\n', '      "--test-concurrency=2",\n')
+    ]
+  ];
+
+  for (const [name, mutation] of mutations) {
+    assert.throws(() => verifyOfficialResetRunner(mutation), name);
+  }
+});
+
+test("official runner confines the synthetic marker to the selected test child", async () => {
+  const runner = await readFile(path.join(repositoryRoot, "scripts", "run-postgres-tests.ts"), "utf8");
+  assert.doesNotThrow(() => verifyOfficialResetRunner(runner));
+  const mutations = [
+    replaceOnce(
+      runner,
+      '["prisma", "migrate", "reset", "--force", "--skip-seed"],\n    resetEnvironment',
+      '["prisma", "migrate", "reset", "--force", "--skip-seed"],\n    testEnvironment'
+    ),
+    replaceOnce(runner, "  delete resetEnvironment[SYNTHETIC_FULL_WORKFLOW_E2E_MARKER];\n", ""),
+    replaceOnce(
+      runner,
+      "    testEnvironment\n  );\n  if (testExitCode",
+      "    resetEnvironment\n  );\n  if (testExitCode"
+    )
+  ];
+  for (const mutation of mutations) assert.throws(() => verifyOfficialResetRunner(mutation));
+});
+
+test("official runner validates the closed suite and selected file before every database boundary", async () => {
+  const runner = await readFile(path.join(repositoryRoot, "scripts", "run-postgres-tests.ts"), "utf8");
+  assert.doesNotThrow(() => verifyOfficialResetRunner(runner));
+});
+
+test("PostgreSQL suite policy keeps ordinary tests default and one exact synthetic selection", async () => {
+  const {
+    PostgresTestSuiteSelectionError,
+    configurePostgresTestSuiteEnvironment,
+    selectPostgresTestSuite
+  } = await import("../scripts/postgres-test-suite");
+  const defaults = ["/trusted/alpha.test.ts", "/trusted/bravo.test.ts"] as const;
+  const ordinary = selectPostgresTestSuite([], defaults, 30_000);
+  const synthetic = selectPostgresTestSuite(["--suite", "synthetic-human-submit"], defaults, 30_000);
+
+  assert.deepEqual(ordinary, {
+    kind: "default",
+    testFiles: defaults,
+    timeoutMs: 30_000,
+    syntheticFullWorkflow: false
+  });
+  assert.deepEqual(synthetic, {
+    kind: "synthetic-human-submit",
+    testFiles: ["tests/e2e/synthetic-human-submit.test.ts"],
+    timeoutMs: 120_000,
+    syntheticFullWorkflow: true
+  });
+
+  for (const args of [
+    ["--suite"],
+    ["--suite", "anything-else"],
+    ["--suite", "../arbitrary.test.ts"],
+    ["--suite", "tests/e2e/arbitrary.test.ts"],
+    ["--suite", "synthetic-human-submit", "extra"],
+    ["--suite", "synthetic-human-submit", "--suite", "synthetic-human-submit"]
+  ]) {
+    assert.throws(() => selectPostgresTestSuite(args, defaults, 30_000), PostgresTestSuiteSelectionError);
+  }
+
+  const ordinaryEnvironment: Record<string, string | undefined> = {
+    SYNTHETIC_FULL_WORKFLOW_E2E: "inherited"
+  };
+  const syntheticEnvironment: Record<string, string | undefined> = {};
+  configurePostgresTestSuiteEnvironment(ordinaryEnvironment, ordinary);
+  configurePostgresTestSuiteEnvironment(syntheticEnvironment, synthetic);
+  assert.equal("SYNTHETIC_FULL_WORKFLOW_E2E" in ordinaryEnvironment, false);
+  assert.equal(syntheticEnvironment.SYNTHETIC_FULL_WORKFLOW_E2E, "1");
+});
+
+test("invalid runner arguments fail before database validation or destructive preparation", async () => {
+  const runnerEntry = path.join(repositoryRoot, "scripts", "run-postgres-tests.ts");
+  const environment = cleanEnvironment();
+  const result = await runTypeScriptEntry(runnerEntry, environment, ["--suite", "../arbitrary.test.ts"]);
+
+  assertSafeRejection(result);
+  assert.match(result.output, /Unsupported PostgreSQL test arguments/);
+  assert.doesNotMatch(result.output, /verified database=|migration reset failed/);
+});
+
+test("the absent synthetic handoff file fails before database validation or destructive preparation", async () => {
+  const runnerEntry = path.join(repositoryRoot, "scripts", "run-postgres-tests.ts");
+  const environment = cleanEnvironment();
+  const result = await runTypeScriptEntry(runnerEntry, environment, ["--suite", "synthetic-human-submit"]);
+
+  assertSafeRejection(result);
+  assert.match(
+    result.output,
+    /Selected PostgreSQL test file does not exist: tests\/e2e\/synthetic-human-submit\.test\.ts; refusing database preparation\./
+  );
+  assert.doesNotMatch(result.output, /verified database=|migration reset failed/);
 });
 
 test("guarded migrate structural policy rejects unsafe in-memory mutations", async () => {

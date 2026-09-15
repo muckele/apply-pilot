@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createServer } from "node:net";
 import { after, before, test } from "node:test";
 
 import { chromium, type Browser } from "playwright";
 
+import { startNextTestServer, type NextTestServer } from "./next-test-server";
+
 let browser: Browser;
 let origin: string;
-let nextServer: ChildProcessWithoutNullStreams;
-let serverOutput = "";
+let nextServer: NextTestServer;
 
 type Rgba = [red: number, green: number, blue: number, alpha: number];
 
@@ -47,71 +46,26 @@ function assertContrast(first: Rgba, second: Rgba, minimum: number, label: strin
   assert.ok(ratio >= minimum, `${label} contrast ${ratio.toFixed(2)}:1 was below ${minimum}:1`);
 }
 
-async function reservePort() {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const port = address.port;
-  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  return port;
-}
-
-async function waitForNextServer(url: string) {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (nextServer.exitCode !== null) {
-      throw new Error(`Next server exited before becoming ready.\n${serverOutput}`);
-    }
-    try {
-      const response = await fetch(url, { redirect: "manual" });
-      if (response.status > 0) return;
-    } catch {
-      // The server has not bound the loopback port yet.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`Timed out waiting for Next server.\n${serverOutput}`);
-}
-
 before(async () => {
-  const port = await reservePort();
-  origin = `http://127.0.0.1:${port}`;
-  nextServer = spawn(
-    process.execPath,
-    ["node_modules/next/dist/bin/next", "dev", "--hostname", "127.0.0.1", "--port", String(port)],
-    {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        AUTH_SECRET: "public-route-browser-test-secret",
-        AUTH_TRUST_HOST: "true",
-        ALLOW_DEMO_USER: "false",
-        GOOGLE_CLIENT_ID: "public-route-test-client",
-        GOOGLE_CLIENT_SECRET: "public-route-test-secret"
-      }
+  nextServer = await startNextTestServer({
+    environment: {
+      ...process.env,
+      AUTH_SECRET: "public-route-browser-test-secret",
+      AUTH_TRUST_HOST: "true",
+      ALLOW_DEMO_USER: "false",
+      GOOGLE_CLIENT_ID: "public-route-test-client",
+      GOOGLE_CLIENT_SECRET: "public-route-test-secret"
     }
-  );
-  nextServer.stdout.on("data", (chunk) => {
-    serverOutput += chunk.toString();
   });
-  nextServer.stderr.on("data", (chunk) => {
-    serverOutput += chunk.toString();
-  });
-  await waitForNextServer(origin);
+  origin = nextServer.origin;
   browser = await chromium.launch({ headless: true });
 });
 
 after(async () => {
-  await browser?.close();
-  if (nextServer && nextServer.exitCode === null) {
-    nextServer.kill("SIGTERM");
-    await new Promise<void>((resolve) => {
-      nextServer.once("exit", () => resolve());
-      setTimeout(resolve, 5_000);
-    });
+  try {
+    await browser?.close();
+  } finally {
+    await nextServer?.stop();
   }
 });
 
