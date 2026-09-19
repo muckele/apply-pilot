@@ -171,7 +171,7 @@ export function renderSyntheticEmployerFixture(): string {
         <label for="portfolio-url">Portfolio URL</label>
         <input id="portfolio-url" name="portfolioUrl" type="url" value="">
 
-        <label for="profile-url">LinkedIn/profile URL</label>
+        <label for="profile-url">LinkedIn profile URL</label>
         <input id="profile-url" name="profileUrl" type="url" value="https://existing-profile.example.test/alex">
 
         <label for="availability">When can you start?</label>

@@ -105,6 +105,9 @@ function cleanEnvironment(
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...parentEnvironment };
   for (const name of databaseAuthorityVariables) delete environment[name];
+  for (const name of Object.keys(environment)) {
+    if (name.toUpperCase() === "COMMIT5_POSTGRES_TEST") delete environment[name];
+  }
 
   // Keep Prisma and dotenv pinned to a synthetic loopback target if a guard regresses far enough to load them.
   environment.DATABASE_URL = localUrl;
@@ -730,6 +733,20 @@ test("subprocess environments remove every inherited database authority", () => 
   assert.equal(JSON.stringify(explicit).includes(sentinelPrefix), false);
 });
 
+test("subprocess environments remove an inherited PostgreSQL test authorization marker", () => {
+  const markerSpellings = [
+    "COMMIT5_POSTGRES_TEST",
+    "commit5_postgres_test",
+    "Commit5_Postgres_Test"
+  ] as const;
+  const sanitized = cleanEnvironment({}, {
+    NODE_ENV: "test",
+    ...Object.fromEntries(markerSpellings.map((name) => [name, "1"]))
+  });
+
+  for (const name of markerSpellings) assert.equal(name in sanitized, false, name);
+});
+
 test("command detector rejects ordinary string, direct executable, and package-runner forms", () => {
   const fixtures: Array<[string, Exclude<DestructiveCommand, "migrate-deploy">]> = [
     ['exec("prisma migrate reset")', "migrate-reset"],
@@ -1163,17 +1180,18 @@ test("invalid runner arguments fail before database validation or destructive pr
   assert.doesNotMatch(result.output, /verified database=|migration reset failed/);
 });
 
-test("the absent synthetic handoff file fails before database validation or destructive preparation", async () => {
+test("the synthetic suite requires explicit database-test authorization after selected-file preflight", async () => {
   const runnerEntry = path.join(repositoryRoot, "scripts", "run-postgres-tests.ts");
   const environment = cleanEnvironment();
   const result = await runTypeScriptEntry(runnerEntry, environment, ["--suite", "synthetic-human-submit"]);
 
   assertSafeRejection(result);
-  assert.match(
+  assert.equal(result.exitCode, 1);
+  assert.match(result.output, /\[postgres-test\] COMMIT5_POSTGRES_TEST must be exactly "1"\./);
+  assert.doesNotMatch(
     result.output,
-    /Selected PostgreSQL test file does not exist: tests\/e2e\/synthetic-human-submit\.test\.ts; refusing database preparation\./
+    /verified database=|Prisma schema loaded from|Applying migration|Database reset successful|migration reset failed|production ApplicationRun reaches Human-Submit completion only after both human actions/
   );
-  assert.doesNotMatch(result.output, /verified database=|migration reset failed/);
 });
 
 test("guarded migrate structural policy rejects unsafe in-memory mutations", async () => {

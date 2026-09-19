@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -85,18 +85,23 @@ test("PostgreSQL selection rejects partial, duplicate, extra, unknown, and path-
   }
 });
 
-test("selected test-file validation fails closed on the intentionally absent synthetic handoff before DB work", async () => {
+test("selected test-file validation fails closed when the synthetic test is absent", async () => {
   const { assertPostgresTestSuiteFilesExist, selectPostgresTestSuite } = await loadSuiteSelector();
   const suite = selectPostgresTestSuite(
     ["--suite", "synthetic-human-submit"],
     ["trusted-default.test.ts"],
     DEFAULT_TIMEOUT_MS
   );
+  const emptyRepository = await mkdtemp(path.join(tmpdir(), "apply-pilot-missing-synthetic-e2e-"));
 
-  await assert.rejects(
-    assertPostgresTestSuiteFilesExist(process.cwd(), suite),
-    /Selected PostgreSQL test file does not exist: tests\/e2e\/synthetic-human-submit\.test\.ts; refusing database preparation\./
-  );
+  try {
+    await assert.rejects(
+      assertPostgresTestSuiteFilesExist(emptyRepository, suite),
+      /Selected PostgreSQL test file does not exist: tests\/e2e\/synthetic-human-submit\.test\.ts; refusing database preparation\./
+    );
+  } finally {
+    await rm(emptyRepository, { recursive: true, force: true });
+  }
 });
 
 test("the synthetic marker is absent from reset and default children and present only in the synthetic test child", async () => {
@@ -452,6 +457,7 @@ test("the employer fixture renders one exact synthetic form without external or 
     document.querySelector("input[name='profileUrl']")?.getAttribute("value"),
     "https://existing-profile.example.test/alex"
   );
+  assert.match(document.body.textContent ?? "", /LinkedIn profile URL/);
   assert.match(document.body.textContent ?? "", /When can you start\?/);
   assert.match(document.body.textContent ?? "", /I certify that I reviewed this synthetic application/);
   assert.equal(document.querySelector("button[type='submit']")?.textContent?.trim(), "Submit synthetic application");
@@ -586,36 +592,81 @@ test("the synthetic child environment inherits only approved runtime keys and no
   assert.equal(environment.AI_ENABLED, "false");
   assert.equal(environment.AI_MOCK_MODE, "true");
   assert.equal(environment.OPENAI_MOCK_MODE, "true");
+  assert.equal(environment.APPLICATION_AUTOMATION_ENABLED, "true");
   assert.equal(environment.DATABASE_URL, explicitUrl);
   assert.equal(environment.DIRECT_URL, explicitUrl);
-  for (const key of [
-    "TEST_DATABASE_URL",
+  const neutralizedEnvironmentNames = [
     "ADZUNA_APP_ID",
     "ADZUNA_APP_KEY",
-    "SERPAPI_API_KEY",
-    "THEIRSTACK_API_KEY",
-    "USAJOBS_API_KEY",
-    "WORKABLE_API_TOKEN",
-    "CRON_SECRET",
-    "AUTH_URL",
+    "ADZUNA_COUNTRY",
+    "AI_ALLOWED_MODELS",
+    "AI_AUTOMATION_CAP_CENTS",
+    "AI_CONFIRMATION_THRESHOLD_CENTS",
+    "AI_EVAL_DELAY_MS",
+    "AI_EVAL_PLAN_TOP",
+    "AI_EVAL_TAILOR_TOP",
+    "AI_EVAL_USER_EMAIL",
+    "AI_EVALUATION_ACKNOWLEDGED",
+    "AI_HARD_CAP_CENTS",
+    "AI_MAX_REQUEST_COST_CENTS",
+    "AI_PROVIDER",
+    "AI_PROVIDER_OVERRIDES",
     "APP_BASE_URL",
-    "GOOGLE_CLIENT_ID",
-    "GOOGLE_CLIENT_SECRET",
+    "APPLY_PILOT_LOCAL_DESTRUCTIVE",
+    "AUTH_ALLOWED_EMAILS",
+    "AUTH_ALLOW_PUBLIC_SIGNUPS",
     "AUTH_GOOGLE_ID",
     "AUTH_GOOGLE_SECRET",
     "AUTH_SECRET",
-    "OPENAI_API_KEY",
+    "AUTH_URL",
+    "BLOB_READ_WRITE_TOKEN",
+    "COMMIT5_POSTGRES_TEST",
+    "CRON_MAX_SOURCES_PER_RUN",
+    "CRON_MIN_SOURCE_INTERVAL_MINUTES",
+    "CRON_RUNNING_LOCK_MINUTES",
+    "CRON_SECRET",
+    "FILE_STORAGE_DRIVER",
     "GEMINI_API_KEY",
+    "GEMINI_FAST_MODEL",
+    "GEMINI_QUALITY_MODEL",
+    "GMAIL_REDIRECT_URI",
+    "GMAIL_SCOPES",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "JOB_SOURCE_MAX_POSTED_AGE_DAYS",
+    "KIMI_EVAL_DATA_ACKNOWLEDGED",
+    "KIMI_EVAL_MODE",
+    "KIMI_MODEL",
+    "KIMI_REASONING_EFFORT",
+    "LOCAL_DATABASE_URL",
+    "LOCAL_DIRECT_URL",
     "MOONSHOT_API_KEY",
-    "SOME_FUTURE_UNKNOWN_SECRET"
-  ]) {
-    assert.equal(key in environment, false, key);
+    "NEXTAUTH_SECRET",
+    "NEXTAUTH_URL",
+    "OPENAI_ALLOWED_MODELS",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL",
+    "SERPAPI_API_KEY",
+    "SERPAPI_MAX_QUERIES_PER_RUN",
+    "TEST_DATABASE_URL",
+    "THEIRSTACK_API_KEY",
+    "THEIRSTACK_POSTED_MAX_AGE_DAYS",
+    "TOKEN_ENCRYPTION_KEY",
+    "USAJOBS_API_KEY",
+    "USAJOBS_USER_AGENT",
+    "WORKABLE_API_TOKEN",
+  ] as const;
+  for (const key of neutralizedEnvironmentNames) {
+    assert.equal(environment[key], "", key);
   }
+  assert.equal("SOME_FUTURE_UNKNOWN_SECRET" in environment, false);
   assert.equal(Object.values(environment).includes(inheritedSecret), false);
   assert.deepEqual(Object.keys(environment).sort(), [
+    ...neutralizedEnvironmentNames,
     "AI_ENABLED",
     "AI_MOCK_MODE",
     "ALLOW_DEMO_USER",
+    "APPLICATION_AUTOMATION_ENABLED",
     "AUTH_TRUST_HOST",
     "DATABASE_URL",
     "DEFAULT_DEMO_USER_ID",
@@ -626,6 +677,80 @@ test("the synthetic child environment inherits only approved runtime keys and no
     "PATH",
     "SYNTHETIC_FULL_WORKFLOW_E2E"
   ].sort());
+});
+
+test("Next dotenv loading cannot restore neutralized provider or auth credentials", async () => {
+  const { buildSyntheticWorkflowChildEnvironment } = await loadWorkflowHarness();
+  const directory = await mkdtemp(path.join(tmpdir(), "apply-pilot-synthetic-dotenv-"));
+  const explicitUrl = "postgresql://postgres:postgres@127.0.0.1:55433/apply_pilot_test?schema=public";
+  const sentinelEnvironment = {
+    SERPAPI_API_KEY: "DOTENV_PROVIDER_SECRET_SENTINEL",
+    ADZUNA_APP_KEY: "DOTENV_ADZUNA_SECRET_SENTINEL",
+    THEIRSTACK_API_KEY: "DOTENV_THEIRSTACK_SECRET_SENTINEL",
+    USAJOBS_API_KEY: "DOTENV_USAJOBS_SECRET_SENTINEL",
+    WORKABLE_API_TOKEN: "DOTENV_WORKABLE_SECRET_SENTINEL",
+    GOOGLE_CLIENT_ID: "DOTENV_GOOGLE_CLIENT_ID_SENTINEL",
+    GOOGLE_CLIENT_SECRET: "DOTENV_GOOGLE_CLIENT_SECRET_SENTINEL",
+    AUTH_GOOGLE_ID: "DOTENV_AUTH_GOOGLE_ID_SENTINEL",
+    AUTH_GOOGLE_SECRET: "DOTENV_AUTH_GOOGLE_SECRET_SENTINEL",
+    AUTH_SECRET: "DOTENV_AUTH_SECRET_SENTINEL",
+    CRON_SECRET: "DOTENV_CRON_SECRET_SENTINEL"
+  } as const;
+
+  try {
+    await writeFile(
+      path.join(directory, ".env.local"),
+      Object.entries(sentinelEnvironment).map(([name, value]) => `${name}=${value}`).join("\n") + "\n",
+      "utf8"
+    );
+    const environment = buildSyntheticWorkflowChildEnvironment(explicitUrl, {
+      PATH: process.env.PATH,
+      SYNTHETIC_FULL_WORKFLOW_E2E: "1"
+    });
+    const loaderScript = [
+      "const { loadEnvConfig } = require(process.argv[1]);",
+      "const directory = process.argv[2];",
+      "const names = JSON.parse(process.argv[3]);",
+      "loadEnvConfig(directory, true, { info() {}, error() {} }, true);",
+      "process.stdout.write(JSON.stringify(Object.fromEntries(names.map((name) => [name, process.env[name]]))));"
+    ].join("\n");
+    const child = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        loaderScript,
+        path.join(process.cwd(), "node_modules", "@next", "env"),
+        directory,
+        JSON.stringify(Object.keys(sentinelEnvironment))
+      ],
+      {
+        cwd: directory,
+        encoding: "utf8",
+        env: environment,
+        shell: false
+      }
+    );
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.deepEqual(JSON.parse(child.stdout), {
+      SERPAPI_API_KEY: "",
+      ADZUNA_APP_KEY: "",
+      THEIRSTACK_API_KEY: "",
+      USAJOBS_API_KEY: "",
+      WORKABLE_API_TOKEN: "",
+      GOOGLE_CLIENT_ID: "",
+      GOOGLE_CLIENT_SECRET: "",
+      AUTH_GOOGLE_ID: "",
+      AUTH_GOOGLE_SECRET: "",
+      AUTH_SECRET: "",
+      CRON_SECRET: ""
+    });
+    for (const sentinel of Object.values(sentinelEnvironment)) {
+      assert.equal(child.stdout.includes(sentinel), false);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the synthetic child environment cannot be built outside the guarded suite or without an explicit URL", async () => {
@@ -752,6 +877,793 @@ test("diagnostic artifact paths stay beneath the ignored synthetic root", async 
   for (const filename of ["../secret.json", "/tmp/secret.json", "nested/secret.json", "failure.txt", ".json"]) {
     assert.throws(() => buildSyntheticDiagnosticArtifactPath(filename, "/repo"), /safe JSON artifact filename/);
   }
+});
+
+test("partial synthetic seeding retains an exact cleanup owner registered before the first write", async () => {
+  const harness = await loadWorkflowHarness();
+  const runWithPreRegisteredCleanup = Reflect.get(harness, "runWithPreRegisteredCleanup");
+  assert.equal(typeof runWithPreRegisteredCleanup, "function");
+  const stack = new harness.SyntheticCleanupStack({ perCleanupTimeoutMs: 50 });
+  const rows = new Set(["unrelated-user"]);
+  const primaryFailure = new Error("injected partial seed failure");
+  let cleanupAttempts = 0;
+
+  await assert.rejects(
+    runWithPreRegisteredCleanup(
+      stack,
+      "delete-synthetic-user",
+      async () => {
+        cleanupAttempts += 1;
+        rows.delete("synthetic-human-submit-user");
+      },
+      async () => {
+        rows.add("synthetic-human-submit-user");
+        throw primaryFailure;
+      }
+    ),
+    (error: unknown) => error === primaryFailure
+  );
+
+  assert.deepEqual(await stack.cleanup(), []);
+  assert.deepEqual([...rows], ["unrelated-user"]);
+  assert.equal(cleanupAttempts, 1);
+  assert.deepEqual(await stack.cleanup(), []);
+  assert.equal(cleanupAttempts, 1);
+});
+
+test("an acquired browser runtime has raw cleanup ownership before fallible setup resumes", async () => {
+  const harness = await loadWorkflowHarness();
+  const acquireCleanupOwnedResource = Reflect.get(harness, "acquireCleanupOwnedResource");
+  assert.equal(typeof acquireCleanupOwnedResource, "function");
+  const stack = new harness.SyntheticCleanupStack({ perCleanupTimeoutMs: 50 });
+  const setupFailure = new Error("injected post-acquisition setup failure");
+  const runtime = {
+    closeAttempts: 0,
+    async close() {
+      this.closeAttempts += 1;
+    }
+  };
+  let primaryFailure: unknown;
+
+  try {
+    const owned = await acquireCleanupOwnedResource(
+      stack,
+      "close-browser-runtime",
+      async () => runtime,
+      (acquired: typeof runtime) => acquired.close()
+    );
+    assert.equal(owned.resource, runtime);
+    throw setupFailure;
+  } catch (error) {
+    primaryFailure = error;
+  } finally {
+    assert.deepEqual(await stack.cleanup(), []);
+  }
+
+  assert.equal(primaryFailure, setupFailure);
+  assert.equal(runtime.closeAttempts, 1);
+  assert.deepEqual(await stack.cleanup(), []);
+  assert.equal(runtime.closeAttempts, 1);
+});
+
+test("a throwing production close still attempts the raw browser runtime close", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const stack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 50 });
+  const productionCloseSecret = "PRODUCTION_CLOSE_SECRET_SENTINEL";
+  let rawCloseAttempts = 0;
+  const owned = await acquireCleanupOwnedResource(
+    stack,
+    "close-browser-runtime",
+    async () => ({ kind: "synthetic-runtime" as const }),
+    async () => {
+      rawCloseAttempts += 1;
+    }
+  );
+  owned.setPreferredCleanup(async () => {
+    throw new Error(productionCloseSecret);
+  });
+
+  const failures = await stack.cleanup();
+
+  assert.equal(rawCloseAttempts, 1);
+  assert.deepEqual(failures, [{ label: "close-browser-runtime", reason: "FAILED" }]);
+  assert.equal(JSON.stringify(failures).includes(productionCloseSecret), false);
+});
+
+test("a bounded production close timeout still attempts the raw browser runtime close", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const stack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 100 });
+  let rawCloseAttempts = 0;
+  const owned = await acquireCleanupOwnedResource(
+    stack,
+    "close-browser-runtime",
+    async () => ({ kind: "synthetic-runtime" as const }),
+    async () => {
+      rawCloseAttempts += 1;
+    },
+    { preferredCleanupTimeoutMs: 10 }
+  );
+  owned.setPreferredCleanup(async () => new Promise<void>(() => undefined));
+  const startedAt = Date.now();
+
+  const failures = await stack.cleanup();
+
+  assert.ok(Date.now() - startedAt < 500);
+  assert.equal(rawCloseAttempts, 1);
+  assert.deepEqual(failures, [{ label: "close-browser-runtime", reason: "FAILED" }]);
+});
+
+test("a never-settling raw browser close reaches force cleanup before the outer deadline", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const stack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 100 });
+  const runtime = { closed: false };
+  let forceCleanupAttempts = 0;
+
+  await acquireCleanupOwnedResource(
+    stack,
+    "close-browser-runtime",
+    async () => runtime,
+    async () => new Promise<void>(() => undefined),
+    {
+      gracefulCleanupTimeoutMs: 10,
+      forceCleanupTimeoutMs: 10,
+      forceCleanup: async (acquired: typeof runtime) => {
+        forceCleanupAttempts += 1;
+        acquired.closed = true;
+      }
+    }
+  );
+
+  const failures = await stack.cleanup();
+
+  assert.equal(forceCleanupAttempts, 1);
+  assert.equal(runtime.closed, true);
+  assert.deepEqual(failures, [{ label: "close-browser-runtime", reason: "FAILED" }]);
+});
+
+test("force cleanup is awaited exactly once and verified before owned cleanup settles", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const stack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 100 });
+  const runtime = { closed: false };
+  let forceCleanupAttempts = 0;
+  let verificationAttempts = 0;
+  let releaseForceCleanup!: () => void;
+  const forceCleanupReleased = new Promise<void>((resolve) => {
+    releaseForceCleanup = resolve;
+  });
+  let announceForceCleanup!: () => void;
+  const forceCleanupStarted = new Promise<void>((resolve) => {
+    announceForceCleanup = resolve;
+  });
+
+  await acquireCleanupOwnedResource(
+    stack,
+    "close-browser-runtime",
+    async () => runtime,
+    async () => new Promise<void>(() => undefined),
+    {
+      gracefulCleanupTimeoutMs: 5,
+      forceCleanupTimeoutMs: 50,
+      forceCleanup: async (acquired: typeof runtime) => {
+        forceCleanupAttempts += 1;
+        announceForceCleanup();
+        await forceCleanupReleased;
+        acquired.closed = true;
+      },
+      verifyClosed: async (acquired: typeof runtime) => {
+        verificationAttempts += 1;
+        return acquired.closed;
+      }
+    }
+  );
+
+  let cleanupSettled = false;
+  const cleanupPromise = stack.cleanup().then((failures) => {
+    cleanupSettled = true;
+    return failures;
+  });
+  await forceCleanupStarted;
+  await Promise.resolve();
+
+  assert.equal(cleanupSettled, false);
+  assert.equal(forceCleanupAttempts, 1);
+  assert.equal(runtime.closed, false);
+
+  releaseForceCleanup();
+  const failures = await cleanupPromise;
+
+  assert.equal(forceCleanupAttempts, 1);
+  assert.equal(verificationAttempts, 1);
+  assert.equal(runtime.closed, true);
+  assert.deepEqual(failures, [{ label: "close-browser-runtime", reason: "FAILED" }]);
+});
+
+test("a never-settling force cleanup fails within its own deadline", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const stack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 100 });
+  const runtime = { closed: false };
+  let forceCleanupAttempts = 0;
+  let forceAbortObserved = false;
+
+  await acquireCleanupOwnedResource(
+    stack,
+    "close-browser-runtime",
+    async () => runtime,
+    async () => new Promise<void>(() => undefined),
+    {
+      gracefulCleanupTimeoutMs: 5,
+      forceCleanupTimeoutMs: 10,
+      forceCleanup: async (_acquired: typeof runtime, signal: AbortSignal) => {
+        forceCleanupAttempts += 1;
+        signal.addEventListener("abort", () => {
+          forceAbortObserved = true;
+        }, { once: true });
+        return new Promise<void>(() => undefined);
+      },
+      verifyClosed: async (acquired: typeof runtime) => acquired.closed
+    }
+  );
+  const startedAt = Date.now();
+
+  const failures = await stack.cleanup();
+
+  assert.ok(Date.now() - startedAt < 80);
+  assert.equal(forceCleanupAttempts, 1);
+  assert.equal(forceAbortObserved, true);
+  assert.equal(runtime.closed, false);
+  assert.deepEqual(failures, [{ label: "close-browser-runtime", reason: "FAILED" }]);
+});
+
+test("database cleanup awaits its engine timeout and disconnects before further mutations can run", async () => {
+  const harness = await loadWorkflowHarness();
+  const runEngineBoundDatabaseCleanup = Reflect.get(harness, "runEngineBoundDatabaseCleanup");
+  assert.equal(typeof runEngineBoundDatabaseCleanup, "function");
+  const statementDelayMs = 10;
+  let mutationCount = 0;
+  let transactionActive = false;
+  let disconnectAttempts = 0;
+
+  await assert.rejects(runEngineBoundDatabaseCleanup(
+    new AbortController().signal,
+    (transactionTimeoutMs: number) => new Promise<void>((resolve, reject) => {
+      transactionActive = true;
+      const engineTimer = setTimeout(() => {
+        transactionActive = false;
+        reject(new Error("simulated Prisma engine transaction timeout"));
+      }, transactionTimeoutMs);
+      void (async () => {
+        for (let step = 0; step < 3; step += 1) {
+          await new Promise((stepComplete) => setTimeout(stepComplete, statementDelayMs));
+          if (!transactionActive) return;
+          mutationCount += 1;
+        }
+        clearTimeout(engineTimer);
+        transactionActive = false;
+        resolve();
+      })();
+    }),
+    async () => {
+      disconnectAttempts += 1;
+      transactionActive = false;
+    },
+    {
+      transactionTimeoutMs: 15,
+      statementCancellationGraceMs: 5,
+      aggregateTimeoutMs: 30,
+      disconnectTimeoutMs: 10,
+      schedulingMarginMs: 5,
+      outerTimeoutMs: 50
+    }
+  ));
+  const mutationCountAtReturn = mutationCount;
+
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.equal(disconnectAttempts, 1);
+  assert.equal(transactionActive, false);
+  assert.equal(mutationCountAtReturn, 1);
+  assert.equal(mutationCount, mutationCountAtReturn);
+});
+
+test("database cleanup keeps ownership of a live transaction when disconnect rejects", async () => {
+  const harness = await loadWorkflowHarness();
+  const runEngineBoundDatabaseCleanup = Reflect.get(harness, "runEngineBoundDatabaseCleanup");
+  assert.equal(typeof runEngineBoundDatabaseCleanup, "function");
+  const disconnectFailure = new Error("simulated actor disconnect rejection");
+  let releaseTransaction!: () => void;
+  const transactionRelease = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  let markTransactionSettled!: () => void;
+  const transactionSettled = new Promise<void>((resolve) => {
+    markTransactionSettled = resolve;
+  });
+  let markDisconnectAttempted!: () => void;
+  const disconnectAttempted = new Promise<void>((resolve) => {
+    markDisconnectAttempted = resolve;
+  });
+  let mutationCount = 0;
+  let helperSettled = false;
+
+  const outcomePromise = runEngineBoundDatabaseCleanup(
+    new AbortController().signal,
+    async () => {
+      await transactionRelease;
+      mutationCount += 1;
+      markTransactionSettled();
+    },
+    async () => {
+      markDisconnectAttempted();
+      throw disconnectFailure;
+    },
+    {
+      transactionTimeoutMs: 5,
+      statementCancellationGraceMs: 1,
+      aggregateTimeoutMs: 20,
+      disconnectTimeoutMs: 10,
+      schedulingMarginMs: 5,
+      outerTimeoutMs: 50
+    }
+  ).then(
+    () => {
+      helperSettled = true;
+      return { status: "fulfilled" as const, error: undefined };
+    },
+    (error: unknown) => {
+      helperSettled = true;
+      return { status: "rejected" as const, error };
+    }
+  );
+
+  await disconnectAttempted;
+  await new Promise((resolve) => setImmediate(resolve));
+  const helperSettledBeforeTransaction = helperSettled;
+  const mutationsBeforeTransaction = mutationCount;
+  releaseTransaction();
+  await transactionSettled;
+  const outcome = await outcomePromise;
+
+  assert.equal(helperSettledBeforeTransaction, false);
+  assert.equal(mutationsBeforeTransaction, 0);
+  assert.equal(mutationCount, 1);
+  assert.equal(outcome.status, "rejected");
+  assert.ok(outcome.error instanceof AggregateError);
+  assert.ok(outcome.error.errors.includes(disconnectFailure));
+});
+
+test("database cleanup keeps ownership of a live transaction when disconnect times out", async () => {
+  const harness = await loadWorkflowHarness();
+  const runEngineBoundDatabaseCleanup = Reflect.get(harness, "runEngineBoundDatabaseCleanup");
+  assert.equal(typeof runEngineBoundDatabaseCleanup, "function");
+  let releaseTransaction!: () => void;
+  const transactionRelease = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  let markTransactionSettled!: () => void;
+  const transactionSettled = new Promise<void>((resolve) => {
+    markTransactionSettled = resolve;
+  });
+  let markDisconnectAttempted!: () => void;
+  const disconnectAttempted = new Promise<void>((resolve) => {
+    markDisconnectAttempted = resolve;
+  });
+  let mutationCount = 0;
+  let helperSettled = false;
+
+  const outcomePromise = runEngineBoundDatabaseCleanup(
+    new AbortController().signal,
+    async () => {
+      await transactionRelease;
+      mutationCount += 1;
+      markTransactionSettled();
+    },
+    async () => {
+      markDisconnectAttempted();
+      return new Promise<void>(() => undefined);
+    },
+    {
+      transactionTimeoutMs: 5,
+      statementCancellationGraceMs: 1,
+      aggregateTimeoutMs: 20,
+      disconnectTimeoutMs: 10,
+      schedulingMarginMs: 5,
+      outerTimeoutMs: 50
+    }
+  ).then(
+    () => {
+      helperSettled = true;
+      return { status: "fulfilled" as const, error: undefined };
+    },
+    (error: unknown) => {
+      helperSettled = true;
+      return { status: "rejected" as const, error };
+    }
+  );
+
+  await disconnectAttempted;
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  const helperSettledBeforeTransaction = helperSettled;
+  const mutationsBeforeTransaction = mutationCount;
+  releaseTransaction();
+  await transactionSettled;
+  const outcome = await outcomePromise;
+
+  assert.equal(helperSettledBeforeTransaction, false);
+  assert.equal(mutationsBeforeTransaction, 0);
+  assert.equal(mutationCount, 1);
+  assert.equal(outcome.status, "rejected");
+  assert.ok(outcome.error instanceof AggregateError);
+  assert.ok(outcome.error.errors.some(
+    (error: unknown) => error instanceof Error &&
+      error.message === "Synthetic database actor disconnect timed out."
+  ));
+});
+
+test("database cleanup fails when transaction settlement exceeds its absolute deadline", async () => {
+  const harness = await loadWorkflowHarness();
+  const runEngineBoundDatabaseCleanup = Reflect.get(harness, "runEngineBoundDatabaseCleanup");
+  assert.equal(typeof runEngineBoundDatabaseCleanup, "function");
+  let releaseTransaction!: () => void;
+  const transactionRelease = new Promise<void>((resolve) => {
+    releaseTransaction = resolve;
+  });
+  let markDisconnectAttempted!: () => void;
+  const disconnectAttempted = new Promise<void>((resolve) => {
+    markDisconnectAttempted = resolve;
+  });
+  let mutationCount = 0;
+  let helperSettled = false;
+
+  const outcomePromise = runEngineBoundDatabaseCleanup(
+    new AbortController().signal,
+    async () => {
+      await transactionRelease;
+      mutationCount += 1;
+    },
+    async () => {
+      markDisconnectAttempted();
+    },
+    {
+      transactionTimeoutMs: 5,
+      statementCancellationGraceMs: 1,
+      aggregateTimeoutMs: 20,
+      disconnectTimeoutMs: 5,
+      schedulingMarginMs: 5,
+      outerTimeoutMs: 50
+    }
+  ).then(
+    () => {
+      helperSettled = true;
+      return { status: "fulfilled" as const, error: undefined };
+    },
+    (error: unknown) => {
+      helperSettled = true;
+      return { status: "rejected" as const, error };
+    }
+  );
+
+  await disconnectAttempted;
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(helperSettled, false);
+  assert.equal(mutationCount, 0);
+  releaseTransaction();
+  const outcome = await outcomePromise;
+  const mutationsAtReturn = mutationCount;
+  await new Promise((resolve) => setTimeout(resolve, 15));
+
+  assert.equal(outcome.status, "rejected");
+  assert.ok(outcome.error instanceof AggregateError);
+  assert.ok(outcome.error.errors.some(
+    (error: unknown) => error instanceof Error &&
+      error.message === "Synthetic database transaction settled after its absolute deadline."
+  ));
+  assert.equal(mutationsAtReturn, 1);
+  assert.equal(mutationCount, mutationsAtReturn);
+});
+
+test("synthetic rate-limit cleanup deletes only its finite exact owned keys", async () => {
+  const harness = await loadWorkflowHarness();
+  const deleteSyntheticWorkflowRateLimitRows = Reflect.get(
+    harness,
+    "deleteSyntheticWorkflowRateLimitRows"
+  );
+  assert.equal(typeof deleteSyntheticWorkflowRateLimitRows, "function");
+  const userId = "synthetic-human-submit-user";
+  const exactOwnedKeys = [
+    `application-automation-policy:read:${userId}`,
+    `application-runs:create:${userId}`,
+    `application-runs:read:${userId}`,
+    `application-runs:prepare:${userId}`,
+    `application-runs:form-inspection:publish:${userId}`,
+    `application-runs:answer-packet:read:${userId}`,
+    `application-runs:answers:review:${userId}`,
+    `application-runs:resolve-review:${userId}`,
+    `application-runs:fill-attempt:acquire:${userId}`,
+    `application-runs:fill-attempt:status:${userId}`,
+    `application-runs:fill-attempt:mutate:${userId}`,
+    `application-runs:complete-by-user:${userId}`
+  ];
+  const unrelatedLookalike = `unrelated:${userId}:shared-owner`;
+  const rows = new Set([...exactOwnedKeys, unrelatedLookalike, "unrelated:stable"]);
+  const receivedFilters: Array<{ contains?: string; in?: string[] }> = [];
+  const rateLimitBucket = {
+    async deleteMany(input: Readonly<{
+      where: Readonly<{
+        key: Readonly<{ contains?: string; in?: string[] }>;
+      }>;
+    }>) {
+      const filter = input.where.key;
+      receivedFilters.push({
+        ...(filter.contains === undefined ? {} : { contains: filter.contains }),
+        ...(filter.in === undefined ? {} : { in: [...filter.in] })
+      });
+      for (const key of [...rows]) {
+        if (
+          (filter.contains !== undefined && key.includes(filter.contains)) ||
+          (filter.in !== undefined && filter.in.includes(key))
+        ) {
+          rows.delete(key);
+        }
+      }
+      return { count: 0 };
+    }
+  };
+
+  await deleteSyntheticWorkflowRateLimitRows(rateLimitBucket, userId);
+  await deleteSyntheticWorkflowRateLimitRows(rateLimitBucket, userId);
+
+  assert.deepEqual(receivedFilters, [
+    { in: exactOwnedKeys },
+    { in: exactOwnedKeys }
+  ]);
+  assert.deepEqual([...rows].sort(), [unrelatedLookalike, "unrelated:stable"].sort());
+});
+
+test("owned cleanup cannot report success while its closure verifier says the resource is live", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const stack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 100 });
+  const runtime = { closed: false };
+  let forceCleanupAttempts = 0;
+  let verificationAttempts = 0;
+
+  await acquireCleanupOwnedResource(
+    stack,
+    "close-browser-runtime",
+    async () => runtime,
+    async () => undefined,
+    {
+      gracefulCleanupTimeoutMs: 10,
+      forceCleanupTimeoutMs: 10,
+      forceCleanup: async (acquired: typeof runtime) => {
+        forceCleanupAttempts += 1;
+        acquired.closed = true;
+      },
+      verifyClosed: async (acquired: typeof runtime) => {
+        verificationAttempts += 1;
+        return acquired.closed;
+      }
+    }
+  );
+
+  const failures = await stack.cleanup();
+
+  assert.equal(forceCleanupAttempts, 1);
+  assert.equal(verificationAttempts, 2);
+  assert.equal(runtime.closed, true);
+  assert.deepEqual(failures, [{ label: "close-browser-runtime", reason: "FAILED" }]);
+});
+
+test("browser cleanup deadlines must leave scheduling margin inside the outer envelope", async () => {
+  const { SyntheticCleanupStack, acquireCleanupOwnedResource } = await loadWorkflowHarness();
+  const validStack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 15 });
+  let validAcquisitions = 0;
+  await acquireCleanupOwnedResource(
+    validStack,
+    "valid-browser-budget",
+    async () => {
+      validAcquisitions += 1;
+      return { closed: false };
+    },
+    async (resource: { closed: boolean }) => {
+      resource.closed = true;
+    },
+    {
+      preferredCleanupTimeoutMs: 9,
+      gracefulCleanupTimeoutMs: 2,
+      forceCleanupTimeoutMs: 2,
+      schedulingMarginMs: 1,
+      forceCleanup: async (resource: { closed: boolean }) => {
+        resource.closed = true;
+      },
+      verifyClosed: async (resource: { closed: boolean }) => resource.closed
+    }
+  );
+  assert.equal(validAcquisitions, 1);
+  assert.deepEqual(await validStack.cleanup(), []);
+
+  const invalidStack = new SyntheticCleanupStack({ perCleanupTimeoutMs: 15 });
+  let invalidAcquisitions = 0;
+  await assert.rejects(
+    acquireCleanupOwnedResource(
+      invalidStack,
+      "invalid-browser-budget",
+      async () => {
+        invalidAcquisitions += 1;
+        return { closed: false };
+      },
+      async (resource: { closed: boolean }) => {
+        resource.closed = true;
+      },
+      {
+        preferredCleanupTimeoutMs: 9,
+        gracefulCleanupTimeoutMs: 2,
+        forceCleanupTimeoutMs: 2,
+        schedulingMarginMs: 2,
+        forceCleanup: async (resource: { closed: boolean }) => {
+          resource.closed = true;
+        },
+        verifyClosed: async (resource: { closed: boolean }) => resource.closed
+      }
+    ),
+    /strictly inside the outer cleanup deadline/
+  );
+  assert.equal(invalidAcquisitions, 0);
+});
+
+test("database cleanup deadlines keep the engine and disconnect phases inside the outer envelope", async () => {
+  const harness = await loadWorkflowHarness();
+  const runEngineBoundDatabaseCleanup = Reflect.get(harness, "runEngineBoundDatabaseCleanup");
+  assert.equal(typeof runEngineBoundDatabaseCleanup, "function");
+  let transactionAttempts = 0;
+  let disconnectAttempts = 0;
+  const runWith = (options: Readonly<{
+    transactionTimeoutMs: number;
+    statementCancellationGraceMs: number;
+    aggregateTimeoutMs: number;
+    disconnectTimeoutMs: number;
+    schedulingMarginMs: number;
+    outerTimeoutMs: number;
+  }>) => runEngineBoundDatabaseCleanup(
+    new AbortController().signal,
+    async () => {
+      transactionAttempts += 1;
+    },
+    async () => {
+      disconnectAttempts += 1;
+    },
+    options
+  );
+
+  await assert.doesNotReject(runWith({
+    transactionTimeoutMs: 7_000,
+    statementCancellationGraceMs: 250,
+    aggregateTimeoutMs: 8_000,
+    disconnectTimeoutMs: 3_000,
+    schedulingMarginMs: 1_000,
+    outerTimeoutMs: 15_000
+  }));
+  assert.equal(transactionAttempts, 1);
+  assert.equal(disconnectAttempts, 0);
+
+  await assert.rejects(runWith({
+    transactionTimeoutMs: 8_000,
+    statementCancellationGraceMs: 250,
+    aggregateTimeoutMs: 8_000,
+    disconnectTimeoutMs: 3_000,
+    schedulingMarginMs: 1_000,
+    outerTimeoutMs: 15_000
+  }), /transaction timeout must be strictly lower than its aggregate deadline/);
+  await assert.rejects(runWith({
+    transactionTimeoutMs: 7_000,
+    statementCancellationGraceMs: 250,
+    aggregateTimeoutMs: 10_000,
+    disconnectTimeoutMs: 4_000,
+    schedulingMarginMs: 1_000,
+    outerTimeoutMs: 15_000
+  }), /strictly inside the outer cleanup deadline/);
+  assert.equal(transactionAttempts, 1);
+  assert.equal(disconnectAttempts, 0);
+});
+
+test("database cleanup supplies an in-flight statement deadline between engine expiry and the watchdog", async () => {
+  const harness = await loadWorkflowHarness();
+  const runEngineBoundDatabaseCleanup = Reflect.get(harness, "runEngineBoundDatabaseCleanup");
+  assert.equal(typeof runEngineBoundDatabaseCleanup, "function");
+  let receivedTransactionTimeoutMs: number | undefined;
+  let receivedStatementTimeoutMs: number | undefined;
+
+  await runEngineBoundDatabaseCleanup(
+    new AbortController().signal,
+    async (transactionTimeoutMs: number, statementTimeoutMs: number) => {
+      receivedTransactionTimeoutMs = transactionTimeoutMs;
+      receivedStatementTimeoutMs = statementTimeoutMs;
+    },
+    async () => undefined,
+    {
+      transactionTimeoutMs: 7_000,
+      statementCancellationGraceMs: 250,
+      aggregateTimeoutMs: 8_000,
+      disconnectTimeoutMs: 3_000,
+      schedulingMarginMs: 1_000,
+      outerTimeoutMs: 15_000
+    }
+  );
+
+  assert.equal(receivedTransactionTimeoutMs, 7_000);
+  assert.equal(receivedStatementTimeoutMs, 7_250);
+});
+
+test("serial database cleanup statements share one absolute cancellation deadline", async () => {
+  const harness = await loadWorkflowHarness();
+  const remainingSyntheticDatabaseStatementTimeoutMs = Reflect.get(
+    harness,
+    "remainingSyntheticDatabaseStatementTimeoutMs"
+  );
+  assert.equal(typeof remainingSyntheticDatabaseStatementTimeoutMs, "function");
+
+  assert.equal(remainingSyntheticDatabaseStatementTimeoutMs(17_250, 10_000), 7_250);
+  assert.equal(remainingSyntheticDatabaseStatementTimeoutMs(17_250, 17_249), 1);
+  assert.throws(
+    () => remainingSyntheticDatabaseStatementTimeoutMs(17_250, 17_250),
+    /statement cancellation deadline expired/
+  );
+  assert.throws(
+    () => remainingSyntheticDatabaseStatementTimeoutMs(17_250, 17_251),
+    /statement cancellation deadline expired/
+  );
+});
+
+test("cleanup outcome aggregation preserves the primary failure and never suppresses cleanup failure", async () => {
+  const harness = await loadWorkflowHarness();
+  const assertSyntheticCleanupOutcome = Reflect.get(harness, "assertSyntheticCleanupOutcome");
+  assert.equal(typeof assertSyntheticCleanupOutcome, "function");
+  const primaryFailure = new Error("injected primary workflow failure");
+  const cleanupSecret = "CLEANUP_DETAIL_SECRET_SENTINEL";
+  const cleanupFailures = [{
+    label: "close-browser-runtime",
+    reason: "FAILED",
+    detail: cleanupSecret
+  }] as const;
+
+  assert.doesNotThrow(() => assertSyntheticCleanupOutcome(undefined, []));
+  assert.doesNotThrow(() => assertSyntheticCleanupOutcome(primaryFailure, []));
+  assert.throws(
+    () => {
+      try {
+        throw primaryFailure;
+      } finally {
+        assertSyntheticCleanupOutcome(primaryFailure, []);
+      }
+    },
+    (error: unknown) => error === primaryFailure
+  );
+
+  let cleanupOnly: unknown;
+  try {
+    assertSyntheticCleanupOutcome(undefined, cleanupFailures);
+  } catch (error) {
+    cleanupOnly = error;
+  }
+  assert.ok(cleanupOnly instanceof AggregateError);
+  assert.equal(cleanupOnly.errors.length, 1);
+  assert.match(String(cleanupOnly.errors[0]), /close-browser-runtime.*FAILED/);
+
+  let combined: unknown;
+  try {
+    assertSyntheticCleanupOutcome(primaryFailure, cleanupFailures);
+  } catch (error) {
+    combined = error;
+  }
+  assert.ok(combined instanceof AggregateError);
+  assert.equal(combined.cause, primaryFailure);
+  assert.equal(combined.errors[0], primaryFailure);
+  assert.match(String(combined.errors[1]), /close-browser-runtime.*FAILED/);
+  assert.equal(
+    [cleanupOnly.message, ...cleanupOnly.errors.map(String), combined.message, ...combined.errors.map(String)]
+      .join("\n")
+      .includes(cleanupSecret),
+    false
+  );
 });
 
 test("the cleanup stack is LIFO, bounded, redacts failures, and safely repeatable", async () => {

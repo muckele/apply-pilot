@@ -26,6 +26,67 @@ const syntheticChildRuntimeEnvironmentNames = [
   "CI",
   "TERM"
 ] as const;
+const syntheticNeutralizedEnvironmentNames = [
+  "ADZUNA_APP_ID",
+  "ADZUNA_APP_KEY",
+  "ADZUNA_COUNTRY",
+  "AI_ALLOWED_MODELS",
+  "AI_AUTOMATION_CAP_CENTS",
+  "AI_CONFIRMATION_THRESHOLD_CENTS",
+  "AI_EVAL_DELAY_MS",
+  "AI_EVAL_PLAN_TOP",
+  "AI_EVAL_TAILOR_TOP",
+  "AI_EVAL_USER_EMAIL",
+  "AI_EVALUATION_ACKNOWLEDGED",
+  "AI_HARD_CAP_CENTS",
+  "AI_MAX_REQUEST_COST_CENTS",
+  "AI_PROVIDER",
+  "AI_PROVIDER_OVERRIDES",
+  "APP_BASE_URL",
+  "APPLY_PILOT_LOCAL_DESTRUCTIVE",
+  "AUTH_ALLOWED_EMAILS",
+  "AUTH_ALLOW_PUBLIC_SIGNUPS",
+  "AUTH_GOOGLE_ID",
+  "AUTH_GOOGLE_SECRET",
+  "AUTH_SECRET",
+  "AUTH_URL",
+  "BLOB_READ_WRITE_TOKEN",
+  "COMMIT5_POSTGRES_TEST",
+  "CRON_MAX_SOURCES_PER_RUN",
+  "CRON_MIN_SOURCE_INTERVAL_MINUTES",
+  "CRON_RUNNING_LOCK_MINUTES",
+  "CRON_SECRET",
+  "FILE_STORAGE_DRIVER",
+  "GEMINI_API_KEY",
+  "GEMINI_FAST_MODEL",
+  "GEMINI_QUALITY_MODEL",
+  "GMAIL_REDIRECT_URI",
+  "GMAIL_SCOPES",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "JOB_SOURCE_MAX_POSTED_AGE_DAYS",
+  "KIMI_EVAL_DATA_ACKNOWLEDGED",
+  "KIMI_EVAL_MODE",
+  "KIMI_MODEL",
+  "KIMI_REASONING_EFFORT",
+  "LOCAL_DATABASE_URL",
+  "LOCAL_DIRECT_URL",
+  "MOONSHOT_API_KEY",
+  "NEXTAUTH_SECRET",
+  "NEXTAUTH_URL",
+  "OPENAI_ALLOWED_MODELS",
+  "OPENAI_API_KEY",
+  "OPENAI_MODEL",
+  "SERPAPI_API_KEY",
+  "SERPAPI_MAX_QUERIES_PER_RUN",
+  "TEST_DATABASE_URL",
+  "THEIRSTACK_API_KEY",
+  "THEIRSTACK_POSTED_MAX_AGE_DAYS",
+  "TOKEN_ENCRYPTION_KEY",
+  "USAJOBS_API_KEY",
+  "USAJOBS_USER_AGENT",
+  "WORKABLE_API_TOKEN"
+] as const;
 
 export type SyntheticNetworkPurpose =
   | "APPLY_PILOT"
@@ -75,6 +136,36 @@ export type SyntheticCleanupFailure = Readonly<{
 
 type CleanupTask = (signal: AbortSignal) => void | Promise<void>;
 
+export type SyntheticCleanupOwnership<T> = Readonly<{
+  resource: T;
+  setPreferredCleanup(task: CleanupTask): void;
+}>;
+
+type SyntheticRateLimitBucketCleanup = Readonly<{
+  deleteMany(input: Readonly<{
+    where: Readonly<{
+      key: Readonly<{
+        in: string[];
+      }>;
+    }>;
+  }>): PromiseLike<unknown>;
+}>;
+
+const syntheticWorkflowRateLimitKeyPrefixes = [
+  "application-automation-policy:read",
+  "application-runs:create",
+  "application-runs:read",
+  "application-runs:prepare",
+  "application-runs:form-inspection:publish",
+  "application-runs:answer-packet:read",
+  "application-runs:answers:review",
+  "application-runs:resolve-review",
+  "application-runs:fill-attempt:acquire",
+  "application-runs:fill-attempt:status",
+  "application-runs:fill-attempt:mutate",
+  "application-runs:complete-by-user"
+] as const;
+
 function assertGuardedSyntheticSuite(environment: Readonly<Record<string, string | undefined>>): void {
   if (environment[GUARDED_SUITE_MARKER] !== "1") {
     throw new Error("Synthetic workflow helpers require the guarded synthetic full-workflow suite.");
@@ -95,6 +186,9 @@ export function buildSyntheticWorkflowChildEnvironment(
     const value = parentEnvironment[name];
     if (value !== undefined) environment[name] = value;
   }
+  // Empty values are deliberate: Next's dotenv loader treats them as already
+  // defined, so repository-local files cannot restore credential or provider authority.
+  for (const name of syntheticNeutralizedEnvironmentNames) environment[name] = "";
   Object.assign(environment, {
     NODE_ENV: "development",
     ALLOW_DEMO_USER: "true",
@@ -104,6 +198,7 @@ export function buildSyntheticWorkflowChildEnvironment(
     AI_ENABLED: "false",
     AI_MOCK_MODE: "true",
     OPENAI_MOCK_MODE: "true",
+    APPLICATION_AUTOMATION_ENABLED: "true",
     DATABASE_URL: validatedDatabaseUrl,
     DIRECT_URL: validatedDatabaseUrl,
     SYNTHETIC_FULL_WORKFLOW_E2E: "1"
@@ -305,6 +400,55 @@ async function runBoundedCleanup(
   });
 }
 
+async function runPreferredCleanupWithin(
+  task: CleanupTask,
+  signal: AbortSignal,
+  timeoutMs: number
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => task(signal)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Preferred synthetic cleanup timed out.")),
+          timeoutMs
+        );
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runCleanupStageWithin(
+  task: CleanupTask,
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<void> {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (parentSignal.aborted) abort();
+  else parentSignal.addEventListener("abort", abort, { once: true });
+
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => task(controller.signal)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(timeoutMessage));
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    parentSignal.removeEventListener("abort", abort);
+  }
+}
+
 export class SyntheticCleanupStack {
   readonly #entries: Array<Readonly<{ label: string; task: CleanupTask }>> = [];
   readonly #perCleanupTimeoutMs: number;
@@ -315,6 +459,10 @@ export class SyntheticCleanupStack {
     if (!Number.isInteger(this.#perCleanupTimeoutMs) || this.#perCleanupTimeoutMs < 1) {
       throw new Error("Synthetic cleanup timeout must be a positive integer.");
     }
+  }
+
+  get perCleanupTimeoutMs(): number {
+    return this.#perCleanupTimeoutMs;
   }
 
   add(label: string, task: CleanupTask): void {
@@ -335,6 +483,303 @@ export class SyntheticCleanupStack {
     }
     return Object.freeze(failures);
   }
+}
+
+export async function runWithPreRegisteredCleanup<T>(
+  stack: SyntheticCleanupStack,
+  label: string,
+  cleanupTask: CleanupTask,
+  task: () => T | Promise<T>
+): Promise<T> {
+  stack.add(label, cleanupTask);
+  return task();
+}
+
+export function remainingSyntheticDatabaseStatementTimeoutMs(
+  deadlineAtMs: number,
+  nowMs = Date.now()
+): number {
+  if (!Number.isSafeInteger(deadlineAtMs) || deadlineAtMs < 1) {
+    throw new Error("Synthetic database statement cancellation deadline must be a positive safe integer.");
+  }
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+    throw new Error("Synthetic database statement cancellation clock must be a non-negative safe integer.");
+  }
+  const remainingMs = deadlineAtMs - nowMs;
+  if (remainingMs < 1) {
+    throw new Error("Synthetic database statement cancellation deadline expired.");
+  }
+  return remainingMs;
+}
+
+export async function deleteSyntheticWorkflowRateLimitRows(
+  rateLimitBucket: SyntheticRateLimitBucketCleanup,
+  userId: string
+): Promise<void> {
+  const exactSyntheticRateLimitKeys = syntheticWorkflowRateLimitKeyPrefixes.map(
+    (prefix) => `${prefix}:${userId}`
+  );
+  await rateLimitBucket.deleteMany({
+    where: { key: { in: exactSyntheticRateLimitKeys } }
+  });
+}
+
+export async function runEngineBoundDatabaseCleanup(
+  signal: AbortSignal,
+  transactionCleanup: (
+    transactionTimeoutMs: number,
+    statementCancellationTimeoutMs: number
+  ) => void | Promise<void>,
+  disconnect: () => void | Promise<void>,
+  options: Readonly<{
+    transactionTimeoutMs: number;
+    statementCancellationGraceMs: number;
+    aggregateTimeoutMs: number;
+    disconnectTimeoutMs: number;
+    schedulingMarginMs: number;
+    outerTimeoutMs: number;
+  }>
+): Promise<void> {
+  for (const [name, value] of Object.entries(options)) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(`Synthetic database cleanup ${name} must be a positive integer.`);
+    }
+  }
+  if (options.transactionTimeoutMs >= options.aggregateTimeoutMs) {
+    throw new Error(
+      "Synthetic database transaction timeout must be strictly lower than its aggregate deadline."
+    );
+  }
+  const statementCancellationTimeoutMs =
+    options.transactionTimeoutMs + options.statementCancellationGraceMs;
+  if (statementCancellationTimeoutMs >= options.aggregateTimeoutMs) {
+    throw new Error(
+      "Synthetic database statement cancellation deadline must be strictly lower than its aggregate deadline."
+    );
+  }
+  if (
+    options.aggregateTimeoutMs + options.disconnectTimeoutMs + options.schedulingMarginMs >=
+    options.outerTimeoutMs
+  ) {
+    throw new Error("Synthetic database cleanup deadlines must fit strictly inside the outer cleanup deadline.");
+  }
+
+  const startedAtMs = Date.now();
+  const aggregateDeadlineAtMs = startedAtMs + options.aggregateTimeoutMs;
+  const finalSettlementDeadlineAtMs =
+    aggregateDeadlineAtMs + options.disconnectTimeoutMs;
+  const outerDeadlineAtMs = startedAtMs + options.outerTimeoutMs;
+  if (
+    !Number.isSafeInteger(finalSettlementDeadlineAtMs) ||
+    !Number.isSafeInteger(outerDeadlineAtMs) ||
+    finalSettlementDeadlineAtMs + options.schedulingMarginMs >= outerDeadlineAtMs
+  ) {
+    throw new Error("Synthetic database cleanup absolute deadlines must fit strictly inside the outer deadline.");
+  }
+
+  const transactionPromise = Promise.resolve()
+    .then(() => transactionCleanup(options.transactionTimeoutMs, statementCancellationTimeoutMs));
+  const transactionOutcomePromise = transactionPromise.then(
+    () => Object.freeze({
+      status: "fulfilled" as const,
+      settledAtMs: Date.now()
+    }),
+    (error: unknown) => {
+      return Object.freeze({
+        status: "rejected" as const,
+        error,
+        settledAtMs: Date.now()
+      });
+    }
+  );
+  const observedTransaction = transactionOutcomePromise.then((outcome) => {
+    if (outcome.status === "rejected") throw outcome.error;
+  });
+
+  try {
+    await runCleanupStageWithin(
+      () => observedTransaction,
+      signal,
+      Math.max(0, aggregateDeadlineAtMs - Date.now()),
+      "Synthetic database cleanup exceeded its aggregate deadline."
+    );
+  } catch (transactionFailure) {
+    let disconnectFailure: unknown;
+    try {
+      await runCleanupStageWithin(
+        () => disconnect(),
+        signal,
+        Math.min(
+          options.disconnectTimeoutMs,
+          Math.max(0, finalSettlementDeadlineAtMs - Date.now())
+        ),
+        "Synthetic database actor disconnect timed out."
+      );
+    } catch (error) {
+      disconnectFailure = error;
+    }
+
+    const transactionOutcome = await transactionOutcomePromise;
+    const failures: unknown[] = [transactionFailure];
+    if (
+      transactionOutcome.status === "rejected" &&
+      transactionOutcome.error !== transactionFailure
+    ) {
+      failures.push(transactionOutcome.error);
+    }
+    if (disconnectFailure !== undefined) failures.push(disconnectFailure);
+    if (transactionOutcome.settledAtMs > finalSettlementDeadlineAtMs) {
+      failures.push(new Error(
+        "Synthetic database transaction settled after its absolute deadline."
+      ));
+    }
+    if (failures.length === 1) throw transactionFailure;
+    throw new AggregateError(
+      failures,
+      "Synthetic database cleanup did not settle safely."
+    );
+  }
+}
+
+export async function acquireCleanupOwnedResource<T>(
+  stack: SyntheticCleanupStack,
+  label: string,
+  acquire: () => T | Promise<T>,
+  rawCleanup: (resource: T, signal: AbortSignal) => void | Promise<void>,
+  options: Readonly<{
+    preferredCleanupTimeoutMs?: number;
+    gracefulCleanupTimeoutMs?: number;
+    forceCleanupTimeoutMs?: number;
+    schedulingMarginMs?: number;
+    forceCleanup?: (resource: T, signal: AbortSignal) => void | Promise<void>;
+    verifyClosed?: (resource: T) => boolean | Promise<boolean>;
+  }> = {}
+): Promise<SyntheticCleanupOwnership<T>> {
+  const preferredCleanupTimeoutMs = options.preferredCleanupTimeoutMs ?? 5_000;
+  const gracefulCleanupTimeoutMs = options.gracefulCleanupTimeoutMs ?? 5_000;
+  const forceCleanupTimeoutMs = options.forceCleanupTimeoutMs ?? 5_000;
+  const schedulingMarginMs = options.schedulingMarginMs;
+  if (!Number.isInteger(preferredCleanupTimeoutMs) || preferredCleanupTimeoutMs < 1) {
+    throw new Error("Preferred synthetic cleanup timeout must be a positive integer.");
+  }
+  if (!Number.isInteger(gracefulCleanupTimeoutMs) || gracefulCleanupTimeoutMs < 1) {
+    throw new Error("Graceful synthetic cleanup timeout must be a positive integer.");
+  }
+  if (!Number.isInteger(forceCleanupTimeoutMs) || forceCleanupTimeoutMs < 1) {
+    throw new Error("Forced synthetic cleanup timeout must be a positive integer.");
+  }
+  if (schedulingMarginMs !== undefined) {
+    if (!Number.isInteger(schedulingMarginMs) || schedulingMarginMs < 1) {
+      throw new Error("Synthetic cleanup scheduling margin must be a positive integer.");
+    }
+    const nestedDeadlineMs = preferredCleanupTimeoutMs + gracefulCleanupTimeoutMs +
+      (options.forceCleanup ? forceCleanupTimeoutMs : 0) + schedulingMarginMs;
+    if (nestedDeadlineMs >= stack.perCleanupTimeoutMs) {
+      throw new Error("Synthetic resource cleanup deadlines must fit strictly inside the outer cleanup deadline.");
+    }
+  }
+  const resource = await acquire();
+  let cleanupStarted = false;
+  let preferredCleanup: CleanupTask | undefined;
+  stack.add(label, async (signal) => {
+    cleanupStarted = true;
+    let preferredFailed = false;
+    let preferredFailure: unknown;
+    try {
+      if (preferredCleanup) {
+        await runPreferredCleanupWithin(preferredCleanup, signal, preferredCleanupTimeoutMs);
+      }
+    } catch (error) {
+      preferredFailed = true;
+      preferredFailure = error;
+    } finally {
+      try {
+        await runCleanupStageWithin(
+          async (gracefulSignal) => {
+            await rawCleanup(resource, gracefulSignal);
+            if (options.verifyClosed && !await options.verifyClosed(resource)) {
+              throw new Error("Graceful synthetic resource cleanup did not close the resource.");
+            }
+          },
+          signal,
+          gracefulCleanupTimeoutMs,
+          "Raw synthetic resource cleanup timed out."
+        );
+      } catch (rawFailure) {
+        let forceFailure: unknown;
+        if (options.forceCleanup) {
+          try {
+            await runCleanupStageWithin(
+              async (forceSignal) => {
+                await options.forceCleanup?.(resource, forceSignal);
+                if (options.verifyClosed && !await options.verifyClosed(resource)) {
+                  throw new Error("Forced synthetic resource cleanup did not close the resource.");
+                }
+              },
+              signal,
+              forceCleanupTimeoutMs,
+              "Forced synthetic resource cleanup timed out."
+            );
+          } catch (error) {
+            forceFailure = error;
+          }
+        }
+        const failures = [
+          ...(preferredFailed ? [preferredFailure] : []),
+          rawFailure,
+          ...(forceFailure === undefined ? [] : [forceFailure])
+        ];
+        if (failures.length > 1) {
+          throw new AggregateError(
+            failures,
+            "Synthetic resource cleanup required fallback and did not complete cleanly."
+          );
+        }
+        if (preferredFailed) {
+          throw new AggregateError(
+            [preferredFailure, rawFailure],
+            "Preferred synthetic cleanup and raw resource cleanup both failed."
+          );
+        }
+        throw rawFailure;
+      }
+    }
+    if (preferredFailed) throw preferredFailure;
+  });
+  return Object.freeze({
+    resource,
+    setPreferredCleanup(task: CleanupTask) {
+      if (cleanupStarted) throw new Error("Synthetic resource cleanup has already started.");
+      preferredCleanup = task;
+    }
+  });
+}
+
+export function assertSyntheticCleanupOutcome(
+  primaryFailure: unknown,
+  cleanupFailures: readonly SyntheticCleanupFailure[]
+): void {
+  if (cleanupFailures.length === 0) return;
+  const summaries = cleanupFailures.map((failure) => {
+    const label = typeof failure.label === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(failure.label)
+      ? failure.label
+      : "invalid-cleanup";
+    const reason = failure.reason === "TIMED_OUT" ? "TIMED_OUT" : "FAILED";
+    return `${label}:${reason}`;
+  });
+  const cleanupFailure = new Error(`Synthetic cleanup failed (${summaries.join(", ")}).`);
+  cleanupFailure.name = "SyntheticCleanupError";
+  if (primaryFailure === undefined) {
+    throw new AggregateError(
+      [cleanupFailure],
+      "Synthetic workflow cleanup did not complete successfully."
+    );
+  }
+  throw new AggregateError(
+    [primaryFailure, cleanupFailure],
+    "Synthetic workflow failed and cleanup did not complete successfully.",
+    { cause: primaryFailure }
+  );
 }
 
 export function parseSyntheticEmployerSnapshot(value: unknown): SyntheticEmployerSnapshot {
