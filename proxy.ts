@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const publicPrefixes = [
-  "/login",
+const publicPagePaths = new Set(["/", "/login", "/signup"]);
+
+const publicApiPrefixes = [
   "/api/auth",
   "/api/health",
   "/api/gmail/callback",
@@ -19,7 +20,10 @@ function hasSessionCookie(request: NextRequest) {
 
 function isPublicPath(pathname: string) {
   return (
-    publicPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)) ||
+    publicPagePaths.has(pathname) ||
+    publicApiPrefixes.some((prefix) =>
+      pathname === prefix || pathname.startsWith(`${prefix}/`)
+    ) ||
     (pathname.startsWith("/api/interviews/") && pathname.endsWith("/audio/upload"))
   );
 }
