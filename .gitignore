@@ -6,8 +6,27 @@ node_modules
 !.env.example
 !.env.production.example
 coverage
+evaluation-results
 dist
 uploads
 *.log
 tsconfig.tsbuildinfo
 prisma/dev.db
+
+# Local personal artifacts and generated documents (never commit)
+output/
+scripts/build-master-resume.py
+
+# Browser automation, evaluation, and test artifacts
+playwright-report/
+test-results/
+blob-report/
+automation-artifacts/
+browser-profile/
+.playwright/
+playwright/.auth/
+.auth/
+storage-state*.json
+
+# macOS metadata
+.DS_Store

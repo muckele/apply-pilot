@@ -1,0 +1,1028 @@
+import { z } from "zod";
+
+import {
+  classifyFillStatus,
+  type BrowserFillAttemptStatus
+} from "@/lib/application-browser/fill-status-presentation";
+
+import type {
+  PublicApplicationAnswerProposal,
+  PublicApplicationRunAnswerPacket,
+  PublicApplicationRunAnswerPacketAnswer
+} from "@/lib/application-runs/answer-packet-api";
+import type { ApplicationFormFieldType } from "@/lib/application-runs/form-inspection";
+import type {
+  ApplicationAnswerDisposition,
+  ApplicationAnswerDispositionReason,
+  ApplicationQuestionClassification
+} from "@/lib/application-runs/question-classification";
+import { PLAN_REVIEW_REASONS, type PlanReviewReason } from "@/lib/application-runs/review-reasons";
+import type { ApplicationRunState } from "@prisma/client";
+import type {
+  B1Status,
+  B1WorkflowState,
+  B3FillCommandStatus,
+  B2InspectionCommandStatus,
+  BrowserInspectionRecoverableCode
+} from "@/lib/application-browser/types";
+import { B3_FILL_COMMAND_REJECTION_CODES } from "@/lib/application-browser/types";
+
+export type ControlConnection = "UNKNOWN" | "CONNECTED" | "UNAVAILABLE";
+export type PendingBrowserCommand =
+  | "GET_STATUS"
+  | "OPEN_TARGET"
+  | "INSPECT_FORM"
+  | "FILL_APPROVED_FIELDS"
+  | "CLOSE_WORKFLOW"
+  | null;
+export type PacketFreshness = "absent" | "current" | "stale" | "unverified";
+export type AnswerPacket = PublicApplicationRunAnswerPacket;
+export type AnswerPacketAnswer = PublicApplicationRunAnswerPacketAnswer;
+
+export type ManualFieldCategory =
+  | "MANUAL_CONTROL_FAMILY"
+  | "MANUAL_ONLY"
+  | "UNSUPPORTED"
+  | "INTENTIONALLY_EXCLUDED"
+  | "USER_REJECTED";
+
+export type ManualFieldPresentation = Readonly<{
+  question: string;
+  fieldType: ApplicationFormFieldType;
+  required: boolean;
+  category: ManualFieldCategory;
+}>;
+
+export type ReviewRunAuthority = Readonly<{
+  id: string;
+  state: ApplicationRunState;
+  stateVersion: number;
+  completedAt: string | null;
+  reviewReasons: readonly PlanReviewReason[];
+}>;
+
+export type PersonalSubmissionCompletionAuthority = Readonly<{
+  id: string;
+  state: "COMPLETED_BY_USER";
+  stateVersion: number;
+  completedAt: string;
+}>;
+
+export const REVIEW_REASON_LABELS: Record<PlanReviewReason, string> = {
+  unknown_requirement_ids: "Some job requirements could not be matched exactly.",
+  unknown_evidence_ids: "Some supporting evidence references could not be matched exactly.",
+  exaggerated_evidence_removed: "Unsupported or exaggerated evidence was removed.",
+  invented_numeric_claims: "Unsupported numeric claims were detected and removed.",
+  planner_confidence_below_threshold: "Application-plan confidence is below the required threshold.",
+  evidence_gaps_present: "Some application requirements still have evidence gaps."
+};
+
+export type PendingReviewMutation =
+  | Readonly<{ type: "ANSWER"; answerId: string; status: "APPROVED" | "REJECTED" }>
+  | Readonly<{ type: "RESOLVE" }>
+  | null;
+
+export type AnswerReviewMutationSnapshot = Readonly<{
+  answerId: string;
+  requestedStatus: "APPROVED" | "REJECTED";
+  answerPacketVersion: number;
+}>;
+
+export type ResolveReviewMutationSnapshot = Readonly<{
+  stateVersion: number;
+  answerPacketVersion: number;
+  packetHash: string;
+  acknowledgedReviewReasons: readonly PlanReviewReason[];
+}>;
+
+export type SameOriginReviewRequest = Readonly<{
+  url: string;
+  init: Readonly<{
+    method: "POST";
+    headers: Readonly<{ "Content-Type": "application/json" }>;
+    cache: "no-store";
+    body: string;
+  }>;
+}>;
+
+const PERSONAL_SUBMISSION_ATTESTATION =
+  "USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE" as const;
+
+type CommandAvailability = Record<Exclude<PendingBrowserCommand, null>, boolean>;
+
+const WORKFLOW_STATES = [
+  "STARTING",
+  "APPLY_PILOT_AUTH_REQUIRED",
+  "CONTROL_READY",
+  "OPENING_TARGET",
+  "TARGET_OPEN",
+  "ERROR",
+  "CLOSED"
+] as const satisfies readonly B1WorkflowState[];
+
+const APPLICATION_RUN_STATES = [
+  "DRAFT",
+  "PREPARING",
+  "READY",
+  "FILLING",
+  "REVIEW_REQUIRED",
+  "READY_FOR_USER_SUBMISSION",
+  "COMPLETED_BY_USER",
+  "BLOCKED",
+  "FAILED",
+  "CANCELLED"
+] as const satisfies readonly ApplicationRunState[];
+
+const RECOVERABLE_CODES = [
+  "FORM_INSPECTION_IN_PROGRESS",
+  "FORM_STABILITY_TIMEOUT",
+  "FORM_GENERATION_INVALIDATED",
+  "FORM_CORRELATION_INVALID",
+  "AMBIGUOUS_DUPLICATE_FIELD",
+  "FORM_INSPECTION_CANCELLED",
+  "FORM_INSPECTION_REQUEST_TOO_LARGE",
+  "RUN_LIFECYCLE_STALE",
+  "RUN_DOCUMENT_STALE",
+  "SAME_ORIGIN_RATE_LIMITED",
+  "SAME_ORIGIN_REQUEST_FAILED"
+] as const satisfies readonly BrowserInspectionRecoverableCode[];
+
+const FIELD_TYPES = [
+  "TEXT",
+  "EMAIL",
+  "TEL",
+  "URL",
+  "TEXTAREA",
+  "SELECT_ONE",
+  "SELECT_MANY",
+  "RADIO_GROUP",
+  "CHECKBOX_BOOLEAN",
+  "CHECKBOX_GROUP",
+  "NUMBER",
+  "DATE",
+  "FILE_UPLOAD",
+  "UNSUPPORTED"
+] as const satisfies readonly ApplicationFormFieldType[];
+
+const CLASSIFICATIONS = [
+  "CONTACT",
+  "PROFESSIONAL_LINK",
+  "EXPERIENCE",
+  "EDUCATION",
+  "SKILL",
+  "CITIZENSHIP_IMMIGRATION",
+  "WORK_AUTHORIZATION",
+  "SPONSORSHIP",
+  "AVAILABILITY",
+  "RELOCATION",
+  "COMPENSATION",
+  "DEMOGRAPHIC",
+  "DISABILITY",
+  "VETERAN",
+  "CRIMINAL_HISTORY",
+  "LEGAL_ATTESTATION",
+  "DOCUMENT",
+  "UNKNOWN"
+] as const satisfies readonly ApplicationQuestionClassification[];
+
+const DISPOSITIONS = [
+  "PROPOSABLE",
+  "MANUAL_ONLY",
+  "EXCLUDED",
+  "UNSUPPORTED"
+] as const satisfies readonly ApplicationAnswerDisposition[];
+
+const APPARENT_FILL_ELIGIBLE_FIELD_TYPES = new Set<ApplicationFormFieldType>([
+  "TEXT",
+  "EMAIL",
+  "TEL",
+  "URL",
+  "TEXTAREA",
+  "SELECT_ONE"
+]);
+
+const DISPOSITION_REASONS = [
+  "NO_ELIGIBLE_SOURCE",
+  "INVALID_SOURCE_VALUE",
+  "AMBIGUOUS_SOURCE",
+  "UNCONFIRMED_APPLICANT_CONTACT",
+  "POLICY_EXCLUDED",
+  "LEGAL_ATTESTATION",
+  "V1_MANUAL_POLICY",
+  "UNSUPPORTED_CONTROL",
+  "AMBIGUOUS_FIELD",
+  "AMBIGUOUS_CHOICES",
+  "MULTIPLE_FILE_UPLOAD",
+  "NO_SELECTED_DOCUMENT",
+  "UNKNOWN_QUESTION"
+] as const satisfies readonly ApplicationAnswerDispositionReason[];
+
+const boundedText = z.string().min(1).max(2_048);
+const sha256Hex = z.string().regex(/^[a-f0-9]{64}$/);
+const nonnegativeSafeInteger = z.number().int().nonnegative().safe();
+const positiveSafeInteger = z.number().int().positive().safe();
+const isoDateTime = z.string().datetime({ offset: true });
+const canonicalIsoDateTime = z.string().refine((value) => {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
+});
+
+const inspectionSchema = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("IN_PROGRESS") }).strict(),
+  z
+    .object({
+      outcome: z.literal("SUCCEEDED"),
+      replayed: z.boolean(),
+      inspectionVersion: positiveSafeInteger,
+      answerPacketVersion: positiveSafeInteger,
+      reinspectionRequired: z.boolean()
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("REINSPECTION_REQUIRED"),
+      errorCode: z.literal("FORM_GENERATION_INVALIDATED"),
+      retryAllowed: z.literal(true)
+    })
+    .strict(),
+  z
+    .object({
+      outcome: z.literal("FAILED"),
+      errorCode: z.enum(RECOVERABLE_CODES),
+      retryAllowed: z.literal(true)
+    })
+    .strict()
+]);
+
+const fillCommandSchema: z.ZodType<B3FillCommandStatus> = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("IN_PROGRESS") }).strict(),
+  z.object({ outcome: z.literal("FINALIZED") }).strict(),
+  z.object({ outcome: z.literal("RECOVERY_PENDING") }).strict(),
+  z.object({ outcome: z.literal("CANCELLED") }).strict(),
+  z
+    .object({
+      outcome: z.literal("REJECTED"),
+      errorCode: z.enum(B3_FILL_COMMAND_REJECTION_CODES)
+    })
+    .strict()
+]);
+
+const statusSchema = z
+  .object({
+    state: z.enum(WORKFLOW_STATES),
+    runId: boundedText,
+    targetHost: boundedText.optional(),
+    errorCode: boundedText.optional(),
+    inspection: inspectionSchema.optional(),
+    fillCommand: fillCommandSchema.optional()
+  })
+  .strict();
+
+const choiceSchema = z
+  .object({
+    key: boundedText,
+    label: z.string().max(2_048),
+    disabled: z.boolean()
+  })
+  .strict();
+
+const proposalSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("SCALAR"), value: z.string().max(16_384) }).strict(),
+  z.object({ kind: z.literal("BOOLEAN"), value: z.boolean() }).strict(),
+  z.object({ kind: z.literal("OPTIONS"), optionKeys: z.array(boundedText).max(256) }).strict(),
+  z
+    .object({
+      kind: z.literal("DOCUMENT_REFERENCE"),
+      artifactType: z.enum(["RESUME", "COVER_LETTER"]),
+      documentId: boundedText
+    })
+    .strict()
+]);
+
+const summarySchema = z
+  .object({
+    fieldCount: nonnegativeSafeInteger,
+    proposableCount: nonnegativeSafeInteger,
+    pendingReviewCount: nonnegativeSafeInteger,
+    approvedCount: nonnegativeSafeInteger,
+    rejectedCount: nonnegativeSafeInteger,
+    manualOnlyCount: nonnegativeSafeInteger,
+    excludedCount: nonnegativeSafeInteger,
+    unsupportedCount: nonnegativeSafeInteger,
+    manualRequiredCount: nonnegativeSafeInteger,
+    readyForRunResolution: z.boolean()
+  })
+  .strict();
+
+const answerSchema = z
+  .object({
+    id: boundedText,
+    normalizedFieldKey: boundedText,
+    question: z.string().max(2_048),
+    fieldType: z.enum(FIELD_TYPES),
+    classification: z.enum(CLASSIFICATIONS),
+    disposition: z.enum(DISPOSITIONS),
+    dispositionReason: z.enum(DISPOSITION_REASONS).nullable(),
+    choices: z.array(choiceSchema).max(256),
+    proposal: proposalSchema.nullable(),
+    required: z.boolean(),
+    requiresReview: z.boolean(),
+    sensitive: z.boolean(),
+    valueRedacted: z.boolean(),
+    status: z.enum(["PENDING", "APPROVED", "REJECTED"]),
+    reviewedByUser: z.boolean(),
+    reviewedAt: isoDateTime.nullable()
+  })
+  .strict()
+  .superRefine((answer, context) => {
+    const hasProposal = answer.proposal !== null;
+    if ((answer.disposition === "PROPOSABLE") !== hasProposal) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["proposal"],
+        message: "Proposal authority is inconsistent with the answer disposition."
+      });
+    }
+    if (hasProposal && (answer.sensitive || answer.valueRedacted)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["proposal"],
+        message: "Sensitive or redacted answers cannot contain proposal authority."
+      });
+    }
+  });
+
+const packetSchema = z
+  .object({
+    inspectionVersion: positiveSafeInteger,
+    answerPacketVersion: positiveSafeInteger,
+    packetHash: sha256Hex,
+    reviewedAt: isoDateTime.nullable(),
+    createdAt: isoDateTime,
+    summary: summarySchema,
+    answers: z.array(answerSchema).max(200)
+  })
+  .strict();
+
+const packetResponseSchema = z
+  .object({
+    runId: boundedText,
+    current: packetSchema.nullable()
+  })
+  .strict();
+
+const reviewReasonsSchema = z
+  .array(z.enum(PLAN_REVIEW_REASONS))
+  .superRefine((reasons, context) => {
+    if (new Set(reasons).size !== reasons.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Review reasons must not contain duplicates."
+      });
+    }
+    for (let index = 1; index < reasons.length; index += 1) {
+      if (PLAN_REVIEW_REASONS.indexOf(reasons[index - 1]) >= PLAN_REVIEW_REASONS.indexOf(reasons[index])) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Review reasons must preserve canonical order."
+        });
+        break;
+      }
+    }
+  });
+
+const runAuthoritySchema = z
+  .object({
+    id: boundedText,
+    state: z.enum(APPLICATION_RUN_STATES),
+    stateVersion: nonnegativeSafeInteger,
+    completedAt: canonicalIsoDateTime.nullable(),
+    reviewReasons: reviewReasonsSchema
+  })
+  .strip()
+  .superRefine((run, context) => {
+    if ((run.state === "COMPLETED_BY_USER") !== (run.completedAt !== null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["completedAt"],
+        message: "Run completion state and timestamp must agree."
+      });
+    }
+  });
+
+const applicationRunReviewResponseSchema = z
+  .object({ run: runAuthoritySchema })
+  .strict();
+
+const personalSubmissionCompletionResponseSchema = z
+  .object({
+    run: z
+      .object({
+        id: boundedText,
+        state: z.literal("COMPLETED_BY_USER"),
+        stateVersion: nonnegativeSafeInteger,
+        completedAt: canonicalIsoDateTime
+      })
+      .strict()
+  })
+  .strict();
+
+const answerReviewResponseSchema = z
+  .object({
+    answer: z
+      .object({
+        id: boundedText,
+        runId: boundedText,
+        status: z.enum(["APPROVED", "REJECTED"]),
+        reviewedByUser: z.literal(true),
+        reviewedAt: isoDateTime,
+        sensitive: z.boolean(),
+        valueRedacted: z.boolean()
+      })
+      .strict()
+  })
+  .strict();
+
+const RECOVERABLE_MESSAGES: Record<BrowserInspectionRecoverableCode, string> = {
+  FORM_INSPECTION_IN_PROGRESS:
+    "An inspection is already running. Wait for it to finish, then refresh status.",
+  FORM_STABILITY_TIMEOUT:
+    "The form did not settle in time. Wait for the page to finish changing, then inspect again.",
+  FORM_GENERATION_INVALIDATED: "The employer form changed during inspection. Inspect it again.",
+  FORM_CORRELATION_INVALID:
+    "The form could not be matched safely. Check that the intended form is visible, then inspect again.",
+  AMBIGUOUS_DUPLICATE_FIELD:
+    "Similar duplicate fields could not be distinguished safely. Review the employer form, then retry; handle those fields manually if it persists.",
+  FORM_INSPECTION_CANCELLED:
+    "Inspection stopped before publication. Check that the target is still open, then retry.",
+  FORM_INSPECTION_REQUEST_TOO_LARGE:
+    "The visible form is too large to inspect safely in one pass. Navigate to a smaller form step if available and retry; otherwise complete it manually.",
+  RUN_LIFECYCLE_STALE: "The application run changed. Refresh browser status, then inspect again.",
+  RUN_DOCUMENT_STALE: "The application documents changed. Refresh browser status, then inspect again.",
+  SAME_ORIGIN_RATE_LIMITED: "Too many inspection requests were made. Wait a moment, then retry.",
+  SAME_ORIGIN_REQUEST_FAILED:
+    "Apply Pilot could not publish the inspection. Check the control workflow and connection, then retry."
+};
+
+export function browserCommandAvailability(input: {
+  status: B1Status;
+  connection: ControlConnection;
+  pendingCommand: PendingBrowserCommand;
+}): CommandAvailability {
+  if (
+    input.status.state === "CLOSED" ||
+    input.connection === "UNAVAILABLE" ||
+    input.pendingCommand !== null
+  ) {
+    return {
+      GET_STATUS: false,
+      OPEN_TARGET: false,
+      INSPECT_FORM: false,
+      FILL_APPROVED_FIELDS: false,
+      CLOSE_WORKFLOW: false
+    };
+  }
+  if (input.connection === "UNKNOWN") {
+    return {
+      GET_STATUS: true,
+      OPEN_TARGET: false,
+      INSPECT_FORM: false,
+      FILL_APPROVED_FIELDS: false,
+      CLOSE_WORKFLOW: false
+    };
+  }
+  return {
+    GET_STATUS: true,
+    OPEN_TARGET: input.status.state === "CONTROL_READY",
+    INSPECT_FORM:
+      input.status.state === "TARGET_OPEN" && input.status.inspection?.outcome !== "IN_PROGRESS",
+    FILL_APPROVED_FIELDS: input.status.state === "TARGET_OPEN",
+    CLOSE_WORKFLOW: true
+  };
+}
+
+export function shouldOfferRetryConnection(
+  connection: ControlConnection,
+  status: B1Status,
+  pendingCommand: PendingBrowserCommand
+): boolean {
+  return connection === "UNAVAILABLE" && status.state !== "CLOSED" && pendingCommand === null;
+}
+
+export function bindingRejectionPlan(
+  command: Exclude<PendingBrowserCommand, null>,
+  status: B1Status,
+  packetFreshness: PacketFreshness
+) {
+  return {
+    connection: "UNAVAILABLE" as const,
+    preservedStatus: status,
+    recoverWithGetStatus:
+      command !== "GET_STATUS" &&
+      command !== "FILL_APPROVED_FIELDS" &&
+      !(command === "CLOSE_WORKFLOW" && status.state === "CLOSED"),
+    packetTrust:
+      command === "INSPECT_FORM" || command === "FILL_APPROVED_FIELDS"
+        ? packetFreshness === "stale"
+          ? ("STALE" as const)
+          : ("UNVERIFIED" as const)
+        : ("UNCHANGED" as const)
+  };
+}
+
+export type InspectionPresentation = {
+  tone: "INFO" | "SUCCESS" | "WARNING" | "ERROR";
+  text: string;
+  retryAllowed: boolean;
+  invalidatesPacket: boolean;
+  automaticPacketRefreshKey: string | null;
+};
+
+export function inspectionPresentation(inspection: B2InspectionCommandStatus): InspectionPresentation {
+  if (inspection.outcome === "IN_PROGRESS") {
+    return {
+      tone: "INFO",
+      text: "Inspection is in progress. No employer fields are being filled or submitted.",
+      retryAllowed: false,
+      invalidatesPacket: false,
+      automaticPacketRefreshKey: null
+    };
+  }
+  if (inspection.outcome === "SUCCEEDED") {
+    if (inspection.reinspectionRequired) {
+      return {
+        tone: "WARNING",
+        text: "The employer form changed after publication. Inspect it again before relying on the packet.",
+        retryAllowed: true,
+        invalidatesPacket: true,
+        automaticPacketRefreshKey: null
+      };
+    }
+    return {
+      tone: "SUCCESS",
+      text: inspection.replayed
+        ? "Existing current packet matched the verified inspection; no new packet version was created."
+        : "Inspection was published and the current answer packet was updated. Review the proposed answers below. No employer fields were filled or submitted.",
+      retryAllowed: false,
+      invalidatesPacket: false,
+      automaticPacketRefreshKey: `${inspection.inspectionVersion}:${inspection.answerPacketVersion}`
+    };
+  }
+  return {
+    tone: inspection.outcome === "REINSPECTION_REQUIRED" ? "WARNING" : "ERROR",
+    text: RECOVERABLE_MESSAGES[inspection.errorCode],
+    retryAllowed: inspection.retryAllowed,
+    invalidatesPacket: inspection.errorCode === "FORM_GENERATION_INVALIDATED",
+    automaticPacketRefreshKey: null
+  };
+}
+
+export type CommandNotice = Pick<InspectionPresentation, "tone" | "text">;
+
+export function applyAuthoritativeBrowserStatus(input: {
+  value: unknown;
+  expectedRunId: string;
+  formInvalidatedSinceVerifiedSuccess: boolean;
+}):
+  | { accepted: false; connection: "UNAVAILABLE" }
+  | {
+      accepted: true;
+      status: B1Status;
+      connection: "CONNECTED";
+      lastAcceptedInspection: B2InspectionCommandStatus | null;
+      formInvalidatedSinceVerifiedSuccess: boolean;
+      notice: CommandNotice | null;
+      automaticPacketRefreshKey: string | null;
+    } {
+  const parsed = statusSchema.safeParse(input.value);
+  if (!parsed.success || parsed.data.runId !== input.expectedRunId) {
+    return { accepted: false, connection: "UNAVAILABLE" };
+  }
+  const status = parsed.data as B1Status;
+  const inspection = status.inspection ?? null;
+  if (inspection === null) {
+    return {
+      accepted: true,
+      status,
+      connection: "CONNECTED",
+      lastAcceptedInspection: null,
+      formInvalidatedSinceVerifiedSuccess: input.formInvalidatedSinceVerifiedSuccess,
+      notice: null,
+      automaticPacketRefreshKey: null
+    };
+  }
+  const presentation = inspectionPresentation(inspection);
+  const cleanSuccess = inspection.outcome === "SUCCEEDED" && !inspection.reinspectionRequired;
+  return {
+    accepted: true,
+    status,
+    connection: "CONNECTED",
+    lastAcceptedInspection: inspection,
+    formInvalidatedSinceVerifiedSuccess: cleanSuccess
+      ? false
+      : input.formInvalidatedSinceVerifiedSuccess || presentation.invalidatesPacket,
+    notice: { tone: presentation.tone, text: presentation.text },
+    automaticPacketRefreshKey: presentation.automaticPacketRefreshKey
+  };
+}
+
+export function parseAnswerPacketResponse(value: unknown, expectedRunId: string): {
+  runId: string;
+  current: AnswerPacket | null;
+} {
+  const parsed = packetResponseSchema.parse(value);
+  if (parsed.runId !== expectedRunId) throw new Error("Answer packet run mismatch.");
+  return parsed as { runId: string; current: AnswerPacket | null };
+}
+
+export function isAnswerReviewEligible(
+  answer: Pick<AnswerPacketAnswer, "status" | "disposition">
+): boolean {
+  return answer.status === "PENDING" && answer.disposition === "PROPOSABLE";
+}
+
+export function isAnswerReviewMutationEligible(input: {
+  answer: Pick<AnswerPacketAnswer, "status" | "disposition">;
+  run: ReviewRunAuthority | null;
+  trusted: boolean;
+}): boolean {
+  return input.trusted &&
+    input.run?.state === "REVIEW_REQUIRED" &&
+    isAnswerReviewEligible(input.answer);
+}
+
+export function apparentAutomatableFieldCount(packet: AnswerPacket | null): number {
+  if (packet === null) return 0;
+  return packet.answers.filter((answer) =>
+    APPARENT_FILL_ELIGIBLE_FIELD_TYPES.has(answer.fieldType) &&
+    answer.disposition === "PROPOSABLE" &&
+    answer.proposal !== null &&
+    answer.status === "APPROVED" &&
+    answer.reviewedByUser &&
+    answer.reviewedAt !== null &&
+    !answer.sensitive &&
+    !answer.valueRedacted
+  ).length;
+}
+
+export function deriveManualFieldPresentations(
+  packet: AnswerPacket | null
+): readonly ManualFieldPresentation[] {
+  if (packet === null) return Object.freeze([]);
+  const manual = packet.answers.flatMap((answer): ManualFieldPresentation[] => {
+    let category: ManualFieldCategory | null = null;
+    if (answer.fieldType === "RADIO_GROUP" || answer.fieldType === "CHECKBOX_BOOLEAN") {
+      category = "MANUAL_CONTROL_FAMILY";
+    } else if (answer.disposition === "MANUAL_ONLY") {
+      category = "MANUAL_ONLY";
+    } else if (answer.disposition === "UNSUPPORTED") {
+      category = "UNSUPPORTED";
+    } else if (answer.disposition === "EXCLUDED") {
+      category = "INTENTIONALLY_EXCLUDED";
+    } else if (
+      APPARENT_FILL_ELIGIBLE_FIELD_TYPES.has(answer.fieldType) &&
+      answer.disposition === "PROPOSABLE" &&
+      answer.status === "REJECTED"
+    ) {
+      category = "USER_REJECTED";
+    } else if (!APPARENT_FILL_ELIGIBLE_FIELD_TYPES.has(answer.fieldType)) {
+      category = "UNSUPPORTED";
+    }
+    return category === null
+      ? []
+      : [{
+          question: answer.question,
+          fieldType: answer.fieldType,
+          required: answer.required,
+          category
+        }];
+  });
+  return Object.freeze(manual.map((field) => Object.freeze(field)));
+}
+
+export function isFillActivationEligible(input: Readonly<{
+  authenticatedOwnerPage: boolean;
+  componentActive: boolean;
+  connection: ControlConnection;
+  hasAcceptedAuthoritativeStatus: boolean;
+  browserStatus: B1Status;
+  packetFreshness: PacketFreshness;
+  reviewLoad: Readonly<{
+    phase: "idle" | "loading" | "loaded" | "error";
+    verified: boolean;
+    run: ReviewRunAuthority | null;
+    packet: AnswerPacket | null;
+  }>;
+  fillStatusLoad: Readonly<{
+    phase: "idle" | "loading" | "loaded" | "error";
+    verified: boolean;
+    status: BrowserFillAttemptStatus | null;
+  }>;
+  pendingBrowserCommand: PendingBrowserCommand;
+  pendingReviewMutation: PendingReviewMutation;
+  pendingFillActivation: boolean;
+  fillMayHaveDispatched: boolean;
+}>): boolean {
+  const inspection = input.browserStatus.inspection;
+  const run = input.reviewLoad.run;
+  const packet = input.reviewLoad.packet;
+  const fillStatus = input.fillStatusLoad.status;
+  return input.authenticatedOwnerPage &&
+    input.componentActive &&
+    input.connection === "CONNECTED" &&
+    input.hasAcceptedAuthoritativeStatus &&
+    input.browserStatus.state === "TARGET_OPEN" &&
+    input.browserStatus.fillCommand === undefined &&
+    inspection?.outcome === "SUCCEEDED" &&
+    !inspection.reinspectionRequired &&
+    input.packetFreshness === "current" &&
+    input.reviewLoad.phase === "loaded" &&
+    input.reviewLoad.verified &&
+    run?.state === "READY" &&
+    packet !== null &&
+    packet.reviewedAt !== null &&
+    packet.summary.readyForRunResolution &&
+    input.fillStatusLoad.phase === "loaded" &&
+    input.fillStatusLoad.verified &&
+    fillStatus !== null &&
+    fillStatus.state === run.state &&
+    fillStatus.stateVersion === run.stateVersion &&
+    fillStatus.fillAttemptId === null &&
+    fillStatus.fillLeaseExpiresAt === null &&
+    !fillStatus.leaseLive &&
+    !fillStatus.expiredRecoveryRequired &&
+    !fillStatus.fieldOperationAllowed &&
+    fillStatus.outcome === null &&
+    fillStatus.errorCode === null &&
+    fillStatus.steps.length === 0 &&
+    classifyFillStatus(fillStatus) === "NO_ATTEMPT" &&
+    input.pendingBrowserCommand === null &&
+    input.pendingReviewMutation === null &&
+    !input.pendingFillActivation &&
+    !input.fillMayHaveDispatched &&
+    apparentAutomatableFieldCount(packet) > 0;
+}
+
+export function isResolveReviewEligible(input: {
+  run: ReviewRunAuthority | null;
+  packet: AnswerPacket | null;
+  trusted: boolean;
+}): boolean {
+  return (
+    input.trusted &&
+    input.run?.state === "REVIEW_REQUIRED" &&
+    input.packet !== null &&
+    input.packet.reviewedAt === null &&
+    input.packet.summary.readyForRunResolution === true
+  );
+}
+
+export function isAnswerReviewPostconditionCurrent(input: {
+  phase: "idle" | "loading" | "loaded" | "error";
+  unverified: boolean;
+  packet: AnswerPacket | null;
+  snapshot: AnswerReviewMutationSnapshot;
+}): boolean {
+  if (
+    input.phase !== "loaded" ||
+    input.unverified ||
+    input.packet === null ||
+    input.packet.answerPacketVersion !== input.snapshot.answerPacketVersion
+  ) {
+    return false;
+  }
+
+  const answer = input.packet.answers.find((entry) => entry.id === input.snapshot.answerId);
+  return (
+    answer?.status === input.snapshot.requestedStatus &&
+    answer.reviewedByUser === true &&
+    answer.reviewedAt !== null
+  );
+}
+
+export function isResolveReviewPostconditionCurrent(input: {
+  phase: "idle" | "loading" | "loaded" | "error";
+  unverified: boolean;
+  run: ReviewRunAuthority | null;
+  packet: AnswerPacket | null;
+  snapshot: ResolveReviewMutationSnapshot;
+}): boolean {
+  return (
+    input.phase === "loaded" &&
+    !input.unverified &&
+    input.run?.state === "READY" &&
+    input.packet !== null &&
+    input.packet.answerPacketVersion === input.snapshot.answerPacketVersion &&
+    input.packet.packetHash === input.snapshot.packetHash &&
+    input.packet.reviewedAt !== null
+  );
+}
+
+export function parseApplicationRunReviewResponse(
+  value: unknown,
+  expectedRunId: string
+): ReviewRunAuthority {
+  const parsed = applicationRunReviewResponseSchema.parse(value);
+  if (parsed.run.id !== expectedRunId) throw new Error("Application run review response run mismatch.");
+  return {
+    id: parsed.run.id,
+    state: parsed.run.state,
+    stateVersion: parsed.run.stateVersion,
+    completedAt: parsed.run.completedAt,
+    reviewReasons: [...parsed.run.reviewReasons]
+  };
+}
+
+export function buildCompleteApplicationRunByUserRequest(input: {
+  runId: string;
+}): SameOriginReviewRequest {
+  return {
+    url: `/api/application-runs/${encodeURIComponent(input.runId)}/complete-by-user`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ attestation: PERSONAL_SUBMISSION_ATTESTATION })
+    }
+  };
+}
+
+export function parseCompleteApplicationRunByUserResponse(
+  value: unknown,
+  expectedRunId: string
+): PersonalSubmissionCompletionAuthority {
+  const parsed = personalSubmissionCompletionResponseSchema.parse(value);
+  if (parsed.run.id !== expectedRunId) {
+    throw new Error("Application run completion response belongs to another run.");
+  }
+  return parsed.run;
+}
+
+export function isPersonalSubmissionCompletionEligible(input: Readonly<{
+  authenticatedOwnerPage: boolean;
+  componentActive: boolean;
+  run: ReviewRunAuthority | null;
+  runVerified: boolean;
+  completionPending: boolean;
+}>): boolean {
+  return input.authenticatedOwnerPage &&
+    input.componentActive &&
+    input.runVerified &&
+    !input.completionPending &&
+    (input.run?.state === "READY" || input.run?.state === "READY_FOR_USER_SUBMISSION");
+}
+
+export function buildAnswerReviewRequest(input: {
+  runId: string;
+  answerId: string;
+  answerPacketVersion: number;
+  status: "APPROVED" | "REJECTED";
+}): SameOriginReviewRequest {
+  return {
+    url: `/api/application-runs/${encodeURIComponent(input.runId)}/answers/${encodeURIComponent(input.answerId)}/review`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        status: input.status,
+        answerPacketVersion: input.answerPacketVersion
+      })
+    }
+  };
+}
+
+export function parseAnswerReviewResponse(
+  value: unknown,
+  expected: {
+    runId: string;
+    answerId: string;
+    status: "APPROVED" | "REJECTED";
+  }
+): void {
+  const parsed = answerReviewResponseSchema.parse(value).answer;
+  if (parsed.runId !== expected.runId) throw new Error("Answer review response run mismatch.");
+  if (parsed.id !== expected.answerId) throw new Error("Answer review response answer mismatch.");
+  if (parsed.status !== expected.status) throw new Error("Answer review response status mismatch.");
+}
+
+export function buildResolveReviewRequest(input: {
+  runId: string;
+  run: ReviewRunAuthority;
+  packet: AnswerPacket;
+}): SameOriginReviewRequest {
+  return {
+    url: `/api/application-runs/${encodeURIComponent(input.runId)}/resolve-review`,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({
+        stateVersion: input.run.stateVersion,
+        acknowledgedReviewReasons: [...input.run.reviewReasons],
+        answerPacketVersion: input.packet.answerPacketVersion,
+        packetHash: input.packet.packetHash
+      })
+    }
+  };
+}
+
+export function derivePacketFreshness(input: {
+  packet: AnswerPacket | null;
+  latestPacketResponseWasNull: boolean;
+  packetLoadUnverified: boolean;
+  connection: ControlConnection;
+  workflowState: B1WorkflowState;
+  lastAcceptedInspection: B2InspectionCommandStatus | null;
+  formInvalidatedSinceVerifiedSuccess: boolean;
+}): PacketFreshness {
+  if (input.packet === null) {
+    return input.latestPacketResponseWasNull ? "absent" : "unverified";
+  }
+  if (
+    input.formInvalidatedSinceVerifiedSuccess ||
+    input.lastAcceptedInspection?.outcome === "REINSPECTION_REQUIRED" ||
+    (input.lastAcceptedInspection?.outcome === "SUCCEEDED" &&
+      input.lastAcceptedInspection.reinspectionRequired)
+  ) {
+    return "stale";
+  }
+  if (
+    input.packetLoadUnverified ||
+    input.connection !== "CONNECTED" ||
+    input.workflowState !== "TARGET_OPEN" ||
+    input.lastAcceptedInspection?.outcome !== "SUCCEEDED" ||
+    input.lastAcceptedInspection.reinspectionRequired ||
+    input.packet.inspectionVersion !== input.lastAcceptedInspection.inspectionVersion ||
+    input.packet.answerPacketVersion !== input.lastAcceptedInspection.answerPacketVersion
+  ) {
+    return "unverified";
+  }
+  return "current";
+}
+
+export type ProposalPresentation = {
+  label: string;
+  values: Array<{ text: string; annotation: string | null }>;
+};
+
+export function presentProposal(
+  proposal: PublicApplicationAnswerProposal,
+  choices: AnswerPacketAnswer["choices"],
+  answer: Pick<AnswerPacketAnswer, "disposition" | "sensitive" | "valueRedacted">
+): ProposalPresentation | null {
+  if (answer.disposition !== "PROPOSABLE" || answer.sensitive || answer.valueRedacted) {
+    return null;
+  }
+  if (proposal.kind === "SCALAR") {
+    return {
+      label: "Proposed answer — review before use",
+      values: [{ text: proposal.value, annotation: null }]
+    };
+  }
+  if (proposal.kind === "BOOLEAN") {
+    return {
+      label: "Proposed answer — review before use",
+      values: [{ text: proposal.value ? "Yes" : "No", annotation: null }]
+    };
+  }
+  if (proposal.kind === "DOCUMENT_REFERENCE") {
+    return {
+      label:
+        proposal.artifactType === "RESUME"
+          ? "Proposed résumé document reference"
+          : "Proposed cover-letter document reference",
+      values: [{ text: proposal.documentId, annotation: null }]
+    };
+  }
+  return {
+    label: "Proposed answer — review before use",
+    values: proposal.optionKeys.map((key) => {
+      const matches = choices.filter((choice) => choice.key === key);
+      if (matches.length !== 1) {
+        return { text: "Option unavailable in packet choices", annotation: null };
+      }
+      return {
+        text: matches[0].label,
+        annotation: matches[0].disabled ? "Disabled option" : null
+      };
+    })
+  };
+}
+
+const DISPOSITION_MESSAGES: Record<ApplicationAnswerDisposition, string> = {
+  PROPOSABLE: "Apply Pilot produced a proposed answer. Review it before using it.",
+  MANUAL_ONLY: "You must answer this field manually.",
+  EXCLUDED: "Apply Pilot intentionally did not propose an answer.",
+  UNSUPPORTED: "This field or control is unsupported and must be handled manually."
+};
+
+export function dispositionMessage(disposition: ApplicationAnswerDisposition): string {
+  return DISPOSITION_MESSAGES[disposition];
+}
+
+export function readinessMessage(ready: boolean): string {
+  return ready
+    ? "Packet review requirements are satisfied for Apply Pilot's internal run-review workflow."
+    : "Packet review requirements are not yet satisfied for Apply Pilot's internal run-review workflow.";
+}
