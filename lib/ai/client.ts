@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import type { z } from "zod";
 import { PublicApiError } from "@/lib/api-errors";
-import { getAiFinancialPolicy } from "@/lib/ai/config";
+import { getAiFinancialPolicy, getAiProviderForFeature, getAiRuntimeMode } from "@/lib/ai/config";
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros as estimatePricedCost, getModelPricing } from "@/lib/ai/pricing";
 import {
@@ -207,6 +207,46 @@ export async function generateJson<T>({
   }
 }
 
+// Kept separate so the priced maximum output is verifiably present in the
+// exact payload sent to OpenAI.
+type ApplicationPlanChatRequestInput<T> = {
+  model: string;
+  promptName: string;
+  systemPrompt: string;
+  payload: unknown;
+  schema?: z.ZodType<T, z.ZodTypeDef, unknown>;
+  maxOutputTokens: number;
+};
+
+export function buildApplicationPlanChatRequest<T>({
+  model,
+  promptName,
+  systemPrompt,
+  payload,
+  schema,
+  maxOutputTokens
+}: ApplicationPlanChatRequestInput<T>) {
+  return {
+    model,
+    temperature: 0.2,
+    max_tokens: maxOutputTokens,
+    response_format: schema
+      ? zodResponseFormat(schema, promptName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64))
+      : { type: "json_object" as const },
+    messages: [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: JSON.stringify(payload) }
+    ]
+  };
+}
+
+export function callApplicationPlanProvider<T>(
+  client: Pick<OpenAI, "chat">,
+  input: ApplicationPlanChatRequestInput<T>
+) {
+  return client.chat.completions.create(buildApplicationPlanChatRequest(input));
+}
+
 // Application planning is the new paid AI surface. It retains main's OpenAI routing
 // while applying the accepted engine's input, price, confirmation, and reservation fences.
 async function generateApplicationPlanJson<T>({
@@ -220,9 +260,14 @@ async function generateApplicationPlanJson<T>({
   const { policy } = assertAiInputWithinLimits("APPLICATION_PLAN", systemPrompt, payload);
   const promptVersion = context.promptVersion ?? "1";
   const requestHash = hashAiInput(promptName, promptVersion, payload);
-  const client = getOpenAIClient();
+  // The new planner requires explicit provider opt-in as well as the accepted
+  // AI_ENABLED/mock gates; a stored key alone must never start a paid call.
+  const plannerProvider = getAiProviderForFeature("APPLICATION_PLAN");
+  const client = plannerProvider === "openai" && getAiRuntimeMode("openai") === "openai"
+    ? getOpenAIClient()
+    : null;
 
-  if (!client || process.env.OPENAI_MOCK_MODE === "true") {
+  if (!client) {
     if (fallback === undefined) throw new LocalAiUnavailableError();
     return {
       data: validateGeneratedJson(fallback, schema, promptName),
@@ -285,16 +330,8 @@ async function generateApplicationPlanJson<T>({
   let reconciled = false;
 
   try {
-    const response = await client.chat.completions.create({
-      model,
-      temperature: 0.2,
-      response_format: schema
-        ? zodResponseFormat(schema, promptName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64))
-        : { type: "json_object" },
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: JSON.stringify(payload) }
-      ]
+    const response = await callApplicationPlanProvider(client, {
+      model, promptName, systemPrompt, payload, schema, maxOutputTokens: policy.maxOutputTokens
     });
     providerReturned = true;
     inputTokens = response.usage?.prompt_tokens ?? 0;
