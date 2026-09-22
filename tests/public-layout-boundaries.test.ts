@@ -8,6 +8,7 @@ const repositoryRoot = process.cwd();
 const productPagePaths = [
   "applications/[id]/page.tsx",
   "applications/page.tsx",
+  "application-runs/[id]/browser/page.tsx",
   "dashboard/page.tsx",
   "interviews/[id]/page.tsx",
   "interviews/library/page.tsx",
@@ -31,6 +32,21 @@ const apiRoutePaths = [
   "app/api/ai/settings/route.ts",
   "app/api/application-answers/[id]/route.ts",
   "app/api/application-answers/route.ts",
+  "app/api/application-automation-policy/route.ts",
+  "app/api/application-runs/[id]/answer-packet/rebuild/route.ts",
+  "app/api/application-runs/[id]/answer-packet/route.ts",
+  "app/api/application-runs/[id]/answers/[answerId]/document-export/route.ts",
+  "app/api/application-runs/[id]/answers/[answerId]/review/route.ts",
+  "app/api/application-runs/[id]/cancel/route.ts",
+  "app/api/application-runs/[id]/complete-by-user/route.ts",
+  "app/api/application-runs/[id]/execution-token/route.ts",
+  "app/api/application-runs/[id]/execution-tokens/[tokenId]/route.ts",
+  "app/api/application-runs/[id]/fill-attempt/route.ts",
+  "app/api/application-runs/[id]/form-inspection/route.ts",
+  "app/api/application-runs/[id]/prepare/route.ts",
+  "app/api/application-runs/[id]/resolve-review/route.ts",
+  "app/api/application-runs/[id]/route.ts",
+  "app/api/application-runs/route.ts",
   "app/api/applications/[id]/route.ts",
   "app/api/applications/route.ts",
   "app/api/auth/[...nextauth]/route.ts",
@@ -154,7 +170,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 50);
+  assert.equal(actualRoutes.length, 65);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });

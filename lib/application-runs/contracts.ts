@@ -1,0 +1,301 @@
+import type {
+  ApplicationAutomationPolicy,
+  ApplicationRun,
+  ApplicationRunAnswer
+} from "@prisma/client";
+import { z } from "zod";
+
+import {
+  FILL_ERROR_CODES,
+  FILL_STEP_RESULTS,
+  STOPPED_EARLY_FILL_ERRORS
+} from "@/lib/application-runs/fill-attempt-domain";
+import {
+  MAX_FIELDS_TOTAL,
+  MAX_FUTURE_OBSERVED_URL_CODE_POINTS
+} from "@/lib/application-runs/form-inspection";
+import { applicationAutomationPolicyPatchSchema } from "@/lib/application-runs/policy";
+import { PLAN_REVIEW_REASONS } from "@/lib/application-runs/review-reasons";
+
+export const cuidPathIdSchema = z.string().cuid();
+
+export const applicationRunPathSchema = z
+  .object({
+    id: cuidPathIdSchema
+  })
+  .strict();
+
+export const applicationRunAnswerPathSchema = z
+  .object({
+    id: cuidPathIdSchema,
+    answerId: cuidPathIdSchema
+  })
+  .strict();
+
+export const applicationRunExecutionTokenPathSchema = z
+  .object({
+    id: cuidPathIdSchema,
+    tokenId: cuidPathIdSchema
+  })
+  .strict();
+
+export const createApplicationRunBodySchema = z
+  .object({
+    applicationId: cuidPathIdSchema,
+    idempotencyKey: z
+      .string()
+      .trim()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/)
+  })
+  .strict();
+
+export const strictEmptyBodySchema = z.object({}).strict();
+
+export const completeApplicationRunByUserBodySchema = z
+  .object({
+    attestation: z.literal("USER_PERSONALLY_SUBMITTED_ON_EMPLOYER_SITE")
+  })
+  .strict();
+
+const nonnegativeSafeVersionSchema = z.number().int().safe().nonnegative();
+
+export const acquireApplicationRunFillAttemptBodySchema = z
+  .object({
+    expectedStateVersion: nonnegativeSafeVersionSchema
+  })
+  .strict();
+
+const fillAttemptIdSchema = z.string().uuid();
+const fillStepKeySchema = z
+  .string()
+  .min(1)
+  .max(160)
+  .superRefine((value, context) => {
+    const [prefix, attemptId, normalizedFieldKey, ...rest] = value.split(":");
+    if (
+      prefix !== "fill" ||
+      rest.length > 0 ||
+      !fillAttemptIdSchema.safeParse(attemptId).success ||
+      !/^[a-f0-9]{64}$/.test(normalizedFieldKey ?? "")
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Fill step keys must bind one UUID attempt to one canonical field key."
+      });
+    }
+  });
+
+const fillFinalizationStepSchema = z
+  .object({
+    stepKey: fillStepKeySchema,
+    result: z.enum(FILL_STEP_RESULTS),
+    errorCode: z.enum(FILL_ERROR_CODES).nullable()
+  })
+  .strict();
+
+const finalizeApplicationRunFillAttemptBodySchema = z
+  .object({
+    action: z.literal("FINALIZE"),
+    fillAttemptId: fillAttemptIdSchema,
+    expectedStateVersion: nonnegativeSafeVersionSchema,
+    outcome: z.enum(["COMPLETED", "STOPPED_EARLY"]),
+    errorCode: z.enum(STOPPED_EARLY_FILL_ERRORS).nullable(),
+    steps: z.array(fillFinalizationStepSchema).min(1).max(MAX_FIELDS_TOTAL)
+  })
+  .strict();
+
+const recoverExpiredApplicationRunFillAttemptBodySchema = z
+  .object({
+    action: z.literal("RECOVER_EXPIRED"),
+    fillAttemptId: fillAttemptIdSchema,
+    expectedStateVersion: nonnegativeSafeVersionSchema
+  })
+  .strict();
+
+export const applicationRunFillAttemptPatchBodySchema = z
+  .discriminatedUnion("action", [
+    finalizeApplicationRunFillAttemptBodySchema,
+    recoverExpiredApplicationRunFillAttemptBodySchema
+  ])
+  .superRefine((value, context) => {
+    if (value.action !== "FINALIZE") return;
+    if (
+      (value.outcome === "COMPLETED" && value.errorCode !== null) ||
+      (value.outcome === "STOPPED_EARLY" && value.errorCode === null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["errorCode"],
+        message: "Fill finalization outcome and error must agree."
+      });
+    }
+
+    const stepKeys = value.steps.map((step) => step.stepKey);
+    if (new Set(stepKeys).size !== stepKeys.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steps"],
+        message: "Fill finalization step keys must not contain duplicates."
+      });
+    }
+    const expectedPrefix = `fill:${value.fillAttemptId}:`;
+    value.steps.forEach((step, index) => {
+      if (!step.stepKey.startsWith(expectedPrefix)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["steps", index, "stepKey"],
+          message: "Fill finalization steps must belong to the asserted attempt."
+        });
+      }
+    });
+  });
+
+export const publishApplicationRunFormInspectionBodySchema = z
+  .object({
+    expectedStateVersion: nonnegativeSafeVersionSchema,
+    expectedFormInspectionVersion: nonnegativeSafeVersionSchema,
+    expectedAnswerPacketVersion: nonnegativeSafeVersionSchema,
+    observedUrl: z.string().max(MAX_FUTURE_OBSERVED_URL_CODE_POINTS),
+    inspectionReport: z.unknown()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!Object.prototype.hasOwnProperty.call(value, "inspectionReport")) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["inspectionReport"],
+        message: "Inspection report is required."
+      });
+    }
+  });
+
+export const rebuildApplicationRunAnswerPacketBodySchema = z
+  .object({
+    expectedStateVersion: nonnegativeSafeVersionSchema,
+    expectedFormInspectionVersion: nonnegativeSafeVersionSchema,
+    expectedAnswerPacketVersion: nonnegativeSafeVersionSchema
+  })
+  .strict();
+
+export const resolveApplicationRunReviewBodySchema = z
+  .object({
+    stateVersion: z.number().int().nonnegative(),
+    acknowledgedReviewReasons: z.array(z.enum(PLAN_REVIEW_REASONS)),
+    answerPacketVersion: z.number().int().nonnegative(),
+    packetHash: z.string().regex(/^[a-f0-9]{64}$/).nullable()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.acknowledgedReviewReasons).size !== value.acknowledgedReviewReasons.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["acknowledgedReviewReasons"],
+        message: "Review reasons must not contain duplicates."
+      });
+    }
+    if (
+      (value.answerPacketVersion === 0 && value.packetHash !== null) ||
+      (value.answerPacketVersion > 0 && value.packetHash === null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["packetHash"],
+        message: "Packet hash must match the answer packet version."
+      });
+    }
+  });
+
+export const reviewApplicationRunAnswerBodySchema = z
+  .object({
+    status: z.enum(["APPROVED", "REJECTED"]),
+    answerPacketVersion: z.number().int().nonnegative()
+  })
+  .strict();
+
+export const applicationRunDocumentExportBodySchema = z
+  .object({
+    expectedStateVersion: nonnegativeSafeVersionSchema,
+    answerPacketVersion: z.number().int().safe().positive(),
+    packetHash: z.string().regex(/^[a-f0-9]{64}$/),
+    format: z.literal("docx")
+  })
+  .strict();
+
+export const automationPolicyPatchContract = applicationAutomationPolicyPatchSchema;
+
+export type CreateApplicationRunBody = z.infer<typeof createApplicationRunBodySchema>;
+export type CompleteApplicationRunByUserBody = z.infer<
+  typeof completeApplicationRunByUserBodySchema
+>;
+export type AcquireApplicationRunFillAttemptBody = z.infer<
+  typeof acquireApplicationRunFillAttemptBodySchema
+>;
+export type ApplicationRunFillAttemptPatchBody = z.infer<
+  typeof applicationRunFillAttemptPatchBodySchema
+>;
+export type PublishApplicationRunFormInspectionBody = z.infer<
+  typeof publishApplicationRunFormInspectionBodySchema
+>;
+export type RebuildApplicationRunAnswerPacketBody = z.infer<
+  typeof rebuildApplicationRunAnswerPacketBodySchema
+>;
+export type ResolveApplicationRunReviewBody = z.infer<typeof resolveApplicationRunReviewBodySchema>;
+export type ReviewApplicationRunAnswerBody = z.infer<typeof reviewApplicationRunAnswerBodySchema>;
+export type ApplicationRunDocumentExportBody = z.infer<
+  typeof applicationRunDocumentExportBodySchema
+>;
+
+export type AutomationPolicyValues = Pick<
+  ApplicationAutomationPolicy,
+  | "enabled"
+  | "mode"
+  | "minimumFitScore"
+  | "minimumConfidenceScore"
+  | "dailyApplicationCap"
+  | "allowedHosts"
+  | "blockedHosts"
+  | "permittedAdapters"
+  | "coverLetterRequired"
+  | "sensitiveAnswerPolicy"
+  | "finalReviewRequired"
+>;
+
+export type AutomationPolicyDto = AutomationPolicyValues & {
+  persisted: boolean;
+  effectiveEnabled: boolean;
+};
+
+export type ApplicationRunDto = Pick<
+  ApplicationRun,
+  | "id"
+  | "applicationId"
+  | "jobPostingId"
+  | "state"
+  | "stateVersion"
+  | "applyHost"
+  | "applyUrlSnapshot"
+  | "detectedAdapter"
+  | "prepareLeaseExpiresAt"
+  | "reviewReasons"
+  | "reviewAcknowledgedAt"
+  | "blockingReason"
+  | "errorCategory"
+  | "preparedAt"
+  | "completedAt"
+  | "cancelledAt"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+export type ApplicationRunAnswerDto = Pick<
+  ApplicationRunAnswer,
+  | "id"
+  | "runId"
+  | "status"
+  | "reviewedByUser"
+  | "reviewedAt"
+  | "sensitive"
+  | "valueRedacted"
+>;

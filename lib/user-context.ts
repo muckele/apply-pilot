@@ -99,7 +99,7 @@ export function apiErrorResponse(error: unknown) {
       }
     });
 
-    return NextResponse.json({ error: error.message }, { status: error.status });
+    return NextResponse.json({ error: error.message, ...error.details }, { status: error.status });
   }
 
   if (error instanceof Error) {
