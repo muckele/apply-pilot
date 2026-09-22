@@ -81,9 +81,27 @@ function fallbackParse(text: string): ParsedResume {
     "Scheduling",
     "Compliance"
   ];
-  const skills = skillTerms.filter((skill) =>
-    text.toLowerCase().includes(skill.toLowerCase().replace(".", ""))
-  );
+  const mentionsSkill = (source: string, skill: string) => {
+    const term = skill.replace(/[.*+?^{}$()|[\]\\]/g, "\\$&");
+    return new RegExp("\\b" + term + "\\b", "i").test(source);
+  };
+  const negationSource = text
+    .replace(/\b(do not know|don't know|no experience with|not proficient in)[ \t]*\r?\n[ \t]*/gi, "$1 ")
+    .replace(/,[ \t]*\r?\n[ \t]*/g, ", ");
+  const negatedSkills = new Set<string>();
+
+  for (const sentence of negationSource.split(/(?:[.!?](?=\s|$)|;|\r?\n)/)) {
+    for (const marker of sentence.matchAll(/\b(?:do not know|don't know|no experience with|not proficient in)[ \t]+/gi)) {
+      const following = sentence.slice(marker.index + marker[0].length);
+      const transition = following.search(/\b(?:but|however|yet)\b|,\s*(?:experienced|proficient|skilled)\b/i);
+      const scope = transition < 0 ? following : following.slice(0, transition);
+      for (const skill of skillTerms) {
+        if (mentionsSkill(scope, skill)) negatedSkills.add(skill);
+      }
+    }
+  }
+
+  const skills = skillTerms.filter((skill) => mentionsSkill(text, skill) && !negatedSkills.has(skill));
   const achievements = text
     .split(/\n+/)
     .map((line) => line.trim())
@@ -102,7 +120,7 @@ function fallbackParse(text: string): ParsedResume {
   };
 }
 
-export async function parseResumeText(text: string, userId?: string) {
+export async function parseResumeTextWithMeta(text: string, userId?: string) {
   if (!text.trim()) {
     throw new Error("Resume text is empty.");
   }
@@ -116,52 +134,18 @@ export async function parseResumeText(text: string, userId?: string) {
     context: userId ? { userId, feature: "RESUME_PARSE", promptVersion: "2" } : undefined
   });
 
-  return generated.data;
+  return generated;
 }
 
-export async function tailorResume(payload: unknown, fallbackText: string, userId?: string) {
-  const fallback: TailoredResumeOutput = {
-    professionalSummary:
-      "Customer-facing technical professional with full-stack software engineering training and hands-on operations experience across scheduling, compliance, billing workflows, and stakeholder coordination.",
-    skillsSection: [
-      "JavaScript",
-      "React",
-      "Node.js",
-      "Express",
-      "Python",
-      "SQL",
-      "REST APIs",
-      "Customer discovery",
-      "Implementation support",
-      "Operations leadership"
-    ],
-    bulletRewrites: [
-      {
-        original: "Supported business operations and customer-facing workflows.",
-        rewrite:
-          "Coordinated cross-functional operations across hiring, compliance, scheduling, billing workflows, and payer communication to improve service delivery and accountability.",
-        reason: "Makes the operations scope concrete without inventing metrics."
-      }
-    ],
-    rolesOrProjectsToEmphasize: [
-      "General Assembly full-stack projects",
-      "Golden Behavior Connection operations leadership",
-      "Business development and customer-facing problem solving"
-    ],
-    unsupportedKeywords: [],
-    formattingWarnings: [
-      "Keep the exported resume single-column and avoid tables, graphics, text boxes, and decorative layouts."
-    ],
-    atsCompatibilityScore: 78,
-    jobFitScore: 76,
-    resumeText: fallbackText
-  };
+export async function parseResumeText(text: string, userId?: string) {
+  return (await parseResumeTextWithMeta(text, userId)).data;
+}
 
+export async function tailorResume(payload: unknown, _fallbackText: string, userId?: string) {
   const generated = await generateJson<TailoredResumeOutput>({
     promptName: "resumeTailorPrompt",
     systemPrompt: resumeTailorPrompt,
     payload,
-    fallback,
     schema: tailoredResumeSchema,
     context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "2" } : undefined
   });

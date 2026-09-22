@@ -132,7 +132,7 @@ export async function runJobMatch(
 
   if (!options.force && job.overallFitScore !== null) {
     const existingAnalysis = await prisma.aIAnalysis.findFirst({
-      where: { userId, jobPostingId: job.id, type: "JOB_MATCH", inputHash },
+      where: { userId, jobPostingId: job.id, type: "JOB_MATCH", inputHash, model: { not: "heuristic-local" } },
       orderBy: { createdAt: "desc" }
     });
 

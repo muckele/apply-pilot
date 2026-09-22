@@ -120,7 +120,7 @@ export async function POST(request: NextRequest) {
             inputHash: prep.inputHash,
             input: { jobPostingId: linkedJobPostingId, applicationId: input.applicationId },
             output: prep,
-            confidence: 76
+            confidence: prep.usage.mocked ? null : 76
           }
         });
       }

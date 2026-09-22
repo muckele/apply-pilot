@@ -53,14 +53,9 @@ export async function draftCoverLetter(payload: {
 }, userId?: string) {
   const fallback = {
     title: `${payload.job.company} ${payload.job.title} cover letter`,
-    coverLetter: `Dear ${payload.job.company} Hiring Team,\n\nI am interested in the ${payload.job.title} role because it sits at the intersection of technical problem solving, customer communication, and operational follow-through. My background combines full-stack software engineering training with business development, recruiting, scheduling, payer coordination, and small-business operations.\n\nI would bring a practical, customer-facing technical perspective to the team: translating requirements, troubleshooting workflows, communicating clearly with stakeholders, and staying honest about what is supported by the data and systems in front of me.\n\nThank you for your time and consideration.\n\nMathew Uckele`,
-    angle:
-      "Position Mathew as a bridge between engineering, customers, and operations without overstating seniority.",
-    claimsUsed: [
-      "Full-stack software engineering training",
-      "Customer-facing sales and business development background",
-      "Operations leadership across scheduling, compliance, and billing workflows"
-    ]
+    coverLetter: `Dear ${payload.job.company} Hiring Team,\n\nI am writing about the ${payload.job.title} position. I am interested in learning more about the role and how I might contribute to your team.\n\nThank you for your time and consideration.\n\nSincerely,\n[Your name]`,
+    angle: "Generic draft requiring applicant personalization and review before use.",
+    claimsUsed: [] as string[]
   };
 
   const generated = await generateJson({
@@ -86,20 +81,10 @@ export async function draftEmailReply(payload: {
   tone: string;
   job?: unknown;
 }, userId?: string) {
-  const fallback = {
-    summary: "Recruiter or hiring-team email requiring user review.",
-    requestedAction: "Review the message and confirm the appropriate next step.",
-    deadline: null,
-    draftResponse:
-      "Hi,\n\nThank you for reaching out. I appreciate the update and would be happy to continue the conversation. Please let me know the best next step and any details I should prepare in advance.\n\nBest,\nMathew",
-    suggestedFollowUpTask: "Review and personalize the draft before sending."
-  };
-
   const generated = await generateJson({
     promptName: "emailReplyPrompt",
     systemPrompt: emailReplyPrompt,
     payload,
-    fallback,
     schema: emailReplySchema,
     context: userId ? { userId, feature: "EMAIL_REPLY", promptVersion: "2" } : undefined
   });
@@ -115,27 +100,18 @@ export async function draftEmailReply(payload: {
 
 export async function generateInterviewPrep(payload: unknown, userId?: string) {
   const fallback = {
-    prepBrief:
-      "Prepare to connect the job requirements to customer-facing technical problem solving, software fundamentals, and operations ownership.",
+    prepBrief: "Review the job description and your own evidence before the interview. Prepare specific examples you can verify.",
     likelyQuestions: [
-      "Tell me about your transition into technical roles.",
-      "How do you explain technical concepts to non-technical stakeholders?",
-      "Describe a time you improved an operational workflow."
+      "What interests you about this role?",
+      "Which of your documented experiences best match the role requirements?",
+      "What questions do you have about the team's work?"
     ],
-    starStories: [
-      {
-        theme: "Operations ownership",
-        situation: "A service workflow involved multiple moving parts across people, payers, and documentation.",
-        task: "Improve coordination and reduce operational ambiguity.",
-        action: "Organized hiring, compliance, scheduling, billing workflow, and payer communication responsibilities.",
-        result: "Created clearer accountability and more reliable follow-through."
-      }
-    ],
+    starStories: [],
     questionsToAsk: [
       "What does success look like in the first 90 days?",
-      "How does the team balance implementation work with customer support escalations?"
+      "What are the main priorities for this role?"
     ],
-    risksToPrepareFor: ["Be clear about hands-on production engineering depth versus training and project experience."]
+    risksToPrepareFor: ["Review your evidence for each requirement and avoid unsupported claims."]
   };
 
   const generated = await generateJson({
@@ -158,13 +134,12 @@ export async function generateInterviewPrep(payload: unknown, userId?: string) {
 
 export async function generateInterviewFeedback(payload: unknown, userId?: string) {
   const fallback = {
-    summary: "Interview notes saved. Add a transcript or detailed notes for stronger feedback.",
+    summary: "Detailed AI feedback is unavailable in local mode. Review your interview notes before drawing conclusions.",
     questionsAsked: [],
     strongMoments: [],
     weakAnswers: [],
     betterAnswers: [],
-    thankYouEmailDraft:
-      "Hi,\n\nThank you for taking the time to speak with me today. I appreciated learning more about the role and the team. The conversation reinforced my interest in contributing a mix of technical problem solving, customer communication, and operational follow-through.\n\nBest,\nMathew"
+    thankYouEmailDraft: "Hi,\n\nThank you for taking the time to speak with me. I appreciated learning more about the role and the team.\n\nBest,\n[Your name]"
   };
 
   const generated = await generateJson({
