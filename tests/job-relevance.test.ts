@@ -148,3 +148,58 @@ test("pre-import filtering rejects salary ranges below target when salary is ava
     /below the target range/
   );
 });
+
+test("pre-import filtering rejects onsite jobs outside preferred locations", () => {
+  const onsiteJob = job({
+    location: "New York, NY",
+    remoteStatus: "Onsite",
+    description: "Support customer implementation, API integrations, workflow troubleshooting, and SaaS onboarding."
+  });
+  const profile = {
+    preferredLocations: ["Los Angeles, CA"],
+    remotePreference: "FLEXIBLE"
+  } as never;
+  const relevance = scoreJobRelevance({ job: onsiteJob, profile });
+
+  assert.match(getPreImportRejectionReason({ job: onsiteJob, profile, relevance }) ?? "", /Location does not match/);
+});
+
+test("pre-import filtering retains remote-only and remote-preference rules", () => {
+  const onsiteJob = job({
+    remoteStatus: "Onsite",
+    description: "Support customer implementation, API integrations, workflow troubleshooting, and SaaS onboarding."
+  });
+  const relevance = scoreJobRelevance({ job: onsiteJob, profile: null });
+
+  assert.match(getPreImportRejectionReason({ job: onsiteJob, profile: null, relevance, remoteOnly: true }) ?? "", /remote-only filter/);
+  assert.match(getPreImportRejectionReason({
+    job: onsiteJob,
+    profile: { remotePreference: "REMOTE", preferredLocations: [] } as never,
+    relevance
+  }) ?? "", /remote preference/);
+});
+
+test("job-only React, SQL, and AWS remain search signals, not supported applicant keywords", () => {
+  const result = scoreJobRelevance({
+    job: job({
+      description: "Requires React, SQL, and AWS. Partner with customers on API integrations and onboarding."
+    }),
+    profile: null
+  });
+
+  assert.ok(result.breakdown.techStackScore > 0);
+  assert.deepEqual(result.supportedKeywords, []);
+  assert.ok(result.reasons.every((reason) => !/supported technical skills/i.test(reason)));
+});
+
+test("deterministic relevance supplies neutral guidance without a fixed applicant history", () => {
+  const result = scoreJobRelevance({
+    job: job({
+      description: "Support customer onboarding, technical demos, API integrations, and SaaS workflows."
+    }),
+    profile: null
+  });
+
+  assert.match(result.resumeAngle, /review your actual experience/i);
+  assert.doesNotMatch(JSON.stringify(result), /Mathew|Uckele|full-stack training|business development|operations leadership/i);
+});

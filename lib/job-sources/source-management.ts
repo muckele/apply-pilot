@@ -92,6 +92,7 @@ export async function runJobSourceSync({
       ? await scoreTopImportedJobs({
           userId,
           jobs: result.imported,
+          profile: syncProfile,
           limit: aiSettings.maxAnalysesPerSync
         })
       : [];

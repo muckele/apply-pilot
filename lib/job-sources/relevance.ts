@@ -96,7 +96,7 @@ const operationsSaasTerms = [
   "payer"
 ];
 
-const technicalSkillFallbacks = [
+const technicalSearchTerms = [
   "javascript",
   "react",
   "node",
@@ -172,31 +172,6 @@ function textIncludesAny(text: string, terms: string[]) {
 
 function countMatches(text: string, terms: string[]) {
   return terms.filter((term) => text.includes(term)).length;
-}
-
-function matchedTerms(text: string, terms: string[]) {
-  return [...new Set(terms.filter((term) => term && text.includes(term)))];
-}
-
-function readableKeyword(keyword: string) {
-  const known: Record<string, string> = {
-    api: "APIs",
-    aws: "AWS",
-    css: "CSS",
-    html: "HTML",
-    javascript: "JavaScript",
-    mongodb: "MongoDB",
-    "node.js": "Node.js",
-    postgresql: "PostgreSQL",
-    revops: "RevOps",
-    "rest api": "REST APIs",
-    "rest apis": "REST APIs",
-    saas: "SaaS",
-    sql: "SQL",
-    tam: "Technical Account Management"
-  };
-
-  return known[keyword] ?? keyword.replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function jobText(job: NormalizedJob) {
@@ -360,7 +335,7 @@ function scoreSalary(job: NormalizedJob, profile: UserProfile | null) {
 }
 
 function scoreTechStack(text: string, profile: UserProfile | null) {
-  const skills = profile?.skillsToEmphasize?.map(normalizeText).filter(Boolean) ?? technicalSkillFallbacks;
+  const skills = profile?.skillsToEmphasize?.map(normalizeText).filter(Boolean) ?? technicalSearchTerms;
   const matches = countMatches(text, skills);
 
   return clampScore((matches / Math.max(4, Math.min(skills.length, 8))) * 100);
@@ -410,19 +385,6 @@ function scoreBodyEvidence(breakdown: Omit<JobRelevanceResult["breakdown"], "bod
   return 20;
 }
 
-function buildSupportedKeywords(text: string, profile: UserProfile | null) {
-  const profileSkills = profile?.skillsToEmphasize?.map(normalizeText).filter(Boolean) ?? [];
-  const terms = [
-    ...matchedTerms(text, technicalSkillFallbacks),
-    ...matchedTerms(text, profileSkills),
-    ...matchedTerms(text, customerFacingTerms),
-    ...matchedTerms(text, operationsSaasTerms),
-    ...matchedTerms(text, preferredRoleTerms)
-  ];
-
-  return [...new Set(terms.map(readableKeyword))].slice(0, 14);
-}
-
 function buildKeywordsToStrengthen(breakdown: JobRelevanceResult["breakdown"], hardExcluded: boolean) {
   const keywords: string[] = [];
 
@@ -430,7 +392,7 @@ function buildKeywordsToStrengthen(breakdown: JobRelevanceResult["breakdown"], h
     keywords.push("Role type/deal-breaker");
   }
   if (breakdown.techStackScore < 50) {
-    keywords.push("Supported technical stack");
+    keywords.push("Limited technical stack signals in posting");
   }
   if (breakdown.customerFacingScore < 60) {
     keywords.push("Customer-facing delivery");
@@ -448,35 +410,12 @@ function buildKeywordsToStrengthen(breakdown: JobRelevanceResult["breakdown"], h
   return keywords.slice(0, 8);
 }
 
-function buildResumeAngle(breakdown: JobRelevanceResult["breakdown"], concerns: string[]) {
-  const strengths: string[] = [];
-
-  if (breakdown.customerFacingScore >= 60) {
-    strengths.push("customer-facing technical discovery, demos, training, and implementation support");
-  }
-  if (breakdown.techStackScore >= 50) {
-    strengths.push("full-stack training, APIs, databases, and troubleshooting");
-  }
-  if (breakdown.operationsSaasScore >= 50) {
-    strengths.push("SaaS operations, scheduling, compliance, billing, and workflow ownership");
-  }
-  if (!strengths.length) {
-    strengths.push("technical curiosity, operational ownership, and customer-facing problem solving");
-  }
-
-  const caution = concerns.length
-    ? " Address gaps honestly by positioning them as adjacent experience and growth areas, not claimed expertise."
-    : "";
-
-  return `Lead with ${strengths.join("; ")}.${caution}`;
-}
-
 function recommendationForDecision(decision: JobRelevanceDecision) {
   if (decision === "strong") {
-    return "Apply now";
+    return "Prioritize for review";
   }
   if (decision === "review") {
-    return "Consider";
+    return "Review";
   }
 
   return "Skip";
@@ -524,7 +463,7 @@ export function scoreJobRelevance({
     reasons.push("Posting has customer-facing technical language.");
   }
   if (breakdown.techStackScore >= 50) {
-    reasons.push("Posting mentions supported technical skills.");
+    reasons.push("Posting contains technical stack signals relevant to the search.");
   }
   if (breakdown.locationScore >= 90) {
     reasons.push("Location or work style fits preferences.");
@@ -552,18 +491,17 @@ export function scoreJobRelevance({
   const evidenceAdjustedScore = breakdown.bodyEvidenceScore < 70 ? Math.min(58, clampScore(rawScore)) : clampScore(rawScore);
   const score = hardExcluded ? Math.min(35, evidenceAdjustedScore) : evidenceAdjustedScore;
   const decision: JobRelevanceDecision = score >= 80 ? "strong" : score >= 60 ? "review" : "skip";
-  const supportedKeywords = buildSupportedKeywords(text, profile);
   const keywordsToStrengthen = buildKeywordsToStrengthen(breakdown, hardExcluded);
 
   return {
     score,
     decision,
     recommendation: recommendationForDecision(decision),
-    reasons: reasons.length ? reasons : ["Basic keyword overlap with the search query."],
+    reasons: reasons.length ? reasons : ["Posting has limited target-role signals."],
     concerns,
-    supportedKeywords,
+    supportedKeywords: [],
     keywordsToStrengthen,
-    resumeAngle: buildResumeAngle(breakdown, concerns),
+    resumeAngle: "Review your actual experience for evidence relevant to this posting; avoid unsupported claims.",
     hardExcluded,
     breakdown
   };

@@ -356,44 +356,10 @@ async function importRawJobs({
     }
 
     seen.add(key);
-    imported.push(await upsertJobWithRelevance({ userId, jobSourceId: source.id, job, relevance }));
+    imported.push(await upsertNormalizedJob({ userId, jobSourceId: source.id, job }));
   }
 
   return { imported, skipped, bestRelevanceScore };
-}
-
-async function upsertJobWithRelevance({
-  userId,
-  jobSourceId,
-  job,
-  relevance
-}: {
-  userId: string;
-  jobSourceId?: string;
-  job: NormalizedJob;
-  relevance: JobRelevanceResult;
-}) {
-  const upserted = await upsertNormalizedJob({ userId, jobSourceId, job });
-  const hasAiScore = upserted.confidenceScore !== null;
-
-  return prisma.jobPosting.update({
-    where: { id: upserted.id },
-    data: {
-      overallFitScore: hasAiScore ? upserted.overallFitScore : relevance.score,
-      keyMatchReason: hasAiScore ? (upserted.keyMatchReason ?? relevance.reasons[0]) : relevance.reasons[0],
-      matchRecommendation: hasAiScore
-        ? (upserted.matchRecommendation ?? relevance.recommendation)
-        : relevance.recommendation,
-      supportedKeywords: hasAiScore && upserted.supportedKeywords.length ? upserted.supportedKeywords : relevance.supportedKeywords,
-      missingKeywords:
-        hasAiScore && upserted.missingKeywords.length ? upserted.missingKeywords : relevance.keywordsToStrengthen,
-      suggestedResumeAngle: hasAiScore ? (upserted.suggestedResumeAngle ?? relevance.resumeAngle) : relevance.resumeAngle,
-      suggestedCoverLetterAngle: hasAiScore
-        ? upserted.suggestedCoverLetterAngle
-        : "Connect Mathew's software training, customer-facing sales background, and operations leadership to the company's role-specific needs.",
-      concerns: hasAiScore && upserted.concerns.length ? upserted.concerns : relevance.concerns
-    }
-  });
 }
 
 async function runProviderSearch({
@@ -427,32 +393,56 @@ export async function importJobsFromSource({
   return runProviderSearch({ userId, source, criteria, profile });
 }
 
+function normalizedJobFromPosting(job: JobPosting): NormalizedJob {
+  return {
+    title: job.title,
+    company: job.company,
+    location: job.location ?? undefined,
+    remoteStatus: job.remoteStatus ?? undefined,
+    salaryMin: job.salaryMin ?? undefined,
+    salaryMax: job.salaryMax ?? undefined,
+    datePosted: job.datePosted ?? undefined,
+    sourceUrl: job.sourceUrl,
+    applyUrl: job.applyUrl ?? undefined,
+    description: job.description,
+    requirements: job.requirements,
+    preferredQualifications: job.preferredQualifications,
+    benefits: job.benefits,
+    detectedTechStack: job.detectedTechStack,
+    seniorityLevel: job.seniorityLevel ?? undefined,
+    companySize: job.companySize ?? undefined,
+    sourceType: job.sourceType
+  };
+}
+
 export async function scoreTopImportedJobs({
   userId,
   jobs,
+  profile,
   limit
 }: {
   userId: string;
   jobs: JobPosting[];
+  profile: UserProfile | null;
   limit: number;
 }) {
-  const candidates = [...jobs]
-    .filter((job) => (job.overallFitScore ?? 0) >= 60)
+  const candidates = jobs
+    .map((job) => ({ job, relevance: scoreJobRelevance({ job: normalizedJobFromPosting(job), profile }) }))
+    .filter(({ relevance }) => relevance.score >= 60)
     .sort((left, right) => {
-      const scoreDifference = (right.overallFitScore ?? 0) - (left.overallFitScore ?? 0);
+      const scoreDifference = right.relevance.score - left.relevance.score;
       if (scoreDifference !== 0) return scoreDifference;
-      return (right.datePosted?.getTime() ?? 0) - (left.datePosted?.getTime() ?? 0);
+      return (right.job.datePosted?.getTime() ?? 0) - (left.job.datePosted?.getTime() ?? 0);
     })
     .slice(0, Math.max(0, limit));
   const results: DiscoveryAiScoreResult[] = [];
 
-  for (const job of candidates) {
+  for (const { job, relevance } of candidates) {
     try {
-      const deterministicScore = job.overallFitScore ?? 0;
       const result = await runJobMatch(userId, job.id);
       results.push({
         jobId: job.id,
-        deterministicScore,
+        deterministicScore: relevance.score,
         aiScore: result.job.overallFitScore ?? undefined,
         score: result.job.overallFitScore ?? undefined,
         cached: result.cached
@@ -460,7 +450,7 @@ export async function scoreTopImportedJobs({
     } catch (error) {
       results.push({
         jobId: job.id,
-        deterministicScore: job.overallFitScore ?? 0,
+        deterministicScore: relevance.score,
         error: error instanceof Error ? error.message : "Scoring failed."
       });
     }
@@ -817,7 +807,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
   }
 
   const scoredJobs = scoreImported && aiSettings.aiDiscoveryEnabled
-    ? await scoreTopImportedJobs({ userId: options.userId, jobs: [...importedJobs.values()], limit: maxJobsToScore })
+    ? await scoreTopImportedJobs({ userId: options.userId, jobs: [...importedJobs.values()], profile, limit: maxJobsToScore })
     : [];
 
   return {
