@@ -214,7 +214,7 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
                                 </Link>
                                 <p className="mt-0.5 text-xs leading-5 text-slate-500">{application.jobPosting.title}</p>
                               </div>
-                              <ScoreBadge score={application.jobPosting.overallFitScore ?? 50} />
+                              <ScoreBadge score={application.jobPosting.overallFitScore} />
                             </div>
 
                             <div className="mt-3 flex flex-wrap gap-2">
@@ -331,7 +331,7 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
                     <td className="px-5 py-4 text-slate-600">{formatDate(application.dateApplied)}</td>
                     <td className="px-5 py-4 text-slate-600">{formatDate(application.followUpDueAt)}</td>
                     <td className="px-5 py-4 text-slate-600">{attention?.label ?? "Clear"}</td>
-                    <td className="px-5 py-4"><ScoreBadge score={application.jobPosting.overallFitScore ?? 50} /></td>
+                    <td className="px-5 py-4"><ScoreBadge score={application.jobPosting.overallFitScore} /></td>
                   </tr>
                 ))
               ) : (
