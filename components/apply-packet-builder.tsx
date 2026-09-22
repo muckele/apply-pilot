@@ -14,6 +14,7 @@ import {
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, ScoreBadge, SecondaryButton, StatusBadge } from "@/components/ui";
+import { validFitScore } from "@/lib/jobs/fit-presentation";
 
 type PacketResumeOption = {
   id: string;
@@ -43,7 +44,7 @@ type ApplyPacketBuilderProps = {
     title: string;
     company: string;
     applyUrl: string;
-    fitScore: number;
+    fitScore: number | null;
     recommendation: string;
     keyReason: string;
     hasFitAnalysis: boolean;
@@ -153,6 +154,8 @@ export function ApplyPacketBuilder({
     () => coverLetters.find((document) => document.id === selectedCoverId) ?? null,
     [coverLetters, selectedCoverId]
   );
+  const selectedResumeAtsScore = validFitScore(selectedResume?.atsCompatibility);
+  const selectedResumeFitScore = validFitScore(selectedResume?.jobFitScore);
   const applied = application?.status === "APPLIED";
   const selectedResumeSaved = Boolean(
     application?.id && selectedResumeId && application.resumeVersionId === selectedResumeId
@@ -339,7 +342,7 @@ export function ApplyPacketBuilder({
               </select>
               {selectedResume ? (
                 <span className="mt-1 block text-xs text-slate-500">
-                  {selectedResume.atsCompatibility ?? "-"}% ATS · {selectedResume.jobFitScore ?? "-"}% fit
+                  {selectedResumeAtsScore === null ? "ATS unscored" : `${selectedResumeAtsScore}% ATS`} · {selectedResumeFitScore === null ? "Fit unscored" : `${selectedResumeFitScore}% fit`}
                 </span>
               ) : null}
             </label>

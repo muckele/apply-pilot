@@ -119,7 +119,7 @@ async function getJobsForPage(params: SearchParams, userId: string) {
         ? `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`
         : "Salary not listed",
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-    fitScore: job.overallFitScore ?? 50,
+    fitScore: job.overallFitScore,
     status: job.status,
     sourceType: job.sourceType,
     keyReason:

@@ -43,7 +43,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
           inputHash: feedback.inputHash,
           input: { interviewId: interview.id },
           output: feedback,
-          confidence: 76
+          confidence: feedback.usage.mocked ? null : 76
         }
       });
 

@@ -6,6 +6,7 @@ import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { getJobFitPresentation } from "@/lib/jobs/fit-presentation";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -30,15 +31,7 @@ function mapJobPosting(job: JobPosting) {
     remoteStatus: job.remoteStatus || "Work style not listed",
     salary: formatSalary(job),
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-    fitScore: job.overallFitScore ?? 50,
-    hasFitAnalysis: Boolean(
-      job.overallFitScore ||
-        job.resumeKeywordScore ||
-        job.skillsMatchScore ||
-        job.experienceMatchScore ||
-        job.confidenceScore ||
-        job.matchRecommendation
-    ),
+    ...getJobFitPresentation(job),
     status: job.status,
     recommendation: job.matchRecommendation ?? "Review",
     sourceType: job.sourceType,
@@ -49,12 +42,6 @@ function mapJobPosting(job: JobPosting) {
     supportedKeywords: job.supportedKeywords,
     description: job.description,
     concerns: job.concerns,
-    suggestedResumeAngle:
-      job.suggestedResumeAngle ??
-      "Lead with the most relevant customer-facing, operations, and technical experience that is honestly supported by your resume.",
-    suggestedCoverLetterAngle:
-      job.suggestedCoverLetterAngle ??
-      "Connect Mathew's software training, customer-facing sales background, and operations leadership to this role.",
     applyUrl: job.applyUrl || job.sourceUrl,
     importedAt: job.firstDiscoveredAt.toISOString().slice(0, 10)
   };
@@ -211,7 +198,7 @@ export default async function JobDetailPage({ params }: Props) {
                         </span>
                       ))
                     ) : (
-                      <p className="text-xs leading-5 text-slate-500">Run AI fit scoring for deeper keyword support.</p>
+                      <p className="text-xs leading-5 text-slate-500">Run fit scoring to assess supported keywords.</p>
                     )}
                   </div>
                 </div>
@@ -228,7 +215,7 @@ export default async function JobDetailPage({ params }: Props) {
                         </span>
                       ))
                     ) : (
-                      <p className="text-xs leading-5 text-slate-500">No major weak spots flagged yet.</p>
+                      <p className="text-xs leading-5 text-slate-500">No keyword gaps recorded yet.</p>
                     )}
                   </div>
                 </div>

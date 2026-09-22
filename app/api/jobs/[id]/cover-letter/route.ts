@@ -43,7 +43,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
         inputHash: drafted.inputHash,
         input: { jobId: job.id, resumeId: resume?.id },
         output: drafted,
-        confidence: 78
+        confidence: drafted.usage.mocked ? null : 78
       }
     });
 

@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import type { z } from "zod";
+import { PublicApiError } from "@/lib/api-errors";
 
 import {
   assertAiBudgetAvailable,
@@ -10,6 +11,13 @@ import {
 } from "@/lib/ai/usage";
 
 let openai: OpenAI | null = null;
+
+export class LocalAiUnavailableError extends PublicApiError {
+  constructor() {
+    super("This AI feature is unavailable in local mode.", 503);
+    this.name = "LocalAiUnavailableError";
+  }
+}
 
 export function getOpenAIClient() {
   if (!process.env.OPENAI_API_KEY) {
@@ -59,7 +67,7 @@ type GenerateJsonInput<T> = {
   promptName: string;
   systemPrompt: string;
   payload: unknown;
-  fallback: T;
+  fallback?: T;
   schema?: z.ZodType<T, z.ZodTypeDef, unknown>;
   context?: AiCallContext;
 };
@@ -77,6 +85,9 @@ export async function generateJson<T>({
   const requestHash = hashAiInput(promptName, promptVersion, payload);
 
   if (!client || process.env.OPENAI_MOCK_MODE === "true") {
+    if (fallback === undefined) {
+      throw new LocalAiUnavailableError();
+    }
     return {
       data: validateGeneratedJson(fallback, schema, promptName),
       meta: {

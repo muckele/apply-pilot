@@ -2,6 +2,7 @@ import { CalendarClock, Mail, Plus, TrendingUp } from "lucide-react";
 
 import { JobCard } from "@/components/job-card";
 import { ButtonLink, MetricCard, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { formatAverageFit } from "@/lib/jobs/fit-presentation";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -33,7 +34,7 @@ export default async function DashboardPage() {
     prisma.resumeVersion.count({ where: { userId, createdAt: { gte: weekStart } } }),
     prisma.jobPosting.aggregate({ where: { userId, overallFitScore: { not: null } }, _avg: { overallFitScore: true } }),
     prisma.jobPosting.findMany({
-      where: { userId, status: { in: ["ACTIVE", "APPLIED", "INTERVIEW", "OFFER"] } },
+      where: { userId, status: { in: ["ACTIVE", "APPLIED", "INTERVIEW", "OFFER"] }, overallFitScore: { not: null } },
       orderBy: [{ overallFitScore: "desc" }, { datePosted: "desc" }, { firstDiscoveredAt: "desc" }],
       take: 2
     }),
@@ -69,7 +70,7 @@ export default async function DashboardPage() {
         ? `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`
         : "Salary not listed",
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-    fitScore: job.overallFitScore ?? 50,
+    fitScore: job.overallFitScore,
     status: job.status,
     sourceType: job.sourceType,
     keyReason: job.keyMatchReason ?? "Run fit scoring to generate a targeted match summary."
@@ -94,20 +95,20 @@ export default async function DashboardPage() {
         <MetricCard label="Interviews" value={upcomingInterviews} detail="Upcoming" />
         <MetricCard label="Follow-ups" value={followUpsDue} detail="Need action" />
         <MetricCard label="Resume versions" value={resumeVersions} detail="Created" />
-        <MetricCard label="Avg. fit" value={`${Math.round(avgFit._avg.overallFitScore ?? 0)}%`} detail="Scored jobs" />
+        <MetricCard label="Avg. fit" value={formatAverageFit(avgFit._avg.overallFitScore)} detail="Scored jobs" />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.8fr)]">
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-950">Best new matches</h2>
+            <h2 className="text-sm font-semibold text-slate-950">Best scored matches</h2>
             <ButtonLink href="/jobs" variant="secondary">View jobs</ButtonLink>
           </div>
           {jobCards.length ? (
             jobCards.map((job) => <JobCard key={job.id} job={job} />)
           ) : (
             <Panel>
-              <div className="p-5 text-sm text-slate-600">No scored jobs yet. Run discovery or import a job to begin.</div>
+              <div className="p-5 text-sm text-slate-600">No scored jobs yet. Review a job and run fit scoring when available.</div>
             </Panel>
           )}
         </section>
@@ -127,7 +128,7 @@ export default async function DashboardPage() {
                         <p className="text-sm font-semibold text-slate-950">{application.jobPosting.company}</p>
                         <p className="text-xs text-slate-500">{application.jobPosting.title}</p>
                       </div>
-                      <ScoreBadge score={application.jobPosting.overallFitScore ?? 50} />
+                      <ScoreBadge score={application.jobPosting.overallFitScore} />
                     </div>
                     <p className="mt-2 text-sm text-slate-700">{application.nextAction ?? "Review next step."}</p>
                     <p className="mt-1 text-xs text-slate-500">Due {formatDate(application.followUpDueAt)}</p>

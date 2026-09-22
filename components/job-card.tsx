@@ -13,7 +13,7 @@ type JobCardProps = {
     remoteStatus: string;
     salary: string;
     datePosted: string;
-    fitScore: number;
+    fitScore: number | null;
     status: string;
     sourceType?: string;
     keyReason: string;

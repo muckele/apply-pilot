@@ -1,7 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
-import { parseResumeText } from "@/lib/ai/resume";
+import { parseResumeTextWithMeta } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -94,7 +94,8 @@ export async function POST(request: NextRequest) {
       throw new PublicApiError("Upload a resume file or paste resume text before parsing.");
     }
 
-    const parsed = await parseResumeText(rawText, userId);
+    const parsedResult = await parseResumeTextWithMeta(rawText, userId);
+    const parsed = parsedResult.data;
 
     if (isMaster) {
       await prisma.resume.updateMany({
@@ -128,12 +129,13 @@ export async function POST(request: NextRequest) {
       data: {
         userId,
         type: "RESUME_PARSE",
-        model: process.env.OPENAI_MOCK_MODE === "true" ? "heuristic-local" : process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+        model: parsedResult.meta.model,
         promptName: "resumeParse",
-        promptVersion: "2",
+        promptVersion: parsedResult.meta.promptVersion,
+        inputHash: parsedResult.meta.requestHash,
         input: { resumeId: resume.id },
         output: parsed as unknown as Prisma.InputJsonValue,
-        confidence: rawText ? 70 : 30
+        confidence: parsedResult.meta.mocked ? null : 70
       }
     });
 

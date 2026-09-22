@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import { jobMatchPrompt } from "@/prompts/jobMatchPrompt";
-import { scoreFromRatio, uniqueStrings } from "@/lib/normalize";
 import { generateJson } from "@/lib/ai/client";
 
 export type JobMatchOutput = {
@@ -54,24 +53,6 @@ type MatchInput = {
   } | null;
 };
 
-const defaultSkills = [
-  "javascript",
-  "react",
-  "node",
-  "express",
-  "python",
-  "sql",
-  "mongodb",
-  "postgresql",
-  "django",
-  "rest api",
-  "aws",
-  "customer success",
-  "sales",
-  "operations",
-  "implementation"
-];
-
 const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
 const recommendationSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.toLowerCase() : value),
@@ -97,87 +78,11 @@ const jobMatchOutputSchema: z.ZodType<JobMatchOutput, z.ZodTypeDef, unknown> = z
   recommendation: recommendationSchema
 });
 
-function hasTerm(text: string, term: string) {
-  const normalizedTerm = term.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`\\b${normalizedTerm}\\b`, "i").test(text);
-}
-
-function heuristicMatch(input: MatchInput): JobMatchOutput {
-  const text = `${input.job.title} ${input.job.description} ${(input.job.requirements ?? []).join(" ")} ${(input.job.detectedTechStack ?? []).join(" ")}`.toLowerCase();
-  const candidateSkills = uniqueStrings([
-    ...(input.resume?.skills ?? []),
-    ...(input.profile?.skillsToEmphasize ?? []),
-    ...defaultSkills
-  ]).map((skill) => skill.toLowerCase());
-  const supportedKeywords = candidateSkills.filter((skill) => hasTerm(text, skill));
-  const visibleKeywords = uniqueStrings([
-    ...(input.job.detectedTechStack ?? []),
-    ...(input.job.requirements ?? [])
-      .join(" ")
-      .split(/[,.;\n]/)
-      .map((part) => part.trim())
-      .filter((part) => part.length > 2 && part.length < 45)
-  ]);
-  const missingKeywords = visibleKeywords
-    .filter((keyword) => !supportedKeywords.some((supported) => keyword.toLowerCase().includes(supported)))
-    .slice(0, 10);
-  const roleText = `${input.job.title} ${input.job.description}`.toLowerCase();
-  const targetRoleHit = (input.profile?.preferredRoles ?? []).some((role) =>
-    roleText.includes(role.toLowerCase().replace(" / ", " "))
-  );
-  const skillsMatchScore = scoreFromRatio(
-    supportedKeywords.length / Math.max(6, supportedKeywords.length + missingKeywords.length)
-  );
-  const roleScore = targetRoleHit ? 92 : roleText.includes("engineer") ? 78 : 68;
-  const locationScore =
-    input.job.remoteStatus?.toLowerCase().includes("remote") ||
-    (input.job.location ?? "").toLowerCase().includes("los angeles") ||
-    (input.job.location ?? "").toLowerCase().includes("fontana")
-      ? 90
-      : 70;
-  const overallFitScore = Math.round(skillsMatchScore * 0.45 + roleScore * 0.3 + locationScore * 0.25);
-
-  return {
-    overallFitScore,
-    resumeKeywordScore: skillsMatchScore,
-    skillsMatchScore,
-    experienceMatchScore: roleText.includes("senior") ? 58 : 76,
-    careerGoalScore: roleScore,
-    locationWorkStyleScore: locationScore,
-    compensationScore: input.job.salaryMin && input.profile?.salaryTargetMin
-      ? input.job.salaryMin >= input.profile.salaryTargetMin
-        ? 90
-        : 62
-      : null,
-    confidenceScore: input.resume?.rawText ? 78 : 58,
-    whyGoodMatch: [
-      "The role overlaps with customer-facing technical work, software implementation, and SaaS operations.",
-      supportedKeywords.length
-        ? `Supported keywords include ${supportedKeywords.slice(0, 5).join(", ")}.`
-        : "The posting has some broad role alignment, but a parsed master resume would improve confidence."
-    ],
-    concerns: roleText.includes("senior")
-      ? ["The posting appears to target a more senior profile; apply only if requirements are flexible."]
-      : ["Confirm the required years of experience and avoid overstating unsupported tools."],
-    missingKeywords,
-    supportedKeywords,
-    keywordsToEmphasize: supportedKeywords.slice(0, 8),
-    suggestedResumeAngle:
-      "Lead with customer-facing technical problem solving, implementation experience, full-stack training, and operations ownership.",
-    suggestedCoverLetterAngle:
-      "Connect software engineering training with sales, business development, and operational leadership for a practical customer-facing technical profile.",
-    recommendation: overallFitScore >= 78 ? "apply now" : overallFitScore >= 62 ? "consider" : "skip"
-  };
-}
-
 export async function scoreJobMatch(input: MatchInput, userId?: string) {
-  const fallback = heuristicMatch(input);
-
   const generated = await generateJson<JobMatchOutput>({
     promptName: "jobMatchPrompt",
     systemPrompt: jobMatchPrompt,
     payload: input,
-    fallback,
     schema: jobMatchOutputSchema,
     context: userId ? { userId, feature: "JOB_MATCH", promptVersion: "2" } : undefined
   });

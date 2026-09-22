@@ -56,7 +56,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
               </div>
               <div>
                 <p className="text-xs text-slate-500">Fit score</p>
-                <div className="mt-2"><ScoreBadge score={application.jobPosting.overallFitScore ?? 50} /></div>
+                <div className="mt-2"><ScoreBadge score={application.jobPosting.overallFitScore} /></div>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Date applied</p>
