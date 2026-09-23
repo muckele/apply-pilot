@@ -17,6 +17,9 @@ import {
 export const FORM_INSPECTION_SCHEMA_VERSION = 1 as const;
 export const FORM_NORMALIZER_VERSION = 1 as const;
 export const FIELD_FINGERPRINT_VERSION = 1 as const;
+export const NORMALIZED_SNAPSHOT_SCHEMA_VERSION = 2 as const;
+export const NORMALIZED_SNAPSHOT_NORMALIZER_VERSION = 2 as const;
+export const NORMALIZED_SNAPSHOT_FINGERPRINT_VERSION = 2 as const;
 
 export const MAX_FORMS = 4;
 export const MAX_SECTIONS_PER_FORM = 32;
@@ -573,6 +576,20 @@ export type NormalizedApplicationFormSection = Readonly<{
   sectionKey: string;
   heading: string | null;
   fields: readonly NormalizedApplicationFormField[];
+  ambiguousMembers?: readonly AmbiguousApplicationFormMember[];
+}>;
+
+export type AmbiguousApplicationFormMember = Readonly<{
+  collisionKey: string;
+  memberIntegrityDigest: string;
+  required: boolean;
+}>;
+
+export type ApplicationFormAmbiguityGroup = Readonly<{
+  collisionKey: string;
+  memberCount: number;
+  requiredMemberCount: number;
+  groupFingerprint: string;
 }>;
 
 export type NormalizedApplicationForm = Readonly<{
@@ -582,11 +599,12 @@ export type NormalizedApplicationForm = Readonly<{
 }>;
 
 export type NormalizedApplicationFormSnapshot = Readonly<{
-  schemaVersion: typeof FORM_INSPECTION_SCHEMA_VERSION;
-  normalizerVersion: typeof FORM_NORMALIZER_VERSION;
+  schemaVersion: typeof FORM_INSPECTION_SCHEMA_VERSION | typeof NORMALIZED_SNAPSHOT_SCHEMA_VERSION;
+  normalizerVersion: typeof FORM_NORMALIZER_VERSION | typeof NORMALIZED_SNAPSHOT_NORMALIZER_VERSION;
   classifierVersion: typeof CLASSIFIER_VERSION;
-  fingerprintVersion: typeof FIELD_FINGERPRINT_VERSION;
+  fingerprintVersion: typeof FIELD_FINGERPRINT_VERSION | typeof NORMALIZED_SNAPSHOT_FINGERPRINT_VERSION;
   forms: readonly NormalizedApplicationForm[];
+  ambiguityGroups?: readonly ApplicationFormAmbiguityGroup[];
 }>;
 
 const normalizedConstraintSchema = z
@@ -668,6 +686,46 @@ const normalizedApplicationFormSnapshotSchema = z
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["forms"], message: "Snapshot has too many choices." });
     }
   });
+
+const ambiguousMemberSchema = z.object({
+  collisionKey: z.string().regex(LOWERCASE_HEX_64_PATTERN),
+  memberIntegrityDigest: z.string().regex(LOWERCASE_HEX_64_PATTERN),
+  required: z.boolean()
+}).strict();
+const ambiguityGroupSchema = z.object({
+  collisionKey: z.string().regex(LOWERCASE_HEX_64_PATTERN),
+  memberCount: z.number().int().min(2).max(MAX_FIELDS_TOTAL),
+  requiredMemberCount: z.number().int().min(0).max(MAX_FIELDS_TOTAL),
+  groupFingerprint: z.string().regex(LOWERCASE_HEX_64_PATTERN)
+}).strict();
+const normalizedSectionV2Schema = normalizedSectionSchema.extend({
+  fields: z.array(normalizedFieldSchema).max(MAX_FIELDS_TOTAL),
+  ambiguousMembers: z.array(ambiguousMemberSchema).max(MAX_FIELDS_TOTAL)
+}).strict();
+const normalizedFormV2Schema = normalizedFormSchema.extend({
+  sections: z.array(normalizedSectionV2Schema).min(1).max(MAX_SECTIONS_PER_FORM)
+}).strict();
+const normalizedApplicationFormSnapshotV2Schema = z.object({
+  schemaVersion: z.literal(NORMALIZED_SNAPSHOT_SCHEMA_VERSION),
+  normalizerVersion: z.literal(NORMALIZED_SNAPSHOT_NORMALIZER_VERSION),
+  classifierVersion: z.literal(CLASSIFIER_VERSION),
+  fingerprintVersion: z.literal(NORMALIZED_SNAPSHOT_FINGERPRINT_VERSION),
+  forms: z.array(normalizedFormV2Schema).min(1).max(MAX_FORMS),
+  ambiguityGroups: z.array(ambiguityGroupSchema).max(MAX_FIELDS_TOTAL)
+}).strict().superRefine((snapshot, context) => {
+  let fieldCount = 0;
+  let choiceCount = 0;
+  for (const form of snapshot.forms) for (const section of form.sections) {
+    if (section.fields.length + section.ambiguousMembers.length === 0) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Snapshot section has no field occurrences." });
+    }
+    fieldCount += section.fields.length + section.ambiguousMembers.length;
+    for (const field of section.fields) choiceCount += field.choices.length;
+  }
+  if (fieldCount > MAX_FIELDS_TOTAL || choiceCount > MAX_CHOICES_TOTAL) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Snapshot exceeds inspection bounds." });
+  }
+});
 
 function sanitizedNullable(value: string | null): string | null {
   if (value === null) return null;
@@ -834,11 +892,23 @@ export function computeFormFingerprint(
         .map((section) => ({
           sectionKey: section.sectionKey,
           heading: canonicalizeFormComparisonText(section.heading ?? ""),
-          fieldFingerprints: section.fields.map((field) => field.fieldFingerprint).sort(compareCodeUnits)
+          fieldFingerprints: section.fields.map((field) => field.fieldFingerprint).sort(compareCodeUnits),
+          ...(canonicalSnapshot.schemaVersion === 2 ? { ambiguousMembers: section.ambiguousMembers } : {})
         }))
         .sort((left, right) => compareCodeUnits(left.sectionKey, right.sectionKey))
     }))
     .sort((left, right) => compareCodeUnits(left.formKey, right.formKey));
+  if (canonicalSnapshot.schemaVersion === 2) {
+    return hashDomainSeparated("application-form:v2\0", {
+      applyHost,
+      classifierVersion: canonicalSnapshot.classifierVersion,
+      fingerprintVersion: canonicalSnapshot.fingerprintVersion,
+      forms,
+      groupFingerprints: canonicalSnapshot.ambiguityGroups?.map((group) => group.groupFingerprint),
+      normalizerVersion: canonicalSnapshot.normalizerVersion,
+      schemaVersion: canonicalSnapshot.schemaVersion
+    });
+  }
   return hashDomainSeparated("application-form:v1\0", {
     applyHost,
     classifierVersion: CLASSIFIER_VERSION,
@@ -853,7 +923,23 @@ type WorkingField = {
   normalized: NormalizedApplicationFormField;
   normalizedFormTitle: string;
   normalizedSectionHeading: string;
+  memberIntegrityDigest: string;
 };
+
+function compareAmbiguousMembers(left: AmbiguousApplicationFormMember, right: AmbiguousApplicationFormMember): number {
+  return compareCodeUnits(left.collisionKey, right.collisionKey) ||
+    compareCodeUnits(left.memberIntegrityDigest, right.memberIntegrityDigest) ||
+    Number(left.required) - Number(right.required);
+}
+
+function groupFingerprint(collisionKey: string, members: readonly AmbiguousApplicationFormMember[]): string {
+  return hashDomainSeparated("application-form-ambiguity-group:v2\0", {
+    collisionKey,
+    memberCount: members.length,
+    requiredMemberCount: members.filter((member) => member.required).length,
+    memberDigests: members.map((member) => member.memberIntegrityDigest).sort(compareCodeUnits)
+  });
+}
 
 export function buildNormalizedApplicationFormInspection(input: {
   authoritativeApplyHost: string;
@@ -862,6 +948,9 @@ export function buildNormalizedApplicationFormInspection(input: {
   formFingerprint: string;
   fieldCount: number;
   requiredFieldCount: number;
+  uniqueFieldCount: number;
+  ambiguousQuestionCount: number;
+  ambiguousRequiredCount: number;
   snapshot: NormalizedApplicationFormSnapshot;
 } {
   normalizeApplyHost(input.authoritativeApplyHost);
@@ -975,7 +1064,28 @@ export function buildNormalizedApplicationFormInspection(input: {
           choices,
           fieldFingerprint
         };
-        const working = { normalized, normalizedFormTitle, normalizedSectionHeading };
+        const memberIntegrityDigest = hashDomainSeparated("application-form-ambiguous-member:v2\0", {
+          collisionKey: normalizedFieldKey,
+          formTitle: normalizedFormTitle,
+          sectionHeading: normalizedSectionHeading,
+          question: normalizedQuestion,
+          helpText: normalizedHelpText,
+          originalFieldType: field.fieldType,
+          fieldType,
+          rawUnsupportedReason: field.unsupportedReason,
+          unsupportedReason,
+          classification: classification.classification,
+          semanticFieldKey: classification.semanticFieldKey,
+          permittedDisposition,
+          dispositionReason,
+          required: field.required,
+          autocomplete: field.autocomplete,
+          constraints: normalizedConstraints,
+          choices: canonicalChoices
+            .map((choice) => ({ label: choice.normalizedLabel, disabled: choice.disabled }))
+            .sort((left, right) => compareCodeUnits(left.label, right.label) || Number(left.disabled) - Number(right.disabled))
+        });
+        const working = { normalized, normalizedFormTitle, normalizedSectionHeading, memberIntegrityDigest };
         allFields.push(working);
         return working;
       });
@@ -984,32 +1094,47 @@ export function buildNormalizedApplicationFormInspection(input: {
     return { title, normalizedFormTitle, sections: workingSections };
   });
 
-  const seenFieldKeys = new Set<string>();
+  const fieldGroups = new Map<string, WorkingField[]>();
   for (const field of allFields) {
-    if (seenFieldKeys.has(field.normalized.normalizedFieldKey)) {
-      throw new FormInspectionDomainError(
-        "AMBIGUOUS_DUPLICATE_FIELD",
-        "The inspection contains indistinguishable duplicate fields."
-      );
-    }
-    seenFieldKeys.add(field.normalized.normalizedFieldKey);
+    const key = field.normalized.normalizedFieldKey;
+    fieldGroups.set(key, [...(fieldGroups.get(key) ?? []), field]);
   }
+  const collisionKeys = new Set([...fieldGroups].filter(([, members]) => members.length > 1).map(([key]) => key));
+  const ambiguityGroups: ApplicationFormAmbiguityGroup[] = [...collisionKeys].sort(compareCodeUnits).map((collisionKey) => {
+    const members = fieldGroups.get(collisionKey)!.map((field) => ({
+      collisionKey,
+      memberIntegrityDigest: field.memberIntegrityDigest,
+      required: field.normalized.required
+    }));
+    return {
+      collisionKey,
+      memberCount: members.length,
+      requiredMemberCount: members.filter((member) => member.required).length,
+      groupFingerprint: groupFingerprint(collisionKey, members)
+    };
+  });
 
   const forms: NormalizedApplicationForm[] = workingForms
     .map((form) => {
       const sections: NormalizedApplicationFormSection[] = form.sections
         .map((section) => {
-          const fields = section.fields.map((field) => field.normalized).sort((left, right) =>
+          const fields = section.fields.filter((field) => !collisionKeys.has(field.normalized.normalizedFieldKey)).map((field) => field.normalized).sort((left, right) =>
             compareCodeUnits(left.normalizedFieldKey, right.normalizedFieldKey)
           );
-          const sectionKey = hashDomainSeparated("application-form-section-key:v1\0", {
+          const ambiguousMembers = section.fields.filter((field) => collisionKeys.has(field.normalized.normalizedFieldKey)).map((field) => ({
+            collisionKey: field.normalized.normalizedFieldKey,
+            memberIntegrityDigest: field.memberIntegrityDigest,
+            required: field.normalized.required
+          })).sort(compareAmbiguousMembers);
+          const sectionKey = hashDomainSeparated("application-form-section-key:v2\0", {
             fieldKeys: fields.map((field) => field.normalizedFieldKey),
-            heading: section.normalizedSectionHeading
+            heading: section.normalizedSectionHeading,
+            ambiguousMembers
           });
-          return { sectionKey, heading: section.heading, fields };
+          return { sectionKey, heading: section.heading, fields, ambiguousMembers };
         })
         .sort((left, right) => compareCodeUnits(left.sectionKey, right.sectionKey));
-      const formKey = hashDomainSeparated("application-form-form-key:v1\0", {
+      const formKey = hashDomainSeparated("application-form-form-key:v2\0", {
         sectionKeys: sections.map((section) => section.sectionKey),
         title: form.normalizedFormTitle
       });
@@ -1017,17 +1142,21 @@ export function buildNormalizedApplicationFormInspection(input: {
     })
     .sort((left, right) => compareCodeUnits(left.formKey, right.formKey));
 
-  const snapshot = normalizedApplicationFormSnapshotSchema.parse({
-    schemaVersion: FORM_INSPECTION_SCHEMA_VERSION,
-    normalizerVersion: FORM_NORMALIZER_VERSION,
+  const snapshot = normalizedApplicationFormSnapshotV2Schema.parse({
+    schemaVersion: NORMALIZED_SNAPSHOT_SCHEMA_VERSION,
+    normalizerVersion: NORMALIZED_SNAPSHOT_NORMALIZER_VERSION,
     classifierVersion: CLASSIFIER_VERSION,
-    fingerprintVersion: FIELD_FINGERPRINT_VERSION,
-    forms
+    fingerprintVersion: NORMALIZED_SNAPSHOT_FINGERPRINT_VERSION,
+    forms,
+    ambiguityGroups
   });
   return {
     formFingerprint: computeFormFingerprint(input.authoritativeApplyHost, snapshot),
     fieldCount: allFields.length,
     requiredFieldCount: allFields.filter((field) => field.normalized.required).length,
+    uniqueFieldCount: allFields.length - ambiguityGroups.reduce((sum, group) => sum + group.memberCount, 0),
+    ambiguousQuestionCount: ambiguityGroups.reduce((sum, group) => sum + group.memberCount, 0),
+    ambiguousRequiredCount: ambiguityGroups.reduce((sum, group) => sum + group.requiredMemberCount, 0),
     snapshot
   };
 }
@@ -1126,6 +1255,8 @@ function assertNormalizedConstraintsCanonical(field: NormalizedApplicationFormFi
 
 function assertCanonicalSnapshot(snapshot: NormalizedApplicationFormSnapshot): void {
   const seenFieldKeys = new Set<string>();
+  const membersByCollisionKey = new Map<string, AmbiguousApplicationFormMember[]>();
+  const isV2 = snapshot.schemaVersion === NORMALIZED_SNAPSHOT_SCHEMA_VERSION;
 
   for (const form of snapshot.forms) {
     assertCanonicalNullableDisplay(form.title);
@@ -1135,6 +1266,20 @@ function assertCanonicalSnapshot(snapshot: NormalizedApplicationFormSnapshot): v
       assertCanonicalNullableDisplay(section.heading);
       const normalizedSectionHeading = canonicalizeFormComparisonText(section.heading ?? "");
       assertStrictlySorted(section.fields, (field) => field.normalizedFieldKey, "fields");
+      if (isV2) {
+        const members = section.ambiguousMembers;
+        if (!members) rejectNonCanonicalSnapshot("V2 section has no ambiguity member array.");
+        for (let index = 1; index < members.length; index += 1) {
+          if (compareAmbiguousMembers(members[index - 1], members[index]) > 0) {
+            rejectNonCanonicalSnapshot("Ambiguous members are not canonical.");
+          }
+        }
+        for (const member of members) {
+          membersByCollisionKey.set(member.collisionKey, [
+            ...(membersByCollisionKey.get(member.collisionKey) ?? []), member
+          ]);
+        }
+      }
 
       for (const field of section.fields) {
         assertCanonicalNullableDisplay(field.question);
@@ -1246,9 +1391,10 @@ function assertCanonicalSnapshot(snapshot: NormalizedApplicationFormSnapshot): v
         }
       }
 
-      const expectedSectionKey = hashDomainSeparated("application-form-section-key:v1\0", {
+      const expectedSectionKey = hashDomainSeparated(isV2 ? "application-form-section-key:v2\0" : "application-form-section-key:v1\0", {
         fieldKeys: section.fields.map((field) => field.normalizedFieldKey),
-        heading: normalizedSectionHeading
+        heading: normalizedSectionHeading,
+        ...(isV2 ? { ambiguousMembers: section.ambiguousMembers } : {})
       });
       if (section.sectionKey !== expectedSectionKey) {
         rejectNonCanonicalSnapshot("Snapshot section identity is inconsistent.");
@@ -1256,7 +1402,7 @@ function assertCanonicalSnapshot(snapshot: NormalizedApplicationFormSnapshot): v
     }
 
     assertStrictlySorted(form.sections, (section) => section.sectionKey, "sections");
-    const expectedFormKey = hashDomainSeparated("application-form-form-key:v1\0", {
+    const expectedFormKey = hashDomainSeparated(isV2 ? "application-form-form-key:v2\0" : "application-form-form-key:v1\0", {
       sectionKeys: form.sections.map((section) => section.sectionKey),
       title: normalizedFormTitle
     });
@@ -1266,10 +1412,32 @@ function assertCanonicalSnapshot(snapshot: NormalizedApplicationFormSnapshot): v
   }
 
   assertStrictlySorted(snapshot.forms, (form) => form.formKey, "forms");
+  if (isV2) {
+    const groups = snapshot.ambiguityGroups;
+    if (!groups) rejectNonCanonicalSnapshot("V2 snapshot has no ambiguity groups.");
+    assertStrictlySorted(groups, (group) => group.collisionKey, "ambiguity groups");
+    if (groups.length !== membersByCollisionKey.size) {
+      rejectNonCanonicalSnapshot("Ambiguity groups do not account for all members.");
+    }
+    for (const group of groups) {
+      const members = membersByCollisionKey.get(group.collisionKey) ?? [];
+      if (seenFieldKeys.has(group.collisionKey) ||
+          members.length < 2 ||
+          group.memberCount !== members.length ||
+          group.requiredMemberCount !== members.filter((member) => member.required).length ||
+          group.groupFingerprint !== groupFingerprint(group.collisionKey, members)) {
+        rejectNonCanonicalSnapshot("Ambiguity group commitment is inconsistent.");
+      }
+    }
+  }
 }
 
 export function parseNormalizedApplicationFormSnapshot(value: unknown): NormalizedApplicationFormSnapshot {
-  const parsed = normalizedApplicationFormSnapshotSchema.parse(value);
+  const version = typeof value === "object" && value !== null && "schemaVersion" in value
+    ? value.schemaVersion : undefined;
+  const parsed = version === NORMALIZED_SNAPSHOT_SCHEMA_VERSION
+    ? normalizedApplicationFormSnapshotV2Schema.parse(value)
+    : normalizedApplicationFormSnapshotSchema.parse(value);
   assertCanonicalSnapshot(parsed);
   return parsed;
 }

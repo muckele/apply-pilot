@@ -465,6 +465,9 @@ function validPacket(): AnswerPacket {
     createdAt: "2026-08-29T20:00:00.000Z",
     summary: {
       fieldCount: 4,
+      observedFieldCount: 4,
+      ambiguousQuestionCount: 0,
+      ambiguousRequiredCount: 0,
       proposableCount: 3,
       pendingReviewCount: 1,
       approvedCount: 1,
@@ -1042,7 +1045,8 @@ test("resolve review request contains exact ordered authority fields and no pack
     stateVersion: 7,
     acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
     answerPacketVersion: 3,
-    packetHash: "a".repeat(64)
+    packetHash: "a".repeat(64),
+    acknowledgedAmbiguousQuestionCount: 0
   });
   assert.equal(JSON.stringify(request).includes("Portfolio URL"), false);
   assert.equal(JSON.stringify(request).includes("https://example.com"), false);
@@ -1077,7 +1081,8 @@ test("resolve postcondition confirms only ready current authority with matching 
     stateVersion: 7,
     answerPacketVersion: 3,
     packetHash: "a".repeat(64),
-    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"]
+    acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
+    acknowledgedAmbiguousQuestionCount: 0
   };
   const complete = {
     phase: "loaded" as const,
@@ -2943,7 +2948,8 @@ test("Task 3 mounted resolve posts only exact current run and packet authority a
     stateVersion: 7,
     acknowledgedReviewReasons: ["unknown_requirement_ids", "evidence_gaps_present"],
     answerPacketVersion: 3,
-    packetHash: "a".repeat(64)
+    packetHash: "a".repeat(64),
+    acknowledgedAmbiguousQuestionCount: 0
   });
   const body = String(request.init?.body);
   for (const forbidden of ["answer-scalar", "Portfolio URL", "https://example.com", "answers", APPLICATION_BROWSER_BINDING_NAME]) {
@@ -3247,7 +3253,8 @@ test("Task 3 mounted held authority replacement makes the old resolve authority 
     stateVersion: 8,
     acknowledgedReviewReasons: ["unknown_evidence_ids", "evidence_gaps_present"],
     answerPacketVersion: 4,
-    packetHash: "b".repeat(64)
+    packetHash: "b".repeat(64),
+    acknowledgedAmbiguousQuestionCount: 0
   });
 });
 
@@ -3908,6 +3915,30 @@ test("mounted Fill-status refresh ignores older READY authority and rejects same
     assert.match(control.container.textContent ?? "", /contradictory same-version Fill status was rejected/i);
     assert.match(control.container.textContent ?? "", /Automated Fill attempt finished/);
     assert.doesNotMatch(control.container.textContent ?? "", /Fill stopped early/);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("completed Fill with unavailable packet still warns that employer questions may need manual work", async () => {
+  const attemptId = "550e8400-e29b-41d4-a716-446655440000";
+  const control = await mountControl();
+  try {
+    control.setFillStatusHandler(async () => fillStatusResponse({
+      state: "READY_FOR_USER_SUBMISSION",
+      stateVersion: 9,
+      fillAttemptId: attemptId,
+      fillLeaseExpiresAt: null,
+      leaseLive: false,
+      expiredRecoveryRequired: false,
+      fieldOperationAllowed: false,
+      outcome: "COMPLETED",
+      errorCode: null,
+      steps: [{ stepKey: `fill:${attemptId}:${"a".repeat(64)}`, result: "FILLED", errorCode: null }]
+    }));
+    await clickButton(control, "Refresh Fill status");
+    assert.match(control.container.textContent ?? "", /Automated Fill attempt finished/);
+    assert.match(control.container.textContent ?? "", /employer questions may still require manual completion/i);
   } finally {
     await control.cleanup();
   }

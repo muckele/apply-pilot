@@ -24,6 +24,9 @@ function publicAnswerPacket() {
     createdAt: "2026-08-30T12:00:00.000Z",
     summary: {
       fieldCount: 1,
+      observedFieldCount: 1,
+      ambiguousQuestionCount: 0,
+      ambiguousRequiredCount: 0,
       proposableCount: 1,
       pendingReviewCount: 1,
       approvedCount: 0,

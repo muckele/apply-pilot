@@ -71,8 +71,18 @@ function report(
   });
 }
 
+function proposableTextReport(): ApplicationFormInspectionReport {
+  const value = report("LinkedIn profile URL");
+  return applicationFormInspectionReportSchema.parse({
+    ...value,
+    forms: [{ ...value.forms[0], sections: [{ ...value.forms[0].sections[0], fields: [{
+      ...value.forms[0].sections[0].fields[0], helpText: null, autocomplete: null
+    }] }] }]
+  });
+}
+
 function selectReport(): ApplicationFormInspectionReport {
-  const value = report();
+  const value = proposableTextReport();
   return applicationFormInspectionReportSchema.parse({
     ...value,
     forms: [{
@@ -420,8 +430,22 @@ test("stable protected inspection accepts only a fresh CURRENT candidate and exp
   await controller.close();
 });
 
-test("acquired Fill authority binds exact private generation, form, field, family, and option identity", async () => {
-  for (const inspectionReport of [report(), selectReport()]) {
+test("acquired Fill authority rejects an otherwise writable manual-only field", async () => {
+  const fake = new FakeProtectedTarget();
+  const inspectionReport = report();
+  fake.enqueueExtraction(controlledExtraction(inspectionReport).value);
+  const controller = createController(fake);
+  const generation = await controller.inspect();
+  assert.equal(acquiredAuthority(inspectionReport).normalized.snapshot.forms[0].sections[0].fields[0].permittedDisposition, "MANUAL_ONLY");
+  assert.throws(
+    () => controller.assertAcquiredFillAuthority(generation.generationId, acquiredAuthority(inspectionReport).authority),
+    controllerError("FORM_GENERATION_INVALIDATED")
+  );
+  assert.equal(fake.writeRequests.length, 0);
+});
+
+test("acquired Fill authority binds exact private generation, form, field, and family identity", async () => {
+  for (const inspectionReport of [proposableTextReport()]) {
     const fake = new FakeProtectedTarget();
     const extraction = controlledExtraction(inspectionReport);
     fake.enqueueExtraction(extraction.value);
@@ -488,13 +512,13 @@ test("acquired Fill authority mismatch fails before protected writing", async ()
 
 test("protected Fill writing excludes inspection and every overlapping write", async () => {
   const fake = new FakeProtectedTarget();
-  const extraction = controlledExtraction();
+  const extraction = controlledExtraction(proposableTextReport());
   const pendingWrite = deferred<ProtectedCandidateFieldWriteResult>();
   fake.enqueueExtraction(extraction.value);
   fake.enqueueWrite(pendingWrite.promise);
   const controller = createController(fake);
   const generation = await controller.inspect();
-  const acquired = acquiredAuthority();
+  const acquired = acquiredAuthority(proposableTextReport());
   await controller.assertAcquiredFillAuthority(generation.generationId, acquired.authority);
 
   const write = controller.writeApprovedField(

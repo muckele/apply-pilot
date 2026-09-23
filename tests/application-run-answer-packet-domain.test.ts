@@ -18,12 +18,44 @@ import {
   assertApplicationAnswerDispositionWithinPermitted,
   summarizeApplicationAnswerPacket
 } from "@/lib/application-runs/answer-packet-domain";
+import { buildNormalizedApplicationFormInspection } from "@/lib/application-runs/form-inspection";
+import { derivePacketInspectionContext } from "@/lib/application-runs/answer-packet-domain";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
 const HASH_D = "d".repeat(64);
 const HASH_E = "e".repeat(64);
+
+test("an empty v2 packet requires a verified all-ambiguous inspection witness", () => {
+  const rawField = {
+    question: "Portfolio URL", helpText: null, fieldType: "URL", unsupportedReason: null,
+    required: true, autocomplete: "url",
+    constraints: { minLength: null, maxLength: null, min: null, max: null, step: null, acceptedFileTypes: [], multiple: false },
+    choices: []
+  };
+  const inspection = buildNormalizedApplicationFormInspection({
+    authoritativeApplyHost: "jobs.example.com",
+    report: { schemaVersion: 1, forms: [{ title: "Application", sections: [{ heading: "Details", fields: [rawField, rawField] }] }] }
+  });
+  const witness = derivePacketInspectionContext({
+    authoritativeApplyHost: "jobs.example.com",
+    expectedFormFingerprint: inspection.formFingerprint,
+    snapshot: inspection.snapshot
+  });
+  const packet = {
+    schemaVersion: 1, inspectionVersion: 1, formFingerprint: inspection.formFingerprint,
+    builderVersion: 2, policyHash: HASH_A, answers: []
+  };
+  const summary = summarizeApplicationAnswerPacket({
+    currentPacketVersion: 1, packetVersion: 1, packet, rows: [], inspectionContext: witness
+  });
+  assert.equal(summary.fieldCount, 0);
+  assert.equal(summary.ambiguousQuestionCount, 2);
+  assert.equal(summary.manualRequiredCount, 2);
+  assert.equal(summary.readyForRunResolution, true);
+  assert.throws(() => summarizeApplicationAnswerPacket({ currentPacketVersion: 1, packetVersion: 1, packet, rows: [] }));
+});
 
 function numberedHash(index: number): string {
   return index.toString(16).padStart(64, "0");
@@ -1228,6 +1260,9 @@ test("packet summary derives counts from a complete canonical packet and retains
   };
   assert.deepEqual(summarizeApplicationAnswerPacket(input), {
     fieldCount: 5,
+    observedFieldCount: 5,
+    ambiguousQuestionCount: 0,
+    ambiguousRequiredCount: 0,
     proposableCount: 2,
     pendingReviewCount: 0,
     approvedCount: 1,

@@ -10,6 +10,8 @@ import {
   hasVisibleBaseCharacter,
   isWellFormedUnicode,
   utf8ByteLength,
+  verifyNormalizedApplicationFormSnapshot,
+  type NormalizedApplicationFormSnapshot,
   type ApplicationFormFieldType
 } from "@/lib/application-runs/form-inspection";
 import {
@@ -24,7 +26,7 @@ import {
 export { canonicalJson } from "@/lib/application-runs/form-inspection";
 
 export const ANSWER_PACKET_SCHEMA_VERSION = 1 as const;
-export const ANSWER_PACKET_BUILDER_VERSION = 1 as const;
+export const ANSWER_PACKET_BUILDER_VERSION = 2 as const;
 export const ANSWER_PACKET_CANONICALIZER_VERSION = 1 as const;
 
 export const MAX_SCALAR_PROPOSAL_CODE_POINTS = 2_048;
@@ -894,10 +896,45 @@ export type ApplicationAnswerPacketSummaryInput = Readonly<{
   packet: unknown;
   validationContext?: unknown;
   rows: readonly unknown[];
+  inspectionContext?: PacketInspectionContext;
 }>;
+
+export type PacketInspectionContext = Readonly<{
+  schemaVersion: 1 | 2;
+  formFingerprint: string;
+  uniqueFieldKeys: readonly string[];
+  ambiguousQuestionCount: number;
+  ambiguousRequiredCount: number;
+}>;
+
+const verifiedInspectionContexts = new WeakSet<object>();
+
+export function derivePacketInspectionContext(input: {
+  authoritativeApplyHost: string;
+  expectedFormFingerprint: string;
+  snapshot: unknown;
+}): PacketInspectionContext {
+  const snapshot: NormalizedApplicationFormSnapshot = verifyNormalizedApplicationFormSnapshot(input);
+  const uniqueFieldKeys = snapshot.forms.flatMap((form) => form.sections.flatMap((section) =>
+    section.fields.map((field) => field.normalizedFieldKey)
+  )).sort(compareCodeUnits);
+  const groups = snapshot.ambiguityGroups ?? [];
+  const context = Object.freeze({
+    schemaVersion: snapshot.schemaVersion,
+    formFingerprint: input.expectedFormFingerprint,
+    uniqueFieldKeys: Object.freeze(uniqueFieldKeys),
+    ambiguousQuestionCount: groups.reduce((sum, group) => sum + group.memberCount, 0),
+    ambiguousRequiredCount: groups.reduce((sum, group) => sum + group.requiredMemberCount, 0)
+  });
+  verifiedInspectionContexts.add(context);
+  return context;
+}
 
 export type ApplicationAnswerPacketSummary = Readonly<{
   fieldCount: number;
+  observedFieldCount: number;
+  ambiguousQuestionCount: number;
+  ambiguousRequiredCount: number;
   proposableCount: number;
   pendingReviewCount: number;
   approvedCount: number;
@@ -926,7 +963,8 @@ const applicationAnswerPacketSummaryInputSchema = z
     packetVersion: safeVersionSchema,
     packet: z.unknown(),
     validationContext: z.unknown().optional(),
-    rows: z.array(applicationAnswerPacketSummaryRowSchema).max(200)
+    rows: z.array(applicationAnswerPacketSummaryRowSchema).max(200),
+    inspectionContext: z.unknown().optional()
   })
   .strict();
 
@@ -977,7 +1015,20 @@ export function summarizeApplicationAnswerPacket(
     parsedInput.packet,
     parsedInput.validationContext
   );
-  if (packet.answers.length === 0) {
+  const inspectionContext = parsedInput.inspectionContext as PacketInspectionContext | undefined;
+  if (inspectionContext && !verifiedInspectionContexts.has(inspectionContext)) {
+    throw new AnswerPacketDomainError("PACKET_INVARIANT_VIOLATION", "Inspection context is not verified.");
+  }
+  if (packet.builderVersion === 2 && (!inspectionContext || inspectionContext.schemaVersion !== 2 ||
+    inspectionContext.formFingerprint !== packet.formFingerprint ||
+    inspectionContext.uniqueFieldKeys.length !== packet.answers.length ||
+    packet.answers.some((answer, index) => answer.normalizedFieldKey !== inspectionContext.uniqueFieldKeys[index]))) {
+    throw new AnswerPacketDomainError("PACKET_INVARIANT_VIOLATION", "Packet does not cover verified inspection fields.");
+  }
+  if (packet.answers.length === 0 && !(
+    packet.builderVersion === 2 && inspectionContext?.schemaVersion === 2 &&
+    inspectionContext.ambiguousQuestionCount > 0 && inspectionContext.uniqueFieldKeys.length === 0
+  )) {
     throw new AnswerPacketDomainError(
       "PACKET_INVARIANT_VIOLATION",
       "A summary requires a nonempty canonical packet answer set."
@@ -1035,6 +1086,9 @@ export function summarizeApplicationAnswerPacket(
 
   return {
     fieldCount: joined.length,
+    observedFieldCount: joined.length + (inspectionContext?.ambiguousQuestionCount ?? 0),
+    ambiguousQuestionCount: inspectionContext?.ambiguousQuestionCount ?? 0,
+    ambiguousRequiredCount: inspectionContext?.ambiguousRequiredCount ?? 0,
     proposableCount: proposable.length,
     pendingReviewCount,
     approvedCount: approvedRows.length,
@@ -1042,7 +1096,7 @@ export function summarizeApplicationAnswerPacket(
     manualOnlyCount: joined.filter(({ answer }) => answer.disposition === "MANUAL_ONLY").length,
     excludedCount: joined.filter(({ answer }) => answer.disposition === "EXCLUDED").length,
     unsupportedCount: joined.filter(({ answer }) => answer.disposition === "UNSUPPORTED").length,
-    manualRequiredCount: joined.filter(
+    manualRequiredCount: (inspectionContext?.ambiguousRequiredCount ?? 0) + joined.filter(
       ({ answer, row }) =>
         answer.required &&
         (answer.disposition === "MANUAL_ONLY" ||

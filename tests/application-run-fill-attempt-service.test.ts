@@ -206,6 +206,9 @@ function createVerifiedPacket(options: { fieldType?: string; proposal?: unknown;
   };
   const summary = {
     fieldCount: 1,
+    observedFieldCount: 1,
+    ambiguousQuestionCount: 0,
+    ambiguousRequiredCount: 0,
     proposableCount: 1,
     pendingReviewCount: 0,
     approvedCount: 1,

@@ -212,6 +212,15 @@ export function boundedWriterFixture(): string {
   </body></html>`;
 }
 
+export function policyEligibleWriterFixture(): string {
+  return boundedWriterFixture()
+    .replace('aria-label="Empty text"', 'aria-label="Website URL"')
+    .replace('aria-label="Occupied text"', 'aria-label="Portfolio URL"')
+    .replace('aria-label="Empty URL"', 'aria-label="LinkedIn profile URL"')
+    .replace('aria-label="Empty textarea"', 'aria-label="When are you available to start?"')
+    .replace('aria-label="Empty select"', 'aria-label="Availability"');
+}
+
 export async function createFormFillFixturePage(
   browser: Browser,
   beforeNavigation?: (page: Page) => Promise<void>

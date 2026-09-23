@@ -174,9 +174,15 @@ test("hypothetical multi-step login and CAPTCHA barrier is not an inspectable na
 
 test("hypothetical async select and duplicate labels invalidate old authority and preserve occupied values", async () => {
   await withProtectedPage(changingSelectApplicationHtml(), async ({ page, controller }) => {
-    await assert.rejects(controller.inspect(), (error: unknown) =>
-      error instanceof Error && "code" in error && error.code === "AMBIGUOUS_DUPLICATE_FIELD");
+    const partialGeneration = await controller.inspect();
+    const partial = fieldsFrom(partialGeneration.inspectionReport);
+    assert.equal(partial.ambiguousQuestionCount, 2);
+    assert.equal(partial.snapshot.ambiguityGroups?.length, 1);
+    assert.equal(partial.snapshot.forms.flatMap((form) => form.sections.flatMap((section) => section.fields))
+      .filter((field) => field.question === "Portfolio URL").length, 0);
     await page.locator("#duplicate-b").evaluate((element) => element.remove());
+    await assert.rejects(controller.assertCurrent(partialGeneration.generationId),
+      (error: unknown) => error instanceof ApplicationFormInspectionControllerError && error.code === "FORM_GENERATION_INVALIDATED");
     const oldGeneration = await controller.inspect();
     const oldFields = fieldsFrom(oldGeneration.inspectionReport).snapshot.forms.flatMap((form) =>
       form.sections.flatMap((section) => section.fields));
@@ -212,6 +218,49 @@ test("hypothetical async select and duplicate labels invalidate old authority an
     const outcome = await controller.writeApprovedField(generation.generationId, request);
     assert.equal(outcome.status, "PRESERVED_EXISTING");
     assert.equal(await page.locator("#existing").inputValue(), "https://existing.example.test/profile");
+  });
+});
+
+test("protected partial Fill seals the unique target and leaves required duplicate controls untouched", async () => {
+  const html = `<!doctype html><html><body><form>
+    <label for="portfolio-a">Portfolio URL</label><input id="portfolio-a" type="url" required>
+    <label for="portfolio-b">Portfolio URL</label><input id="portfolio-b" type="url" required>
+    <label for="profile-unique">LinkedIn profile URL</label><input id="profile-unique" type="url" required>
+  </form></body></html>`;
+  await withProtectedPage(html, async ({ page, controller, unsafeCodes }) => {
+    const generation = await controller.inspect();
+    const normalized = fieldsFrom(generation.inspectionReport);
+    assert.equal(normalized.ambiguousQuestionCount, 2);
+    assert.equal(normalized.ambiguousRequiredCount, 2);
+    assert.equal(normalized.snapshot.ambiguityGroups?.length, 1);
+    const unique = normalized.snapshot.forms.flatMap((form) => form.sections.flatMap((section) => section.fields));
+    assert.equal(unique.length, 1);
+    assert.equal(unique[0].question, "LinkedIn profile URL");
+    const ambiguousKey = normalized.snapshot.ambiguityGroups![0].collisionKey;
+    assert.throws(() => controller.assertAcquiredFillAuthority(generation.generationId, {
+      formFingerprint: normalized.formFingerprint,
+      fields: [{
+        normalizedFieldKey: ambiguousKey,
+        fieldFingerprint: "0".repeat(64),
+        fieldType: "URL",
+        proposal: { kind: "SCALAR", value: "https://never.example.test" }
+      }]
+    }), (error: unknown) => error instanceof ApplicationFormInspectionControllerError);
+    const approved = {
+      normalizedFieldKey: unique[0].normalizedFieldKey,
+      fieldFingerprint: unique[0].fieldFingerprint,
+      fieldType: "URL" as const,
+      proposal: { kind: "SCALAR" as const, value: "https://profile.example.test/synthetic" }
+    };
+    controller.assertAcquiredFillAuthority(generation.generationId, {
+      formFingerprint: normalized.formFingerprint,
+      fields: [approved]
+    });
+    assert.equal((await controller.writeApprovedField(generation.generationId, approved)).status, "FILLED");
+    assert.equal(await page.locator("#profile-unique").inputValue(), approved.proposal.value);
+    assert.equal(await page.locator("#portfolio-a").inputValue(), "");
+    assert.equal(await page.locator("#portfolio-b").inputValue(), "");
+    assert.deepEqual(unsafeCodes, []);
   });
 });
 

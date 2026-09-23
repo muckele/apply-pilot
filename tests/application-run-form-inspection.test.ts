@@ -9,6 +9,7 @@ import {
   FormInspectionDomainError,
   FORM_INSPECTION_SCHEMA_VERSION,
   FORM_INSPECTION_TEXT_LIMITS,
+  hashDomainSeparated,
   hasVisibleBaseCharacter,
   MAX_CHOICES_PER_FIELD,
   MAX_CHOICES_TOTAL,
@@ -44,7 +45,7 @@ function field(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function report(fields = [field()], overrides: Record<string, unknown> = {}) {
+function report(fields: Array<Record<string, unknown>> = [field()], overrides: Record<string, unknown> = {}) {
   return {
     schemaVersion: FORM_INSPECTION_SCHEMA_VERSION,
     forms: [
@@ -110,7 +111,7 @@ test("the inspection schema rejects unknown authority at every object depth", ()
               fields: [
                 {
                   ...base.forms[0].sections[0].fields[0],
-                  constraints: { ...base.forms[0].sections[0].fields[0].constraints, value: "secret" }
+                  constraints: { ...(base.forms[0].sections[0].fields[0].constraints as typeof EMPTY_CONSTRAINTS), value: "secret" }
                 }
               ]
             }
@@ -467,11 +468,135 @@ test("confirmation semantics create distinct server-owned field identities", () 
   assert.notEqual(fields[0].normalizedFieldKey, fields[1].normalizedFieldKey);
 });
 
-test("truly indistinguishable duplicate fields fail without ordinal authority", () => {
-  assert.throws(
-    () => build(report([field({ question: "Portfolio URL" }), field({ question: "Portfolio URL" })])),
-    (error) => error instanceof FormInspectionDomainError && error.code === "AMBIGUOUS_DUPLICATE_FIELD"
-  );
+test("duplicate members are anonymous while a unique field survives", () => {
+  const normalized = build(report([
+    field({ question: "Portfolio URL" }),
+    field({ question: "Portfolio URL" }),
+    field({ question: "LinkedIn URL" })
+  ]));
+  const section = normalized.snapshot.forms[0].sections[0];
+  assert.equal(normalized.snapshot.schemaVersion, 2);
+  assert.equal(normalized.fieldCount, 3);
+  assert.equal(normalized.uniqueFieldCount, 1);
+  assert.equal(normalized.ambiguousQuestionCount, 2);
+  assert.equal(normalized.ambiguousRequiredCount, 2);
+  assert.equal(section.fields.length, 1);
+  assert.equal(section.ambiguousMembers?.length, 2);
+  assert.deepEqual(Object.keys(section.ambiguousMembers![0]).sort(), [
+    "collisionKey", "memberIntegrityDigest", "required"
+  ]);
+  assert.equal(normalized.snapshot.ambiguityGroups?.length, 1);
+  assert.equal(normalized.snapshot.ambiguityGroups?.[0].memberCount, 2);
+  assert.deepEqual(parseNormalizedApplicationFormSnapshot(normalized.snapshot), normalized.snapshot);
+});
+
+test("ambiguous member reorder is canonical and cardinality or material changes freshness", () => {
+  const first = field({ question: "Portfolio URL", helpText: "First" });
+  const second = field({ question: "Portfolio URL", helpText: "Second" });
+  const unique = field({ question: "LinkedIn URL" });
+  const base = build(report([first, second, unique]));
+  const reordered = build(report([second, unique, first]));
+  assert.deepEqual(base.snapshot, reordered.snapshot);
+  assert.equal(base.formFingerprint, reordered.formFingerprint);
+  assert.notEqual(base.formFingerprint, build(report([first, second, second, unique])).formFingerprint);
+  assert.notEqual(base.formFingerprint, build(report([first, { ...second, required: false }, unique])).formFingerprint);
+});
+
+test("an entirely ambiguous form has no unique fields and verifies as v2", () => {
+  const normalized = build(report([field(), field()]));
+  assert.equal(normalized.uniqueFieldCount, 0);
+  assert.equal(normalized.snapshot.forms[0].sections[0].fields.length, 0);
+  assert.equal(normalized.snapshot.ambiguityGroups?.[0].memberCount, 2);
+  assert.deepEqual(verifyNormalizedApplicationFormSnapshot({
+    authoritativeApplyHost: "jobs.example.com",
+    expectedFormFingerprint: normalized.formFingerprint,
+    snapshot: normalized.snapshot
+  }), normalized.snapshot);
+});
+
+test("three duplicate members across sections form one global anonymous group", () => {
+  const duplicate = field({ question: "Portfolio URL" });
+  const input = report();
+  input.forms[0].sections = [
+    { heading: "Candidate details", fields: [duplicate, field({ question: "LinkedIn URL" })] },
+    { heading: "Candidate details", fields: [duplicate, duplicate] }
+  ];
+  const built = build(input);
+  assert.equal(built.uniqueFieldCount, 1);
+  assert.equal(built.ambiguousQuestionCount, 3);
+  assert.equal(built.snapshot.ambiguityGroups?.length, 1);
+  assert.equal(built.snapshot.ambiguityGroups?.[0].memberCount, 3);
+  assert.deepEqual(built.snapshot.forms[0].sections.map((section) => section.ambiguousMembers?.length).sort(), [1, 2]);
+  assert.notEqual(built.formFingerprint, build(report([duplicate, duplicate, field({ question: "LinkedIn URL" })])).formFingerprint);
+});
+
+test("ambiguous upload and differing select choices remain anonymous but freshness-sensitive", () => {
+  const upload = field({ question: "Upload resume", fieldType: "FILE_UPLOAD", autocomplete: null });
+  const uploads = build(report([upload, upload]));
+  assert.equal(uploads.uniqueFieldCount, 0);
+  assert.equal(uploads.snapshot.forms[0].sections[0].fields.length, 0);
+  const select = field({
+    question: "Preferred location", fieldType: "SELECT_ONE", autocomplete: null,
+    choices: [{ label: "Remote", disabled: false }]
+  });
+  const alternate = { ...select, choices: [{ label: "Hybrid", disabled: false }] };
+  const first = build(report([select, alternate]));
+  assert.equal(first.ambiguousQuestionCount, 2);
+  assert.equal(first.uniqueFieldCount, 0);
+  assert.notEqual(first.formFingerprint, build(report([select, select])).formFingerprint);
+  assert.equal(first.formFingerprint, build(report([alternate, select])).formFingerprint);
+});
+
+test("raw unsupported reasons remain in anonymous member integrity when normalized disposition is equal", () => {
+  const password = field({ question: "Extra answer", fieldType: "UNSUPPORTED", unsupportedReason: "PASSWORD", autocomplete: null });
+  const richText = { ...password, unsupportedReason: "RICH_TEXT" };
+  const first = build(report([password, richText]));
+  const second = build(report([password, password]));
+  assert.equal(first.ambiguousQuestionCount, 2);
+  assert.notEqual(first.formFingerprint, second.formFingerprint);
+});
+
+test("tampered anonymous group counts and member commitments fail stored verification", () => {
+  const built = build(report([field(), field()]));
+  const count = JSON.parse(JSON.stringify(built.snapshot));
+  count.ambiguityGroups![0].memberCount = 3;
+  assert.throws(() => parseNormalizedApplicationFormSnapshot(count));
+  const member = JSON.parse(JSON.stringify(built.snapshot));
+  member.forms[0].sections[0].ambiguousMembers![0].memberIntegrityDigest = "0".repeat(64);
+  assert.throws(() => parseNormalizedApplicationFormSnapshot(member));
+});
+
+test("legacy v1 snapshots verify only in their original fingerprint domain", () => {
+  const v2 = build(report([field({ question: "LinkedIn URL" })]));
+  const form = v2.snapshot.forms[0];
+  const section = form.sections[0];
+  const heading = canonicalizeFormComparisonText(section.heading ?? "");
+  const sectionKey = hashDomainSeparated("application-form-section-key:v1\0", {
+    fieldKeys: section.fields.map((entry) => entry.normalizedFieldKey), heading
+  });
+  const title = canonicalizeFormComparisonText(form.title ?? "");
+  const formKey = hashDomainSeparated("application-form-form-key:v1\0", { sectionKeys: [sectionKey], title });
+  const v1 = {
+    schemaVersion: 1, normalizerVersion: 1, classifierVersion: v2.snapshot.classifierVersion,
+    fingerprintVersion: 1,
+    forms: [{ formKey, title: form.title, sections: [{ sectionKey, heading: section.heading, fields: section.fields }] }]
+  };
+  assert.deepEqual(parseNormalizedApplicationFormSnapshot(v1), v1);
+  assert.throws(() => parseNormalizedApplicationFormSnapshot({ ...v1, schemaVersion: 2 }));
+});
+
+test("a v2 section cannot erase all observed field occurrences", () => {
+  const snapshot = JSON.parse(JSON.stringify(build(report([field()])).snapshot));
+  const form = snapshot.forms[0];
+  const section = form.sections[0];
+  section.fields = [];
+  section.sectionKey = hashDomainSeparated("application-form-section-key:v2\0", {
+    fieldKeys: [], heading: canonicalizeFormComparisonText(section.heading ?? ""), ambiguousMembers: []
+  });
+  form.formKey = hashDomainSeparated("application-form-form-key:v2\0", {
+    sectionKeys: [section.sectionKey], title: canonicalizeFormComparisonText(form.title ?? "")
+  });
+  assert.throws(() => parseNormalizedApplicationFormSnapshot(snapshot));
 });
 
 test("the authoritative host is explicit fingerprint material and URL parts are not input", () => {

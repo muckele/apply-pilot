@@ -6,10 +6,23 @@ import { Prisma, type ApplicationRunState } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  computeApplicationAnswerPacketHash,
+  computeApplicationAnswerProposalHash
+} from "@/lib/application-runs/answer-packet-domain";
+import {
   createApplicationRunAnswerPacketService,
-  type ApplicationRunAnswerPacketServiceDependencies
+  loadVerifiedCurrentAnswerPacketForLockedRunInTransaction,
+  type ApplicationRunAnswerPacketServiceDependencies,
+  type VerifiedCurrentAnswerPacket
 } from "@/lib/application-runs/answer-packet-service";
-import { FORM_INSPECTION_SCHEMA_VERSION } from "@/lib/application-runs/form-inspection";
+import { createApplicationRunFillAttemptService } from "@/lib/application-runs/fill-attempt";
+import {
+  FORM_INSPECTION_SCHEMA_VERSION,
+  canonicalizeFormComparisonText,
+  computeFormFingerprint,
+  hashDomainSeparated,
+  type NormalizedApplicationFormSnapshot
+} from "@/lib/application-runs/form-inspection";
 
 const NOW = new Date("2026-08-26T20:00:00.000Z");
 const USER_ID = "user-1";
@@ -41,7 +54,7 @@ function field(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function report(fields = [field()]) {
+function report(fields: Array<Record<string, unknown>> = [field()]) {
   return {
     schemaVersion: FORM_INSPECTION_SCHEMA_VERSION,
     forms: [{ title: "Application", sections: [{ heading: "Candidate", fields }] }]
@@ -58,6 +71,7 @@ type FakePolicy = FakeRow & {
   id: string;
   userId: string;
   enabled: boolean;
+  mode: "FILL_AND_REVIEW";
   allowedHosts: string[];
   blockedHosts: string[];
   sensitiveAnswerPolicy: "EXCLUDE";
@@ -118,6 +132,7 @@ type FakeState = {
   tokens: FakeToken[];
   audits: FakeRow[];
   events: FakeRow[];
+  steps: FakeRow[];
 };
 
 function cloneState<T>(value: T): T {
@@ -148,6 +163,7 @@ class FakeAnswerPacketDatabase {
         id: "policy-1",
         userId: USER_ID,
         enabled: true,
+        mode: "FILL_AND_REVIEW",
         allowedHosts: ["jobs.example.com"],
         blockedHosts: [],
         sensitiveAnswerPolicy: "EXCLUDE",
@@ -203,6 +219,7 @@ class FakeAnswerPacketDatabase {
       ],
       audits: [],
       events: [],
+      steps: [],
       ...cloneState(overrides)
     };
   }
@@ -238,6 +255,7 @@ class FakeAnswerPacketDatabase {
           const [runId, userId] = values;
           return (state.run.id === runId && state.run.userId === userId ? [{ id: state.run.id }] : []) as T;
         }
+        if (sql.includes("clock_timestamp")) return [{ now: new Date(NOW) }] as T;
         if (sql.includes('FROM "ApplicationAnswer"')) {
           const [userId, includeLinks, includeAvailability] = values;
           return state.vault
@@ -305,6 +323,8 @@ class FakeAnswerPacketDatabase {
           state.run.currentAnswerPacketVersion = data.currentAnswerPacketVersion;
           if (data.state) state.run.state = data.state;
           if (data.stateVersion?.increment) state.run.stateVersion += data.stateVersion.increment;
+          if ("fillAttemptId" in data) state.run.fillAttemptId = data.fillAttemptId as string;
+          if ("fillLeaseExpiresAt" in data) state.run.fillLeaseExpiresAt = data.fillLeaseExpiresAt as Date;
           return { count: 1 };
         }
       },
@@ -355,6 +375,12 @@ class FakeAnswerPacketDatabase {
               proposal: input.proposal === Prisma.DbNull ? null : cloneState(input.proposal)
             });
           }
+          return { count: data.length };
+        }
+      },
+      applicationRunStep: {
+        createMany: async ({ data }: { data: FakeRow[] }) => {
+          state.steps.push(...cloneState(data));
           return { count: data.length };
         }
       },
@@ -529,6 +555,196 @@ test("first publication persists inspection 1 and packet 1, transitions READY, a
   ]);
 });
 
+test("partial publication stores only unique answers and makes ambiguous manual work visible", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const duplicate = field({ question: "Portfolio URL" });
+  const packetService = service(database);
+  const first = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: report([duplicate, duplicate, field()])
+  }));
+  assert.equal(first.packet.summary.fieldCount, 1);
+  assert.equal(first.packet.summary.observedFieldCount, 3);
+  assert.equal(first.packet.summary.ambiguousQuestionCount, 2);
+  assert.equal(first.packet.summary.manualRequiredCount, 2);
+  assert.equal(database.state.packetAnswers.length, 1);
+  const second = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    expectedStateVersion: 5, expectedFormInspectionVersion: 1, expectedAnswerPacketVersion: 1,
+    inspectionReport: report([duplicate, duplicate, field()])
+  }));
+  assert.equal(second.replayed, false);
+  assert.equal(second.inspectionVersion, 2);
+  assert.equal(second.packetVersion, 2);
+});
+
+test("an entirely ambiguous form publishes a verified empty packet and no answer rows", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const duplicate = field({ question: "Portfolio URL" });
+  const packetService = service(database);
+  const published = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: report([duplicate, duplicate])
+  }));
+  assert.deepEqual(published.packet.answers, []);
+  assert.equal(published.packet.summary.ambiguousQuestionCount, 2);
+  assert.equal(published.packet.summary.manualRequiredCount, 2);
+  assert.equal(database.state.packetAnswers.length, 0);
+  const loaded = await packetService.getCurrentAnswerPacket({ userId: USER_ID, runId: RUN_ID });
+  assert.equal(loaded.current?.summary.observedFieldCount, 2);
+});
+
+test("real packet verification lets Fill acquire only the reviewed unique field beside ambiguous required questions", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const duplicate = field({ question: "Portfolio URL" });
+  await service(database).publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: report([duplicate, duplicate, field()])
+  }));
+  const answer = database.state.packetAnswers[0];
+  assert.equal(answer.disposition, "PROPOSABLE");
+  assert.notEqual(answer.proposal, null);
+  answer.status = "APPROVED";
+  answer.reviewedByUser = true;
+  answer.reviewedAt = new Date(NOW);
+  answer.finalValueHash = computeApplicationAnswerProposalHash(answer.proposal as never);
+  answer.reviewHashVersion = "CANONICAL_PROPOSAL_V1";
+  database.state.packets[0].reviewedAt = new Date(NOW);
+  database.state.run.state = "READY";
+  const expectedStateVersion = database.state.run.stateVersion;
+  const fill = createApplicationRunFillAttemptService({
+    prismaClient: database.client as never,
+    env: { APPLICATION_AUTOMATION_ENABLED: "true" },
+    attemptIdGenerator: () => "550e8400-e29b-41d4-a716-446655440000",
+    assertTransition: () => undefined
+  });
+  const result = await fill.acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion });
+  assert.equal(result.eligibleFields.length, 1);
+  assert.equal(result.eligibleFields[0].normalizedFieldKey, answer.normalizedFieldKey);
+  assert.deepEqual(database.state.steps.map((step) => step.stepKey), [result.eligibleFields[0].stepKey]);
+  assert.equal(database.state.run.state, "FILLING");
+  assert.equal(database.state.run.fillAttemptId, result.attemptId);
+  assert.equal(database.state.audits.filter((audit) => audit.action === "application-run-fill-attempt.acquire").length, 1);
+});
+
+test("real packet verification consumes no Fill attempt for an entirely ambiguous form", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const duplicate = field({ question: "Portfolio URL" });
+  await service(database).publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: report([duplicate, duplicate])
+  }));
+  database.state.packets[0].reviewedAt = new Date(NOW);
+  database.state.run.state = "READY";
+  const expectedStateVersion = database.state.run.stateVersion;
+  const fill = createApplicationRunFillAttemptService({
+    prismaClient: database.client as never,
+    env: { APPLICATION_AUTOMATION_ENABLED: "true" },
+    attemptIdGenerator: () => "550e8400-e29b-41d4-a716-446655440000",
+    assertTransition: () => undefined
+  });
+  await assert.rejects(fill.acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion }),
+    (error: unknown) => assertPublicErrorCode(error, "FILL_NO_ELIGIBLE_FIELDS"));
+  assert.equal(database.state.run.state, "READY");
+  assert.equal(database.state.run.fillAttemptId, null);
+  assert.deepEqual(database.state.steps, []);
+  assert.equal(database.state.audits.filter((audit) => audit.action === "application-run-fill-attempt.acquire").length, 0);
+});
+
+test("rebuild of a verified historical v1 inspection requires fresh v2 reinspection", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  await packetService.publishFormInspectionAndAnswerPacket(publicationInput());
+  const current = database.state.inspections[0].normalizedSnapshot as NormalizedApplicationFormSnapshot;
+  const originalForm = current.forms[0];
+  const originalSection = originalForm.sections[0];
+  const sectionKey = hashDomainSeparated("application-form-section-key:v1\0", {
+    fieldKeys: originalSection.fields.map((entry) => entry.normalizedFieldKey),
+    heading: canonicalizeFormComparisonText(originalSection.heading ?? "")
+  });
+  const formKey = hashDomainSeparated("application-form-form-key:v1\0", {
+    sectionKeys: [sectionKey], title: canonicalizeFormComparisonText(originalForm.title ?? "")
+  });
+  const v1 = {
+    schemaVersion: 1 as const, normalizerVersion: 1 as const, classifierVersion: current.classifierVersion,
+    fingerprintVersion: 1 as const,
+    forms: [{ formKey, title: originalForm.title, sections: [{
+      sectionKey, heading: originalSection.heading, fields: originalSection.fields
+    }] }]
+  };
+  database.state.inspections[0].normalizedSnapshot = v1;
+  database.state.inspections[0].schemaVersion = 1;
+  database.state.inspections[0].normalizerVersion = 1;
+  database.state.inspections[0].fingerprintVersion = 1;
+  database.state.inspections[0].formFingerprint = computeFormFingerprint("jobs.example.com", v1);
+  database.state.packets[0].builderVersion = 3;
+  await assert.rejects(packetService.rebuildCurrentAnswerPacket({
+    userId: USER_ID, runId: RUN_ID, expectedStateVersion: 5,
+    expectedFormInspectionVersion: 1, expectedAnswerPacketVersion: 1
+  }), (error: unknown) => assertPublicErrorCode(error, "RUN_INSPECTION_STALE"));
+});
+
+test("authentic stored v1 inspection and builder-1 packet remain readable with their original hash rules", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const packetService = service(database);
+  await packetService.publishFormInspectionAndAnswerPacket(publicationInput());
+  const verifiedV2 = await database.client.$transaction(async (tx) =>
+    loadVerifiedCurrentAnswerPacketForLockedRunInTransaction(tx as never, {
+      userId: USER_ID, run: database.state.run as never
+    })
+  ) as VerifiedCurrentAnswerPacket | null;
+  assert.ok(verifiedV2);
+  const current = database.state.inspections[0].normalizedSnapshot as NormalizedApplicationFormSnapshot;
+  const originalForm = current.forms[0];
+  const originalSection = originalForm.sections[0];
+  const sectionKey = hashDomainSeparated("application-form-section-key:v1\0", {
+    fieldKeys: originalSection.fields.map((entry) => entry.normalizedFieldKey),
+    heading: canonicalizeFormComparisonText(originalSection.heading ?? "")
+  });
+  const formKey = hashDomainSeparated("application-form-form-key:v1\0", {
+    sectionKeys: [sectionKey], title: canonicalizeFormComparisonText(originalForm.title ?? "")
+  });
+  const v1 = {
+    schemaVersion: 1 as const, normalizerVersion: 1 as const,
+    classifierVersion: current.classifierVersion, fingerprintVersion: 1 as const,
+    forms: [{ formKey, title: originalForm.title, sections: [{
+      sectionKey, heading: originalSection.heading, fields: originalSection.fields
+    }] }]
+  };
+  const v1FormFingerprint = computeFormFingerprint("jobs.example.com", v1);
+  const historicalPacket = {
+    ...verifiedV2.packet,
+    formFingerprint: v1FormFingerprint,
+    builderVersion: 1
+  };
+  database.state.inspections[0].normalizedSnapshot = v1;
+  database.state.inspections[0].schemaVersion = 1;
+  database.state.inspections[0].normalizerVersion = 1;
+  database.state.inspections[0].fingerprintVersion = 1;
+  database.state.inspections[0].formFingerprint = v1FormFingerprint;
+  database.state.packets[0].builderVersion = 1;
+  database.state.packets[0].packetHash = computeApplicationAnswerPacketHash(
+    historicalPacket, verifiedV2.validationContext
+  );
+  const loaded = await packetService.getCurrentAnswerPacket({ userId: USER_ID, runId: RUN_ID });
+  assert.equal(loaded.current?.inspectionVersion, 1);
+  assert.equal(loaded.current?.answers.length, 1);
+  assert.equal(loaded.current?.packetHash, database.state.packets[0].packetHash);
+});
+
+test("a changed anonymous member creates fresh inspection and packet authority", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  const duplicate = field({ question: "Portfolio URL" });
+  const packetService = service(database);
+  const first = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: report([duplicate, duplicate, field()])
+  }));
+  const second = await packetService.publishFormInspectionAndAnswerPacket(publicationInput({
+    expectedStateVersion: 5, expectedFormInspectionVersion: 1, expectedAnswerPacketVersion: 1,
+    inspectionReport: report([duplicate, { ...duplicate, helpText: "Optional portfolio" }, field()])
+  }));
+  assert.notEqual(second.packetHash, first.packetHash);
+  assert.equal(second.inspectionVersion, 2);
+  assert.equal(second.packetVersion, 2);
+  assert.equal(second.packet.summary.ambiguousQuestionCount, 2);
+  assert.equal(database.state.packetAnswers.length, 2);
+});
+
 test("exact replay tolerates stale artifact counters but performs no mutation or side effect", async () => {
   const database = new FakeAnswerPacketDatabase();
   const packetService = service(database);
@@ -643,7 +859,7 @@ test("owner-safe choice projection preserves the pinned packet hash and exact re
     inspectionReport: choiceInspection
   }));
 
-  assert.equal(first.packetHash, "bc7a0de0b23d435b03764d7fcbf886564426de51bf212061a9043f5a3cedb9dc");
+  assert.equal(first.packetHash, "d8a1d062351b90aa54b25990481f5e1c4801ce487ca9eae12dba4ab0f8dff4c2");
   assert.deepEqual(first.packet.answers[0].choices, [
     {
       key: "a9c9e34d4cb7ae5e7596dd4f6f096bd7f0ca2f8bec27df13977ef599a51badc7",
@@ -689,6 +905,11 @@ test("current read returns null only for 0/0 and rejects every broken or unverif
     ["unsupported inspection", (database) => {
       database.state.inspections[0].schemaVersion = Number(database.state.inspections[0].schemaVersion) + 1;
     }, "RUN_INSPECTION_STALE"],
+    ["snapshot version disagrees with persisted marker", (database) => {
+      database.state.inspections[0].schemaVersion = 1;
+      database.state.inspections[0].normalizerVersion = 1;
+      database.state.inspections[0].fingerprintVersion = 1;
+    }, "RUN_INSPECTION_INVALID"],
     ["unsupported packet", (database) => {
       database.state.packets[0].builderVersion = Number(database.state.packets[0].builderVersion) + 1;
     }, "RUN_PACKET_INVALID"],

@@ -22,7 +22,7 @@ import { parseExecutionTargetUrl } from "@/lib/application-runs/host-policy";
 
 import {
   assertNoSubmission,
-  boundedWriterFixture,
+  policyEligibleWriterFixture,
   type FormFillTrapSnapshot
 } from "./form-fill-fixtures";
 
@@ -67,7 +67,7 @@ test("guarded orchestration uses the exact private generation and server order w
       await route.fulfill({
         status: 200,
         contentType: "text/html; charset=utf-8",
-        body: boundedWriterFixture()
+        body: policyEligibleWriterFixture()
       });
     }
   });
@@ -106,9 +106,12 @@ test("guarded orchestration uses the exact private generation and server order w
       assert.equal(matches.length, 1, `expected one normalized field for ${question}`);
       return matches[0];
     };
-    const url = field("Empty URL");
-    const occupiedText = field("Occupied text");
-    const select = field("Empty select");
+    const url = field("LinkedIn profile URL");
+    const occupiedText = field("Portfolio URL");
+    const select = field("Availability");
+    assert.equal(url.permittedDisposition, "PROPOSABLE");
+    assert.equal(occupiedText.permittedDisposition, "PROPOSABLE");
+    assert.equal(select.permittedDisposition, "PROPOSABLE");
     assert.equal(url.fieldType, "URL");
     assert.equal(occupiedText.fieldType, "TEXT");
     assert.equal(select.fieldType, "SELECT_ONE");

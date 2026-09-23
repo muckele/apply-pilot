@@ -40,6 +40,9 @@ export type CorrelatedProtectedApplicationFormExtraction = Readonly<{
   formFingerprint: string;
   fieldCount: number;
   requiredFieldCount: number;
+  uniqueFieldCount: number;
+  ambiguousQuestionCount: number;
+  ambiguousRequiredCount: number;
   inspectionReport: ApplicationFormInspectionReport;
   normalizedSnapshot: NormalizedApplicationFormSnapshot;
   dispose(): Promise<void>;
@@ -169,6 +172,27 @@ function normalizedFieldForSource(input: Readonly<{
   return normalized;
 }
 
+function ambiguousMemberForSource(input: Readonly<{
+  report: ApplicationFormInspectionReport;
+  sourceOrdinal: ProtectedSourceFieldOrdinal;
+  authoritativeApplyHost: string;
+}>) {
+  const form = input.report.forms[input.sourceOrdinal.form];
+  const section = form?.sections[input.sourceOrdinal.section];
+  const field = section?.fields[input.sourceOrdinal.field];
+  if (!form || !section || !field) throw correlationInvalid();
+  const doubled = buildNormalizedApplicationFormInspection({
+    authoritativeApplyHost: input.authoritativeApplyHost,
+    report: {
+      schemaVersion: input.report.schemaVersion,
+      forms: [{ title: form.title, sections: [{ heading: section.heading, fields: [field, field] }] }]
+    }
+  });
+  const member = doubled.snapshot.forms[0]?.sections[0]?.ambiguousMembers?.[0];
+  if (!member || doubled.ambiguousQuestionCount !== 2) throw correlationInvalid();
+  return member;
+}
+
 function buildWriterTargetBindings(input: Readonly<{
   extraction: ProtectedApplicationFormExtraction;
   normalizedSnapshot: NormalizedApplicationFormSnapshot;
@@ -184,6 +208,17 @@ function buildWriterTargetBindings(input: Readonly<{
     }
   }
 
+  // Sections are canonically sorted, so match raw sections using their unique
+  // field keys and anonymous occurrence multisets rather than source order.
+  const allAnonymous = input.normalizedSnapshot.forms.flatMap((form) =>
+    form.sections.flatMap((section) => section.ambiguousMembers ?? [])
+  );
+  const anonymousCounts = new Map<string, number>();
+  for (const member of allAnonymous) {
+    const key = `${member.collisionKey}/${member.memberIntegrityDigest}/${member.required}`;
+    anonymousCounts.set(key, (anonymousCounts.get(key) ?? 0) + 1);
+  }
+
   const bindings: ProtectedWriterTargetBinding[] = [];
   const boundKeys = new Set<string>();
   for (const slot of input.extraction.fields) {
@@ -195,6 +230,18 @@ function buildWriterTargetBindings(input: Readonly<{
       sourceOrdinal: source,
       authoritativeApplyHost: input.authoritativeApplyHost
     });
+    if (input.normalizedSnapshot.ambiguityGroups?.some((group) => group.collisionKey === derived.normalizedFieldKey)) {
+      const member = ambiguousMemberForSource({
+        report: input.extraction.report,
+        sourceOrdinal: source,
+        authoritativeApplyHost: input.authoritativeApplyHost
+      });
+      const key = `${member.collisionKey}/${member.memberIntegrityDigest}/${member.required}`;
+      const remaining = anonymousCounts.get(key) ?? 0;
+      if (remaining < 1) throw correlationInvalid();
+      anonymousCounts.set(key, remaining - 1);
+      continue;
+    }
     const normalized = normalizedByKey.get(derived.normalizedFieldKey);
     if (
       !normalized ||
@@ -235,6 +282,7 @@ function buildWriterTargetBindings(input: Readonly<{
       choices: Object.freeze(choices)
     }));
   }
+  if ([...anonymousCounts.values()].some((count) => count !== 0)) throw correlationInvalid();
 
   const expectedWritableKeys = [...normalizedByKey.values()]
     .filter((field) => isWritableFieldType(field.fieldType))
@@ -301,6 +349,9 @@ export async function correlateProtectedApplicationFormExtraction(
       formFingerprint: full.formFingerprint,
       fieldCount: full.fieldCount,
       requiredFieldCount: full.requiredFieldCount,
+      uniqueFieldCount: full.uniqueFieldCount,
+      ambiguousQuestionCount: full.ambiguousQuestionCount,
+      ambiguousRequiredCount: full.ambiguousRequiredCount,
       inspectionReport,
       normalizedSnapshot: full.snapshot,
       dispose: createIdempotentDisposer(disposeOwnedCandidate)

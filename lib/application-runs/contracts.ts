@@ -184,7 +184,8 @@ export const resolveApplicationRunReviewBodySchema = z
     stateVersion: z.number().int().nonnegative(),
     acknowledgedReviewReasons: z.array(z.enum(PLAN_REVIEW_REASONS)),
     answerPacketVersion: z.number().int().nonnegative(),
-    packetHash: z.string().regex(/^[a-f0-9]{64}$/).nullable()
+    packetHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+    acknowledgedAmbiguousQuestionCount: z.number().int().min(0).max(200).optional()
   })
   .strict()
   .superRefine((value, context) => {

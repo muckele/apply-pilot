@@ -29,7 +29,7 @@ import { buildNormalizedApplicationFormInspection } from "@/lib/application-runs
 
 import {
   assertNoSubmission,
-  boundedWriterFixture,
+  policyEligibleWriterFixture,
   type FormFillTrapSnapshot
 } from "./form-fill-fixtures";
 
@@ -105,6 +105,9 @@ const productionAnswerPacket = {
   createdAt: "2026-09-11T17:00:00.000Z",
   summary: {
     fieldCount: 1,
+    observedFieldCount: 1,
+    ambiguousQuestionCount: 0,
+    ambiguousRequiredCount: 0,
     proposableCount: 1,
     pendingReviewCount: 0,
     approvedCount: 1,
@@ -512,7 +515,7 @@ test("a production ApplicationBrowserControl remount with an existing attempt ne
   }
 });
 
-test("downstream synthetic trigger crosses one trusted bridge and writes six families without employer action or submit", async () => {
+test("downstream synthetic trigger writes only policy-eligible fields without employer action or submit", async () => {
   const context = await browser.newContext();
   const employerContext = await browser.newContext();
   await context.route(`${CONTROL_ORIGIN}/**`, async (route) => {
@@ -539,7 +542,7 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
       await route.fulfill({
         status: 200,
         contentType: "text/html; charset=utf-8",
-        body: boundedWriterFixture()
+        body: policyEligibleWriterFixture()
       });
     }
   });
@@ -614,18 +617,19 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
         assert.equal(matches.length, 1, question);
         return matches[0];
       };
-      const select = field("Empty select");
+      const select = field("Availability");
       const selectedChoice = select.choices.find((choice) => choice.label === "A");
       assert.ok(selectedChoice);
       const definitions = [
-        [field("Empty text"), "TEXT", { kind: "SCALAR", value: "Ada Lovelace" }],
-        [field("Empty email"), "EMAIL", { kind: "SCALAR", value: "ada@example.test" }],
-        [field("Empty telephone"), "TEL", { kind: "SCALAR", value: "+1 555 0100" }],
-        [field("Empty URL"), "URL", { kind: "SCALAR", value: "https://portfolio.example.test" }],
-        [field("Empty textarea"), "TEXTAREA", { kind: "SCALAR", value: "Carefully reviewed response." }],
+        [field("Website URL"), "TEXT", { kind: "SCALAR", value: "https://website.example.test" }],
+        [field("LinkedIn profile URL"), "URL", { kind: "SCALAR", value: "https://portfolio.example.test" }],
+        [field("When are you available to start?"), "TEXTAREA", { kind: "SCALAR", value: "Within two weeks" }],
         [select, "SELECT_ONE", { kind: "OPTIONS", optionKeys: [selectedChoice.key] }],
-        [field("Occupied text"), "TEXT", { kind: "SCALAR", value: "MUST-NOT-OVERWRITE" }]
+        [field("Portfolio URL"), "TEXT", { kind: "SCALAR", value: "MUST-NOT-OVERWRITE" }]
       ] as const;
+      for (const [candidate] of definitions) assert.equal(candidate.permittedDisposition, "PROPOSABLE");
+      assert.equal(field("Empty email").permittedDisposition, "MANUAL_ONLY");
+      assert.equal(field("Empty telephone").permittedDisposition, "MANUAL_ONLY");
       const eligibleFields = definitions.map(([candidate, fieldType, proposal]) => Object.freeze({
         stepKey: `fill:${ATTEMPT_ID}:${candidate.normalizedFieldKey}`,
         normalizedFieldKey: candidate.normalizedFieldKey,
@@ -806,20 +810,20 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
       fillCommand: { outcome: "FINALIZED" }
     });
     assert.equal(JSON.stringify(controlState.result).includes(ATTEMPT_ID), false);
-    assert.equal(JSON.stringify(controlState.result).includes("Ada Lovelace"), false);
+    assert.equal(JSON.stringify(controlState.result).includes("https://website.example.test"), false);
     assert.equal(bridgeFillCommandCount, 1);
     assert.equal(acquisitionCount, 1);
-    assert.equal(writerCalls, 7);
+    assert.equal(writerCalls, 5);
     assert.equal(maxWriterConcurrency, 1);
     assert.deepEqual(writerFieldOrder, serverFieldOrder);
-    assert.equal(new Set(writerFieldOrder).size, 7);
-    assert.ok(fillStatusReads >= 8);
+    assert.equal(new Set(writerFieldOrder).size, 5);
+    assert.ok(fillStatusReads >= 6);
 
     const acquired = acquisition as BrowserFillAcquisition | null;
     assert.ok(acquired);
     assert.deepEqual(
       new Set(acquired.eligibleFields.map((field) => field.fieldType)),
-      new Set(["TEXT", "EMAIL", "TEL", "URL", "TEXTAREA", "SELECT_ONE"])
+      new Set(["TEXT", "URL", "TEXTAREA", "SELECT_ONE"])
     );
     const recordedFinalization = finalization as BrowserFillFinalizeInput | null;
     assert.ok(recordedFinalization);
@@ -829,14 +833,14 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
     );
     assert.deepEqual(
       recordedFinalization.steps.map((step) => step.result),
-      ["FILLED", "FILLED", "FILLED", "FILLED", "FILLED", "FILLED", "PRESERVED_EXISTING"]
+      ["FILLED", "FILLED", "FILLED", "FILLED", "PRESERVED_EXISTING"]
     );
 
-    assert.equal(await employerPage.locator("#text-empty").inputValue(), "Ada Lovelace");
-    assert.equal(await employerPage.locator("#email-empty").inputValue(), "ada@example.test");
-    assert.equal(await employerPage.locator("#tel-empty").inputValue(), "+1 555 0100");
+    assert.equal(await employerPage.locator("#text-empty").inputValue(), "https://website.example.test");
+    assert.equal(await employerPage.locator("#email-empty").inputValue(), "");
+    assert.equal(await employerPage.locator("#tel-empty").inputValue(), "");
     assert.equal(await employerPage.locator("#url-empty").inputValue(), "https://portfolio.example.test");
-    assert.equal(await employerPage.locator("#textarea-empty").inputValue(), "Carefully reviewed response.");
+    assert.equal(await employerPage.locator("#textarea-empty").inputValue(), "Within two weeks");
     assert.equal(await employerPage.locator("#select-empty").inputValue(), "SECRET-A");
     assert.equal(await employerPage.locator("#text-occupied").inputValue(), "SECRET-OCCUPIED-TEXT");
     assert.equal(await employerPage.locator("#radio-a").isChecked(), false);
@@ -854,14 +858,12 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
     };
     assert.deepEqual(traps.eventLog, [
       "text-empty:input",
-      "email-empty:input",
-      "tel-empty:input",
       "url-empty:input",
       "textarea-empty:input",
       "select-empty:input",
       "select-empty:change"
     ]);
-    assert.equal(traps.input, 6);
+    assert.equal(traps.input, 4);
     assert.equal(traps.change, 1);
     assert.equal(traps.click, 0);
     assert.equal(traps.focus, 0);
@@ -879,11 +881,11 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
     assert.deepEqual(handoff.fillCommand, { outcome: "FINALIZED" });
     assert.equal(targetController.formInspectionTarget(), null);
     assert.equal(employerPage.isClosed(), false);
-    assert.equal(await employerPage.locator("#text-empty").inputValue(), "Ada Lovelace");
+    assert.equal(await employerPage.locator("#text-empty").inputValue(), "https://website.example.test");
     assert.equal(await employerPage.locator("#select-empty").inputValue(), "SECRET-A");
     await assert.rejects(coordinator.handleCommand({ type: "FILL_APPROVED_FIELDS" }, () => undefined));
     assert.equal(acquisitionCount, 1);
-    assert.equal(writerCalls, 7);
+    assert.equal(writerCalls, 5);
   } finally {
     await coordinator.close().catch(() => undefined);
     await employerContext.close().catch(() => undefined);

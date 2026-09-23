@@ -15,18 +15,23 @@ import {
   computeApplicationAnswerPacketInputHash,
   computeApplicationAnswerPacketPolicyHash,
   computeApplicationAnswerSourceFingerprint,
+  derivePacketInspectionContext,
   parseCompatibleApplicationAnswerProposal,
   summarizeApplicationAnswerPacket,
   type ApplicationAnswerPacketProjection,
   type ApplicationAnswerPacketSummary,
   type ApplicationAnswerProposal,
-  type ApplicationAnswerPacketValidationContext
+  type ApplicationAnswerPacketValidationContext,
+  type PacketInspectionContext
 } from "@/lib/application-runs/answer-packet-domain";
 import { revokeUsableExecutionTokensForRunInTransaction } from "@/lib/application-runs/execution-token";
 import {
   FIELD_FINGERPRINT_VERSION,
   FORM_INSPECTION_SCHEMA_VERSION,
   FORM_NORMALIZER_VERSION,
+  NORMALIZED_SNAPSHOT_SCHEMA_VERSION,
+  NORMALIZED_SNAPSHOT_NORMALIZER_VERSION,
+  NORMALIZED_SNAPSHOT_FINGERPRINT_VERSION,
   MAX_FUTURE_OBSERVED_URL_CODE_POINTS,
   buildNormalizedApplicationFormInspection,
   canonicalizeFormComparisonText,
@@ -314,17 +319,31 @@ function sourceSetTooLarge(): PublicApiError {
 
 function isSupportedInspection(inspection: StoredInspection): boolean {
   return (
-    inspection.schemaVersion === FORM_INSPECTION_SCHEMA_VERSION &&
-    inspection.normalizerVersion === FORM_NORMALIZER_VERSION &&
-    inspection.classifierVersion === CLASSIFIER_VERSION &&
-    inspection.fingerprintVersion === FIELD_FINGERPRINT_VERSION
+    inspection.classifierVersion === CLASSIFIER_VERSION && (
+      (inspection.schemaVersion === FORM_INSPECTION_SCHEMA_VERSION &&
+       inspection.normalizerVersion === FORM_NORMALIZER_VERSION &&
+       inspection.fingerprintVersion === FIELD_FINGERPRINT_VERSION) ||
+      (inspection.schemaVersion === NORMALIZED_SNAPSHOT_SCHEMA_VERSION &&
+       inspection.normalizerVersion === NORMALIZED_SNAPSHOT_NORMALIZER_VERSION &&
+       inspection.fingerprintVersion === NORMALIZED_SNAPSHOT_FINGERPRINT_VERSION)
+    )
   );
+}
+
+function inspectionMatchesSnapshotMarkers(
+  inspection: StoredInspection,
+  snapshot: NormalizedApplicationFormSnapshot
+): boolean {
+  return inspection.schemaVersion === snapshot.schemaVersion &&
+    inspection.normalizerVersion === snapshot.normalizerVersion &&
+    inspection.classifierVersion === snapshot.classifierVersion &&
+    inspection.fingerprintVersion === snapshot.fingerprintVersion;
 }
 
 function isSupportedPacket(packet: StoredPacket): boolean {
   return (
     packet.schemaVersion === ANSWER_PACKET_SCHEMA_VERSION &&
-    packet.builderVersion === ANSWER_PACKET_BUILDER_VERSION
+    (packet.builderVersion === 1 || packet.builderVersion === ANSWER_PACKET_BUILDER_VERSION)
   );
 }
 
@@ -531,7 +550,8 @@ function packetProjectionFromRows(
   inspection: StoredInspection,
   packet: StoredPacket,
   rows: readonly StoredPacketAnswer[],
-  snapshot: NormalizedApplicationFormSnapshot
+  snapshot: NormalizedApplicationFormSnapshot,
+  inspectionContext: PacketInspectionContext
 ): {
   packet: ApplicationAnswerPacketProjection;
   validationContext: ApplicationAnswerPacketValidationContext;
@@ -540,6 +560,8 @@ function packetProjectionFromRows(
   const fields = flattenFields(snapshot);
   const fieldsByKey = new Map(fields.map((field) => [field.normalizedFieldKey, field] as const));
   if (rows.length !== fields.length) throw packetInvalid();
+  if (inspectionContext.uniqueFieldKeys.length !== fields.length ||
+      inspectionContext.uniqueFieldKeys.some((key) => !fieldsByKey.has(key))) throw packetInvalid();
   const answerKeys = new Set<string>();
   const answers: CandidateAnswer[] = rows.map((row) => {
     const field = fieldsByKey.get(row.normalizedFieldKey);
@@ -663,14 +685,21 @@ export async function loadVerifiedCurrentAnswerPacketForLockedRunInTransaction(
   } catch {
     throw inspectionInvalid();
   }
+  if (!inspectionMatchesSnapshotMarkers(inspection, snapshot)) throw inspectionInvalid();
 
   const rows = await tx.applicationRunAnswer.findMany({
     where: { answerPacketId: packet.id },
     orderBy: { normalizedFieldKey: "asc" }
   }) as StoredPacketAnswer[];
   let projected: ReturnType<typeof packetProjectionFromRows>;
+  const inspectionContext = derivePacketInspectionContext({
+    authoritativeApplyHost: input.run.applyHost,
+    expectedFormFingerprint: inspection.formFingerprint,
+    snapshot
+  });
   try {
-    projected = packetProjectionFromRows(inspection, packet, rows, snapshot);
+    if (packet.builderVersion === 1 && snapshot.schemaVersion !== 1) throw packetInvalid();
+    projected = packetProjectionFromRows(inspection, packet, rows, snapshot, inspectionContext);
     if (computeApplicationAnswerPacketHash(projected.packet, projected.validationContext) !== packet.packetHash) {
       throw packetInvalid();
     }
@@ -686,6 +715,7 @@ export async function loadVerifiedCurrentAnswerPacketForLockedRunInTransaction(
       packetVersion: packet.version,
       packet: projected.packet,
       validationContext: projected.validationContext,
+      inspectionContext,
       rows: rows.map((row) => ({
         packetVersion: packet.version,
         packetHash: packet.packetHash,
@@ -1006,6 +1036,11 @@ async function buildCandidatePacket(
   }
 ): Promise<CandidatePacket> {
   const fields = flattenFields(input.snapshot);
+  const inspectionContext = derivePacketInspectionContext({
+    authoritativeApplyHost: input.run.applyHost,
+    expectedFormFingerprint: input.formFingerprint,
+    snapshot: input.snapshot
+  });
   const vaultRows = await lockAnswerVaultRows(tx, input.userId, fields);
   const needsResume = fields.some(
     (field) => field.permittedDisposition === "PROPOSABLE" && field.semanticFieldKey === "document.resume"
@@ -1072,6 +1107,7 @@ async function buildCandidatePacket(
     packetVersion: input.candidatePacketVersion,
     packet,
     validationContext,
+    inspectionContext,
     rows: answers.map((answer) => ({
       packetVersion: input.candidatePacketVersion,
       packetHash,
@@ -1100,6 +1136,7 @@ function isExactReplay(
 ): current is VerifiedCurrentAnswerPacket {
   return Boolean(
     current &&
+    candidate.summary.ambiguousQuestionCount === 0 &&
     current.inspection.version === candidate.inspectionVersion &&
     current.inspection.formFingerprint === formFingerprint &&
     current.packetRecord.policyHash === candidate.policyHash &&
@@ -1165,10 +1202,10 @@ async function persistMaterialPacket(
       runId: input.run.id,
       userId: input.userId,
       version: input.candidate.inspectionVersion,
-      schemaVersion: FORM_INSPECTION_SCHEMA_VERSION,
-      normalizerVersion: FORM_NORMALIZER_VERSION,
+      schemaVersion: input.snapshot.schemaVersion,
+      normalizerVersion: input.snapshot.normalizerVersion,
       classifierVersion: CLASSIFIER_VERSION,
-      fingerprintVersion: FIELD_FINGERPRINT_VERSION,
+      fingerprintVersion: input.snapshot.fingerprintVersion,
       formFingerprint: input.formFingerprint,
       normalizedSnapshot: input.snapshot as unknown as Prisma.InputJsonValue
     }
@@ -1333,14 +1370,16 @@ export function createApplicationRunAnswerPacketService(
       if (
         pointers &&
         isSupportedInspection(pointers.inspection) &&
+        freshInspection.ambiguousQuestionCount === 0 &&
         pointers.inspection.formFingerprint === freshInspection.formFingerprint
       ) {
         try {
-          verifyNormalizedApplicationFormSnapshot({
+          const storedSnapshot = verifyNormalizedApplicationFormSnapshot({
             authoritativeApplyHost: run.applyHost,
             expectedFormFingerprint: pointers.inspection.formFingerprint,
             snapshot: pointers.inspection.normalizedSnapshot
           });
+          if (!inspectionMatchesSnapshotMarkers(pointers.inspection, storedSnapshot)) throw inspectionInvalid();
         } catch {
           throw inspectionInvalid();
         }
@@ -1422,6 +1461,8 @@ export function createApplicationRunAnswerPacketService(
       } catch {
         throw inspectionInvalid();
       }
+      if (!inspectionMatchesSnapshotMarkers(pointers.inspection, snapshot)) throw inspectionInvalid();
+      if (snapshot.schemaVersion === 1) throw inspectionStale();
       const current = isSupportedPacket(pointers.packet)
         ? await loadVerifiedCurrentAnswerPacketForLockedRunInTransaction(tx, { userId: parsed.userId, run })
         : null;
