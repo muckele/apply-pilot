@@ -121,6 +121,7 @@ type CleanupStepSettlement = Readonly<{
 type Workflow = Readonly<{
   browser: Browser;
   context: BrowserContext;
+  employerContext: BrowserContext;
   controlPage: Page;
   fixtures: IntegrationFixtures;
   targetController(): ReturnType<typeof createPlaywrightTargetController> | null;
@@ -375,6 +376,7 @@ async function createWorkflow(input: {
   publicationOrder?: string[];
   failAt?: "AFTER_FIXTURES" | "AFTER_BRIDGE";
   armHeldPacketReadBeforeFailure?: boolean;
+  handoffForm?: boolean;
   setupFailure?: Error;
   closeSettlementTimeoutMs?: number;
   testOnlyTransformCapturedCloseExecution?: CapturedCloseExecutionTransform;
@@ -395,6 +397,7 @@ async function createWorkflow(input: {
   let fixtures: IntegrationFixtures | undefined;
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
+  let employerContext: BrowserContext | undefined;
   let controlPage: Page | undefined;
   let companionOutcome: Promise<PromiseSettledResult<void>> | undefined;
   let runtimeClosed = false;
@@ -497,6 +500,7 @@ async function createWorkflow(input: {
       {
         label: "browser context close",
         async run() {
+          await employerContext?.close();
           await context?.close();
         }
       },
@@ -543,10 +547,12 @@ async function createWorkflow(input: {
     browser = await launchSmokeBrowser();
     input.onBrowserAcquired?.(browser);
     context = await browser.newContext();
+    employerContext = await browser.newContext();
     controlPage = await context.newPage();
     const acquiredFixtures = fixtures;
     const acquiredBrowser = browser;
     const acquiredContext = context;
+    const acquiredEmployerContext = employerContext;
     const acquiredControlPage = controlPage;
 
     const dependencies: CompanionDependencies = {
@@ -554,11 +560,13 @@ async function createWorkflow(input: {
         return {
           browser: acquiredBrowser,
           context: acquiredContext,
+          employerContext: acquiredEmployerContext,
           controlPage: acquiredControlPage,
           async close() {
             if (runtimeClosed) return;
             runtimeClosed = true;
             await acquiredControlPage.close().catch(() => undefined);
+            await acquiredEmployerContext.close().catch(() => undefined);
             await acquiredContext.close().catch(() => undefined);
           }
         };
@@ -598,20 +606,29 @@ async function createWorkflow(input: {
         });
       },
       createTargetController(targetInput) {
-        assert.equal(targetInput.context, acquiredContext);
+        assert.equal(targetInput.context, acquiredEmployerContext);
         assert.equal(typeof targetInput.onUnsafe, "function");
         const expectedRequestUrl = new URL(SYNTHETIC_EMPLOYER_URL);
         expectedRequestUrl.hash = "";
         const controller = createPlaywrightTargetController({
           ...targetInput,
           testOnlyFulfillMainDocument: async (request, route) => {
+            if (input.handoffForm && new URL(request.url()).pathname === "/confirmation") {
+              await route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><p>Synthetic confirmation</p>" });
+              return;
+            }
             assert.equal(request.url(), expectedRequestUrl.toString());
             assert.equal(request.isNavigationRequest(), true);
             assert.equal(request.resourceType(), "document");
             await route.fulfill({
               status: 200,
               contentType: "text/html; charset=utf-8",
-              body: integrationEmployerHtml(acquiredFixtures.mutationUrl)
+              body: input.handoffForm
+                ? integrationEmployerHtml(acquiredFixtures.mutationUrl).replace(
+                    `action="${acquiredFixtures.mutationUrl}" method="post"`,
+                    'action="/confirmation" method="get"'
+                  )
+                : integrationEmployerHtml(acquiredFixtures.mutationUrl)
             });
           }
         });
@@ -740,6 +757,7 @@ async function createWorkflow(input: {
     return {
       browser: acquiredBrowser,
       context: acquiredContext,
+      employerContext: acquiredEmployerContext,
       controlPage: acquiredControlPage,
       fixtures: acquiredFixtures,
       targetController: () => capturedTargetController,
@@ -1209,6 +1227,54 @@ test("captured executor fallback is cleanup-only CLOSE_WORKFLOW after the bindin
   });
   assert.ok(inspectedWorkflow);
   assert.deepEqual(inspectedWorkflow.directExecutorInvocations(), [{ type: "CLOSE_WORKFLOW" }]);
+});
+
+test("real companion opens employer in a distinct context without owner cookie or control binding", { timeout: 20_000 }, async () => {
+  await withWorkflow({}, async (workflow) => {
+    const controlOrigin = new URL(workflow.fixtures.controlOrigin);
+    await workflow.context.addCookies([{
+      name: "synthetic-owner-session",
+      value: "owner-only",
+      domain: controlOrigin.hostname,
+      path: "/"
+    }]);
+    const employerPage = await openAndArm(workflow);
+    assert.equal(employerPage.context(), workflow.employerContext);
+    assert.notEqual(employerPage.context(), workflow.context);
+    assert.equal((await workflow.context.cookies()).some((cookie) => cookie.name === "synthetic-owner-session"), true);
+    assert.equal((await workflow.employerContext.cookies()).some((cookie) => cookie.name === "synthetic-owner-session"), false);
+    assert.equal(await employerPage.evaluate((binding) =>
+      typeof (window as unknown as Record<string, unknown>)[binding], APPLICATION_BROWSER_BINDING_NAME), "undefined");
+  });
+});
+
+test("real companion retires protected authority before a separate HUMAN confirmation navigation", { timeout: 20_000 }, async () => {
+  await withWorkflow({ handoffForm: true }, async (workflow) => {
+    const employerPage = await openAndArm(workflow);
+    await employerPage.locator("#name").fill("synthetic-human-work");
+    const handoff = await invoke(workflow.controlPage, { type: "HANDOFF_TO_HUMAN" });
+    assert.equal(handoff.state, "HUMAN_ONLY");
+    assert.ok(handoff.humanSession?.expiresAtMs);
+    assert.equal(await employerPage.locator("#name").inputValue(), "synthetic-human-work");
+    assert.equal(workflow.targetController()?.formInspectionTarget(), null);
+    assert.equal((await invoke(workflow.controlPage, { type: "HANDOFF_TO_HUMAN" })).state, "HUMAN_ONLY");
+    await assert.rejects(invoke(workflow.controlPage, { type: "INSPECT_FORM" }));
+    // The companion never invokes employer Submit; this is the separate synthetic HUMAN actor.
+    await employerPage.locator("#submit").click();
+    assert.equal(new URL(employerPage.url()).pathname, "/confirmation");
+    assert.equal(await employerPage.locator("p").textContent(), "Synthetic confirmation");
+  });
+});
+
+test("control-page trust loss closes the handed-off employer context without restoring Fill", { timeout: 20_000 }, async () => {
+  await withWorkflow({ handoffForm: true }, async (workflow) => {
+    const employerPage = await openAndArm(workflow);
+    assert.equal((await invoke(workflow.controlPage, { type: "HANDOFF_TO_HUMAN" })).state, "HUMAN_ONLY");
+    await workflow.controlPage.goto(`${workflow.fixtures.alternateOrigin}/left-control`).catch(() => undefined);
+    await waitFor("handed-off employer page close", () => employerPage.isClosed());
+    assert.equal(workflow.employerContext.pages().length, 0);
+    await waitFor("companion settlement after control trust loss", () => workflow.companionSettled());
+  });
 });
 
 test("real companion materially publishes, exposes the full owner packet only by HTTP, and exactly replays", { timeout: 30_000 }, async () => {

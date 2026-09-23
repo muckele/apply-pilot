@@ -74,6 +74,7 @@ test("the closed session surface exposes only fixed protected V2 operations", as
     assert.deepEqual(Object.keys(value.session).sort(), [
       "close",
       "extractApplicationForm",
+      "retireForHuman",
       "snapshot",
       "subscribe",
       "verifyCandidate",
@@ -367,6 +368,53 @@ test("session close synchronously invalidates candidate identity before cleanup 
     assert.deepEqual(await value.session.verifyCandidate(extraction.candidate), { status: "INVALID" });
     await closing;
     await extraction.dispose();
+  } finally {
+    await value.context.close();
+  }
+});
+
+test("verified human retirement removes protected CDP authority while retaining synthetic values", async () => {
+  const value = await fixture(SIMPLE_FORM);
+  try {
+    await value.page.locator("#name").fill("synthetic-human-work");
+    const extracted = await value.session.extractApplicationForm();
+    await value.session.retireForHuman();
+    assert.equal(value.page.isClosed(), false);
+    assert.equal(await value.page.locator("#name").inputValue(), "synthetic-human-work");
+    assert.deepEqual(await value.session.verifyCandidate(extracted.candidate), { status: "INVALID" });
+    await assert.rejects(value.session.snapshot(), assertSessionCode("PROTECTED_SESSION_CLOSED"));
+    await extracted.dispose();
+  } finally {
+    await value.context.close();
+  }
+});
+
+test("human retirement refuses an in-flight protected operation and cannot claim page retention", async () => {
+  const value = await fixture(SIMPLE_FORM);
+  const fence = await value.session.snapshot();
+  const waiting = value.session.waitForChange(fence, 10_000).catch(() => undefined);
+  try {
+    await assert.rejects(value.session.retireForHuman(), assertSessionCode("PROTECTED_SESSION_BUSY"));
+    await assert.rejects(value.session.snapshot(), assertSessionCode("PROTECTED_SESSION_CLOSED"));
+  } finally {
+    await value.session.close().catch(() => undefined);
+    await value.context.close();
+    await waiting;
+  }
+});
+
+test("lifecycle-subscriber close joins the acknowledged human retirement", async () => {
+  const value = await fixture(SIMPLE_FORM);
+  let reentrantClose: Promise<void> | undefined;
+  value.session.subscribe((code) => {
+    if (code === "CLOSED") reentrantClose = value.session.close();
+  });
+  try {
+    const retirement = value.session.retireForHuman();
+    assert.equal(reentrantClose, retirement);
+    await retirement;
+    assert.equal(value.page.isClosed(), false);
+    await assert.rejects(value.session.snapshot(), assertSessionCode("PROTECTED_SESSION_CLOSED"));
   } finally {
     await value.context.close();
   }

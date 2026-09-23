@@ -202,6 +202,8 @@ export type ProtectedApplicationBrowserSession = Readonly<{
    */
   waitForChange(since: BrowserDocumentFence, timeoutMs: number): Promise<BrowserDocumentFence>;
   subscribe(listener: (code: ProtectedSessionLifecycleCode) => void | Promise<void>): () => void;
+  /** Retires every protected browser capability with acknowledged CDP cleanup, retaining only the page. */
+  retireForHuman(): Promise<void>;
   close(): Promise<void>;
 }>;
 
@@ -765,6 +767,13 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
 
   const exactCdp = cdp;
   if (!exactCdp) throw sessionError("PROTECTED_SESSION_SETUP_FAILED");
+  const inFlightProtocol = new Set<Promise<unknown>>();
+  const sendTracked = (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+    const pending = exactCdp.send(method as Parameters<CDPSession["send"]>[0], params as never);
+    inFlightProtocol.add(pending);
+    void pending.finally(() => inFlightProtocol.delete(pending)).catch(() => undefined);
+    return pending;
+  };
 
   const requireOpen = () => {
     if (closed) throw sessionError("PROTECTED_SESSION_CLOSED");
@@ -803,7 +812,7 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
     requireCurrentAttempt();
     const frameTree = await readinessCall(
       deadline,
-      () => exactCdp.send("Page.getFrameTree")
+      () => sendTracked("Page.getFrameTree")
     );
     // Bind the entire attempt, including frame selection, to its identity.
     // Replacement can happen before authority exists or documentEpoch advances.
@@ -823,7 +832,7 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
       );
       if (context) {
         const epoch = documentEpoch;
-        const evaluated = await readinessCall(deadline, () => exactCdp.send("Runtime.evaluate", {
+        const evaluated = await readinessCall(deadline, () => sendTracked("Runtime.evaluate", {
           expression: protectedBrowserCapabilityExpression(),
           contextId: context.id,
           objectGroup,
@@ -836,7 +845,7 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
         if (!contextIsCurrent()) throw sessionError("PROTECTED_SESSION_STALE_RESPONSE");
         const objectId = parseRemoteObjectId(evaluated);
         if (!objectId) throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
-        const handshake = await readinessCall(deadline, () => exactCdp.send("Runtime.callFunctionOn", {
+        const handshake = await readinessCall(deadline, () => sendTracked("Runtime.callFunctionOn", {
           functionDeclaration: "function () { return this.handshake(); }",
           objectId,
           objectGroup,
@@ -889,7 +898,7 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
     argument?: unknown,
     deadline = Date.now() + HOST_OPERATION_TIMEOUT_MS,
     dispatchCleanupAfterDeadline = false
-  ): Promise<unknown> => beforeHostDeadline(deadline, () => exactCdp.send("Runtime.callFunctionOn", {
+  ): Promise<unknown> => beforeHostDeadline(deadline, () => sendTracked("Runtime.callFunctionOn", {
     functionDeclaration,
     objectId: captured.capabilityObjectId,
     objectGroup,
@@ -1295,6 +1304,52 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
     );
   }, Number.isSafeInteger(timeoutMs) && timeoutMs >= 0 && timeoutMs <= 10_000 ? timeoutMs : 0);
 
+  const retireForHuman = (): Promise<void> => {
+    requireOpen();
+    const retiringAuthority = authority;
+    closed = true; // closes admission before inspecting pending transport
+    invalidateAllCandidates();
+    authority = null;
+    const busy = exclusiveOperation || activeOperation || readinessAttempt !== null || inFlightProtocol.size > 0;
+    const deadline = Date.now() + HOST_OPERATION_TIMEOUT_MS;
+    const retirement = Promise.resolve().then(async () => {
+      if (busy) throw sessionError("PROTECTED_SESSION_BUSY");
+      if (retiringAuthority) {
+        const disposed = await beforeHostDeadline(deadline, () => sendTracked("Runtime.callFunctionOn", {
+          functionDeclaration: "function () { return this.dispose(); }",
+          objectId: retiringAuthority.capabilityObjectId,
+          objectGroup,
+          returnByValue: true,
+          awaitPromise: true,
+          silent: true
+        }), "PROTECTED_SESSION_STALE_RESPONSE");
+        if (parseByValueResult(disposed) !== "DISPOSED") {
+          throw sessionError("PROTECTED_SESSION_INVALID_RESPONSE");
+        }
+      }
+      if (scriptIdentifier) {
+        await beforeHostDeadline(deadline, () => sendTracked("Page.removeScriptToEvaluateOnNewDocument", {
+          identifier: scriptIdentifier
+        }), "PROTECTED_SESSION_STALE_RESPONSE");
+      }
+      await beforeHostDeadline(deadline, () => sendTracked("Runtime.releaseObjectGroup", { objectGroup }),
+        "PROTECTED_SESSION_STALE_RESPONSE");
+      await beforeHostDeadline(deadline, () => exactCdp.detach(), "PROTECTED_SESSION_STALE_RESPONSE");
+      page.off("close", onPageClosed);
+      exactCdp.off("Runtime.executionContextCreated", onContextCreated);
+      exactCdp.off("Runtime.executionContextDestroyed", onContextDestroyed);
+      exactCdp.off("Runtime.executionContextsCleared", onContextsCleared);
+      exactCdp.off("Page.frameNavigated", onFrameNavigated);
+      exactCdp.off("close", onDisconnected);
+      lifecycleListeners.clear();
+      contexts.clear();
+    });
+    closePromise = retirement;
+    emitLifecycle("CLOSED");
+    notifyContexts();
+    return retirement;
+  };
+
   const close = (): Promise<void> => {
     if (closePromise) return closePromise;
     // Install the exact shared operation before lifecycle listeners or cleanup
@@ -1352,6 +1407,7 @@ export async function createProtectedApplicationBrowserSession(input: Readonly<{
       lifecycleListeners.add(listener);
       return () => lifecycleListeners.delete(listener);
     },
+    retireForHuman,
     close
   }) as ProtectedApplicationBrowserSession;
 }

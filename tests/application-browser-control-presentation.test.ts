@@ -179,7 +179,8 @@ async function flushComponentWork(): Promise<void> {
 }
 
 async function mountControl(
-  initialFetchHandler: FetchHandler = defaultReviewFetchHandler
+  initialFetchHandler: FetchHandler = defaultReviewFetchHandler,
+  options: { acknowledgeTransmission?: boolean } = {}
 ): Promise<MountedControl> {
   const dom = new JSDOM("<!doctype html><html><body><div id=\"root\"></div></body></html>", {
     url: "http://localhost/application-runs/test/browser"
@@ -227,6 +228,10 @@ async function mountControl(
     }));
   });
   await flushComponentWork();
+  if (options.acknowledgeTransmission !== false) {
+    const acknowledgement = container.querySelector<HTMLInputElement>('[data-testid="transmission-ack"]');
+    if (acknowledgement) await act(async () => { acknowledgement.click(); });
+  }
 
   const unmount = async () => {
     if (!mounted) return;
@@ -414,6 +419,8 @@ const workflowStates: B1WorkflowState[] = [
   "CONTROL_READY",
   "OPENING_TARGET",
   "TARGET_OPEN",
+  "HANDOFF_PENDING",
+  "HUMAN_ONLY",
   "ERROR",
   "CLOSED"
 ];
@@ -423,6 +430,8 @@ const commands: B1Command["type"][] = [
   "OPEN_TARGET",
   "INSPECT_FORM",
   "FILL_APPROVED_FIELDS",
+  "HANDOFF_TO_HUMAN",
+  "END_HUMAN_SESSION",
   "CLOSE_WORKFLOW"
 ];
 
@@ -1125,6 +1134,8 @@ test("command authorization covers every workflow state and uses the exact froze
     assert.equal(availability.OPEN_TARGET, state === "CONTROL_READY", `${state} OPEN_TARGET`);
     assert.equal(availability.INSPECT_FORM, state === "TARGET_OPEN", `${state} INSPECT_FORM`);
     assert.equal(availability.FILL_APPROVED_FIELDS, state === "TARGET_OPEN", `${state} FILL_APPROVED_FIELDS`);
+    assert.equal(availability.HANDOFF_TO_HUMAN, state === "TARGET_OPEN" || state === "HUMAN_ONLY", `${state} HANDOFF_TO_HUMAN`);
+    assert.equal(availability.END_HUMAN_SESSION, state === "HUMAN_ONLY", `${state} END_HUMAN_SESSION`);
     assert.equal(availability.CLOSE_WORKFLOW, state !== "CLOSED", `${state} CLOSE_WORKFLOW`);
     assert.equal("CLOSE" in availability, false);
   }
@@ -1137,7 +1148,8 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
       connection: "CONNECTED",
       pendingCommand: null
     }),
-    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
+    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false,
+      HANDOFF_TO_HUMAN: false, END_HUMAN_SESSION: false, CLOSE_WORKFLOW: false }
   );
 
   for (const pendingCommand of commands) {
@@ -1147,7 +1159,8 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
         connection: "CONNECTED",
         pendingCommand
       }),
-      { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
+      { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false,
+        HANDOFF_TO_HUMAN: false, END_HUMAN_SESSION: false, CLOSE_WORKFLOW: false }
     );
   }
 
@@ -1157,7 +1170,8 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
       connection: "UNKNOWN",
       pendingCommand: null
     }),
-    { GET_STATUS: true, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
+    { GET_STATUS: true, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false,
+      HANDOFF_TO_HUMAN: false, END_HUMAN_SESSION: false, CLOSE_WORKFLOW: false }
   );
   assert.deepEqual(
     browserCommandAvailability({
@@ -1165,7 +1179,8 @@ test("CLOSED, pending commands, unavailable connections, and in-progress inspect
       connection: "UNAVAILABLE",
       pendingCommand: null
     }),
-    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false, CLOSE_WORKFLOW: false }
+    { GET_STATUS: false, OPEN_TARGET: false, INSPECT_FORM: false, FILL_APPROVED_FIELDS: false,
+      HANDOFF_TO_HUMAN: false, END_HUMAN_SESSION: false, CLOSE_WORKFLOW: false }
   );
 
   assert.equal(
@@ -1196,6 +1211,8 @@ test("binding rejection plans preserve authoritative status and permit at most o
     OPEN_TARGET: { recoverWithGetStatus: true, packetTrust: "UNCHANGED" },
     INSPECT_FORM: { recoverWithGetStatus: true, packetTrust: "UNVERIFIED" },
     FILL_APPROVED_FIELDS: { recoverWithGetStatus: false, packetTrust: "UNVERIFIED" },
+    HANDOFF_TO_HUMAN: { recoverWithGetStatus: true, packetTrust: "UNCHANGED" },
+    END_HUMAN_SESSION: { recoverWithGetStatus: false, packetTrust: "UNCHANGED" },
     CLOSE_WORKFLOW: { recoverWithGetStatus: true, packetTrust: "UNCHANGED" }
   } as const;
 
@@ -3372,6 +3389,82 @@ test("unmount aborts only a React-owned Fill-status read", async () => {
     assert.equal((signal as AbortSignal).aborted, true);
     response.resolve(fillStatusResponse());
     await flushComponentWork();
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("Fill requires an explicit before-Fill acknowledgement that page scripts may transmit values", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run),
+    { acknowledgeTransmission: false }
+  );
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    assert.match(control.container.textContent ?? "", /before you press Submit/i);
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    const acknowledgement = control.container.querySelector<HTMLInputElement>('[data-testid="transmission-ack"]');
+    assert.ok(acknowledgement);
+    await act(async () => { acknowledgement.click(); });
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+    assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 0);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human handoff requires its own irreversible confirmation and shows lifetime and end control", async () => {
+  const packet = fillReadyPacket();
+  const run = validRunAuthority({ state: "READY", stateVersion: 7, reviewReasons: [] });
+  const commandsSeen: B1Command[] = [];
+  const expiresAtMs = Date.now() + 60 * 60 * 1000;
+  const control = await mountControl(async (input) =>
+    String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse(run)
+  );
+  try {
+    control.setBinding(async (command) => {
+      commandsSeen.push(command);
+      if (command.type === "HANDOFF_TO_HUMAN") return {
+        state: "HUMAN_ONLY", runId: RUN_ID, targetHost: "jobs.example.test",
+        humanSession: { expiresAtMs }
+      };
+      if (command.type === "END_HUMAN_SESSION") return { state: "CLOSED", runId: RUN_ID };
+      return trustedTargetStatus(packet);
+    });
+    await clickButton(control, "Refresh status");
+    await clickButton(control, "Finish manually in this browser");
+    assert.equal(commandsSeen.filter((command) => command.type === "HANDOFF_TO_HUMAN").length, 0);
+    assert.match(control.container.textContent ?? "", /refreshing or closing this control page ends the session/i);
+    await clickButton(control, "Confirm human handoff");
+    assert.equal(commandsSeen.filter((command) => command.type === "HANDOFF_TO_HUMAN").length, 1);
+    assert.match(control.container.textContent ?? "", /60-minute maximum/i);
+    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    await clickButton(control, "End human session");
+    assert.equal(commandsSeen.filter((command) => command.type === "END_HUMAN_SESSION").length, 1);
+  } finally {
+    await control.cleanup();
+  }
+});
+
+test("human-only control warns at ten and two minutes without extending expiry", async () => {
+  let expiresAtMs = Date.now() + 9 * 60_000;
+  const control = await mountControl();
+  try {
+    control.setBinding(async () => ({ state: "HUMAN_ONLY", runId: RUN_ID,
+      humanSession: { expiresAtMs } }));
+    await clickButton(control, "Refresh status");
+    assert.match(control.container.textContent ?? "", /10 minutes or less remain/i);
+    expiresAtMs = Date.now() + 60_000;
+    await clickButton(control, "Refresh status");
+    assert.match(control.container.textContent ?? "", /2 minutes or less remain/i);
+    assert.match(control.container.textContent ?? "", /no extension/i);
   } finally {
     await control.cleanup();
   }
