@@ -237,6 +237,9 @@ export function ApplicationBrowserControl({
   const [pendingReviewMutation, setPendingReviewMutation] = useState<PendingReviewMutation>(null);
   const [pendingFillActivation, setPendingFillActivation] = useState(false);
   const [fillMayHaveDispatched, setFillMayHaveDispatched] = useState(false);
+  const [transmissionAcknowledged, setTransmissionAcknowledged] = useState(false);
+  const [handoffConfirming, setHandoffConfirming] = useState(false);
+  const [humanClockMs, setHumanClockMs] = useState(() => Date.now());
   const [personalSubmissionCompletion, setPersonalSubmissionCompletion] =
     useState<PersonalSubmissionCompletion>(initialPersonalSubmissionCompletion);
   const [lastAcceptedInspection, setLastAcceptedInspection] = useState<B2InspectionCommandStatus | null>(null);
@@ -254,6 +257,7 @@ export function ApplicationBrowserControl({
   const pendingReviewMutationRef = useRef<PendingReviewMutation>(null);
   const pendingFillActivationRef = useRef(false);
   const fillMayHaveDispatchedRef = useRef(false);
+  const transmissionAcknowledgedRef = useRef(false);
   const personalSubmissionCompletionPendingRef = useRef(false);
   const personalSubmissionConfirmationIntentRef = useRef<PersonalSubmissionConfirmationIntent | null>(null);
   const mutationAbortControllerRef = useRef<AbortController | null>(null);
@@ -272,6 +276,12 @@ export function ApplicationBrowserControl({
     fillStatusLoadRef.current = next;
     setFillStatusLoad(next);
   }, []);
+
+  useEffect(() => {
+    if (status.state !== "HUMAN_ONLY") return;
+    const timer = window.setInterval(() => setHumanClockMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [status.state]);
 
   const invalidatePersonalSubmissionConfirmationIntent = useCallback(() => {
     if (personalSubmissionConfirmationIntentRef.current === null) return;
@@ -666,6 +676,10 @@ export function ApplicationBrowserControl({
         if (!accepted.suppliedNotice) {
           const text = command.type === "OPEN_TARGET"
             ? "Frozen employer target opened."
+            : command.type === "HANDOFF_TO_HUMAN"
+              ? "Automation retired. Finish manually in the disposable employer browser."
+              : command.type === "END_HUMAN_SESSION"
+                ? "Human browser session ended."
             : command.type === "CLOSE_WORKFLOW"
               ? "Browser workflow status updated."
               : command.type === "INSPECT_FORM"
@@ -687,6 +701,10 @@ export function ApplicationBrowserControl({
         const plan = bindingRejectionPlan(command.type, statusRef.current, freshness);
         const text = command.type === "GET_STATUS"
           ? "The local browser connection could not be refreshed. Retry the connection."
+          : command.type === "HANDOFF_TO_HUMAN"
+            ? "Handoff outcome is uncertain. Refresh browser status; never repeat Fill. If the browser was closed, complete manually in your ordinary browser."
+            : command.type === "END_HUMAN_SESSION"
+              ? "End-session cleanup outcome is uncertain. Do not assume the employer page or submitted application has closed."
           : command.type === "OPEN_TARGET"
             ? "The target-open command stopped safely. Browser status was checked once."
             : command.type === "INSPECT_FORM"
@@ -731,7 +749,8 @@ export function ApplicationBrowserControl({
     if (
       pendingCommandRef.current !== null ||
       pendingFillActivationRef.current ||
-      fillMayHaveDispatchedRef.current
+      fillMayHaveDispatchedRef.current ||
+      !transmissionAcknowledgedRef.current
     ) return;
     const expectedGeneration = activeComponentGenerationRef.current;
     if (expectedGeneration === null) return;
@@ -1470,6 +1489,14 @@ export function ApplicationBrowserControl({
     fillMayHaveDispatched
   });
   const fillUiLocked = pendingFillActivation || personalSubmissionCompletionPending;
+  const handoffEligible = status.state === "TARGET_OPEN" &&
+    fillStatusLoad.verified && fillStatusLoad.status !== null &&
+    !fillStatusLoad.status.leaseLive && !fillStatusLoad.status.expiredRecoveryRequired &&
+    status.fillCommand?.outcome !== "IN_PROGRESS" && status.fillCommand?.outcome !== "RECOVERY_PENDING" &&
+    !pendingFillActivation && pendingCommand === null && pendingReviewMutation === null;
+  const humanMinutesRemaining = status.humanSession
+    ? Math.max(0, Math.ceil((status.humanSession.expiresAtMs - humanClockMs) / 60_000))
+    : null;
 
   return (
     <div className="space-y-5 p-5">
@@ -1491,6 +1518,30 @@ export function ApplicationBrowserControl({
 
       {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
       {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
+
+      {status.state === "TARGET_OPEN" ? <section className="space-y-3 rounded-lg border border-slate-200 p-4" aria-labelledby="human-handoff-heading">
+        <h2 id="human-handoff-heading" className="font-semibold text-slate-950">Finish manually</h2>
+        <p className="text-sm text-slate-700">Review the entire employer form and complete every remaining manual field. Fill status must be verified before handoff. If Fill is uncertain, do not repeat it.</p>
+        {!handoffConfirming ? <SecondaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
+          onClick={() => setHandoffConfirming(true)}>Finish manually in this browser</SecondaryButton> : <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <p>Confirming permanently ends Apply Pilot inspection and Fill for this workflow. The disposable employer page remains for a 60-minute maximum, with warnings at 10 and 2 minutes and no extension. Employer scripts may still transmit or navigate. Refreshing or closing this control page ends the session and may lose unsent work.</p>
+          <div className="flex gap-2">
+            <PrimaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
+              onClick={() => { setHandoffConfirming(false); void invoke({ type: "HANDOFF_TO_HUMAN" }); }}>Confirm human handoff</PrimaryButton>
+            <SecondaryButton type="button" onClick={() => setHandoffConfirming(false)}>Not yet</SecondaryButton>
+          </div>
+        </div>}
+        <p className="text-xs text-slate-600">If same-page handoff is unavailable, close this disposable workflow and reopen the application in your ordinary browser. You must reenter unsent values; no cookies or hidden form state are transferred. Check an uncertain prior submission with the employer before any retry.</p>
+      </section> : null}
+
+      {status.state === "HUMAN_ONLY" ? <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4" aria-labelledby="human-session-heading">
+        <h2 id="human-session-heading" className="font-semibold text-amber-950">Human-only browser session</h2>
+        <p className="text-sm text-amber-950">Apply Pilot automation has ended. This disposable session has a 60-minute maximum with no extension. {humanMinutesRemaining === null ? "Time remaining is unavailable." : `${humanMinutesRemaining} minute(s) remain.`} Review and submit personally on the employer site. A confirmation-looking page does not verify delivery.</p>
+        {humanMinutesRemaining !== null && humanMinutesRemaining <= 10 ? <p className="text-sm font-semibold text-amber-950">Session expiry warning: {humanMinutesRemaining <= 2 ? "2 minutes or less" : "10 minutes or less"} remain. Unsent work may be lost.</p> : null}
+        <p className="text-sm text-amber-950">Refreshing, leaving, or closing this Apply Pilot control page ends the employer session. If submission is uncertain, check the employer&apos;s own status before any retry.</p>
+        <SecondaryButton type="button" disabled={!availability.END_HUMAN_SESSION || fillUiLocked}
+          onClick={() => void invoke({ type: "END_HUMAN_SESSION" })}>End human session</SecondaryButton>
+      </section> : null}
 
       {showPersonalSubmissionSection ? <section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="personal-submission-heading">
         <div>
@@ -1585,9 +1636,22 @@ export function ApplicationBrowserControl({
           </dl> : null}
         </div> : <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">{fillStatusPendingCopy}</p>}
 
+        <label className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+          <input
+            data-testid="transmission-ack"
+            type="checkbox"
+            checked={transmissionAcknowledged}
+            onChange={(event) => {
+              transmissionAcknowledgedRef.current = event.target.checked;
+              setTransmissionAcknowledged(event.target.checked);
+            }}
+          />
+          <span>I understand that filling a field can trigger the employer page&apos;s own scripts. Values may be sent to the employer or third parties before you press Submit. Apply Pilot will not press Submit and cannot promise network-free filling.</span>
+        </label>
+
         {apparentEligibleCount > 0 ? <PrimaryButton
           type="button"
-          disabled={!fillActivationEligible}
+          disabled={!fillActivationEligible || !transmissionAcknowledged}
           onClick={() => void activateFill()}
         >
           {pendingFillActivation ? "Filling…" : "Fill approved fields"}

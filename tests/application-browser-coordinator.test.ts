@@ -2598,17 +2598,18 @@ test("coordinator enforces command state and idempotent close", async () => {
   assert.equal(coordinator.status().state, "CLOSED");
 });
 
-test("production runtime always requests headed non-persistent Chromium and normalizes missing-browser errors", async () => {
+test("production runtime creates separate control and employer contexts and normalizes missing-browser errors", async () => {
   const launchOptions: Array<Record<string, unknown>> = [];
   let newContextCalls = 0;
   let closeCalls = 0;
+  const contexts: object[] = [];
   const runtime = await launchApplicationBrowserRuntimeWithLauncherForTest({
     async launch(options) {
       launchOptions.push(options as Record<string, unknown>);
       return {
         async newContext() {
           newContextCalls += 1;
-          return {
+          const context = {
             async newPage() {
               return { close: async () => undefined };
             },
@@ -2616,6 +2617,8 @@ test("production runtime always requests headed non-persistent Chromium and norm
               closeCalls += 1;
             }
           };
+          contexts.push(context);
+          return context;
         },
         async close() {
           closeCalls += 1;
@@ -2626,10 +2629,13 @@ test("production runtime always requests headed non-persistent Chromium and norm
 
   assert.deepEqual(launchOptions, [{ headless: false }]);
   assert.equal("executablePath" in launchOptions[0], false);
-  assert.equal(newContextCalls, 1);
+  assert.equal(newContextCalls, 2);
+  assert.equal(runtime.context, contexts[0]);
+  assert.equal(runtime.employerContext, contexts[1]);
+  assert.notEqual(runtime.context, runtime.employerContext);
   await runtime.close();
   await runtime.close();
-  assert.equal(closeCalls, 2);
+  assert.equal(closeCalls, 3);
 
   await assert.rejects(
     launchApplicationBrowserRuntimeWithLauncherForTest({
@@ -2640,6 +2646,82 @@ test("production runtime always requests headed non-persistent Chromium and norm
     (error: unknown) => error instanceof Error && error.message === MISSING_CHROMIUM_MESSAGE
   );
   assert.equal(MISSING_CHROMIUM_MESSAGE, "Apply Pilot Chromium is not installed. Run: npm run browser:install");
+});
+
+test("runtime attempts every exact-owned close and reports employer-context cleanup failure", async () => {
+  const calls: string[] = [];
+  let created = 0;
+  const runtime = await launchApplicationBrowserRuntimeWithLauncherForTest({
+    async launch() {
+      return {
+        async newContext() {
+          created += 1;
+          const name = created === 1 ? "control" : "employer";
+          return {
+            async newPage() { return { async close() { calls.push("page"); } }; },
+            async close() {
+              calls.push(name);
+              if (name === "employer") throw new Error("synthetic employer close failure");
+            }
+          };
+        },
+        async close() { calls.push("browser"); }
+      };
+    }
+  });
+  await assert.rejects(runtime.close(), /synthetic employer close failure/);
+  assert.deepEqual(calls, ["page", "employer", "control", "browser"]);
+  await assert.rejects(runtime.close(), /synthetic employer close failure/);
+  assert.deepEqual(calls, ["page", "employer", "control", "browser"]);
+});
+
+test("stalled control-page close cannot defer employer-context or browser close", async () => {
+  const calls: string[] = [];
+  let created = 0;
+  const runtime = await launchApplicationBrowserRuntimeWithLauncherForTest({
+    async launch() {
+      return {
+        async newContext() {
+          created += 1;
+          const name = created === 1 ? "control" : "employer";
+          return {
+            async newPage() { return { close() { calls.push("page"); return new Promise<void>(() => undefined); } }; },
+            async close() { calls.push(name); }
+          };
+        },
+        async close() { calls.push("browser"); }
+      };
+    }
+  }, 5);
+  await assert.rejects(runtime.close(), /did not settle/);
+  assert.deepEqual(calls, ["page", "employer", "control", "browser"]);
+});
+
+test("partial runtime setup rollback closes browser despite a stalled control-context close", async () => {
+  const calls: string[] = [];
+  const setupFailure = new Error("synthetic second-context failure");
+  let created = 0;
+  await assert.rejects(
+    launchApplicationBrowserRuntimeWithLauncherForTest({
+      async launch() {
+        return {
+          async newContext() {
+            created += 1;
+            if (created === 2) throw setupFailure;
+            return {
+              async newPage() { return { async close() { calls.push("page"); } }; },
+              close() { calls.push("control-context"); return new Promise<void>(() => undefined); }
+            };
+          },
+          async close() { calls.push("browser"); }
+        };
+      }
+    }, 5),
+    (error: unknown) => error instanceof AggregateError &&
+      error.errors[0] === setupFailure &&
+      error.errors[1] instanceof Error && /did not settle/.test(error.errors[1].message)
+  );
+  assert.deepEqual(calls, ["control-context", "browser"]);
 });
 
 test("companion closes the target controller and runtime when control navigation fails after launch", async () => {

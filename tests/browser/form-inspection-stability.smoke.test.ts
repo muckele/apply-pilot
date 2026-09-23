@@ -415,13 +415,13 @@ test("fragment and same-document History navigation synchronously revoke protect
   }
 });
 
-test("reload revokes protected authority while unsafe path drift remains target-guarded", async (context) => {
+test("reload and unsafe path drift both fail closed under the frozen target guard", async (context) => {
   await context.test("reload", async () => {
-    await withHarness(STABLE_FORM_HTML, async ({ page, controller, invalidations }) => {
+    await withHarness(STABLE_FORM_HTML, async ({ page, controller, unsafeCodes }) => {
       await controller.inspect();
-      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
       await waitForNoCurrent(controller);
-      assert.deepEqual(invalidations, ["REINSPECTION_REQUIRED"]);
+      assert.deepEqual(unsafeCodes, ["TARGET_NAVIGATION_BLOCKED"]);
     });
   });
 

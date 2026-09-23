@@ -36,7 +36,7 @@ const BASELINE_MISMATCH_MESSAGE =
  * included in that reviewed change. Manual editing is intentional friction.
  */
 const SEALED_SOURCE_SHA256: Readonly<Record<ProtectedSourcePath, string>> = {
-  [SESSION_PATH]: "7a700c97bf940796167396c96f1626143e25381dac83e84c33f1652676c76ea7",
+  [SESSION_PATH]: "75d77340ff765d67c05caf46b39927321a62cf0d6dbb4ca2046338fdf65fb6f9",
   [WORLD_PATH]: "a84acce8abc338002c4fc0bcf7b21fe7d026ff84ccfb3ecd6a155f1b051c8d0d"
 };
 
@@ -60,6 +60,7 @@ const EXPECTED_PROTECTED_SESSION_METHODS = [
   "snapshot",
   "waitForChange",
   "subscribe",
+  "retireForHuman",
   "close"
 ] as const;
 

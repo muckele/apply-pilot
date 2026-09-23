@@ -69,13 +69,28 @@ function startupErrorCode(error: unknown): string {
     : "COMPANION_START_FAILED";
 }
 
+const OWNED_CLEANUP_DEADLINE_MS = 10_000;
+
+function boundedOwnedCleanup(cleanup: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    cleanup(),
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new ApplicationBrowserError(
+        "Exact-owned browser cleanup did not settle.", "HUMAN_SESSION_CLEANUP_UNCERTAIN"
+      )), OWNED_CLEANUP_DEADLINE_MS);
+    })
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
+
 export async function runApplicationBrowserCompanion(
   args: string[],
   dependencies: CompanionDependencies = productionDependencies
 ): Promise<void> {
   const identity = parseCompanionArguments(args);
   const runtime = await dependencies.launchRuntime();
-  const context = runtime.context as BrowserContext;
+  const controlContext = runtime.context as BrowserContext;
+  const employerContext = runtime.employerContext as BrowserContext;
   const controlPage = runtime.controlPage as Page;
   let targetController: ReturnType<typeof createPlaywrightTargetController> | null = null;
   let formInspectionController: ApplicationFormInspectionController | null = null;
@@ -86,17 +101,17 @@ export async function runApplicationBrowserCompanion(
     closeOwnedResourcesPromise = (async () => {
       let firstError: unknown;
       try {
-        await formInspectionController?.close();
+        await boundedOwnedCleanup(async () => formInspectionController?.close());
       } catch (error) {
         firstError = error;
       }
       try {
-        await targetController?.close();
+        await boundedOwnedCleanup(async () => targetController?.close());
       } catch (error) {
         firstError ??= error;
       }
       try {
-        await runtime.close();
+        await boundedOwnedCleanup(() => runtime.close());
       } catch (error) {
         firstError ??= error;
       }
@@ -110,14 +125,14 @@ export async function runApplicationBrowserCompanion(
     const client = dependencies.createClient({
       configuredApplyPilotOrigin: identity.configuredApplyPilotOrigin,
       immutableRunId: identity.immutableRunId,
-      requestContext: context.request
+      requestContext: controlContext.request
     });
     let resolveClosed: (() => void) | undefined;
     const closed = new Promise<void>((resolve) => {
       resolveClosed = resolve;
     });
     const createdTargetController = dependencies.createTargetController({
-      context,
+      context: employerContext,
       onUnsafe: async (code) => coordinator.safeStop(code)
     });
     targetController = createdTargetController;
@@ -175,6 +190,12 @@ export async function runApplicationBrowserCompanion(
         });
       },
       getFormInspectionPort: () => formInspectionPort,
+      retireForHuman: async (assertActive) => {
+        await formInspectionController?.close();
+        formInspectionPort = null;
+        assertActive();
+        await createdTargetController.retireForHuman(identity.configuredApplyPilotOrigin, assertActive);
+      },
       closeResources: closeOwnedResources,
       onClosed: resolveClosed
     });

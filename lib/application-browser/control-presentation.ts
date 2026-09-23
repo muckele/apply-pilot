@@ -33,6 +33,8 @@ export type PendingBrowserCommand =
   | "OPEN_TARGET"
   | "INSPECT_FORM"
   | "FILL_APPROVED_FIELDS"
+  | "HANDOFF_TO_HUMAN"
+  | "END_HUMAN_SESSION"
   | "CLOSE_WORKFLOW"
   | null;
 export type PacketFreshness = "absent" | "current" | "stale" | "unverified";
@@ -116,6 +118,8 @@ const WORKFLOW_STATES = [
   "CONTROL_READY",
   "OPENING_TARGET",
   "TARGET_OPEN",
+  "HANDOFF_PENDING",
+  "HUMAN_ONLY",
   "ERROR",
   "CLOSED"
 ] as const satisfies readonly B1WorkflowState[];
@@ -274,7 +278,8 @@ const statusSchema = z
     targetHost: boundedText.optional(),
     errorCode: boundedText.optional(),
     inspection: inspectionSchema.optional(),
-    fillCommand: fillCommandSchema.optional()
+    fillCommand: fillCommandSchema.optional(),
+    humanSession: z.object({ expiresAtMs: nonnegativeSafeInteger }).strict().optional()
   })
   .strict();
 
@@ -479,6 +484,8 @@ export function browserCommandAvailability(input: {
       OPEN_TARGET: false,
       INSPECT_FORM: false,
       FILL_APPROVED_FIELDS: false,
+      HANDOFF_TO_HUMAN: false,
+      END_HUMAN_SESSION: false,
       CLOSE_WORKFLOW: false
     };
   }
@@ -488,6 +495,8 @@ export function browserCommandAvailability(input: {
       OPEN_TARGET: false,
       INSPECT_FORM: false,
       FILL_APPROVED_FIELDS: false,
+      HANDOFF_TO_HUMAN: false,
+      END_HUMAN_SESSION: false,
       CLOSE_WORKFLOW: false
     };
   }
@@ -497,6 +506,8 @@ export function browserCommandAvailability(input: {
     INSPECT_FORM:
       input.status.state === "TARGET_OPEN" && input.status.inspection?.outcome !== "IN_PROGRESS",
     FILL_APPROVED_FIELDS: input.status.state === "TARGET_OPEN",
+    HANDOFF_TO_HUMAN: input.status.state === "TARGET_OPEN" || input.status.state === "HUMAN_ONLY",
+    END_HUMAN_SESSION: input.status.state === "HUMAN_ONLY",
     CLOSE_WORKFLOW: true
   };
 }
@@ -520,6 +531,7 @@ export function bindingRejectionPlan(
     recoverWithGetStatus:
       command !== "GET_STATUS" &&
       command !== "FILL_APPROVED_FIELDS" &&
+      command !== "END_HUMAN_SESSION" &&
       !(command === "CLOSE_WORKFLOW" && status.state === "CLOSED"),
     packetTrust:
       command === "INSPECT_FORM" || command === "FILL_APPROVED_FIELDS"

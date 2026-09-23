@@ -1,4 +1,4 @@
-import type { BrowserContext, Page, Request, Route } from "playwright";
+import type { BrowserContext, CDPSession, Page, Request, Route } from "playwright";
 
 import {
   createGuardedFillOrchestrationService,
@@ -75,9 +75,15 @@ type CoordinatorInput = {
   openTarget(input: TargetOpenInput, assertActive: () => void): Promise<{ finalUrl: string }>;
   initializeFormInspectionController?(input: Readonly<{ authoritativeApplyHost: string }>): void;
   getFormInspectionPort?(): FormInspectionPort | null;
+  retireForHuman?(assertActive: () => void): Promise<void>;
   closeResources(): Promise<void>;
   onClosed?(): void;
+  now?(): number;
+  schedule?(callback: () => void, delayMs: number): unknown;
+  cancel?(timer: unknown): void;
 };
+
+const HUMAN_SESSION_LIFETIME_MS = 60 * 60 * 1000;
 
 function canonicalWithoutFragment(url: URL): string {
   const copy = new URL(url.toString());
@@ -159,6 +165,9 @@ export class ApplicationBrowserCoordinator {
     frozenTargetUrl: string;
   }> | null = null;
   private cleanupPromise: Promise<void> | null = null;
+  private humanSessionExpiresAtMs: number | null = null;
+  private humanSessionTimer: unknown = null;
+  private humanSessionClosingPromise: Promise<B1Status> | null = null;
 
   constructor(input: CoordinatorInput) {
     this.input = input;
@@ -179,7 +188,10 @@ export class ApplicationBrowserCoordinator {
       ...(this.workflowState === "TARGET_OPEN" && this.inspectionStatus
         ? { inspection: this.inspectionStatus }
         : {}),
-      ...(this.fillCommandStatus ? { fillCommand: this.fillCommandStatus } : {})
+      ...(this.fillCommandStatus ? { fillCommand: this.fillCommandStatus } : {}),
+      ...(this.workflowState === "HUMAN_ONLY" && this.humanSessionExpiresAtMs !== null
+        ? { humanSession: { expiresAtMs: this.humanSessionExpiresAtMs } }
+        : {})
     };
   }
 
@@ -205,6 +217,8 @@ export class ApplicationBrowserCoordinator {
       await this.close();
       return this.status();
     }
+    if (command.type === "HANDOFF_TO_HUMAN") return this.handoffToHuman(assertActive);
+    if (command.type === "END_HUMAN_SESSION") return this.endHumanSession();
     if (command.type === "INSPECT_FORM") return this.inspectForm(assertActive);
     if (command.type === "FILL_APPROVED_FIELDS") {
       return this.activateApprovedFields(assertActive);
@@ -611,7 +625,72 @@ export class ApplicationBrowserCoordinator {
     return this.cleanupPromise;
   }
 
+  private clearHumanSessionTimer(): void {
+    if (this.humanSessionTimer === null) return;
+    (this.input.cancel ?? clearTimeout)(this.humanSessionTimer as ReturnType<typeof setTimeout>);
+    this.humanSessionTimer = null;
+  }
+
+  private async handoffToHuman(assertActive: () => void): Promise<B1Status> {
+    if (this.humanSessionClosingPromise) return this.humanSessionClosingPromise;
+    if (this.workflowState === "HUMAN_ONLY") return this.status();
+    if (this.workflowState !== "TARGET_OPEN") {
+      throw new ApplicationBrowserError("Human handoff is unavailable in this state.", "COMMAND_NOT_ALLOWED");
+    }
+    if (
+      this.inspectionInFlight || this.fillInFlight || this.activeFillOperation !== null ||
+      this.inspectionStatus?.outcome === "IN_PROGRESS" ||
+      this.fillCommandStatus?.outcome === "IN_PROGRESS" ||
+      this.fillCommandStatus?.outcome === "RECOVERY_PENDING"
+    ) {
+      throw new ApplicationBrowserError("A protected operation is not settled.", "HANDOFF_NOT_QUIESCENT");
+    }
+    if (!this.input.retireForHuman) {
+      throw new ApplicationBrowserError("Human handoff retirement is unavailable.", "HANDOFF_RETIREMENT_FAILED");
+    }
+    this.workflowState = "HANDOFF_PENDING";
+    this.publishedFillAuthority = null;
+    try {
+      assertActive();
+      await this.input.retireForHuman(assertActive);
+      assertActive();
+      this.requireState("HANDOFF_PENDING");
+      this.workflowState = "HUMAN_ONLY";
+      this.humanSessionExpiresAtMs = (this.input.now ?? Date.now)() + HUMAN_SESSION_LIFETIME_MS;
+      this.humanSessionTimer = (this.input.schedule ?? setTimeout)(() => {
+        void this.endHumanSession();
+      }, HUMAN_SESSION_LIFETIME_MS);
+      return this.status();
+    } catch (error) {
+      await this.safeStop("HANDOFF_RETIREMENT_FAILED");
+      throw error;
+    }
+  }
+
+  private endHumanSession(): Promise<B1Status> {
+    if (this.humanSessionClosingPromise) return this.humanSessionClosingPromise;
+    if (this.workflowState === "CLOSED" || this.workflowState === "ERROR") return Promise.resolve(this.status());
+    if (this.workflowState !== "HUMAN_ONLY") {
+      throw new ApplicationBrowserError("No human session is active.", "COMMAND_NOT_ALLOWED");
+    }
+    this.clearHumanSessionTimer();
+    this.publishedFillAuthority = null;
+    this.humanSessionClosingPromise = (async () => {
+      try {
+        await this.closeResourcesOnce();
+        this.workflowState = "CLOSED";
+      } catch {
+        this.workflowState = "ERROR";
+        this.workflowErrorCode = "HUMAN_SESSION_CLEANUP_UNCERTAIN";
+      }
+      return this.status();
+    })();
+    return this.humanSessionClosingPromise;
+  }
+
   async safeStop(code: string): Promise<void> {
+    const humanBoundary = this.workflowState === "HANDOFF_PENDING" || this.workflowState === "HUMAN_ONLY";
+    this.clearHumanSessionTimer();
     this.activeFillOperation = null;
     if (this.workflowState === "CLOSED") return;
     this.publishedFillAuthority = null;
@@ -619,15 +698,27 @@ export class ApplicationBrowserCoordinator {
     try {
       await this.closeResourcesOnce();
     } catch {
+      if (humanBoundary) this.workflowErrorCode = "HUMAN_SESSION_CLEANUP_UNCERTAIN";
       // The owning companion observes the memoized cleanup failure during finalization.
     }
   }
 
   async close(): Promise<void> {
+    const humanBoundary = this.workflowState === "HANDOFF_PENDING" || this.workflowState === "HUMAN_ONLY";
+    this.clearHumanSessionTimer();
     this.publishedFillAuthority = null;
     this.activeFillOperation = null;
-    if (this.workflowState !== "CLOSED") this.workflowState = "CLOSED";
-    await this.closeResourcesOnce();
+    this.workflowState = humanBoundary ? "HANDOFF_PENDING" : "CLOSED";
+    try {
+      await this.closeResourcesOnce();
+      this.workflowState = "CLOSED";
+    } catch (error) {
+      if (humanBoundary) {
+        this.workflowState = "ERROR";
+        this.workflowErrorCode = "HUMAN_SESSION_CLEANUP_UNCERTAIN";
+      }
+      throw error;
+    }
   }
 }
 
@@ -655,13 +746,17 @@ export function createSafeBrowserDiagnostic(input: {
 type SyntheticFulfill = (request: Request, route: Route) => Promise<void>;
 type ProtectedTargetSession = Readonly<
   ProtectedFormInspectionAuthority &
-  Pick<ProtectedApplicationBrowserSession, "close">
+  Pick<ProtectedApplicationBrowserSession, "close"> &
+  Partial<Pick<ProtectedApplicationBrowserSession, "retireForHuman">>
 >;
 
 export function createPlaywrightTargetController(input: {
   context: BrowserContext;
   onUnsafe(code: string): void | Promise<void>;
   testOnlyFulfillMainDocument?: SyntheticFulfill;
+  testOnlyBeforeRouteContinue?(request: Request): Promise<void>;
+  testOnlyCreateHumanPolicySession?(page: Page): Promise<CDPSession>;
+  testOnlyBeforeHumanPolicySwitch?(): Promise<void>;
   testOnlyCreateProtectedSession?(page: Page): Promise<ProtectedTargetSession>;
 }) {
   let employerPage: Page | null = null;
@@ -682,6 +777,11 @@ export function createPlaywrightTargetController(input: {
   let contextListenerRemoved = false;
   let pageCleanupGeneration = 0;
   let guardFailure: ApplicationBrowserError | null = null;
+  let automationRetired = false;
+  let retirementIngressClosed = false;
+  let retireOwnedPage: ((controlOrigin: string, assertActive: () => void) => Promise<void>) | null = null;
+  let retirementPromise: Promise<void> | null = null;
+  let humanNavigationCdp: CDPSession | null = null;
 
   const trackCleanup = (cleanup: Promise<void>): Promise<void> => {
     pendingCleanup.add(cleanup);
@@ -774,6 +874,8 @@ export function createPlaywrightTargetController(input: {
   };
 
   const cleanupOwnedResources = (): Promise<void> => {
+    const policySession = humanNavigationCdp;
+    humanNavigationCdp = null;
     const ownedSessions = [protectedSession, setupSession].filter(
       (session): session is ProtectedTargetSession => session !== null
     );
@@ -787,7 +889,8 @@ export function createPlaywrightTargetController(input: {
     setupPageEvents.clear();
     const sessionClosures = ownedSessions.map((session) => closeSessionOnce(session));
     const pageClosures = ownedPages.map((page) => closePageOnce(page));
-    return Promise.all([...sessionClosures, ...pageClosures]).then(() => undefined);
+    const policyClosure = policySession ? [Promise.resolve(policySession.detach()).catch(() => undefined)] : [];
+    return Promise.all([...sessionClosures, ...pageClosures, ...policyClosure]).then(() => undefined);
   };
 
   function close(): Promise<void> {
@@ -883,7 +986,10 @@ export function createPlaywrightTargetController(input: {
         assertOpeningActive();
 
         let navigationCount = 0;
-        let navigationPhase: "INITIAL_CONVERGENCE" | "STEADY_TARGET" = "INITIAL_CONVERGENCE";
+        let navigationPhase: "INITIAL_CONVERGENCE" | "STEADY_TARGET" | "HUMAN_ONLY" = "INITIAL_CONVERGENCE";
+        let humanControlOrigin: string | null = null;
+        const pendingRouteCallbacks = new Set<Promise<void>>();
+        const pendingHumanPolicyDecisions = new Set<Promise<unknown>>();
         const frozenOrigin = openInput.target.url.origin;
         const frozenCanonicalUrl = canonicalWithoutFragment(openInput.target.url);
         const policy = {
@@ -898,18 +1004,23 @@ export function createPlaywrightTargetController(input: {
         const isCanonicalTarget = (candidate: ExecutionTarget | null): boolean =>
           isAllowedAuthority(candidate) &&
           canonicalWithoutFragment(candidate.url) === frozenCanonicalUrl;
-        const markUnsafe = () => {
+        const postFenceAllowed = (url: string): boolean => {
+          const candidate = parseExecutionTargetUrl(url);
+          return candidate !== null && humanControlOrigin !== null && candidate.url.origin !== humanControlOrigin;
+        };
+        const markUnsafe = (code = "TARGET_NAVIGATION_BLOCKED") => {
           if (guardFailure) return;
           guardFailure = new ApplicationBrowserError(
             "Employer navigation was blocked before the request left Chromium.",
-            "TARGET_NAVIGATION_BLOCKED"
+            code
           );
-          void input.onUnsafe("TARGET_NAVIGATION_BLOCKED");
+          void input.onUnsafe(code);
         };
 
         openingPage.on("framenavigated", (frame) => {
-          if (navigationPhase !== "STEADY_TARGET" || frame !== openingPage.mainFrame()) return;
-          if (!isCanonicalTarget(parseExecutionTargetUrl(frame.url()))) markUnsafe();
+          if (frame !== openingPage.mainFrame()) return;
+          if (navigationPhase === "STEADY_TARGET" && !isCanonicalTarget(parseExecutionTargetUrl(frame.url()))) markUnsafe();
+          if (navigationPhase === "HUMAN_ONLY" && !postFenceAllowed(frame.url())) markUnsafe("HUMAN_NAVIGATION_BLOCKED");
           for (const listener of mainFrameNavigationListeners) {
             try {
               listener();
@@ -919,12 +1030,32 @@ export function createPlaywrightTargetController(input: {
           }
         });
         await openingPage.route("**/*", async (route, request) => {
+          let settleRoute!: () => void;
+          const routeSettlement = new Promise<void>((resolve) => { settleRoute = resolve; });
+          pendingRouteCallbacks.add(routeSettlement);
+          try {
+          if (retirementIngressClosed && navigationPhase !== "HUMAN_ONLY") {
+            await route.abort("blockedbyclient");
+            return;
+          }
           if (
             !request.isNavigationRequest() ||
             request.resourceType() !== "document" ||
             request.frame() !== openingPage.mainFrame()
           ) {
+            await input.testOnlyBeforeRouteContinue?.(request);
             await route.continue();
+            return;
+          }
+
+          if (navigationPhase === "HUMAN_ONLY") {
+            if (guardFailure || !postFenceAllowed(request.url())) {
+              markUnsafe("HUMAN_NAVIGATION_BLOCKED");
+              await route.abort("blockedbyclient");
+              return;
+            }
+            if (input.testOnlyFulfillMainDocument) await input.testOnlyFulfillMainDocument(request, route);
+            else await route.continue();
             return;
           }
 
@@ -933,9 +1064,11 @@ export function createPlaywrightTargetController(input: {
           const valid =
             !guardFailure &&
             isAllowedAuthority(candidate) &&
-            (navigationPhase === "STEADY_TARGET"
-              ? isCanonicalTarget(candidate)
-              : navigationCount <= 5 && (navigationCount > 1 || isCanonicalTarget(candidate)));
+            // Playwright's route.continue carries redirects without re-entering this
+            // route. Once the exact page is open, any new document request could
+            // redirect to an unreviewed destination. Keep it frozen until handoff.
+            navigationPhase === "INITIAL_CONVERGENCE" &&
+            navigationCount <= 5 && (navigationCount > 1 || isCanonicalTarget(candidate));
           if (!valid) {
             markUnsafe();
             await route.abort("blockedbyclient");
@@ -946,6 +1079,10 @@ export function createPlaywrightTargetController(input: {
             return;
           }
           await route.continue();
+          } finally {
+            pendingRouteCallbacks.delete(routeSettlement);
+            settleRoute();
+          }
         });
         assertOpeningActive();
 
@@ -1004,6 +1141,7 @@ export function createPlaywrightTargetController(input: {
         const assertAuthorityActive = (): void => {
           if (
             closed ||
+            automationRetired ||
             employerPage !== ownedPage ||
             protectedSession !== ownedSession ||
             ownedPage.isClosed()
@@ -1072,6 +1210,71 @@ export function createPlaywrightTargetController(input: {
         setupPage = null;
         setupSession = null;
         formInspectionTarget = target;
+        retireOwnedPage = (controlOrigin, assertActive) => {
+          if (retirementPromise) return retirementPromise;
+          if (closed || guardFailure || employerPage !== ownedPage || protectedSession !== ownedSession) {
+            return Promise.reject(new ApplicationBrowserError("The employer page cannot be handed off.", "HANDOFF_RETIREMENT_FAILED"));
+          }
+          automationRetired = true;
+          retirementIngressClosed = true;
+          formInspectionTarget = null;
+          mainFrameNavigationListeners.clear();
+          retirementPromise = (async () => {
+            if (!ownedSession.retireForHuman || pendingRouteCallbacks.size > 0) {
+              throw new ApplicationBrowserError("Protected browser work is unresolved.", "HANDOFF_NOT_QUIESCENT");
+            }
+            await ownedSession.retireForHuman();
+            if (pendingRouteCallbacks.size > 0) {
+              throw new ApplicationBrowserError("A navigation callback is unresolved.", "HANDOFF_NOT_QUIESCENT");
+            }
+            assertActive();
+            if (closed || guardFailure || ownedPage.isClosed()) {
+              throw new ApplicationBrowserError("The employer page changed during retirement.", "HANDOFF_RETIREMENT_FAILED");
+            }
+            humanControlOrigin = controlOrigin;
+            // Playwright route.continue follows redirects without re-entering the
+            // page route. This lifecycle-only CDP Fetch policy sees each document
+            // request, including redirects, without reading bodies or issuing a
+            // new employer request on the companion's behalf.
+            const policyCdp = await (input.testOnlyCreateHumanPolicySession?.(ownedPage) ??
+              input.context.newCDPSession(ownedPage));
+            humanNavigationCdp = policyCdp;
+            const frameTree = await policyCdp.send("Page.getFrameTree");
+            if (frameTree.frameTree.frame.id.length === 0) {
+              throw new ApplicationBrowserError("The employer main frame is unavailable.", "HANDOFF_RETIREMENT_FAILED");
+            }
+            policyCdp.on("Fetch.requestPaused", (event) => {
+              const allowed = navigationPhase === "HUMAN_ONLY" &&
+                event.resourceType === "Document" &&
+                postFenceAllowed(event.request.url);
+              const operation = allowed
+                ? policyCdp.send("Fetch.continueRequest", { requestId: event.requestId })
+                : policyCdp.send("Fetch.failRequest", { requestId: event.requestId, errorReason: "BlockedByClient" });
+              pendingHumanPolicyDecisions.add(operation);
+              void operation.then(() => {
+                if (!allowed) markUnsafe(navigationPhase === "HUMAN_ONLY" ? "HUMAN_NAVIGATION_BLOCKED" : "TARGET_NAVIGATION_BLOCKED");
+              }, () => markUnsafe("HUMAN_POLICY_LOST")).finally(() => {
+                pendingHumanPolicyDecisions.delete(operation);
+              });
+            });
+            policyCdp.on("close", () => {
+              if (!closed && navigationPhase === "HUMAN_ONLY") markUnsafe("HUMAN_POLICY_LOST");
+            });
+            await policyCdp.send("Fetch.enable", {
+              patterns: [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" }]
+            });
+            await input.testOnlyBeforeHumanPolicySwitch?.();
+            assertActive();
+            if (closed || guardFailure || ownedPage.isClosed()) {
+              throw new ApplicationBrowserError("The employer page changed during policy setup.", "HANDOFF_RETIREMENT_FAILED");
+            }
+            if (pendingRouteCallbacks.size > 0 || pendingHumanPolicyDecisions.size > 0) {
+              throw new ApplicationBrowserError("A browser callback is unresolved.", "HANDOFF_NOT_QUIESCENT");
+            }
+            navigationPhase = "HUMAN_ONLY";
+          })();
+          return retirementPromise;
+        };
         handedOff = true;
         created = null;
         session = null;
@@ -1110,6 +1313,10 @@ export function createPlaywrightTargetController(input: {
       !closed && employerPage && !employerPage.isClosed()
         ? formInspectionTarget
         : null,
+    retireForHuman: (controlOrigin: string, assertActive: () => void): Promise<void> =>
+      retireOwnedPage?.(controlOrigin, assertActive) ?? Promise.reject(
+        new ApplicationBrowserError("The employer page is not ready for handoff.", "HANDOFF_RETIREMENT_FAILED")
+      ),
     close
   });
 }

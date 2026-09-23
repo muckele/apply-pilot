@@ -361,6 +361,7 @@ async function openProductionControlPage(input: Readonly<{
 
 async function prepareFillEligibleProductionControl(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Refresh status", exact: true }).click();
+  await page.getByTestId("transmission-ack").check();
   await page.waitForFunction(() => {
     const fill = [...document.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === "Fill approved fields"
@@ -513,6 +514,7 @@ test("a production ApplicationBrowserControl remount with an existing attempt ne
 
 test("downstream synthetic trigger crosses one trusted bridge and writes six families without employer action or submit", async () => {
   const context = await browser.newContext();
+  const employerContext = await browser.newContext();
   await context.route(`${CONTROL_ORIGIN}/**`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -526,7 +528,7 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
   const unsafeCodes: string[] = [];
   const coordinatorRef: { current: ApplicationBrowserCoordinator | null } = { current: null };
   const targetController = createPlaywrightTargetController({
-    context,
+    context: employerContext,
     onUnsafe(code) {
       unsafeCodes.push(code);
       void coordinatorRef.current?.safeStop(code);
@@ -728,6 +730,11 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
         }
       });
     },
+    async retireForHuman(assertActive) {
+      await formController?.close();
+      assertActive();
+      await targetController.retireForHuman(CONTROL_ORIGIN, assertActive);
+    },
     closeResources() {
       closePromise ??= (async () => {
         await formController?.close();
@@ -775,7 +782,7 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
     });
     employerPage.on("popup", () => { popup += 1; });
     employerPage.on("filechooser", () => { upload += 1; });
-    context.on("request", (request) => {
+    employerContext.on("request", (request) => {
       if (request.url().includes("/__apply_pilot_submit")) syntheticSubmissionRequest += 1;
     });
 
@@ -866,8 +873,20 @@ test("downstream synthetic trigger crosses one trusted bridge and writes six fam
     assert.equal(popup, 0);
     assertNoSubmission(traps);
     assert.deepEqual(unsafeCodes, []);
+
+    const handoff = await invoke(controlPage, { type: "HANDOFF_TO_HUMAN" }) as B1Status;
+    assert.equal(handoff.state, "HUMAN_ONLY");
+    assert.deepEqual(handoff.fillCommand, { outcome: "FINALIZED" });
+    assert.equal(targetController.formInspectionTarget(), null);
+    assert.equal(employerPage.isClosed(), false);
+    assert.equal(await employerPage.locator("#text-empty").inputValue(), "Ada Lovelace");
+    assert.equal(await employerPage.locator("#select-empty").inputValue(), "SECRET-A");
+    await assert.rejects(coordinator.handleCommand({ type: "FILL_APPROVED_FIELDS" }, () => undefined));
+    assert.equal(acquisitionCount, 1);
+    assert.equal(writerCalls, 7);
   } finally {
     await coordinator.close().catch(() => undefined);
+    await employerContext.close().catch(() => undefined);
     await context.close().catch(() => undefined);
   }
 });

@@ -119,6 +119,13 @@ export async function installControlBridge(input: {
       void input.controlPage.close().catch(() => undefined);
     }
   });
-  input.controlPage.on("close", bridge.invalidate);
+  input.controlPage.on("close", () => {
+    bridge.invalidate();
+    try {
+      void Promise.resolve(input.onTrustLost("CONTROL_PAGE_CLOSED")).catch(() => undefined);
+    } catch {
+      // Trust is already revoked; the owner still attempts exact-owned cleanup.
+    }
+  });
   return bridge;
 }

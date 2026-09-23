@@ -8,6 +8,8 @@ export const B1_WORKFLOW_STATES = [
   "CONTROL_READY",
   "OPENING_TARGET",
   "TARGET_OPEN",
+  "HANDOFF_PENDING",
+  "HUMAN_ONLY",
   "ERROR",
   "CLOSED"
 ] as const;
@@ -19,6 +21,8 @@ export type B1Command =
   | { type: "OPEN_TARGET" }
   | { type: "INSPECT_FORM" }
   | { type: "FILL_APPROVED_FIELDS" }
+  | { type: "HANDOFF_TO_HUMAN" }
+  | { type: "END_HUMAN_SESSION" }
   | { type: "CLOSE_WORKFLOW" };
 
 export const B3_FILL_COMMAND_REJECTION_CODES = [
@@ -83,6 +87,7 @@ export type B1Status = {
   errorCode?: string;
   inspection?: B2InspectionCommandStatus;
   fillCommand?: B3FillCommandStatus;
+  humanSession?: { expiresAtMs: number };
 };
 
 const immutableRunIdSchema = z.string().cuid();
@@ -140,6 +145,8 @@ export function parseB1Command(value: unknown): B1Command {
       type !== "OPEN_TARGET" &&
       type !== "INSPECT_FORM" &&
       type !== "FILL_APPROVED_FIELDS" &&
+      type !== "HANDOFF_TO_HUMAN" &&
+      type !== "END_HUMAN_SESSION" &&
       type !== "CLOSE_WORKFLOW")
   ) {
     throw new Error("Invalid B1 command.");
@@ -151,6 +158,8 @@ export function isB1CommandAllowed(command: B1Command, state: B1WorkflowState): 
   if (command.type === "OPEN_TARGET") return state === "CONTROL_READY";
   if (command.type === "INSPECT_FORM") return state === "TARGET_OPEN";
   if (command.type === "FILL_APPROVED_FIELDS") return state === "TARGET_OPEN";
+  if (command.type === "HANDOFF_TO_HUMAN") return state === "TARGET_OPEN" || state === "HUMAN_ONLY";
+  if (command.type === "END_HUMAN_SESSION") return state === "HUMAN_ONLY";
   if (command.type === "CLOSE_WORKFLOW") return state !== "CLOSED";
   return state !== "CLOSED";
 }
