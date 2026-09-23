@@ -1165,7 +1165,22 @@ test("production ApplicationRun reaches Human-Submit completion only after both 
       name: "Fill approved fields",
       exact: true
     });
-    await waitForValue("explicit Fill UI authority", () => fillButton.isEnabled(), Boolean);
+    await controlPage.getByRole("heading", { name: "Fill has not started", exact: true })
+      .waitFor({ state: "visible" });
+    await controlPage.getByText(
+      "Current packet — versions match the latest verified employer-form inspection in this session.",
+      { exact: true }
+    ).waitFor({ state: "visible" });
+    const transmissionDisclosure =
+      "I understand that filling a field can trigger the employer page's own scripts. Values may be sent to the employer or third parties before you press Submit. Apply Pilot will not press Submit and cannot promise network-free filling.";
+    const transmissionAcknowledgement = controlPage.getByRole("checkbox", {
+      name: transmissionDisclosure,
+      exact: true
+    });
+    await transmissionAcknowledgement.waitFor({ state: "visible" });
+    assert.equal(await controlPage.getByText(transmissionDisclosure, { exact: true }).isVisible(), true);
+    assert.equal(await transmissionAcknowledgement.isChecked(), false);
+    assert.equal(await fillButton.isDisabled(), true);
     fixtureSnapshot = await readSyntheticEmployerSnapshot(employerPage);
     assertNoSyntheticEmployerSubmission(
       fixtureSnapshot,
@@ -1178,6 +1193,30 @@ test("production ApplicationRun reaches Human-Submit completion only after both 
     assert.equal(requestSummary.fillAcquisitionCount, 0);
     assert.equal(requestSummary.fillFinalizationCount, 0);
     assert.equal(requestSummary.completionRequestCount, 0);
+    assert.equal(resolvedRun.fillAttemptId, null);
+
+    // OWNER ACTION — acknowledge possible page-owned transmission before explicit Fill.
+    await transmissionAcknowledgement.check();
+    assert.equal(await transmissionAcknowledgement.isChecked(), true);
+    await waitForValue("explicit Fill UI authority", () => fillButton.isEnabled(), Boolean);
+    await transmissionAcknowledgement.uncheck();
+    assert.equal(await transmissionAcknowledgement.isChecked(), false);
+    await waitForValue("Fill disabled without transmission acknowledgement", () => fillButton.isDisabled(), Boolean);
+    await transmissionAcknowledgement.check();
+    assert.equal(await transmissionAcknowledgement.isChecked(), true);
+    await waitForValue("Fill restored after transmission acknowledgement", () => fillButton.isEnabled(), Boolean);
+    assert.equal((await actor.client.applicationRun.findUniqueOrThrow({
+      where: { id: runId },
+      select: { fillAttemptId: true }
+    })).fillAttemptId, null);
+    assert.equal(requestSummary.fillAcquisitionCount, 0);
+    assert.equal(requestSummary.fillFinalizationCount, 0);
+    assert.equal(requestSummary.completionRequestCount, 0);
+    fixtureSnapshot = await readSyntheticEmployerSnapshot(employerPage);
+    assertNoSyntheticEmployerSubmission(
+      fixtureSnapshot,
+      networkCounters.syntheticSubmissionEndpointCount
+    );
 
     diagnostic.phase = "FILL";
     await fillButton.click();
@@ -1301,6 +1340,31 @@ test("production ApplicationRun reaches Human-Submit completion only after both 
       })).state,
       "READY_FOR_USER_SUBMISSION"
     );
+
+    diagnostic.phase = "HUMAN_HANDOFF";
+    // OWNER ACTION — retire companion authority through the control page before HUMAN Submit.
+    await controlPage.bringToFront();
+    const finishManually = controlPage.getByRole("button", {
+      name: "Finish manually in this browser",
+      exact: true
+    });
+    await waitForValue("human handoff UI authority", () => finishManually.isEnabled(), Boolean);
+    await finishManually.click();
+    const confirmHandoff = controlPage.getByRole("button", {
+      name: "Confirm human handoff",
+      exact: true
+    });
+    await confirmHandoff.waitFor({ state: "visible" });
+    await waitForValue("confirmed human handoff UI authority", () => confirmHandoff.isEnabled(), Boolean);
+    await confirmHandoff.click();
+    await controlPage.getByRole("heading", { name: "Human-only browser session", exact: true })
+      .waitFor({ state: "visible" });
+    assert.equal(await fillButton.isDisabled(), true);
+    assert.equal(employerPage.isClosed(), false);
+    assert.equal(requestSummary.fillAcquisitionCount, 1);
+    assert.equal(requestSummary.fillFinalizationCount, 1);
+    assert.equal(networkCounters.syntheticSubmissionEndpointCount, 0);
+    await employerPage.bringToFront();
 
     diagnostic.phase = "HUMAN_EMPLOYER_SUBMIT";
     // HUMAN ACTION — SYNTHETIC EMPLOYER SUBMIT
