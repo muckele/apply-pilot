@@ -16,7 +16,6 @@ import {
   applicationFormInspectionReportSchema,
   buildNormalizedApplicationFormInspection,
   canonicalJson,
-  FormInspectionDomainError,
   FORM_INSPECTION_SCHEMA_VERSION,
   type ApplicationFormInspectionReport,
   type NormalizedApplicationFormField
@@ -153,13 +152,16 @@ function normalizedFields(
 }
 
 const EXPECTED_COMMIT_2B_CORRELATED_KEYS = [
+  "ambiguousQuestionCount",
+  "ambiguousRequiredCount",
   "candidate",
   "dispose",
   "fieldCount",
   "formFingerprint",
   "inspectionReport",
   "normalizedSnapshot",
-  "requiredFieldCount"
+  "requiredFieldCount",
+  "uniqueFieldCount"
 ] as const;
 
 function assertNoOpaqueReferenceAuthority(
@@ -688,7 +690,7 @@ test("preserves canonical form section field and choice ordering without retaini
   const rawFormTitles = report.forms.map((form) => form.title);
   const canonicalFormTitles = authoritative.snapshot.forms.map((form) => form.title);
   const canonicalFormKeys = authoritative.snapshot.forms.map((form) => form.formKey);
-  assert.notDeepEqual(canonicalFormTitles, rawFormTitles);
+  assert.deepEqual([...canonicalFormTitles].sort(), [...rawFormTitles].sort());
   assert.deepEqual(canonicalFormKeys, [...canonicalFormKeys].sort());
 
   const rawMultiSectionForm = report.forms[0];
@@ -867,23 +869,39 @@ test("correlates multiple-file upload normalization without retaining field auth
   await result.dispose();
 });
 
-test("preserves canonical duplicate-field ambiguity and disposes transferred ownership", async () => {
+test("quarantines duplicate source slots while binding only a unique writer target", async () => {
   const duplicate = rawField({ question: "Portfolio URL" });
-  const report = singleSectionReport([duplicate, duplicate]);
+  const report = singleSectionReport([duplicate, duplicate, rawField({ question: "LinkedIn URL" })]);
   const synthetic = syntheticExtraction(report);
-
-  await assert.rejects(
-    correlateProtectedApplicationFormExtraction({
-      extraction: synthetic.extraction,
-      authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
-    }),
-    (error) => {
-      assert.ok(error instanceof FormInspectionDomainError);
-      assert.equal(error.code, "AMBIGUOUS_DUPLICATE_FIELD");
-      return true;
-    }
-  );
+  const result = await correlateProtectedApplicationFormExtraction({
+    extraction: synthetic.extraction,
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+  });
+  assert.equal(result.fieldCount, 3);
+  assert.equal(result.uniqueFieldCount, 1);
+  assert.equal(result.ambiguousQuestionCount, 2);
+  assert.equal(result.ambiguousRequiredCount, 2);
+  assert.deepEqual(synthetic.sealedBindings()?.map((binding) => binding.sourceOrdinal.field), [2]);
+  await result.dispose();
   assert.equal(synthetic.disposeCalls(), 1);
+});
+
+test("duplicate file uploads and differing native selects seal no writer target", async () => {
+  const upload = rawField({ question: "Upload résumé", fieldType: "FILE_UPLOAD", autocomplete: null });
+  const select = rawField({
+    question: "Preferred location", fieldType: "SELECT_ONE", autocomplete: null,
+    choices: [{ label: "Remote", disabled: false }]
+  });
+  const otherSelect = { ...select, choices: [{ label: "Hybrid", disabled: false }] };
+  const synthetic = syntheticExtraction(singleSectionReport([upload, upload, select, otherSelect]));
+  const result = await correlateProtectedApplicationFormExtraction({
+    extraction: synthetic.extraction,
+    authoritativeApplyHost: AUTHORITATIVE_APPLY_HOST
+  });
+  assert.equal(result.uniqueFieldCount, 0);
+  assert.equal(result.ambiguousQuestionCount, 4);
+  assert.deepEqual(synthetic.sealedBindings(), []);
+  await result.dispose();
 });
 
 test("validates source references before preserving canonical duplicate-field ambiguity", async () => {

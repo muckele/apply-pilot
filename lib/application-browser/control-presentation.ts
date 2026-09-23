@@ -95,6 +95,7 @@ export type ResolveReviewMutationSnapshot = Readonly<{
   answerPacketVersion: number;
   packetHash: string;
   acknowledgedReviewReasons: readonly PlanReviewReason[];
+  acknowledgedAmbiguousQuestionCount: number;
 }>;
 
 export type SameOriginReviewRequest = Readonly<{
@@ -307,6 +308,9 @@ const proposalSchema = z.discriminatedUnion("kind", [
 const summarySchema = z
   .object({
     fieldCount: nonnegativeSafeInteger,
+    observedFieldCount: nonnegativeSafeInteger,
+    ambiguousQuestionCount: nonnegativeSafeInteger.max(200),
+    ambiguousRequiredCount: nonnegativeSafeInteger.max(200),
     proposableCount: nonnegativeSafeInteger,
     pendingReviewCount: nonnegativeSafeInteger,
     approvedCount: nonnegativeSafeInteger,
@@ -317,7 +321,14 @@ const summarySchema = z
     manualRequiredCount: nonnegativeSafeInteger,
     readyForRunResolution: z.boolean()
   })
-  .strict();
+  .strict()
+  .superRefine((summary, context) => {
+    if (summary.observedFieldCount !== summary.fieldCount + summary.ambiguousQuestionCount ||
+        summary.ambiguousRequiredCount > summary.ambiguousQuestionCount ||
+        summary.manualRequiredCount < summary.ambiguousRequiredCount) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Packet summary counts are inconsistent." });
+    }
+  });
 
 const answerSchema = z
   .object({
@@ -826,6 +837,7 @@ export function isResolveReviewPostconditionCurrent(input: {
     input.packet !== null &&
     input.packet.answerPacketVersion === input.snapshot.answerPacketVersion &&
     input.packet.packetHash === input.snapshot.packetHash &&
+    input.packet.summary.ambiguousQuestionCount === input.snapshot.acknowledgedAmbiguousQuestionCount &&
     input.packet.reviewedAt !== null
   );
 }
@@ -933,7 +945,8 @@ export function buildResolveReviewRequest(input: {
         stateVersion: input.run.stateVersion,
         acknowledgedReviewReasons: [...input.run.reviewReasons],
         answerPacketVersion: input.packet.answerPacketVersion,
-        packetHash: input.packet.packetHash
+        packetHash: input.packet.packetHash,
+        acknowledgedAmbiguousQuestionCount: input.packet.summary.ambiguousQuestionCount
       })
     }
   };

@@ -494,6 +494,10 @@ export function createApplicationFormInspectionControllerWithRuntime(
       const normalized = normalizedFields.get(request.normalizedFieldKey);
       if (
         !normalized ||
+        record.correlated.normalizedSnapshot.ambiguityGroups?.some(
+          (group) => group.collisionKey === request.normalizedFieldKey
+        ) ||
+        normalized.permittedDisposition !== "PROPOSABLE" ||
         normalized.fieldFingerprint !== request.fieldFingerprint ||
         normalized.fieldType !== request.fieldType ||
         !isRecord(request.proposal)

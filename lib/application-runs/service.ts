@@ -796,6 +796,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     acknowledgedReviewReasons: unknown;
     answerPacketVersion?: unknown;
     packetHash?: unknown;
+    acknowledgedAmbiguousQuestionCount?: unknown;
   }): Promise<ApplicationRunDto> {
     validateUserId(input?.userId);
     const userId = input.userId;
@@ -804,7 +805,8 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
       stateVersion: input?.stateVersion,
       acknowledgedReviewReasons: input?.acknowledgedReviewReasons,
       answerPacketVersion: input?.answerPacketVersion,
-      packetHash: input?.packetHash
+      packetHash: input?.packetHash,
+      acknowledgedAmbiguousQuestionCount: input?.acknowledgedAmbiguousQuestionCount
     });
 
     return prismaClient.$transaction(async (tx) => {
@@ -848,6 +850,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
         if (run.currentFormInspectionVersion !== 0 || run.currentAnswerPacketVersion !== 0) {
           throw packetInvalid();
         }
+        if ((acknowledgment.acknowledgedAmbiguousQuestionCount ?? 0) !== 0) throw packetStale();
         now = resolveNow(clock);
       } else {
         const storedPacket = await tx.applicationRunAnswerPacket.findUnique({
@@ -877,6 +880,12 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
         });
         if (!verified || verified.packetRecord.id !== storedPacket.id) {
           throw packetInvalid();
+        }
+        if ((acknowledgment.acknowledgedAmbiguousQuestionCount ?? 0) !==
+            (verified.summary.ambiguousQuestionCount ?? 0) ||
+            (verified.snapshot?.schemaVersion === 2 && (verified.summary.ambiguousQuestionCount ?? 0) > 0 &&
+              acknowledgment.acknowledgedAmbiguousQuestionCount === undefined)) {
+          throw packetStale();
         }
         if (verified.packetRecord.reviewedAt !== null) {
           throw packetInvalid();

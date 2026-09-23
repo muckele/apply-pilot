@@ -22,6 +22,9 @@ export type PublicApplicationAnswerProposal =
 
 export type PublicApplicationRunAnswerPacketSummary = {
   fieldCount: number;
+  observedFieldCount: number;
+  ambiguousQuestionCount: number;
+  ambiguousRequiredCount: number;
   proposableCount: number;
   pendingReviewCount: number;
   approvedCount: number;
@@ -172,6 +175,9 @@ export function toPublicApplicationRunAnswerPacket(
     createdAt: packet.createdAt.toISOString(),
     summary: {
       fieldCount: packet.summary.fieldCount,
+      observedFieldCount: packet.summary.observedFieldCount,
+      ambiguousQuestionCount: packet.summary.ambiguousQuestionCount,
+      ambiguousRequiredCount: packet.summary.ambiguousRequiredCount,
       proposableCount: packet.summary.proposableCount,
       pendingReviewCount: packet.summary.pendingReviewCount,
       approvedCount: packet.summary.approvedCount,

@@ -271,6 +271,9 @@ function verifiedPacketFor(
     }]]),
     summary: {
       fieldCount: 1,
+      observedFieldCount: 1,
+      ambiguousQuestionCount: 0,
+      ambiguousRequiredCount: 0,
       proposableCount: 1,
       pendingReviewCount: 0,
       approvedCount: 1,
@@ -1883,6 +1886,28 @@ test("packet review resolution uses one database timestamp and permits manual-re
   assert.ok(database.operations.indexOf("packet.updateMany") < database.operations.indexOf("run.updateMany"));
   assert.equal(database.tokens[0].revokedAt, null);
   assert.equal(database.operations.includes("token.updateMany"), false);
+});
+
+test("partial packet review requires the exact verified ambiguity count before acknowledgment", async () => {
+  const database = packetReviewDatabase({ summary: {
+    ambiguousQuestionCount: 2, ambiguousRequiredCount: 2,
+    observedFieldCount: 3, manualRequiredCount: 2
+  } });
+  const base = {
+    userId: USER_ID, runId: RUN_ID, stateVersion: 4,
+    acknowledgedReviewReasons: [], answerPacketVersion: 3, packetHash: PACKET_HASH
+  };
+  for (const acknowledgment of [base, { ...base, acknowledgedAmbiguousQuestionCount: 1 }]) {
+    await assert.rejects(
+      serviceFor(database).resolveApplicationRunReview(acknowledgment),
+      (error) => assertPublicError(error, 409, "RUN_PACKET_STALE")
+    );
+    assert.equal(database.packets[0].reviewedAt, null);
+  }
+  const resolved = await serviceFor(database).resolveApplicationRunReview({
+    ...base, acknowledgedAmbiguousQuestionCount: 2
+  });
+  assert.equal(resolved.state, "READY");
 });
 
 test("post-fill packet review resolves to user submission readiness without erasing fill provenance", async () => {

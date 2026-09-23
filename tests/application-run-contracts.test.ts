@@ -171,6 +171,22 @@ test("review resolution requires packet fences correlated to legacy or packet-ba
   }
 });
 
+test("review acknowledgment accepts a bounded exact ambiguity count and rejects malformed counts", () => {
+  const valid = {
+    stateVersion: 7,
+    acknowledgedReviewReasons: [],
+    answerPacketVersion: 3,
+    packetHash: PACKET_HASH,
+    acknowledgedAmbiguousQuestionCount: 2
+  };
+  assert.deepEqual(resolveApplicationRunReviewBodySchema.parse(valid), valid);
+  for (const count of [-1, 201, 1.5, "2", null]) {
+    assert.equal(resolveApplicationRunReviewBodySchema.safeParse({
+      ...valid, acknowledgedAmbiguousQuestionCount: count
+    }).success, false);
+  }
+});
+
 test("answer review requires an explicit nonnegative integer packet version and rejects caller authority", () => {
   assert.deepEqual(reviewApplicationRunAnswerBodySchema.parse({ status: "APPROVED", answerPacketVersion: 0 }), {
     status: "APPROVED",

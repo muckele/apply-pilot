@@ -1025,7 +1025,8 @@ export function ApplicationBrowserControl({
       stateVersion: current.run.stateVersion,
       answerPacketVersion: current.packet.answerPacketVersion,
       packetHash: current.packet.packetHash,
-      acknowledgedReviewReasons: [...current.run.reviewReasons]
+      acknowledgedReviewReasons: [...current.run.reviewReasons],
+      acknowledgedAmbiguousQuestionCount: current.packet.summary.ambiguousQuestionCount
     };
     pendingReviewMutationRef.current = mutation;
     setPendingReviewMutation(mutation);
@@ -1624,6 +1625,10 @@ export function ApplicationBrowserControl({
         {fillPresentation ? <div className={`rounded-lg px-4 py-3 text-sm ${noticeClass(fillPresentation.tone)}`}>
           <h3 className="font-semibold">{fillPresentation.title}</h3>
           <p className="mt-2 leading-6">{fillPresentation.text}</p>
+          {fillPresentation.category === "COMPLETED" && (reviewLoad.packet?.summary.ambiguousQuestionCount ?? 0) > 0 ?
+            <p className="mt-2 leading-6">Fill finished for approved fields only. {reviewLoad.packet!.summary.ambiguousQuestionCount} ambiguous employer questions still require manual completion. You submit the employer form yourself.</p> : null}
+          {fillPresentation.category === "COMPLETED" && !reviewLoad.packet ?
+            <p className="mt-2 leading-6">Fill finished for approved fields only. Employer questions may still require manual completion. Refresh review data to see the verified manual-work count, and submit the employer form yourself.</p> : null}
           {stoppedErrorCopy ? <p className="mt-2">{stoppedErrorCopy}</p> : null}
           {fillStatusLoad.status && fillStatusLoad.status.steps.length > 0 ? <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
             {[
@@ -1655,7 +1660,7 @@ export function ApplicationBrowserControl({
           onClick={() => void activateFill()}
         >
           {pendingFillActivation ? "Filling…" : "Fill approved fields"}
-        </PrimaryButton> : <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">No approved automatable fields are apparent in the current packet. Complete the employer form manually; no Fill attempt will be consumed from this page.</p>}
+        </PrimaryButton> : <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Apply Pilot has no fields it can fill on this form. {reviewLoad.packet?.summary.ambiguousQuestionCount ? `${reviewLoad.packet.summary.ambiguousQuestionCount} ambiguous employer questions require manual completion. ` : ""}Complete the employer form manually; no Fill attempt will be consumed from this page.</p>}
 
         {manualFields.length > 0 ? <div className="rounded-lg border border-slate-200 p-4">
           <h3 className="font-medium text-slate-950">Manual fields</h3>
@@ -1693,9 +1698,12 @@ export function ApplicationBrowserControl({
 
           <div className="rounded-lg border border-slate-200 p-4">
             <h3 className="font-medium text-slate-950">Packet summary</h3>
+            {reviewLoad.packet.summary.ambiguousQuestionCount > 0 ? <p className="mt-2 text-sm text-amber-900">Review the proposed answers for the fields Apply Pilot could identify safely. {reviewLoad.packet.summary.ambiguousQuestionCount} ambiguous employer questions require manual completion. Confirming this review does not complete those questions.</p> : null}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
               {[
                 ["Fields", reviewLoad.packet.summary.fieldCount], ["Proposable", reviewLoad.packet.summary.proposableCount],
+                ["Observed controls", reviewLoad.packet.summary.observedFieldCount], ["Ambiguous manual questions", reviewLoad.packet.summary.ambiguousQuestionCount],
+                ["Ambiguous required", reviewLoad.packet.summary.ambiguousRequiredCount],
                 ["Pending review", reviewLoad.packet.summary.pendingReviewCount], ["Approved", reviewLoad.packet.summary.approvedCount],
                 ["Rejected", reviewLoad.packet.summary.rejectedCount], ["Manual only", reviewLoad.packet.summary.manualOnlyCount],
                 ["Excluded", reviewLoad.packet.summary.excludedCount], ["Unsupported", reviewLoad.packet.summary.unsupportedCount],

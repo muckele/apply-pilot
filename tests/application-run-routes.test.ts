@@ -81,6 +81,9 @@ function ownerSafePacket() {
     createdAt: NOW,
     summary: {
       fieldCount: 1,
+      observedFieldCount: 1,
+      ambiguousQuestionCount: 0,
+      ambiguousRequiredCount: 0,
       proposableCount: 1,
       pendingReviewCount: 1,
       approvedCount: 0,

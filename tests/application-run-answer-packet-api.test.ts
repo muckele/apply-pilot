@@ -218,6 +218,9 @@ test("public packet mapper explicitly copies owner fields and omits provenance a
     createdAt,
     summary: {
       fieldCount: 4,
+      observedFieldCount: 6,
+      ambiguousQuestionCount: 2,
+      ambiguousRequiredCount: 1,
       proposableCount: 4,
       pendingReviewCount: 1,
       approvedCount: 2,
