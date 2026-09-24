@@ -1,7 +1,9 @@
 import { notFound } from "next/navigation";
 
 import { ApplicationStatusActions } from "@/components/application-status-actions";
+import { ApplicationRunEntry } from "@/components/application-run-entry";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { getCurrentApplicationRun } from "@/lib/application-runs/service";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -35,6 +37,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
     notFound();
   }
 
+  const currentRun = await getCurrentApplicationRun(userId, application.id);
   const attention = getApplicationAttention(application);
 
   return (
@@ -112,6 +115,15 @@ export default async function ApplicationDetailPage({ params }: Props) {
         </section>
 
         <aside className="space-y-6">
+          <Panel>
+            <PanelHeader title="Browser run" description="Create or open this application's owned browser run." />
+            <ApplicationRunEntry
+              key={currentRun?.id ?? "no-active-run"}
+              applicationId={application.id}
+              initialRun={currentRun ? { id: currentRun.id, state: currentRun.state } : null}
+            />
+          </Panel>
+
           <Panel>
             <PanelHeader title="Next action" />
             <div className="p-5">

@@ -263,6 +263,27 @@ test("ApplicationRun POST returns 201 on creation, 200 on replay, and no-store",
   assert.equal((await replay.json()).replayed, true);
 });
 
+test("ApplicationRun POST rejects unauthenticated creation before rate limiting or dispatch", async () => {
+  let rateCalls = 0;
+  let createCalls = 0;
+  const handlers = createApplicationRunsRouteHandlers({
+    requireUserId: async () => { throw new UnauthorizedError(); },
+    checkRateLimit: async () => { rateCalls += 1; },
+    createApplicationRun: async () => {
+      createCalls += 1;
+      return { run: runDto(), replayed: false };
+    }
+  });
+  const response = await handlers.POST(jsonRequest("/api/application-runs", "POST", {
+    applicationId: APPLICATION_ID,
+    idempotencyKey: "request-123"
+  }));
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get("Cache-Control"), "no-store");
+  assert.equal(rateCalls, 0);
+  assert.equal(createCalls, 0);
+});
+
 test("ApplicationRun GET validates the CUID before rate limiting or Prisma-facing service use", async () => {
   let rateCalls = 0;
   let getCalls = 0;

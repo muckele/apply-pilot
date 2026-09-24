@@ -458,7 +458,12 @@ class FakeApplicationRunDatabase {
   private findRunFirst(args: unknown, state: FakeApplicationRunDatabaseState = this.committedState()) {
     this.operations.push("run.findFirst");
     const where = nested(args, "where");
-    const found = this.visibleRuns(state).find((run) => run.id === where.id && run.userId === where.userId);
+    const found = this.visibleRuns(state).find((run) =>
+      run.userId === where.userId &&
+      (where.id === undefined || run.id === where.id) &&
+      (where.applicationId === undefined || run.applicationId === where.applicationId) &&
+      (where.activeRunKey === undefined || run.activeRunKey === where.activeRunKey)
+    );
     if (!found) return null;
     const application = state.applications.find((candidate) => candidate.id === found.applicationId);
     return structuredClone({
@@ -1094,6 +1099,35 @@ test("DRAFT creation derives owner, job, target URL, host, state, and active key
   });
   assert.equal(database.audits.length, 1);
   assert.equal(database.events.length, 1);
+  assert.equal(database.applications[0].status, "INTERESTED");
+  assert.equal(database.applications[0].dateApplied, null);
+});
+
+test("current ApplicationRun lookup returns only the owner's active run and never creates or prepares", async () => {
+  const database = new FakeApplicationRunDatabase();
+  const service = serviceFor(database);
+  assert.equal(await service.getCurrentApplicationRun(USER_ID, APPLICATION_ID), null);
+
+  const created = await service.createApplicationRun(USER_ID, {
+    applicationId: APPLICATION_ID,
+    idempotencyKey: "request-current-run"
+  });
+  database.operations.length = 0;
+  const current = await service.getCurrentApplicationRun(USER_ID, APPLICATION_ID);
+  assert.deepEqual(current, created.run);
+  assert.equal(current?.state, "DRAFT");
+  assert.equal(await service.getCurrentApplicationRun(OTHER_USER_ID, APPLICATION_ID), null);
+  assert.equal(await service.getCurrentApplicationRun(USER_ID, OTHER_APPLICATION_ID), null);
+  assert.deepEqual(database.operations, ["run.findFirst", "run.findFirst", "run.findFirst"]);
+
+  database.runs[0].activeRunKey = null;
+  assert.equal(await service.getCurrentApplicationRun(USER_ID, APPLICATION_ID), null);
+});
+
+test("current ApplicationRun lookup validates the application ID before querying", async () => {
+  const database = new FakeApplicationRunDatabase();
+  await assert.rejects(serviceFor(database).getCurrentApplicationRun(USER_ID, "not-a-cuid"));
+  assert.equal(database.operations.includes("run.findFirst"), false);
 });
 
 test("DRAFT creation rejects cross-user applications, cross-user jobs, and relation mismatch non-enumeratingly", async () => {

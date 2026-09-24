@@ -16,6 +16,7 @@ import {
   applicationRunAnswerPathSchema,
   completeApplicationRunByUserBodySchema,
   createApplicationRunBodySchema,
+  cuidPathIdSchema,
   resolveApplicationRunReviewBodySchema,
   reviewApplicationRunAnswerBodySchema,
   type ApplicationRunAnswerDto,
@@ -580,6 +581,19 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     });
     if (!run) throw runNotFound();
     return toApplicationRunDto(run);
+  }
+
+  async function getCurrentApplicationRun(
+    userId: string,
+    unvalidatedApplicationId: unknown
+  ): Promise<ApplicationRunDto | null> {
+    validateUserId(userId);
+    const applicationId = cuidPathIdSchema.parse(unvalidatedApplicationId);
+    const run = await prismaClient.applicationRun.findFirst({
+      where: { userId, applicationId, activeRunKey: applicationId },
+      select: APPLICATION_RUN_OPERATIONAL_SELECT
+    });
+    return run ? toApplicationRunDto(run) : null;
   }
 
   async function lockOwnedApplicationRun(
@@ -1165,6 +1179,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     updateAutomationPolicy,
     createApplicationRun,
     getApplicationRun,
+    getCurrentApplicationRun,
     cancelApplicationRun,
     completeApplicationRunByUser,
     resolveApplicationRunReview,
@@ -1178,6 +1193,7 @@ export const readAutomationPolicy = defaultApplicationRunService.readAutomationP
 export const updateAutomationPolicy = defaultApplicationRunService.updateAutomationPolicy;
 export const createApplicationRun = defaultApplicationRunService.createApplicationRun;
 export const getApplicationRun = defaultApplicationRunService.getApplicationRun;
+export const getCurrentApplicationRun = defaultApplicationRunService.getCurrentApplicationRun;
 export const cancelApplicationRun = defaultApplicationRunService.cancelApplicationRun;
 export const completeApplicationRunByUser = defaultApplicationRunService.completeApplicationRunByUser;
 export const resolveApplicationRunReview = defaultApplicationRunService.resolveApplicationRunReview;
