@@ -65,6 +65,22 @@ test("policy defaults mirror the Prisma schema fail-closed values", () => {
   });
 });
 
+test("pretrial setup accepts only an owned-run request shape, never mixed policy values", () => {
+  const runId = "clz8w7m9a0004qwer1234tyui";
+  assert.deepEqual(parseAutomationPolicyPatch({ enablePretrialForRunId: runId }), {
+    enablePretrialForRunId: runId
+  });
+  assert.throws(() => parseAutomationPolicyPatch({ enablePretrialForRunId: "not-a-run" }));
+  assert.throws(() => parseAutomationPolicyPatch({
+    enablePretrialForRunId: runId,
+    mode: "FILL_AND_REVIEW"
+  }));
+  assert.throws(() => parseAutomationPolicyPatch({
+    enablePretrialForRunId: runId,
+    allowedHosts: ["other.example"]
+  }));
+});
+
 test("policy mode accepts only the two exact closed literals without enabling automation", () => {
   assert.deepEqual(parseAutomationPolicyPatch({ mode: "PREPARE_ONLY" }), { mode: "PREPARE_ONLY" });
   assert.deepEqual(parseAutomationPolicyPatch({ mode: "FILL_AND_REVIEW" }), { mode: "FILL_AND_REVIEW" });

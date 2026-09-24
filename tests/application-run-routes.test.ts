@@ -206,6 +206,37 @@ test("policy PATCH validates strictly before rate limiting and service dispatch"
   assert.equal((await valid.json()).changed, true);
 });
 
+test("pretrial policy PATCH forwards only the run-bound action after authentication", async () => {
+  let forwarded: unknown = null;
+  const dependencies = {
+    requireUserId: async () => USER_ID,
+    checkRateLimit: async () => undefined,
+    readAutomationPolicy: async () => ({ ...AUTOMATION_POLICY_DEFAULTS, persisted: false, effectiveEnabled: false }),
+    updateAutomationPolicy: async (_userId: string, patch: unknown) => {
+      forwarded = patch;
+      return { ...AUTOMATION_POLICY_DEFAULTS, enabled: true, persisted: true,
+        effectiveEnabled: true, changed: true, revokedExecutionTokenCount: 0 };
+    }
+  };
+  const handlers = createApplicationAutomationPolicyRouteHandlers(dependencies);
+  const response = await handlers.PATCH(jsonRequest("/api/application-automation-policy", "PATCH", {
+    enablePretrialForRunId: RUN_ID
+  }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(forwarded, { enablePretrialForRunId: RUN_ID });
+
+  const unauthorized = createApplicationAutomationPolicyRouteHandlers({
+    ...dependencies,
+    requireUserId: async () => { throw new UnauthorizedError(); }
+  });
+  forwarded = null;
+  const denied = await unauthorized.PATCH(jsonRequest("/api/application-automation-policy", "PATCH", {
+    enablePretrialForRunId: RUN_ID
+  }));
+  assert.equal(denied.status, 401);
+  assert.equal(forwarded, null);
+});
+
 test("ApplicationRun POST rejects smuggled authoritative fields before rate limiting", async () => {
   let rateCalls = 0;
   let createCalls = 0;

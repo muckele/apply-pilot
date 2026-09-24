@@ -2,8 +2,10 @@ import { notFound } from "next/navigation";
 
 import { ApplicationStatusActions } from "@/components/application-status-actions";
 import { ApplicationRunEntry } from "@/components/application-run-entry";
+import { ApplicationRunPretrialSetup } from "@/components/application-run-pretrial-setup";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { getCurrentApplicationRun } from "@/lib/application-runs/service";
+import { readAutomationPolicy } from "@/lib/application-runs/service";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -38,6 +40,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
   }
 
   const currentRun = await getCurrentApplicationRun(userId, application.id);
+  const automationPolicy = currentRun ? await readAutomationPolicy(userId) : null;
   const attention = getApplicationAttention(application);
 
   return (
@@ -123,6 +126,42 @@ export default async function ApplicationDetailPage({ params }: Props) {
               initialRun={currentRun ? { id: currentRun.id, state: currentRun.state } : null}
             />
           </Panel>
+
+          {currentRun && automationPolicy ? (
+            <Panel>
+              <PanelHeader title="Pretrial setup" description="Review policy capability, then prepare this owned run deliberately." />
+              <ApplicationRunPretrialSetup
+                key={JSON.stringify([
+                  currentRun.id,
+                  currentRun.stateVersion,
+                  currentRun.blockingReason,
+                  currentRun.errorCategory,
+                  automationPolicy.enabled,
+                  automationPolicy.effectiveEnabled,
+                  automationPolicy.mode,
+                  automationPolicy.allowedHosts,
+                  automationPolicy.blockedHosts
+                ])}
+                applicationId={application.id}
+                jobPostingId={application.jobPostingId}
+                initialRun={{
+                  id: currentRun.id,
+                  applicationId: currentRun.applicationId,
+                  state: currentRun.state,
+                  applyHost: currentRun.applyHost,
+                  blockingReason: currentRun.blockingReason,
+                  errorCategory: currentRun.errorCategory
+                }}
+                initialPolicy={{
+                  enabled: automationPolicy.enabled,
+                  effectiveEnabled: automationPolicy.effectiveEnabled,
+                  mode: automationPolicy.mode,
+                  allowedHosts: automationPolicy.allowedHosts,
+                  blockedHosts: automationPolicy.blockedHosts
+                }}
+              />
+            </Panel>
+          ) : null}
 
           <Panel>
             <PanelHeader title="Next action" />

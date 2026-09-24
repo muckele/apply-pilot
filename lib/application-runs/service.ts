@@ -24,7 +24,12 @@ import {
   type AutomationPolicyDto,
   type AutomationPolicyValues
 } from "@/lib/application-runs/contracts";
-import { parseExecutionTargetUrl } from "@/lib/application-runs/host-policy";
+import {
+  canonicalizePolicyHostEntry,
+  isHostAllowedForExecution,
+  isHostBlocked,
+  parseExecutionTargetUrl
+} from "@/lib/application-runs/host-policy";
 import {
   AUTOMATION_POLICY_DEFAULTS,
   isAutomationAllowed,
@@ -383,7 +388,55 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
       }
 
       const currentValues = copyPolicyValues(locked);
-      const nextValues = nextPolicyValues(currentValues, patch);
+      let nextValues = nextPolicyValues(currentValues, patch);
+      if (patch.enablePretrialForRunId) {
+        const run = await tx.applicationRun.findFirst({
+          where: { id: patch.enablePretrialForRunId, userId },
+          select: {
+            id: true,
+            applicationId: true,
+            activeRunKey: true,
+            state: true,
+            applyHost: true,
+            applyUrlSnapshot: true
+          }
+        });
+        if (!run || run.activeRunKey !== run.applicationId) throw runNotFound();
+        if (!["DRAFT", "BLOCKED", "FAILED"].includes(run.state)) {
+          throw new PublicApiError("This application run cannot be set up for preparation from its current state.", 409, {
+            code: "RUN_INVALID_STATE"
+          });
+        }
+        if (currentValues.mode !== "PREPARE_ONLY") {
+          throw new PublicApiError("Review the current Fill-capable policy separately before pretrial setup.", 409, {
+            code: "AUTOMATION_POLICY_MODE_REQUIRES_REVIEW"
+          });
+        }
+        const target = parseExecutionTargetUrl(run.applyUrlSnapshot);
+        if (
+          target === null ||
+          target.host !== run.applyHost ||
+          canonicalizePolicyHostEntry(run.applyHost) !== run.applyHost ||
+          isHostBlocked(run.applyHost, currentValues)
+        ) {
+          throw new PublicApiError("This application run target host is blocked or invalid.", 403, {
+            code: "RUN_HOST_BLOCKED"
+          });
+        }
+        const alreadyAllowed = isHostAllowedForExecution(run.applyHost, currentValues);
+        if (!alreadyAllowed && currentValues.allowedHosts.length >= 50) {
+          throw new PublicApiError("The allowed host list is full.", 422, {
+            code: "AUTOMATION_POLICY_INVALID"
+          });
+        }
+        nextValues = {
+          ...currentValues,
+          enabled: true,
+          allowedHosts: alreadyAllowed
+            ? [...currentValues.allowedHosts]
+            : [...currentValues.allowedHosts, run.applyHost]
+        };
+      }
       const changedFields = changedAutomationPolicyFields(currentValues, nextValues);
 
       if (changedFields.length === 0) {
