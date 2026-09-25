@@ -1,6 +1,6 @@
 # Controlled Application Automation
 
-Canonical developer and operator reference for Apply Pilot's current controlled application automation capability. Runtime source and the Prisma schema remain authoritative if this document ever drifts. Branch positions and local commit hashes are operational context, not product invariants.
+Technical reference for controlled application automation. This document predates PRs #7–#11 in places; read [project state](APPLY_PILOT_PROJECT_STATE.md) for the released checkpoint and runtime source/Prisma schema for current behavior. Branch positions and local commit hashes are operational context, not product invariants.
 
 ## Current status
 
@@ -10,7 +10,7 @@ The current capability is deliberately narrow:
 
 - `PREPARE_ONLY` is the default `AutomationMode`; `FILL_AND_REVIEW` is an explicit opt-in required for Fill acquisition.
 - `APPLICATION_READ` is the only execution-token scope that can be issued.
-- The per-user policy has an authenticated API at `/api/application-automation-policy`; there is no user-facing policy-management UI.
+- The per-user policy has an authenticated API at `/api/application-automation-policy`; PR #10 added owner-facing PREPARE_ONLY pretrial setup and an explicit preparation action. It does not silently grant FILL_AND_REVIEW.
 - Preparation produces an evidence-grounded advisory plan and review state.
 - The local browser companion can open a frozen anonymous employer target, inspect its visible form on explicit request, publish or replay the correlated inspection, and support owner-scoped answer review.
 - After review resolves to `READY`, one explicit user click can invoke the guarded Fill path for reviewed `TEXT`, `EMAIL`, `TEL`, `URL`, `TEXTAREA`, and `SELECT_ONE` fields. Occupied writable values are preserved.
@@ -50,7 +50,7 @@ Start the headed local companion with the canonical Apply Pilot origin and immut
 
 A successful material inspection publishes a new current packet version; a replay confirms that the verified inspection already matches the current packet without creating another version. A changed form produces reinspection-required and marks the prior displayed packet stale. Recoverable outcomes provide bounded retry or manual-handling guidance. Connection and command rejection preserve the last authoritative browser status and stop safely.
 
-The existing trusted control-page binding accepts exactly five payload-free commands: `GET_STATUS`, `OPEN_TARGET`, `INSPECT_FORM`, `FILL_APPROVED_FIELDS`, and `CLOSE_WORKFLOW`. Packet contents and Fill material never cross that binding. Packet reads, answer approval/rejection, review resolution, and durable Fill-status reads use the authenticated owner-scoped web APIs. No execution token or browser bearer token is required for these authenticated owner-page operations.
+The current trusted control-page binding accepts exactly seven payload-free commands: `GET_STATUS`, `OPEN_TARGET`, `INSPECT_FORM`, `FILL_APPROVED_FIELDS`, `HANDOFF_TO_HUMAN`, `END_HUMAN_SESSION`, and `CLOSE_WORKFLOW`. Packet contents and Fill material never cross that binding. Packet reads, answer approval/rejection, review resolution, and durable Fill-status reads use the authenticated owner-scoped web APIs. No execution token or browser bearer token is required for these authenticated owner-page operations.
 
 The **Fill approved fields** control is available only when the authenticated owner page has a connected companion, accepted `TARGET_OPEN` status, a current successful inspection, a verified reviewed packet and `READY` run with matching versions, a verified no-attempt Fill status, no conflicting pending work, and at least one apparently eligible reviewed field. This client gate grants no authority. The coordinator and backend recheck current run, policy, host, packet, attempt, lease, generation, target, and writer authority.
 
