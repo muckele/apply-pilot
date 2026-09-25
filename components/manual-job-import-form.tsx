@@ -2,14 +2,16 @@
 
 import { useState } from "react";
 import { Import, Loader2 } from "lucide-react";
+import Link from "next/link";
 
 import { PrimaryButton } from "@/components/ui";
 
 type ImportResult = {
-  job?: { id: string; title: string; company: string; overallFitScore?: number };
-  match?: { match?: { overallFitScore: number; recommendation: string } };
-  error?: string;
-};
+  job: { id: string; title: string; company: string };
+  application: { id: string };
+  match: { match: { overallFitScore: number } } | null;
+  scoring: { status: "scored" | "unavailable" | "failed" | "not_requested" };
+} | { error: string } | { uncertain: string };
 
 export function ManualJobImportForm() {
   const [pending, setPending] = useState(false);
@@ -31,14 +33,19 @@ export function ManualJobImportForm() {
       runMatch: true
     };
 
-    const response = await fetch("/api/jobs/import", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    const json = (await response.json()) as ImportResult;
-    setResult(response.ok ? json : { error: json.error ?? "Import failed" });
-    setPending(false);
+    try {
+      const response = await fetch("/api/jobs/import", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const json = (await response.json()) as ImportResult;
+      setResult(response.ok ? json : { error: "error" in json ? json.error : "The request could not be completed." });
+    } catch {
+      setResult({ uncertain: "Import status could not be confirmed. Check your jobs before trying again." });
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -88,13 +95,27 @@ export function ManualJobImportForm() {
       </PrimaryButton>
       {result ? (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-          {result.error ? (
-            <p className="text-red-700">{result.error}</p>
+          {"error" in result ? (
+            <p className="text-red-700">Import failed: {result.error}</p>
+          ) : "uncertain" in result ? (
+            <p className="text-amber-800">{result.uncertain}</p>
           ) : (
-            <p>
-              Imported {result.job?.company} · {result.job?.title}. Fit score:{" "}
-              {result.match?.match?.overallFitScore ?? result.job?.overallFitScore ?? "pending"}.
-            </p>
+            <>
+              <p>
+                {result.scoring.status === "scored" ? (
+                  <>Imported {result.job.company} · {result.job.title}. Fit score: {result.match?.match.overallFitScore}.</>
+                ) : result.scoring.status === "unavailable" ? (
+                  <>Imported {result.job.company} · {result.job.title}. Match scoring is currently unavailable; you can score this job later.</>
+                ) : result.scoring.status === "failed" ? (
+                  <>Job imported successfully, but match scoring failed. Open the job to retry scoring.</>
+                ) : (
+                  <>Imported {result.job.company} · {result.job.title}. Match scoring was not requested.</>
+                )}
+              </p>
+              <Link href={`/jobs/${result.job.id}`} className="mt-2 inline-block font-semibold text-brand-700 underline">
+                Open imported job
+              </Link>
+            </>
           )}
         </div>
       ) : null}

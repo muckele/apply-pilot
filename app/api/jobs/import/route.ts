@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { ManualJobImportProvider } from "@/lib/job-sources/manual";
 import { upsertNormalizedJob, runJobMatch } from "@/lib/jobs";
+import { LocalAiUnavailableError } from "@/lib/ai/client";
+import { captureException } from "@/lib/monitoring/logger";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -29,19 +31,32 @@ export async function POST(request: NextRequest) {
       update: {}
     });
 
-    let match = null;
-    if (input.runMatch) {
-      match = await runJobMatch(userId, job.id);
+    try {
+      await writeAuditLog({
+        userId,
+        action: "job.import.manual",
+        resource: "JobPosting",
+        resourceId: job.id
+      });
+    } catch (error) {
+      // The persisted import remains successful even if its audit write fails.
+      captureException(error, { source: "job.import.manual.audit", userId, jobPostingId: job.id });
     }
 
-    await writeAuditLog({
-      userId,
-      action: "job.import.manual",
-      resource: "JobPosting",
-      resourceId: job.id
-    });
+    if (!input.runMatch) {
+      return NextResponse.json({ job, application, match: null, scoring: { status: "not_requested" } });
+    }
 
-    return NextResponse.json({ job, application, match });
+    try {
+      const match = await runJobMatch(userId, job.id);
+      return NextResponse.json({ job: match.job, application, match, scoring: { status: "scored" } });
+    } catch (error) {
+      if (error instanceof LocalAiUnavailableError) {
+        return NextResponse.json({ job, application, match: null, scoring: { status: "unavailable" } });
+      }
+      captureException(error, { source: "job.import.manual.scoring", userId, jobPostingId: job.id });
+      return NextResponse.json({ job, application, match: null, scoring: { status: "failed" } });
+    }
   } catch (error) {
     return apiErrorResponse(error);
   }
