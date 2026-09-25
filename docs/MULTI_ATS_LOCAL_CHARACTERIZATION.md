@@ -1,3 +1,5 @@
+> **Historical P0.1 characterization snapshot. Later PRs #7 and #8 changed handoff and duplicate-field behavior. Read [project state](APPLY_PILOT_PROJECT_STATE.md) for current status; the fixture results below remain evidence only for their pinned baseline.**
+
 # P0.1 local multi-ATS characterization
 
 Date: 2026-09-22. Baseline code: `53ba4f2699422438b53163b5470d2c03e4454171` (tree `34b706eedd6d72aa2f62bce35d4c200af9949977`). New fixture version: `p0.1-local-v1`. Runtime: local headed-independent Playwright Chromium headless shell 1.62.1 on macOS; no hosted runtime or customer browser was exercised. Evidence: `tests/browser/ats-characterization.smoke.test.ts` and `tests/browser/ats-characterization-fixtures.ts`. Final command receipts and independent review are in the external mission record.

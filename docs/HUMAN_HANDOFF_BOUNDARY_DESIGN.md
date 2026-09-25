@@ -1,3 +1,5 @@
+> **Historical P0.2 design snapshot. PR #7 later implemented irreversible human handoff on main. Read [project state](APPLY_PILOT_PROJECT_STATE.md) for current status; statements below about unimplemented behavior refer to the 2026-09-22 baseline.**
+
 # P0.2 human completion boundary — design for owner decision
 
 Status: design and local synthetic feasibility only, 2026-09-22. Base: reviewed P0.1 `0aae75394015aa6051d8b28ed5a1b8bda8a84bb6`. No browser-policy or production implementation change is made here. All new pages, values, and HTTP receipts are synthetic. This document does not establish live ATS compatibility.

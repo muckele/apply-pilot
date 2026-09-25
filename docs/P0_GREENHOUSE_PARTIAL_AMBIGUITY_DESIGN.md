@@ -1,3 +1,5 @@
+> **Historical design snapshot. PR #8 later implemented partial ambiguity normalization on main. Read [project state](APPLY_PILOT_PROJECT_STATE.md) for current status; implementation-needed statements below refer to the pre-PR #8 baseline.**
+
 # Safe partial normalization for ambiguous duplicate fields
 
 **Design only. Recommendation: A, quarantined ambiguity groups. Implementation requires Mathew's explicit authorization.** This design is based on released `origin/main` `113d04c958ff0405f14d75a0eedea8afd74e42c0` (tree `c7f39fba97799c0b680f7f90354c3d9e3f53892f`). It changes no production behavior, schema, test, employer page, or applicant data.
