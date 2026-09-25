@@ -814,6 +814,76 @@ test("policy GET reports persistence and requires both stored and global gates",
   assert.deepEqual(enabled.allowedHosts, ["jobs.example.com"]);
 });
 
+test("pretrial setup atomically enables PREPARE_ONLY and merges only the owned frozen run host", async () => {
+  const database = new FakeApplicationRunDatabase();
+  database.runs.push(fakeRun());
+  database.policy = fakePolicy({
+    enabled: false,
+    mode: "PREPARE_ONLY",
+    minimumFitScore: 92,
+    minimumConfidenceScore: 91,
+    dailyApplicationCap: 2,
+    allowedHosts: ["another.example"],
+    blockedHosts: ["blocked.example"],
+    permittedAdapters: ["greenhouse"],
+    coverLetterRequired: false
+  });
+  const originalApplication = structuredClone(database.applications[0]);
+
+  const result = await serviceFor(database, true).updateAutomationPolicy(USER_ID, {
+    enablePretrialForRunId: RUN_ID
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.enabled, true);
+  assert.equal(result.mode, "PREPARE_ONLY");
+  assert.deepEqual(result.allowedHosts, ["another.example", "jobs.example.com"]);
+  assert.equal(result.minimumFitScore, 92);
+  assert.equal(result.minimumConfidenceScore, 91);
+  assert.equal(result.dailyApplicationCap, 2);
+  assert.deepEqual(result.blockedHosts, ["blocked.example"]);
+  assert.deepEqual(result.permittedAdapters, ["greenhouse"]);
+  assert.equal(result.coverLetterRequired, false);
+  assert.deepEqual(database.applications[0], originalApplication);
+  assert.equal(database.runs[0].state, "DRAFT");
+  assert.equal(database.operations.includes("run.updateMany"), false);
+  assert.ok(database.operations.indexOf("policy.lock") < database.operations.indexOf("run.findFirst"));
+});
+
+test("pretrial setup keeps a concurrently present host and avoids a write when already enabled and allowed", async () => {
+  const database = new FakeApplicationRunDatabase();
+  database.runs.push(fakeRun());
+  database.policy = fakePolicy({ enabled: true, allowedHosts: ["another.example", "example.com"] });
+  const result = await serviceFor(database, true).updateAutomationPolicy(USER_ID, {
+    enablePretrialForRunId: RUN_ID
+  });
+  assert.equal(result.changed, false);
+  assert.deepEqual(result.allowedHosts, ["another.example", "example.com"]);
+  assert.equal(database.operations.includes("policy.update"), false);
+});
+
+test("pretrial setup rejects Fill mode, blocked or invalid hosts, and cross-owner runs without a policy write", async () => {
+  const cases = [
+    { policy: fakePolicy({ mode: "FILL_AND_REVIEW" }), run: fakeRun(), code: "AUTOMATION_POLICY_MODE_REQUIRES_REVIEW" },
+    { policy: fakePolicy({ blockedHosts: ["example.com"] }), run: fakeRun(), code: "RUN_HOST_BLOCKED" },
+    { policy: fakePolicy(), run: fakeRun({ applyHost: "localhost", applyUrlSnapshot: "http://localhost/apply" }), code: "RUN_HOST_BLOCKED" },
+    { policy: fakePolicy(), run: fakeRun({ applyHost: "127.0.0.1", applyUrlSnapshot: "https://127.0.0.1/apply" }), code: "RUN_HOST_BLOCKED" },
+    { policy: fakePolicy(), run: fakeRun({ applyHost: "other.example" }), code: "RUN_HOST_BLOCKED" },
+    { policy: fakePolicy(), run: fakeRun({ userId: OTHER_USER_ID }), code: "RUN_NOT_FOUND" }
+  ];
+  for (const item of cases) {
+    const database = new FakeApplicationRunDatabase();
+    database.policy = item.policy;
+    database.runs.push(item.run);
+    await assert.rejects(
+      serviceFor(database, true).updateAutomationPolicy(USER_ID, { enablePretrialForRunId: RUN_ID }),
+      (error: unknown) => error instanceof PublicApiError && error.details?.code === item.code
+    );
+    assert.equal(database.operations.includes("policy.update"), false, item.code);
+    assert.deepEqual(database.policy, item.policy, item.code);
+  }
+});
+
 test("strict empty policy PATCH is a true read-only no-op for missing and persisted rows", async () => {
   const missing = new FakeApplicationRunDatabase();
   const missingResult = await serviceFor(missing).updateAutomationPolicy(USER_ID, {});

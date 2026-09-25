@@ -74,9 +74,20 @@ export const applicationAutomationPolicyPatchSchema = z
     permittedAdapters: z.array(z.string().regex(/^[a-z0-9-]{1,64}$/)).max(25).optional(),
     coverLetterRequired: z.boolean().optional(),
     sensitiveAnswerPolicy: z.literal("EXCLUDE").optional(),
-    finalReviewRequired: z.literal(true).optional() // false is rejected outright
+    finalReviewRequired: z.literal(true).optional(), // false is rejected outright
+    // The server resolves this owned run's frozen host and merges it under the policy lock.
+    enablePretrialForRunId: z.string().cuid().optional()
   })
-  .strict();
+  .strict()
+  .superRefine((patch, context) => {
+    if (patch.enablePretrialForRunId && Object.keys(patch).length !== 1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["enablePretrialForRunId"],
+        message: "Pretrial setup cannot be combined with other policy changes."
+      });
+    }
+  });
 
 export type ApplicationAutomationPolicyPatch = z.infer<typeof applicationAutomationPolicyPatchSchema>;
 
