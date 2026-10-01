@@ -7,6 +7,7 @@ import { importJobsFromSource, scoreTopImportedJobs } from "@/lib/job-sources/di
 import { scoreJobRelevance } from "@/lib/job-sources/relevance";
 import type { NormalizedJob } from "@/lib/job-sources/types";
 import { prisma } from "@/lib/prisma";
+import { PublicApiError } from "@/lib/api-errors";
 
 function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
   const methods = owner as Record<string, unknown>;
@@ -159,18 +160,34 @@ test("null-fit imports rank two eligible jobs by transient relevance", async (t)
   });
 
   assert.deepEqual(requestedIds, ["strong", "weak"]);
-  assert.deepEqual(ranked.map((result) => result.jobId), ["strong", "weak"]);
-  assert.deepEqual(ranked.map((result) => result.deterministicScore), [strongScore, weakScore]);
-  assert.ok(ranked.every((result) => result.aiScore === undefined));
-  assert.ok(ranked.every((result) => /personalized scoring unavailable/.test(result.error ?? "")));
+  assert.deepEqual(ranked.jobs.map((result) => result.jobId), ["strong", "weak"]);
+  assert.deepEqual(ranked.jobs.map((result) => result.deterministicScore), [strongScore, weakScore]);
+  assert.ok(ranked.jobs.every((result) => result.aiScore === undefined));
+  assert.ok(ranked.jobs.every((result) => /personalized scoring unavailable/.test(result.error ?? "")));
+  assert.deepEqual(ranked.summary, {
+    eligible: 2,
+    attempted: 2,
+    cached: 0,
+    scored: 0,
+    failed: 2,
+    stopReason: null
+  });
 
   requestedIds.length = 0;
   const winner = await scoreTopImportedJobs({
     userId: "user-1", jobs: [weak.row, strong.row], profile: null, limit: 1
   });
   assert.deepEqual(requestedIds, ["strong"]);
-  assert.deepEqual(winner.map((result) => result.jobId), ["strong"]);
-  assert.equal(winner[0].deterministicScore, strongScore);
+  assert.deepEqual(winner.jobs.map((result) => result.jobId), ["strong"]);
+  assert.equal(winner.jobs[0].deterministicScore, strongScore);
+  assert.deepEqual(winner.summary, {
+    eligible: 2,
+    attempted: 1,
+    cached: 0,
+    scored: 0,
+    failed: 1,
+    stopReason: null
+  });
 });
 
 test("stale stored fit cannot outrank a stronger eligible job", async (t) => {
@@ -190,17 +207,183 @@ test("stale stored fit cannot outrank a stronger eligible job", async (t) => {
   });
 
   assert.deepEqual(requestedIds, ["strong", "weak"]);
-  assert.deepEqual(ranked.map((result) => result.jobId), ["strong", "weak"]);
-  assert.deepEqual(ranked.map((result) => result.deterministicScore), [strongScore, weakScore]);
-  assert.notEqual(ranked[1].deterministicScore, weak.row.overallFitScore);
-  assert.ok(ranked.every((result) => result.aiScore === undefined));
-  assert.ok(ranked.every((result) => /personalized scoring unavailable/.test(result.error ?? "")));
+  assert.deepEqual(ranked.jobs.map((result) => result.jobId), ["strong", "weak"]);
+  assert.deepEqual(ranked.jobs.map((result) => result.deterministicScore), [strongScore, weakScore]);
+  assert.notEqual(ranked.jobs[1].deterministicScore, weak.row.overallFitScore);
+  assert.ok(ranked.jobs.every((result) => result.aiScore === undefined));
+  assert.ok(ranked.jobs.every((result) => /personalized scoring unavailable/.test(result.error ?? "")));
 
   requestedIds.length = 0;
   const winner = await scoreTopImportedJobs({
     userId: "user-1", jobs: [weak.row, strong.row], profile: null, limit: 1
   });
   assert.deepEqual(requestedIds, ["strong"]);
-  assert.deepEqual(winner.map((result) => result.jobId), ["strong"]);
-  assert.equal(winner[0].deterministicScore, strongScore);
+  assert.deepEqual(winner.jobs.map((result) => result.jobId), ["strong"]);
+  assert.equal(winner.jobs[0].deterministicScore, strongScore);
+});
+
+test("discovery scoring caps an eligible cross-source batch and reports cached successes", async () => {
+  const jobs = Array.from({ length: 7 }, (_, index) => posting(
+    `job-${index + 1}`,
+    `Solutions Engineer ${index + 1}`,
+    "Partner with customers on technical discovery, API integrations, onboarding, SaaS workflows, and training."
+  ).row);
+  const calls: Array<{ jobId: string; automation?: boolean }> = [];
+
+  const result = await scoreTopImportedJobs({
+    userId: "user-1",
+    jobs,
+    profile: null,
+    limit: 5,
+    jobMatchRunner: async (_userId, jobId, options) => {
+      calls.push({ jobId, automation: options?.automation });
+      return {
+        job: { ...jobs.find((job) => job.id === jobId)!, overallFitScore: 86 },
+        match: {},
+        cached: jobId === "job-2"
+      };
+    }
+  });
+
+  assert.equal(calls.length, 5);
+  assert.ok(calls.every((call) => call.automation === true));
+  assert.equal(result.jobs.length, 5);
+  assert.deepEqual(result.summary, {
+    eligible: 7,
+    attempted: 5,
+    cached: 1,
+    scored: 5,
+    failed: 0,
+    stopReason: null
+  });
+});
+
+test("discovery scoring reports a per-job failure and continues to the next candidate", async () => {
+  const jobs = [
+    posting("job-1", "Solutions Engineer", "Customer discovery, API integrations, SaaS onboarding, and training.").row,
+    posting("job-2", "Implementation Engineer", "Customer implementation, technical workflows, API integrations, and SaaS onboarding.").row
+  ];
+  const attempted: string[] = [];
+
+  const result = await scoreTopImportedJobs({
+    userId: "user-1",
+    jobs,
+    profile: null,
+    limit: 5,
+    jobMatchRunner: async (_userId, jobId) => {
+      attempted.push(jobId);
+      if (attempted.length === 1) throw new Error("synthetic provider rejection");
+      return { job: { ...jobs[1], overallFitScore: 82 }, match: {}, cached: false };
+    }
+  });
+
+  assert.deepEqual(attempted, [result.jobs[0].jobId, result.jobs[1].jobId]);
+  assert.deepEqual(result.summary, {
+    eligible: 2,
+    attempted: 2,
+    cached: 0,
+    scored: 1,
+    failed: 1,
+    stopReason: null
+  });
+});
+
+test("discovery scoring stops later candidates after a systemic budget failure", async () => {
+  const jobs = Array.from({ length: 4 }, (_, index) => posting(
+    `job-${index + 1}`,
+    `Solutions Engineer ${index + 1}`,
+    "Customer discovery, API integrations, SaaS onboarding, and training."
+  ).row);
+  const attempted: string[] = [];
+
+  const result = await scoreTopImportedJobs({
+    userId: "user-1",
+    jobs,
+    profile: null,
+    limit: 4,
+    jobMatchRunner: async (_userId, jobId) => {
+      attempted.push(jobId);
+      throw new PublicApiError("Synthetic automation allowance exhausted.", 429, {
+        code: "AI_BUDGET_EXCEEDED"
+      });
+    }
+  });
+
+  assert.equal(attempted.length, 1);
+  assert.equal(result.jobs.length, 1);
+  assert.deepEqual(result.summary, {
+    eligible: 4,
+    attempted: 1,
+    cached: 0,
+    scored: 0,
+    failed: 1,
+    stopReason: "AI_BUDGET_EXCEEDED"
+  });
+});
+
+test("discovery scoring stops later candidates after a systemic configuration failure", async () => {
+  const jobs = Array.from({ length: 3 }, (_, index) => posting(
+    `job-${index + 1}`,
+    `Solutions Engineer ${index + 1}`,
+    "Customer discovery, API integrations, SaaS onboarding, and training."
+  ).row);
+  let attempts = 0;
+
+  const result = await scoreTopImportedJobs({
+    userId: "user-1",
+    jobs,
+    profile: null,
+    limit: 3,
+    jobMatchRunner: async () => {
+      attempts += 1;
+      throw new PublicApiError("Synthetic pricing configuration failure.", 503, {
+        code: "AI_MODEL_PRICING_UNKNOWN"
+      });
+    }
+  });
+
+  assert.equal(attempts, 1);
+  assert.deepEqual(result.summary, {
+    eligible: 3,
+    attempted: 1,
+    cached: 0,
+    scored: 0,
+    failed: 1,
+    stopReason: "AI_CONFIGURATION_INVALID"
+  });
+});
+
+test("disabled discovery scoring reports eligible jobs and makes zero model attempts", async () => {
+  const jobs = Array.from({ length: 3 }, (_, index) => posting(
+    `job-${index + 1}`,
+    `Solutions Engineer ${index + 1}`,
+    "Customer discovery, API integrations, SaaS onboarding, and training."
+  ).row);
+  let attempts = 0;
+
+  const result = await scoreTopImportedJobs({
+    userId: "user-1",
+    jobs,
+    profile: null,
+    limit: 5,
+    enabled: false,
+    disabledReason: "DISABLED_BY_POLICY",
+    jobMatchRunner: async () => {
+      attempts += 1;
+      throw new Error("must not run");
+    }
+  });
+
+  assert.equal(attempts, 0);
+  assert.deepEqual(result, {
+    jobs: [],
+    summary: {
+      eligible: 3,
+      attempted: 0,
+      cached: 0,
+      scored: 0,
+      failed: 0,
+      stopReason: "DISABLED_BY_POLICY"
+    }
+  });
 });

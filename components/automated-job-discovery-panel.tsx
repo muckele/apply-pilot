@@ -6,7 +6,9 @@ import { AlertTriangle, Bot, CheckCircle2, ExternalLink, Loader2, Search } from 
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton, StatusBadge } from "@/components/ui";
+import type { DiscoveryScoringSummary } from "@/lib/job-sources/discovery";
 import type { JobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
+import { formatDiscoveryScoringSummary } from "@/lib/job-sources/scoring-presentation";
 
 type DiscoveryResult = {
   imported: number;
@@ -21,6 +23,7 @@ type DiscoveryResult = {
     fitScore?: number | null;
   }>;
   scoredJobs: Array<{ jobId: string; score?: number; error?: string }>;
+  scoring: DiscoveryScoringSummary;
   reports: Array<{
     name: string;
     type: string;
@@ -183,6 +186,10 @@ export function AutomatedJobDiscoveryPanel({
             <p className="mt-1 text-xs leading-5 text-emerald-800">
               Searched {result.queries.length} target terms {result.location ? `around ${result.location}` : "without a location restriction"}.
             </p>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+            {formatDiscoveryScoringSummary(result.scoring)}
           </div>
 
           {result.jobs.length ? (
