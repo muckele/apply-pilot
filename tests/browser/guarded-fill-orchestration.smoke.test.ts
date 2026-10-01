@@ -22,7 +22,7 @@ import { parseExecutionTargetUrl } from "@/lib/application-runs/host-policy";
 
 import {
   assertNoSubmission,
-  policyEligibleWriterFixture,
+  mixedPolicyEligibleWriterFixture,
   type FormFillTrapSnapshot
 } from "./form-fill-fixtures";
 
@@ -67,7 +67,7 @@ test("guarded orchestration uses the exact private generation and server order w
       await route.fulfill({
         status: 200,
         contentType: "text/html; charset=utf-8",
-        body: policyEligibleWriterFixture()
+        body: mixedPolicyEligibleWriterFixture()
       });
     }
   });
@@ -109,6 +109,20 @@ test("guarded orchestration uses the exact private generation and server order w
     const url = field("LinkedIn profile URL");
     const occupiedText = field("Portfolio URL");
     const select = field("Availability");
+    const location = field("Location");
+    const firstName = field("First name");
+    const lastName = field("Last name");
+    const email = field("Email address");
+    const phone = field("Phone number");
+    assert.equal(location.fieldType, "UNSUPPORTED");
+    assert.equal(location.unsupportedReason, "CUSTOM_COMBOBOX");
+    assert.equal(location.permittedDisposition, "UNSUPPORTED");
+    assert.equal(location.required, true);
+    for (const contact of [firstName, lastName, email, phone]) {
+      assert.equal(contact.classification, "CONTACT");
+      assert.equal(contact.permittedDisposition, "MANUAL_ONLY");
+      assert.equal(contact.required, true);
+    }
     assert.equal(url.permittedDisposition, "PROPOSABLE");
     assert.equal(occupiedText.permittedDisposition, "PROPOSABLE");
     assert.equal(select.permittedDisposition, "PROPOSABLE");
@@ -328,6 +342,12 @@ test("guarded orchestration uses the exact private generation and server order w
     assert.equal(await page.locator("#url-empty").inputValue(), "https://portfolio.example.test");
     assert.equal(await page.locator("#text-occupied").inputValue(), "SECRET-OCCUPIED-TEXT");
     assert.equal(await page.locator("#select-empty").inputValue(), "SECRET-A");
+    assert.equal(await page.locator("#location-autocomplete").inputValue(), "");
+    assert.equal(await page.locator("#external-place-id").inputValue(), "SECRET-EXTERNAL-PLACE-ID");
+    assert.equal(await page.locator("#first-name").inputValue(), "");
+    assert.equal(await page.locator("#last-name").inputValue(), "");
+    assert.equal(await page.locator("#contact-email").inputValue(), "");
+    assert.equal(await page.locator("#contact-phone").inputValue(), "");
     assert.equal(await page.locator("#radio-a").isChecked(), false);
     assert.equal(await page.locator("#radio-b").isChecked(), false);
     assert.equal(await page.locator("#checkbox-unchecked").isChecked(), false);

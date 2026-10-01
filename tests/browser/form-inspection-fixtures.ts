@@ -29,6 +29,36 @@ export const SECRET_HIDDEN_VALUE = "SECRET-HIDDEN-APPLICANT-VALUE";
 export const SECRET_PASSWORD_VALUE = "SECRET-PASSWORD-APPLICANT-VALUE";
 export const SECRET_OPTION_VALUE = "SECRET-OPTION-IDENTITY-VALUE";
 
+export type NativeComboboxSignal = "role" | "aria-list" | "aria-both" | "aria-haspopup";
+
+export function nativeComboboxInputFixture(signal: NativeComboboxSignal): string {
+  const attribute = signal === "role"
+    ? 'role="combobox"'
+    : signal === "aria-list"
+      ? 'aria-autocomplete="list"'
+      : signal === "aria-both"
+        ? 'aria-autocomplete="both"'
+        : 'aria-haspopup="listbox"';
+  return `<!doctype html><html><body><form aria-label="Native combobox application">
+    <label for="location">Location</label>
+    <input id="location" type="text" ${attribute} aria-required="true">
+    <input id="external-place-id" type="hidden" value="${SECRET_HIDDEN_VALUE}">
+  </form></body></html>`;
+}
+
+export function groupedNativeComboboxInputFixture(
+  kind: "radio" | "checkbox",
+  order: "signaled-first" | "signaled-last"
+): string {
+  const signaled = `<label><input id="custom-option" type="${kind}" name="preference" role="combobox" aria-required="true">Custom option</label>`;
+  const ordinary = `<label><input id="ordinary-option" type="${kind}" name="preference">Ordinary option</label>`;
+  const members = order === "signaled-first" ? `${signaled}${ordinary}` : `${ordinary}${signaled}`;
+  return `<!doctype html><html><body><form aria-label="Grouped native combobox application">
+    <fieldset><legend>Preference</legend>${members}</fieldset>
+    <input id="external-place-id" type="hidden" value="${SECRET_HIDDEN_VALUE}">
+  </form></body></html>`;
+}
+
 export function nativeApplicationFixture(): string {
   return `<!doctype html>
     <html><body>

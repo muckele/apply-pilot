@@ -25,7 +25,9 @@ import {
   fileAndUnsupportedFixture,
   iframeFixture,
   interactiveAriaFixture,
+  groupedNativeComboboxInputFixture,
   nativeApplicationFixture,
+  nativeComboboxInputFixture,
   nestedCustomInteractionFixture,
   nonHyphenShadowComboboxFixture,
   obviousAriaRoleFixture,
@@ -238,6 +240,78 @@ test("returns clean unsupported descriptors without leaking incompatible native 
     assert.equal(JSON.stringify(extraction.report).includes("SECRET-RICH-TEXT-CURRENT-CONTENT"), false);
     await extraction.dispose();
   });
+});
+
+test("native custom-combobox signals stay unsupported and honor ARIA requiredness", async (context) => {
+  for (const signal of ["role", "aria-list", "aria-both", "aria-haspopup"] as const) {
+    await context.test(signal, async () => {
+      await withFixture(nativeComboboxInputFixture(signal), async (page) => {
+        const extraction = await extractSafeApplicationForm(page);
+        const fields = extraction.report.forms[0].sections[0].fields;
+        assert.deepEqual(fields, [{
+          question: "Location",
+          helpText: null,
+          fieldType: "UNSUPPORTED",
+          unsupportedReason: "CUSTOM_COMBOBOX",
+          required: true,
+          autocomplete: null,
+          constraints: {
+            minLength: null,
+            maxLength: null,
+            min: null,
+            max: null,
+            step: null,
+            acceptedFileTypes: [],
+            multiple: false
+          },
+          choices: []
+        }]);
+        assert.equal(extraction.fields.length, 1);
+        assert.equal(JSON.stringify(extraction.report).includes(SECRET_HIDDEN_VALUE), false);
+        assert.deepEqual(await readFormInspectionTraps(page), {
+          inputValue: 0,
+          textAreaValue: 0,
+          selectValue: 0,
+          checked: 0,
+          optionSelected: 0,
+          files: 0,
+          hiddenValue: 0,
+          passwordValue: 0,
+          mutations: 0,
+          submissions: 0,
+          events: { click: 0, keydown: 0, beforeinput: 0, input: 0, change: 0, submit: 0, formdata: 0 }
+        });
+        await extraction.dispose();
+      });
+    });
+  }
+});
+
+test("grouped native custom-combobox inputs stay quarantined without overlapping fields", async (context) => {
+  for (const kind of ["radio", "checkbox"] as const) {
+    for (const order of ["signaled-first", "signaled-last"] as const) {
+      await context.test(`${kind} ${order}`, async () => {
+        await withFixture(groupedNativeComboboxInputFixture(kind, order), async (page) => {
+          const extraction = await extractSafeApplicationForm(page);
+          const fields = extraction.report.forms[0].sections[0].fields;
+          const unsupported = fields.filter((field) => field.unsupportedReason === "CUSTOM_COMBOBOX");
+          const ordinary = fields.filter((field) => field.unsupportedReason === null);
+          assert.equal(fields.length, 2);
+          assert.equal(extraction.fields.length, 2);
+          assert.equal(unsupported.length, 1);
+          assert.equal(unsupported[0].question, "Custom option");
+          assert.equal(unsupported[0].fieldType, "UNSUPPORTED");
+          assert.equal(unsupported[0].required, true);
+          assert.equal(ordinary.length, 1);
+          assert.equal(ordinary[0].question, kind === "radio" ? "Preference" : "Ordinary option");
+          assert.equal(ordinary[0].fieldType, kind === "radio" ? "RADIO_GROUP" : "CHECKBOX_BOOLEAN");
+          assert.deepEqual(ordinary[0].choices.map((choice) => choice.label), kind === "radio" ? ["Ordinary option"] : []);
+          assert.equal(JSON.stringify(extraction.report).includes(SECRET_HIDDEN_VALUE), false);
+          await extraction.dispose();
+        });
+      });
+    }
+  }
 });
 
 test("does not read applicant state or option identities and performs zero employer mutation", async () => {

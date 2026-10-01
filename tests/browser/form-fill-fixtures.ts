@@ -221,6 +221,23 @@ export function policyEligibleWriterFixture(): string {
     .replace('aria-label="Empty select"', 'aria-label="Availability"');
 }
 
+export function mixedPolicyEligibleWriterFixture(): string {
+  return policyEligibleWriterFixture().replace(
+    '<form aria-label="Writer test application" action="https://fixture.invalid/__apply_pilot_submit" method="post">',
+    `<form aria-label="Writer test application" action="https://fixture.invalid/__apply_pilot_submit" method="post">
+      <label for="first-name">First name</label><input id="first-name" type="text" aria-required="true">
+      <label for="last-name">Last name</label><input id="last-name" type="text" aria-required="true">
+      <label for="contact-email">Email address</label><input id="contact-email" type="text" aria-required="true">
+      <label for="contact-phone">Phone number</label><input id="contact-phone" type="text" aria-required="true">
+      <label for="location-autocomplete">Location</label>
+      <input id="location-autocomplete" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-required="true">
+      <input id="external-place-id" type="hidden" value="SECRET-EXTERNAL-PLACE-ID">
+      <div id="phone-country-code" role="combobox" aria-label="Phone country code"></div>
+      <label for="resume-upload">Resume</label><input id="resume-upload" type="file" required accept=".pdf">
+      <fieldset><legend>SMS consent</legend><label><input type="radio" name="sms-consent">Yes</label><label><input type="radio" name="sms-consent">No</label></fieldset>`
+  );
+}
+
 export async function createFormFillFixturePage(
   browser: Browser,
   beforeNavigation?: (page: Page) => Promise<void>
