@@ -5,6 +5,7 @@ import { FileText, Loader2, Mail, Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 export function JobActions({ jobId }: { jobId: string }) {
   const router = useRouter();
@@ -20,24 +21,31 @@ export function JobActions({ jobId }: { jobId: string }) {
         : action === "resume"
           ? `/api/jobs/${jobId}/tailored-resume`
           : `/api/jobs/${jobId}/cover-letter`;
-    const response = await fetch(endpoint, { method: "POST" });
-    const json = await response.json();
-    setPending(null);
+    try {
+      const response = action === "match"
+        ? await fetchWithAiCostConfirmation(endpoint, { method: "POST" })
+        : await fetch(endpoint, { method: "POST" });
+      const json = await response.json();
 
-    if (!response.ok) {
-      setMessage(json.error ?? "Action failed");
-      return;
+      if (!response.ok) {
+        setMessage(json.error ?? "Action failed");
+        return;
+      }
+
+      if (action === "match") {
+        setMessage(`Updated fit score: ${json.match?.overallFitScore ?? json.job?.overallFitScore}%`);
+      } else if (action === "resume") {
+        setMessage(`Saved resume version: ${json.version?.title}`);
+      } else {
+        setMessage(`Saved cover letter: ${json.document?.title}`);
+      }
+
+      router.refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Action failed");
+    } finally {
+      setPending(null);
     }
-
-    if (action === "match") {
-      setMessage(`Updated fit score: ${json.match?.overallFitScore ?? json.job?.overallFitScore}%`);
-    } else if (action === "resume") {
-      setMessage(`Saved resume version: ${json.version?.title}`);
-    } else {
-      setMessage(`Saved cover letter: ${json.document?.title}`);
-    }
-
-    router.refresh();
   }
 
   return (

@@ -1,9 +1,31 @@
 import { z } from "zod";
 
 import { jobMatchPrompt } from "@/prompts/jobMatchPrompt";
-import { generateJson } from "@/lib/ai/client";
+import {
+  type AiInvocationOptions,
+  LocalAiUnavailableError
+} from "@/lib/ai/client";
+import {
+  findCachedAiResponse,
+  hashAiInput,
+  reconcileAiReservation,
+  reserveAiBudget
+} from "@/lib/ai/application-plan-budget";
+import { getAiFinancialPolicy, getAiRuntimeMode } from "@/lib/ai/config";
+import {
+  callGeminiJsonProvider,
+  GeminiProviderError,
+  type GeminiUsage
+} from "@/lib/ai/gemini";
+import { assertAiInputWithinLimits } from "@/lib/ai/policy";
+import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { PublicApiError } from "@/lib/api-errors";
 
-export const JOB_MATCH_PROMPT_VERSION = "3";
+// Result contract remains v3; prompt/cache revision 3.1 adds input-specific refs.
+export const JOB_MATCH_PROMPT_VERSION = "3.1";
+export const JOB_MATCH_PROVIDER = "gemini" as const;
+export const JOB_MATCH_MODEL = "gemini-3.8-flash";
+export const JOB_MATCH_THINKING_LEVEL = "MEDIUM" as const;
 
 export type JobMatchEvidenceCitation = {
   ref: string;
@@ -116,7 +138,7 @@ const citationSchema = z.object({
   excerpt: z.string().min(1)
 }).strict();
 
-const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, unknown> = z.object({
+export const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, unknown> = z.object({
   contractVersion: z.literal("3"),
   overallFitScore: scoreSchema,
   resumeKeywordScore: scoreSchema,
@@ -135,7 +157,7 @@ const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, un
   requirementGaps: z.array(z.object({
     requirement: z.string().min(1),
     jobRequirement: citationSchema,
-    missingKeywords: z.array(z.string().min(1))
+    missingKeywords: z.array(z.string().min(1)).min(1)
   }).strict()),
   advice: z.object({
     keywordsToEmphasize: z.array(z.string().min(1)),
@@ -145,19 +167,173 @@ const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, un
   recommendation: recommendationSchema
 }).strict();
 
+const jsonScore = { type: "number", minimum: 0, maximum: 100 } as const;
+const jsonString = { type: "string" } as const;
+
+function referenceValueIsPresent(value: unknown) {
+  if (typeof value === "string") return value.trim().length > 0;
+  return value !== null && value !== undefined;
+}
+
+function exactReferences(entries: Array<[string, unknown]>) {
+  return entries.filter(([, value]) => referenceValueIsPresent(value)).map(([ref]) => ref);
+}
+
+function indexedReferences(prefix: string, values: unknown) {
+  return Array.isArray(values)
+    ? values.flatMap((value, index) => referenceValueIsPresent(value) ? [`${prefix}[${index}]`] : [])
+    : [];
+}
+
+export function getJobMatchEvidenceReferences(input: MatchInput) {
+  const workHistoryReferences = indexedReferences("resume.workHistory", input.resume?.workHistory);
+  const applicant = [
+    ...exactReferences([
+      ["resume.summary", input.resume?.summary],
+      ["resume.rawText", input.resume?.rawText]
+    ]),
+    ...indexedReferences("resume.skills", input.resume?.skills),
+    ...indexedReferences("resume.achievements", input.resume?.achievements),
+    ...workHistoryReferences,
+    ...exactReferences([["profile.careerGoals", input.profile?.careerGoals]]),
+    ...indexedReferences("profile.preferredRoles", input.profile?.preferredRoles),
+    ...indexedReferences("profile.preferredLocations", input.profile?.preferredLocations),
+    ...exactReferences([
+      ["profile.remotePreference", input.profile?.remotePreference],
+      ["profile.salaryTargetMin", input.profile?.salaryTargetMin],
+      ["profile.salaryTargetMax", input.profile?.salaryTargetMax]
+    ]),
+    ...indexedReferences("profile.skillsToEmphasize", input.profile?.skillsToEmphasize)
+  ];
+  const job = [
+    ...exactReferences([
+      ["job.title", input.job.title],
+      ["job.company", input.job.company],
+      ["job.location", input.job.location],
+      ["job.remoteStatus", input.job.remoteStatus],
+      ["job.salaryMin", input.job.salaryMin],
+      ["job.salaryMax", input.job.salaryMax],
+      ["job.description", input.job.description]
+    ]),
+    ...indexedReferences("job.requirements", input.job.requirements),
+    ...indexedReferences("job.preferredQualifications", input.job.preferredQualifications),
+    ...indexedReferences("job.detectedTechStack", input.job.detectedTechStack)
+  ];
+  const gap = [
+    ...indexedReferences("job.requirements", input.job.requirements),
+    ...indexedReferences("job.preferredQualifications", input.job.preferredQualifications)
+  ];
+  return { applicant, job, gap };
+}
+
+function jsonCitation(refs: string[], emptySentinel: string) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      ref: { type: "string", enum: refs.length ? refs : [emptySentinel] },
+      excerpt: jsonString
+    },
+    required: ["ref", "excerpt"]
+  };
+}
+
+// Kept explicit so the exact provider request is reviewable and does not rely on
+// a provider-specific Zod converter at runtime. Reference enums are derived from
+// the submitted input; local semantic validation remains authoritative.
+export function buildJobMatchResponseJsonSchema(input: MatchInput) {
+  const refs = getJobMatchEvidenceReferences(input);
+  const applicantCitation = jsonCitation(refs.applicant, "__NO_SUBMITTED_APPLICANT_REFERENCE__");
+  const jobCitation = jsonCitation(refs.job, "__NO_SUBMITTED_JOB_REFERENCE__");
+  const gapCitation = jsonCitation(refs.gap, "__NO_SUBMITTED_GAP_REFERENCE__");
+  const factualMatches: Record<string, unknown> = {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        applicantEvidence: { type: "array", minItems: 1, items: applicantCitation },
+        jobEvidence: { type: "array", minItems: 1, items: jobCitation },
+        supportedKeywords: { type: "array", minItems: 1, items: jsonString }
+      },
+      required: ["applicantEvidence", "jobEvidence", "supportedKeywords"]
+    }
+  };
+  if (!refs.applicant.length || !refs.job.length) factualMatches.maxItems = 0;
+  const requirementGaps: Record<string, unknown> = {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        requirement: jsonString,
+        jobRequirement: gapCitation,
+        missingKeywords: { type: "array", minItems: 1, items: jsonString }
+      },
+      required: ["requirement", "jobRequirement", "missingKeywords"]
+    }
+  };
+  if (!refs.gap.length) requirementGaps.maxItems = 0;
+
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      contractVersion: { type: "string", enum: ["3"] },
+      overallFitScore: jsonScore,
+      resumeKeywordScore: jsonScore,
+      skillsMatchScore: jsonScore,
+      experienceMatchScore: jsonScore,
+      careerGoalScore: jsonScore,
+      locationWorkStyleScore: jsonScore,
+      compensationScore: { type: ["number", "null"], minimum: 0, maximum: 100 },
+      confidenceScore: jsonScore,
+      confidenceBasis: jsonString,
+      factualMatches,
+      requirementGaps,
+      advice: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          keywordsToEmphasize: { type: "array", items: jsonString },
+          resumeAngle: jsonString,
+          coverLetterAngle: jsonString
+        },
+        required: ["keywordsToEmphasize", "resumeAngle", "coverLetterAngle"]
+      },
+      recommendation: { type: "string", enum: ["apply now", "consider", "skip"] }
+    },
+    required: [
+      "contractVersion", "overallFitScore", "resumeKeywordScore", "skillsMatchScore",
+      "experienceMatchScore", "careerGoalScore", "locationWorkStyleScore",
+      "compensationScore", "confidenceScore", "confidenceBasis", "factualMatches",
+      "requirementGaps", "advice", "recommendation"
+    ]
+  };
+}
+
+export function buildJobMatchSystemPrompt(input: MatchInput) {
+  const refs = getJobMatchEvidenceReferences(input);
+  return `${jobMatchPrompt.trim()}\n\n` +
+    `Allowed applicant evidence references (exact strings only): ${JSON.stringify(refs.applicant)}\n` +
+    `Allowed job evidence references (exact strings only): ${JSON.stringify(refs.job)}\n` +
+    `Allowed requirement-gap references (exact strings only): ${JSON.stringify(refs.gap)}\n` +
+    "Never append child paths to any listed reference. If an allowlist is empty, return no item that requires it.";
+}
+
 type ResolvedEvidence = { found: true; value: unknown } | { found: false };
 
 function indexedValue(ref: string, prefix: string, values: unknown[] | undefined): ResolvedEvidence {
   const match = ref.match(new RegExp(`^${prefix.replace(".", "\\.")}\\[(\\d+)\\]$`));
   if (!match || !values) return { found: false };
   const index = Number(match[1]);
-  return Number.isSafeInteger(index) && index >= 0 && index < values.length
-    ? { found: true, value: values[index] }
-    : { found: false };
+  if (!Number.isSafeInteger(index) || index < 0 || index >= values.length) return { found: false };
+  const value = values[index];
+  return referenceValueIsPresent(value) ? { found: true, value } : { found: false };
 }
 
 function exactValue(ref: string, values: Record<string, unknown>): ResolvedEvidence {
-  return Object.prototype.hasOwnProperty.call(values, ref) && values[ref] !== null && values[ref] !== undefined
+  return Object.prototype.hasOwnProperty.call(values, ref) && referenceValueIsPresent(values[ref])
     ? { found: true, value: values[ref] }
     : { found: false };
 }
@@ -166,7 +342,6 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
   const exact = exactValue(ref, {
     "resume.summary": input.resume?.summary,
     "resume.rawText": input.resume?.rawText,
-    "resume.workHistory": input.resume?.workHistory,
     "profile.careerGoals": input.profile?.careerGoals,
     "profile.remotePreference": input.profile?.remotePreference,
     "profile.salaryTargetMin": input.profile?.salaryTargetMin,
@@ -177,6 +352,11 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
   const indexed = [
     indexedValue(ref, "resume.skills", input.resume?.skills),
     indexedValue(ref, "resume.achievements", input.resume?.achievements),
+    indexedValue(
+      ref,
+      "resume.workHistory",
+      Array.isArray(input.resume?.workHistory) ? input.resume.workHistory : undefined
+    ),
     indexedValue(ref, "profile.preferredRoles", input.profile?.preferredRoles),
     indexedValue(ref, "profile.preferredLocations", input.profile?.preferredLocations),
     indexedValue(ref, "profile.skillsToEmphasize", input.profile?.skillsToEmphasize)
@@ -247,6 +427,12 @@ function applicantEvidenceText(input: MatchInput) {
     input.resume?.workHistory,
     ...(input.resume?.skills ?? []),
     ...(input.resume?.achievements ?? []),
+    input.profile?.careerGoals,
+    ...(input.profile?.preferredRoles ?? []),
+    ...(input.profile?.preferredLocations ?? []),
+    input.profile?.remotePreference,
+    input.profile?.salaryTargetMin,
+    input.profile?.salaryTargetMax,
     ...(input.profile?.skillsToEmphasize ?? [])
   ].filter((value) => value !== null && value !== undefined);
   return comparable(values.map(evidenceText).join("\n"));
@@ -360,23 +546,198 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
   };
 }
 
-export async function scoreJobMatch(input: MatchInput, userId?: string) {
-  const generated = await generateJson<JobMatchModelOutput>({
-    promptName: "jobMatchPrompt",
-    systemPrompt: jobMatchPrompt,
-    payload: input,
-    schema: jobMatchModelOutputSchema,
-    context: userId
-      ? { userId, feature: "JOB_MATCH", promptVersion: JOB_MATCH_PROMPT_VERSION }
-      : undefined
-  });
-  const normalized = normalizeJobMatchOutput(input, generated.data);
+export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unknown) {
+  const parsed = jobMatchModelOutputSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("jobMatchPrompt returned JSON that did not match the expected schema.");
+  }
+  return { modelOutput: parsed.data, normalized: normalizeJobMatchOutput(input, parsed.data) };
+}
 
-  return {
-    ...normalized,
-    model: generated.meta.model,
-    promptVersion: generated.meta.promptVersion,
-    inputHash: generated.meta.requestHash,
-    usage: generated.meta
-  };
+function usageCost(usage: GeminiUsage) {
+  return estimateAiCostMicros({
+    model: JOB_MATCH_MODEL,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedInputTokens: usage.cachedInputTokens
+  });
+}
+
+export async function scoreJobMatch(
+  input: MatchInput,
+  userId?: string,
+  options: AiInvocationOptions = {}
+) {
+  const systemPrompt = buildJobMatchSystemPrompt(input);
+  const responseJsonSchema = buildJobMatchResponseJsonSchema(input);
+  // The provider may count structured-output schema tokens as request input, so
+  // include the dynamic schema in the same preflight ceiling and reservation.
+  const { policy } = assertAiInputWithinLimits("JOB_MATCH", systemPrompt, {
+    matchInput: input,
+    responseJsonSchema
+  });
+  const inputHash = hashAiInput("jobMatchPrompt", JOB_MATCH_PROMPT_VERSION, input);
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (getAiRuntimeMode(JOB_MATCH_PROVIDER) !== JOB_MATCH_PROVIDER || !apiKey) {
+    throw new LocalAiUnavailableError();
+  }
+  if (!userId) {
+    throw new PublicApiError("JOB_MATCH requires an authenticated budget owner.", 503, {
+      code: "AI_BUDGET_OWNER_REQUIRED"
+    });
+  }
+  if (getModelPricing(JOB_MATCH_MODEL).provider !== JOB_MATCH_PROVIDER) {
+    throw new PublicApiError("JOB_MATCH requires registered Gemini pricing.", 503, {
+      code: "AI_MODEL_PRICING_UNKNOWN"
+    });
+  }
+
+  const financial = getAiFinancialPolicy();
+  const maximumCostMicros = estimateAiCostMicros({
+    model: JOB_MATCH_MODEL,
+    inputTokens: policy.maxInputTokens,
+    outputTokens: policy.maxOutputTokens
+  });
+  if (maximumCostMicros > financial.maximumRequestCents * 10_000) {
+    throw new PublicApiError("This request exceeds the configured per-request AI limit.", 429, {
+      code: "AI_REQUEST_COST_LIMIT",
+      maximumCostMicros
+    });
+  }
+
+  const cached = await findCachedAiResponse({
+    userId,
+    provider: JOB_MATCH_PROVIDER,
+    model: JOB_MATCH_MODEL,
+    promptName: "jobMatchPrompt",
+    promptVersion: JOB_MATCH_PROMPT_VERSION,
+    requestHash: inputHash
+  });
+  if (cached) {
+    const { normalized } = validateAndNormalizeJobMatchOutput(input, cached.output);
+    return {
+      ...normalized,
+      model: JOB_MATCH_MODEL,
+      promptVersion: JOB_MATCH_PROMPT_VERSION,
+      inputHash,
+      usage: {
+        provider: JOB_MATCH_PROVIDER,
+        model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION,
+        requestHash: inputHash,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        estimatedCostMicros: 0,
+        mocked: false
+      }
+    };
+  }
+
+  if (
+    !options.automation &&
+    maximumCostMicros > financial.confirmationThresholdCents * 10_000 &&
+    !options.highCostConfirmed
+  ) {
+    throw new PublicApiError("Confirm this AI request's maximum cost before continuing.", 428, {
+      code: "AI_COST_CONFIRMATION_REQUIRED",
+      maximumCostMicros
+    });
+  }
+
+  const reservation = await reserveAiBudget({
+    userId,
+    provider: JOB_MATCH_PROVIDER,
+    model: JOB_MATCH_MODEL,
+    feature: "JOB_MATCH",
+    promptName: "jobMatchPrompt",
+    promptVersion: JOB_MATCH_PROMPT_VERSION,
+    requestHash: inputHash,
+    maximumCostMicros,
+    automation: options.automation ?? false
+  });
+  let usage: GeminiUsage | null = null;
+  let actualCostMicros: number | undefined;
+  let requestDispatched = false;
+  let reconciled = false;
+
+  try {
+    requestDispatched = true;
+    const response = await callGeminiJsonProvider({
+      apiKey,
+      model: JOB_MATCH_MODEL,
+      systemPrompt,
+      payload: input,
+      responseJsonSchema,
+      maxOutputTokens: policy.maxOutputTokens,
+      thinkingLevel: JOB_MATCH_THINKING_LEVEL
+    });
+    usage = response.usage;
+    actualCostMicros = usageCost(usage);
+    if (
+      usage.inputTokens > policy.maxInputTokens ||
+      usage.outputTokens > policy.maxOutputTokens ||
+      actualCostMicros > reservation.maximumCostMicros
+    ) {
+      throw new GeminiProviderError("Gemini usage exceeded the reserved JOB_MATCH bounds.", {
+        providerResponded: true,
+        usage
+      });
+    }
+    // Both structural and evidence validation complete before this paid result is
+    // cached or marked successful.
+    const { modelOutput, normalized } = validateAndNormalizeJobMatchOutput(input, response.value);
+    await reconcileAiReservation({
+      reservationId: reservation.id,
+      status: "SUCCEEDED",
+      actualCostMicros,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheOutput: modelOutput
+    });
+    reconciled = true;
+    return {
+      ...normalized,
+      model: JOB_MATCH_MODEL,
+      promptVersion: JOB_MATCH_PROMPT_VERSION,
+      inputHash,
+      usage: {
+        provider: JOB_MATCH_PROVIDER,
+        model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION,
+        requestHash: inputHash,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        estimatedCostMicros: actualCostMicros,
+        mocked: false
+      }
+    };
+  } catch (error) {
+    if (!reconciled) {
+      const providerUsage = error instanceof GeminiProviderError ? error.usage : usage;
+      const knownCost = providerUsage ? usageCost(providerUsage) : undefined;
+      const billingDisposition = error instanceof GeminiProviderError
+        ? error.billingDisposition
+        : providerUsage ? "known" : "uncertain";
+      const uncertain = requestDispatched && (
+        billingDisposition === "uncertain" ||
+        (knownCost !== undefined && knownCost > reservation.maximumCostMicros)
+      );
+      const reconciledCost = billingDisposition === "not_charged"
+        ? 0
+        : uncertain ? undefined : knownCost;
+      await reconcileAiReservation({
+        reservationId: reservation.id,
+        status: uncertain ? "UNCERTAIN" : "FAILED",
+        actualCostMicros: reconciledCost,
+        inputTokens: providerUsage?.inputTokens,
+        outputTokens: providerUsage?.outputTokens,
+        cachedInputTokens: providerUsage?.cachedInputTokens,
+        errorCode: error instanceof Error ? error.name : "UnknownError"
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
 }

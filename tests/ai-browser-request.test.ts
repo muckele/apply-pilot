@@ -1,0 +1,69 @@
+import assert from "node:assert/strict";
+import { test, type TestContext } from "node:test";
+
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+
+function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
+  const methods = owner as Record<string, unknown>;
+  const original = methods[name];
+  methods[name] = replacement;
+  t.after(() => { methods[name] = original; });
+}
+
+test("browser cost confirmation retries once with only the confirmation header added", async (t) => {
+  const requests: RequestInit[] = [];
+  stub(t, globalThis, "window", { confirm: () => true });
+  stub(t, globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(init ?? {});
+    return requests.length === 1
+      ? new Response(JSON.stringify({
+          error: "Confirm this AI request's maximum cost before continuing.",
+          code: "AI_COST_CONFIRMATION_REQUIRED",
+          maximumCostMicros: 72_720
+        }), { status: 428, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ ok: true }), { status: 200 });
+  });
+
+  const response = await fetchWithAiCostConfirmation("/api/jobs/job-1/match", {
+    method: "POST",
+    headers: { "x-synthetic": "preserved" }
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(requests.length, 2);
+  assert.equal(new Headers(requests[0].headers).has("x-ai-cost-confirmed"), false);
+  assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");
+  assert.equal(new Headers(requests[1].headers).get("x-synthetic"), "preserved");
+});
+
+test("browser cost confirmation cancellation never retries", async (t) => {
+  let requests = 0;
+  stub(t, globalThis, "window", { confirm: () => false });
+  stub(t, globalThis, "fetch", async () => {
+    requests += 1;
+    return new Response(JSON.stringify({
+      code: "AI_COST_CONFIRMATION_REQUIRED",
+      maximumCostMicros: 72_720
+    }), { status: 428 });
+  });
+
+  await assert.rejects(
+    fetchWithAiCostConfirmation("/api/jobs/job-1/match", { method: "POST" }),
+    /canceled before any provider charge/i
+  );
+  assert.equal(requests, 1);
+});
+
+test("an unrelated 428 response remains readable by its caller", async (t) => {
+  stub(t, globalThis, "window", { confirm: () => { throw new Error("must not confirm"); } });
+  stub(t, globalThis, "fetch", async () => new Response(
+    JSON.stringify({ error: "Different precondition", code: "OTHER_PRECONDITION" }),
+    { status: 428, headers: { "content-type": "application/json" } }
+  ));
+
+  const response = await fetchWithAiCostConfirmation("/api/example", { method: "POST" });
+  assert.deepEqual(await response.json(), {
+    error: "Different precondition",
+    code: "OTHER_PRECONDITION"
+  });
+});

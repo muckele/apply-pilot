@@ -439,7 +439,7 @@ export async function scoreTopImportedJobs({
 
   for (const { job, relevance } of candidates) {
     try {
-      const result = await runJobMatch(userId, job.id);
+      const result = await runJobMatch(userId, job.id, { automation: true });
       results.push({
         jobId: job.id,
         deterministicScore: relevance.score,

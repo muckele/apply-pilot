@@ -10,6 +10,7 @@ import {
   requireBrowserCaptureToken
 } from "@/lib/security/browser-capture-token";
 import { apiErrorResponse } from "@/lib/user-context";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
 
 const webUrl = z.string().trim().url().max(2048).refine((value) => {
   const protocol = new URL(value).protocol;
@@ -62,7 +63,9 @@ export async function POST(request: NextRequest) {
       },
       update: {}
     });
-    const match = input.runMatch ? await runJobMatch(token.userId, job.id) : null;
+    const match = input.runMatch
+      ? await runJobMatch(token.userId, job.id, aiInvocationFromRequest(request))
+      : null;
 
     await prisma.auditLog.create({
       data: {

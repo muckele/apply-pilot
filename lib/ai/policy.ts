@@ -23,7 +23,8 @@ export type AiFeaturePolicy = {
 export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
   RESUME_PARSE: { maxOutputTokens: 4_000, maxInputTokens: 31_000, modelTier: "fast" },
   JOB_PARSE: { maxOutputTokens: 2_500, maxInputTokens: 21_000, modelTier: "fast" },
-  JOB_MATCH: { maxOutputTokens: 2_500, maxInputTokens: 56_000, modelTier: "fast" },
+  // The output ceiling includes visible response and Gemini thinking tokens.
+  JOB_MATCH: { maxOutputTokens: 8_192, maxInputTokens: 56_000, modelTier: "fast" },
   EMAIL_CLASSIFICATION: { maxOutputTokens: 800, maxInputTokens: 11_000, modelTier: "fast" },
   RESUME_TAILOR: { maxOutputTokens: 6_000, maxInputTokens: 56_000, modelTier: "quality" },
   COVER_LETTER: { maxOutputTokens: 1_500, maxInputTokens: 56_000, modelTier: "quality" },

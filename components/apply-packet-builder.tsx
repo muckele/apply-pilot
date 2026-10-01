@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 
 import { PrimaryButton, ScoreBadge, SecondaryButton, StatusBadge } from "@/components/ui";
 import { validFitScore } from "@/lib/jobs/fit-presentation";
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 type PacketResumeOption = {
   id: string;
@@ -180,7 +181,13 @@ export function ApplyPacketBuilder({
           : `/api/jobs/${job.id}/cover-letter`;
 
     try {
-      await runJsonPost(endpoint);
+      if (action === "match") {
+        const response = await fetchWithAiCostConfirmation(endpoint, { method: "POST" });
+        const json = await parseJson(response);
+        if (!response.ok) throw new Error(json?.error ?? "Action failed.");
+      } else {
+        await runJsonPost(endpoint);
+      }
       setMessage(
         action === "match"
           ? "Match analysis updated."

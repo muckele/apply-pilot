@@ -9,6 +9,8 @@ export type ModelPricing = {
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
   cachedInputUsdPerMillion?: number;
+  validFrom?: string;
+  validUntil?: string;
 };
 
 // Keep this registry explicit. Paid calls fail closed when a selected model is absent.
@@ -18,6 +20,14 @@ export type ModelPricing = {
 // Kimi output billing includes reasoning tokens. Never register deprecated K2 preview models.
 // Pricing changes require an intentional code update here; environment variables cannot raise them.
 export const MODEL_PRICING_REGISTRY: Record<string, ModelPricing> = {
+  "gemini-3.8-flash": {
+    provider: "gemini",
+    inputUsdPerMillion: 0.75,
+    outputUsdPerMillion: 3.75,
+    cachedInputUsdPerMillion: 0.075,
+    validFrom: "2026-10-01T00:00:00.000Z",
+    validUntil: "2027-01-01T00:00:00.000Z"
+  },
   "gemini-3.1-flash-lite": {
     provider: "gemini",
     inputUsdPerMillion: 0.25,
@@ -48,13 +58,27 @@ export const MODEL_PRICING_REGISTRY: Record<string, ModelPricing> = {
   }
 };
 
-export function getModelPricing(model: string) {
+export function getModelPricing(model: string, now = new Date()) {
   const pricing = MODEL_PRICING_REGISTRY[model];
   if (!pricing) {
     throw new PublicApiError(
       `AI pricing is not registered for model ${model}. Paid requests are disabled for unrecognized models.`,
       503,
       { code: "AI_MODEL_PRICING_UNKNOWN" }
+    );
+  }
+  if (pricing.validFrom && now < new Date(pricing.validFrom)) {
+    throw new PublicApiError(
+      `AI pricing for model ${model} is not yet effective. Paid requests are disabled.`,
+      503,
+      { code: "AI_MODEL_PRICING_NOT_EFFECTIVE" }
+    );
+  }
+  if (pricing.validUntil && now >= new Date(pricing.validUntil)) {
+    throw new PublicApiError(
+      `AI pricing for model ${model} has expired. Paid requests are disabled until pricing is reviewed.`,
+      503,
+      { code: "AI_MODEL_PRICING_EXPIRED" }
     );
   }
   return pricing;
@@ -64,14 +88,16 @@ export function estimateAiCostMicros({
   model,
   inputTokens,
   outputTokens,
-  cachedInputTokens = 0
+  cachedInputTokens = 0,
+  now
 }: {
   model: string;
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  now?: Date;
 }) {
-  const pricing = getModelPricing(model);
+  const pricing = getModelPricing(model, now);
   const cachedTokens = Math.min(inputTokens, Math.max(0, cachedInputTokens));
   const uncachedTokens = Math.max(0, inputTokens - cachedTokens);
   const cachedPrice = pricing.cachedInputUsdPerMillion ?? pricing.inputUsdPerMillion;
