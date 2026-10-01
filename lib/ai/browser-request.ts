@@ -8,7 +8,7 @@ export async function fetchWithAiCostConfirmation(input: RequestInfo | URL, init
   const response = await fetch(input, init);
   if (response.status !== 428) return response;
 
-  const details = (await response.json().catch(() => null)) as AiErrorPayload | null;
+  const details = (await response.clone().json().catch(() => null)) as AiErrorPayload | null;
   if (details?.code !== "AI_COST_CONFIRMATION_REQUIRED") return response;
 
   const maximum = typeof details.maximumCostMicros === "number"

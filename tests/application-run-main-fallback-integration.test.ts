@@ -7,7 +7,9 @@ import { evaluatePreparationGates } from "@/lib/application-runs/preparation";
 
 test("main's unscored local match cannot unlock Human-Submit preparation", async () => {
   const priorMockMode = process.env.OPENAI_MOCK_MODE;
+  const priorAiMockMode = process.env.AI_MOCK_MODE;
   process.env.OPENAI_MOCK_MODE = "true";
+  process.env.AI_MOCK_MODE = "true";
   let fitScore: number | null = null;
   const matchConfidence: number | null = null;
   try {
@@ -24,6 +26,8 @@ test("main's unscored local match cannot unlock Human-Submit preparation", async
   } finally {
     if (priorMockMode === undefined) delete process.env.OPENAI_MOCK_MODE;
     else process.env.OPENAI_MOCK_MODE = priorMockMode;
+    if (priorAiMockMode === undefined) delete process.env.AI_MOCK_MODE;
+    else process.env.AI_MOCK_MODE = priorAiMockMode;
   }
 
   const gates = {

@@ -23,6 +23,7 @@ function environment(t: TestContext) {
     DATABASE_URL: "postgresql://invalid:invalid@127.0.0.1:1/invalid",
     DIRECT_URL: "postgresql://invalid:invalid@127.0.0.1:1/invalid",
     OPENAI_API_KEY: undefined, OPENAI_MOCK_MODE: undefined,
+    GEMINI_API_KEY: undefined, AI_ENABLED: "false", AI_MOCK_MODE: "false",
     AUTH_SECRET: "synthetic-test-secret", ALLOW_DEMO_USER: "true", NODE_ENV: "test"
   };
   for (const [name, value] of Object.entries(changes)) {
@@ -133,6 +134,29 @@ test("unavailable scoring returns partial success, null scores and deduplicated 
   assert.equal(state.jobs.size, 1);
   assert.equal(state.applications.size, 1);
   assert.equal(state.scoreWrites, 0);
+});
+
+test("manual import preserves its identity but starts no paid score before cost confirmation", async (t) => {
+  const state = setup(t);
+  process.env.AI_ENABLED = "true";
+  process.env.AI_MOCK_MODE = "false";
+  process.env.GEMINI_API_KEY = "synthetic-never-log";
+  let providerCalls = 0;
+  stub(t, prisma.aIResponseCache, "findFirst", async () => null);
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    throw new Error("must not call before confirmation");
+  });
+
+  const response = await invoke(posting);
+  assert.equal(response.status, 428);
+  const result = await response.json();
+  assert.equal(result.code, "AI_COST_CONFIRMATION_REQUIRED");
+  assert.equal(result.maximumCostMicros, 72_720);
+  assert.equal(state.jobs.size, 1);
+  assert.equal(state.applications.size, 1);
+  assert.equal(state.scoreWrites, 0);
+  assert.equal(providerCalls, 0);
 });
 
 test("standalone score match still returns unavailable and cannot write scores", async (t) => {

@@ -67,7 +67,12 @@ async function invokeRoute(path: string, handler: () => Promise<Response>) {
 }
 
 test("resume parsing reports its actual local model to persistence", async (t) => {
-  setEnv(t, { OPENAI_API_KEY: undefined, OPENAI_MOCK_MODE: undefined });
+  setEnv(t, {
+    OPENAI_API_KEY: undefined,
+    OPENAI_MOCK_MODE: undefined,
+    GEMINI_API_KEY: undefined,
+    AI_ENABLED: "false"
+  });
   const { parseResumeTextWithMeta } = await import("@/lib/ai/resume");
   const parsed = await parseResumeTextWithMeta("Alice Example\nPython");
   assert.equal(parsed.meta.model, "heuristic-local");
@@ -83,7 +88,12 @@ test("successful local drafts and feedback do not claim numeric AI confidence", 
 });
 
 test("unavailable personalized match writes no job scores or AI analysis", async (t) => {
-  setEnv(t, { OPENAI_API_KEY: undefined, OPENAI_MOCK_MODE: undefined });
+  setEnv(t, {
+    OPENAI_API_KEY: undefined,
+    OPENAI_MOCK_MODE: undefined,
+    GEMINI_API_KEY: undefined,
+    AI_ENABLED: "false"
+  });
   const { prisma } = await import("@/lib/prisma");
   const { runJobMatch } = await import("@/lib/jobs");
   const { LocalAiUnavailableError } = await import("@/lib/ai/client");

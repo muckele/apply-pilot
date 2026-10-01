@@ -64,7 +64,7 @@ export type AiInvocationOptions = Pick<AiCallContext, "automation" | "highCostCo
 export type GeneratedJsonResult<T> = {
   data: T;
   meta: {
-    provider: "openai" | "local";
+    provider: "gemini" | "openai" | "local";
     model: string;
     promptVersion: string;
     requestHash: string;

@@ -3,7 +3,7 @@ import { afterEach, test } from "node:test";
 import { z } from "zod";
 
 import { generateJson, getOpenAIClient, LocalAiUnavailableError } from "@/lib/ai/client";
-import { scoreJobMatch } from "@/lib/ai/job-match";
+import { scoreJobMatch, validateAndNormalizeJobMatchOutput } from "@/lib/ai/job-match";
 import { draftCoverLetter, draftEmailReply, generateInterviewPrep, generateInterviewFeedback } from "@/lib/ai/documents";
 import { parseResumeText, tailorResume } from "@/lib/ai/resume";
 import { hashAiInput } from "@/lib/ai/usage";
@@ -12,12 +12,21 @@ import { prisma } from "@/lib/prisma";
 const oldKey = process.env.OPENAI_API_KEY;
 const oldMock = process.env.OPENAI_MOCK_MODE;
 const oldModel = process.env.OPENAI_MODEL;
+const oldGeminiKey = process.env.GEMINI_API_KEY;
+const oldAiEnabled = process.env.AI_ENABLED;
+const oldAiMock = process.env.AI_MOCK_MODE;
 afterEach(() => {
   if (oldKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldKey;
   if (oldMock === undefined) delete process.env.OPENAI_MOCK_MODE; else process.env.OPENAI_MOCK_MODE = oldMock;
   if (oldModel === undefined) delete process.env.OPENAI_MODEL; else process.env.OPENAI_MODEL = oldModel;
+  if (oldGeminiKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = oldGeminiKey;
+  if (oldAiEnabled === undefined) delete process.env.AI_ENABLED; else process.env.AI_ENABLED = oldAiEnabled;
+  if (oldAiMock === undefined) delete process.env.AI_MOCK_MODE; else process.env.AI_MOCK_MODE = oldAiMock;
 });
 function local(mock = false) {
+  delete process.env.GEMINI_API_KEY;
+  process.env.AI_ENABLED = "false";
+  process.env.AI_MOCK_MODE = mock ? "true" : "false";
   if (mock) { process.env.OPENAI_API_KEY = "test-key"; process.env.OPENAI_MOCK_MODE = "true"; }
   else { delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_MOCK_MODE; }
 }
@@ -38,11 +47,7 @@ test("central contract keeps safe local fallback but rejects absent fallback wit
   await assert.rejects(generateJson(input), (error) => error instanceof LocalAiUnavailableError);
 });
 
-test("the real job-match path accepts a schema-valid model response", async () => {
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MOCK_MODE = "false";
-  const client = getOpenAIClient()!;
-  const original = client.chat.completions.create;
+test("the job-match boundary accepts and normalizes a schema-valid v3 response", () => {
   const output = {
     contractVersion: "3",
     overallFitScore: 81, resumeKeywordScore: 70, skillsMatchScore: 70,
@@ -62,13 +67,9 @@ test("the real job-match path accepts a schema-valid model response", async () =
     },
     recommendation: "consider"
   };
-  try {
-    client.chat.completions.create = (async () => ({ choices: [{ message: { content: JSON.stringify(output) } }] })) as unknown as typeof original;
-    const result = await scoreJobMatch(alice);
-    assert.equal(result.overallFitScore, 81);
-    assert.deepEqual(result.supportedKeywords, ["Excel"]);
-    assert.notEqual(result.model, "heuristic-local");
-  } finally { client.chat.completions.create = original; }
+  const result = validateAndNormalizeJobMatchOutput(alice, output).normalized;
+  assert.equal(result.overallFitScore, 81);
+  assert.deepEqual(result.supportedKeywords, ["Excel"]);
 });
 
 test("budget denial occurs before a real model call", async () => {

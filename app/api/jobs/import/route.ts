@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { ManualJobImportProvider } from "@/lib/job-sources/manual";
 import { upsertNormalizedJob, runJobMatch } from "@/lib/jobs";
 import { LocalAiUnavailableError } from "@/lib/ai/client";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
+import { PublicApiError } from "@/lib/api-errors";
 import { captureException } from "@/lib/monitoring/logger";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -48,12 +50,13 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      const match = await runJobMatch(userId, job.id);
+      const match = await runJobMatch(userId, job.id, aiInvocationFromRequest(request));
       return NextResponse.json({ job: match.job, application, match, scoring: { status: "scored" } });
     } catch (error) {
       if (error instanceof LocalAiUnavailableError) {
         return NextResponse.json({ job, application, match: null, scoring: { status: "unavailable" } });
       }
+      if (error instanceof PublicApiError && error.status === 428) throw error;
       captureException(error, { source: "job.import.manual.scoring", userId, jobPostingId: job.id });
       return NextResponse.json({ job, application, match: null, scoring: { status: "failed" } });
     }

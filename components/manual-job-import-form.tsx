@@ -5,6 +5,7 @@ import { Import, Loader2 } from "lucide-react";
 import Link from "next/link";
 
 import { PrimaryButton } from "@/components/ui";
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 type ImportResult = {
   job: { id: string; title: string; company: string };
@@ -34,7 +35,7 @@ export function ManualJobImportForm() {
     };
 
     try {
-      const response = await fetch("/api/jobs/import", {
+      const response = await fetchWithAiCostConfirmation("/api/jobs/import", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload)

@@ -1,9 +1,30 @@
 import { z } from "zod";
 
 import { jobMatchPrompt } from "@/prompts/jobMatchPrompt";
-import { generateJson } from "@/lib/ai/client";
+import {
+  type AiInvocationOptions,
+  LocalAiUnavailableError
+} from "@/lib/ai/client";
+import {
+  findCachedAiResponse,
+  hashAiInput,
+  reconcileAiReservation,
+  reserveAiBudget
+} from "@/lib/ai/application-plan-budget";
+import { getAiFinancialPolicy, getAiRuntimeMode } from "@/lib/ai/config";
+import {
+  callGeminiJsonProvider,
+  GeminiProviderError,
+  type GeminiUsage
+} from "@/lib/ai/gemini";
+import { assertAiInputWithinLimits } from "@/lib/ai/policy";
+import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { PublicApiError } from "@/lib/api-errors";
 
 export const JOB_MATCH_PROMPT_VERSION = "3";
+export const JOB_MATCH_PROVIDER = "gemini" as const;
+export const JOB_MATCH_MODEL = "gemini-3.8-flash";
+export const JOB_MATCH_THINKING_LEVEL = "MEDIUM" as const;
 
 export type JobMatchEvidenceCitation = {
   ref: string;
@@ -116,7 +137,7 @@ const citationSchema = z.object({
   excerpt: z.string().min(1)
 }).strict();
 
-const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, unknown> = z.object({
+export const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, unknown> = z.object({
   contractVersion: z.literal("3"),
   overallFitScore: scoreSchema,
   resumeKeywordScore: scoreSchema,
@@ -144,6 +165,77 @@ const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodTypeDef, un
   }).strict(),
   recommendation: recommendationSchema
 }).strict();
+
+const jsonScore = { type: "number", minimum: 0, maximum: 100 } as const;
+const jsonString = { type: "string" } as const;
+const jsonCitation = {
+  type: "object",
+  additionalProperties: false,
+  properties: { ref: jsonString, excerpt: jsonString },
+  required: ["ref", "excerpt"]
+} as const;
+
+// Kept explicit so the exact provider request is reviewable and does not rely on
+// a provider-specific Zod converter at runtime.
+export const JOB_MATCH_RESPONSE_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    contractVersion: { type: "string", enum: ["3"] },
+    overallFitScore: jsonScore,
+    resumeKeywordScore: jsonScore,
+    skillsMatchScore: jsonScore,
+    experienceMatchScore: jsonScore,
+    careerGoalScore: jsonScore,
+    locationWorkStyleScore: jsonScore,
+    compensationScore: { type: ["number", "null"], minimum: 0, maximum: 100 },
+    confidenceScore: jsonScore,
+    confidenceBasis: jsonString,
+    factualMatches: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          applicantEvidence: { type: "array", minItems: 1, items: jsonCitation },
+          jobEvidence: { type: "array", minItems: 1, items: jsonCitation },
+          supportedKeywords: { type: "array", minItems: 1, items: jsonString }
+        },
+        required: ["applicantEvidence", "jobEvidence", "supportedKeywords"]
+      }
+    },
+    requirementGaps: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          requirement: jsonString,
+          jobRequirement: jsonCitation,
+          missingKeywords: { type: "array", items: jsonString }
+        },
+        required: ["requirement", "jobRequirement", "missingKeywords"]
+      }
+    },
+    advice: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        keywordsToEmphasize: { type: "array", items: jsonString },
+        resumeAngle: jsonString,
+        coverLetterAngle: jsonString
+      },
+      required: ["keywordsToEmphasize", "resumeAngle", "coverLetterAngle"]
+    },
+    recommendation: { type: "string", enum: ["apply now", "consider", "skip"] }
+  },
+  required: [
+    "contractVersion", "overallFitScore", "resumeKeywordScore", "skillsMatchScore",
+    "experienceMatchScore", "careerGoalScore", "locationWorkStyleScore",
+    "compensationScore", "confidenceScore", "confidenceBasis", "factualMatches",
+    "requirementGaps", "advice", "recommendation"
+  ]
+} as const;
 
 type ResolvedEvidence = { found: true; value: unknown } | { found: false };
 
@@ -360,23 +452,191 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
   };
 }
 
-export async function scoreJobMatch(input: MatchInput, userId?: string) {
-  const generated = await generateJson<JobMatchModelOutput>({
-    promptName: "jobMatchPrompt",
-    systemPrompt: jobMatchPrompt,
-    payload: input,
-    schema: jobMatchModelOutputSchema,
-    context: userId
-      ? { userId, feature: "JOB_MATCH", promptVersion: JOB_MATCH_PROMPT_VERSION }
-      : undefined
-  });
-  const normalized = normalizeJobMatchOutput(input, generated.data);
+export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unknown) {
+  const parsed = jobMatchModelOutputSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("jobMatchPrompt returned JSON that did not match the expected schema.");
+  }
+  return { modelOutput: parsed.data, normalized: normalizeJobMatchOutput(input, parsed.data) };
+}
 
-  return {
-    ...normalized,
-    model: generated.meta.model,
-    promptVersion: generated.meta.promptVersion,
-    inputHash: generated.meta.requestHash,
-    usage: generated.meta
-  };
+function usageCost(usage: GeminiUsage) {
+  return estimateAiCostMicros({
+    model: JOB_MATCH_MODEL,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedInputTokens: usage.cachedInputTokens
+  });
+}
+
+export async function scoreJobMatch(
+  input: MatchInput,
+  userId?: string,
+  options: AiInvocationOptions = {}
+) {
+  const { policy } = assertAiInputWithinLimits("JOB_MATCH", jobMatchPrompt, input);
+  const inputHash = hashAiInput("jobMatchPrompt", JOB_MATCH_PROMPT_VERSION, input);
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (getAiRuntimeMode(JOB_MATCH_PROVIDER) !== JOB_MATCH_PROVIDER || !apiKey) {
+    throw new LocalAiUnavailableError();
+  }
+  if (!userId) {
+    throw new PublicApiError("JOB_MATCH requires an authenticated budget owner.", 503, {
+      code: "AI_BUDGET_OWNER_REQUIRED"
+    });
+  }
+  if (getModelPricing(JOB_MATCH_MODEL).provider !== JOB_MATCH_PROVIDER) {
+    throw new PublicApiError("JOB_MATCH requires registered Gemini pricing.", 503, {
+      code: "AI_MODEL_PRICING_UNKNOWN"
+    });
+  }
+
+  const financial = getAiFinancialPolicy();
+  const maximumCostMicros = estimateAiCostMicros({
+    model: JOB_MATCH_MODEL,
+    inputTokens: policy.maxInputTokens,
+    outputTokens: policy.maxOutputTokens
+  });
+  if (maximumCostMicros > financial.maximumRequestCents * 10_000) {
+    throw new PublicApiError("This request exceeds the configured per-request AI limit.", 429, {
+      code: "AI_REQUEST_COST_LIMIT",
+      maximumCostMicros
+    });
+  }
+
+  const cached = await findCachedAiResponse({
+    userId,
+    provider: JOB_MATCH_PROVIDER,
+    model: JOB_MATCH_MODEL,
+    promptName: "jobMatchPrompt",
+    promptVersion: JOB_MATCH_PROMPT_VERSION,
+    requestHash: inputHash
+  });
+  if (cached) {
+    const { normalized } = validateAndNormalizeJobMatchOutput(input, cached.output);
+    return {
+      ...normalized,
+      model: JOB_MATCH_MODEL,
+      promptVersion: JOB_MATCH_PROMPT_VERSION,
+      inputHash,
+      usage: {
+        provider: JOB_MATCH_PROVIDER,
+        model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION,
+        requestHash: inputHash,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        estimatedCostMicros: 0,
+        mocked: false
+      }
+    };
+  }
+
+  if (
+    !options.automation &&
+    maximumCostMicros > financial.confirmationThresholdCents * 10_000 &&
+    !options.highCostConfirmed
+  ) {
+    throw new PublicApiError("Confirm this AI request's maximum cost before continuing.", 428, {
+      code: "AI_COST_CONFIRMATION_REQUIRED",
+      maximumCostMicros
+    });
+  }
+
+  const reservation = await reserveAiBudget({
+    userId,
+    provider: JOB_MATCH_PROVIDER,
+    model: JOB_MATCH_MODEL,
+    feature: "JOB_MATCH",
+    promptName: "jobMatchPrompt",
+    promptVersion: JOB_MATCH_PROMPT_VERSION,
+    requestHash: inputHash,
+    maximumCostMicros,
+    automation: options.automation ?? false
+  });
+  let usage: GeminiUsage | null = null;
+  let actualCostMicros: number | undefined;
+  let requestDispatched = false;
+  let reconciled = false;
+
+  try {
+    requestDispatched = true;
+    const response = await callGeminiJsonProvider({
+      apiKey,
+      model: JOB_MATCH_MODEL,
+      systemPrompt: jobMatchPrompt,
+      payload: input,
+      responseJsonSchema: JOB_MATCH_RESPONSE_JSON_SCHEMA,
+      maxOutputTokens: policy.maxOutputTokens,
+      thinkingLevel: JOB_MATCH_THINKING_LEVEL
+    });
+    usage = response.usage;
+    actualCostMicros = usageCost(usage);
+    if (
+      usage.inputTokens > policy.maxInputTokens ||
+      usage.outputTokens > policy.maxOutputTokens ||
+      actualCostMicros > reservation.maximumCostMicros
+    ) {
+      throw new GeminiProviderError("Gemini usage exceeded the reserved JOB_MATCH bounds.", {
+        providerResponded: true,
+        usage
+      });
+    }
+    // Both structural and evidence validation complete before this paid result is
+    // cached or marked successful.
+    const { modelOutput, normalized } = validateAndNormalizeJobMatchOutput(input, response.value);
+    await reconcileAiReservation({
+      reservationId: reservation.id,
+      status: "SUCCEEDED",
+      actualCostMicros,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheOutput: modelOutput
+    });
+    reconciled = true;
+    return {
+      ...normalized,
+      model: JOB_MATCH_MODEL,
+      promptVersion: JOB_MATCH_PROMPT_VERSION,
+      inputHash,
+      usage: {
+        provider: JOB_MATCH_PROVIDER,
+        model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION,
+        requestHash: inputHash,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        estimatedCostMicros: actualCostMicros,
+        mocked: false
+      }
+    };
+  } catch (error) {
+    if (!reconciled) {
+      const providerUsage = error instanceof GeminiProviderError ? error.usage : usage;
+      const knownCost = providerUsage ? usageCost(providerUsage) : undefined;
+      const billingDisposition = error instanceof GeminiProviderError
+        ? error.billingDisposition
+        : providerUsage ? "known" : "uncertain";
+      const uncertain = requestDispatched && (
+        billingDisposition === "uncertain" ||
+        (knownCost !== undefined && knownCost > reservation.maximumCostMicros)
+      );
+      const reconciledCost = billingDisposition === "not_charged"
+        ? 0
+        : uncertain ? undefined : knownCost;
+      await reconcileAiReservation({
+        reservationId: reservation.id,
+        status: uncertain ? "UNCERTAIN" : "FAILED",
+        actualCostMicros: reconciledCost,
+        inputTokens: providerUsage?.inputTokens,
+        outputTokens: providerUsage?.outputTokens,
+        cachedInputTokens: providerUsage?.cachedInputTokens,
+        errorCode: error instanceof Error ? error.name : "UnknownError"
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
 }
