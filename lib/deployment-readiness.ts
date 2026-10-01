@@ -5,9 +5,52 @@ type DeploymentEnv = Record<string, string | undefined>;
 export type DeploymentReadiness = {
   ready: boolean;
   issues: string[];
-  aiMode: "openai" | "heuristic-local";
+  aiMode: "gemini" | "openai" | "mixed" | "heuristic-local";
+  aiProviderStatus: "disabled" | "not_configured" | "configured_unverified" | "invalid_configuration";
   directAudioUploads: boolean;
 };
+
+type AiCapability = Pick<DeploymentReadiness, "aiMode" | "aiProviderStatus"> & {
+  issue?: "invalid_ai_provider";
+};
+
+function aiCapability(env: DeploymentEnv): AiCapability {
+  const configuredProvider = env.AI_PROVIDER?.trim();
+  if (configuredProvider && configuredProvider !== "gemini" && configuredProvider !== "openai") {
+    return {
+      aiMode: "heuristic-local",
+      aiProviderStatus: "invalid_configuration",
+      issue: "invalid_ai_provider"
+    };
+  }
+
+  // Legacy OpenAI features predate the guarded provider switch and still use
+  // their own key/mock gate. JOB_MATCH uses the guarded Gemini runtime. Report
+  // both when configured, but never infer provider reachability from key presence.
+  const openAiConfigured = Boolean(env.OPENAI_API_KEY?.trim()) && env.OPENAI_MOCK_MODE !== "true";
+  const geminiConfigured =
+    env.AI_ENABLED === "true" &&
+    env.AI_MOCK_MODE !== "true" &&
+    Boolean(env.GEMINI_API_KEY?.trim());
+
+  if (openAiConfigured || geminiConfigured) {
+    return {
+      aiMode: openAiConfigured && geminiConfigured
+        ? "mixed"
+        : geminiConfigured ? "gemini" : "openai",
+      aiProviderStatus: "configured_unverified"
+    };
+  }
+
+  const selectedProviderDisabled =
+    env.AI_ENABLED !== "true" ||
+    env.AI_MOCK_MODE === "true" ||
+    (configuredProvider === "openai" && env.OPENAI_MOCK_MODE === "true");
+  return {
+    aiMode: "heuristic-local",
+    aiProviderStatus: selectedProviderDisabled ? "disabled" : "not_configured"
+  };
+}
 
 function productionOrigin(env: DeploymentEnv, requestOrigin: string) {
   const vercelProductionUrl = env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
@@ -67,6 +110,8 @@ export function checkDeploymentReadiness(
 ): DeploymentReadiness {
   const production = env.NODE_ENV === "production" || env.VERCEL_ENV === "production";
   const issues: string[] = [];
+  const { issue: aiIssue, ...ai } = aiCapability(env);
+  if (aiIssue) issues.push(aiIssue);
 
   if (production) {
     const expectedOrigin = productionOrigin(env, requestOrigin);
@@ -111,10 +156,7 @@ export function checkDeploymentReadiness(
   return {
     ready: issues.length === 0,
     issues,
-    aiMode:
-      env.OPENAI_API_KEY?.trim() && env.OPENAI_MOCK_MODE !== "true"
-        ? "openai"
-        : "heuristic-local",
+    ...ai,
     directAudioUploads: Boolean(env.BLOB_READ_WRITE_TOKEN?.trim())
   };
 }

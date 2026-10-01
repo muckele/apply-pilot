@@ -48,6 +48,7 @@ export async function GET(request: NextRequest) {
           },
           capabilities: {
             aiMode: configuration.aiMode,
+            aiProviderStatus: configuration.aiProviderStatus,
             directAudioUploads: configuration.directAudioUploads
           },
           configurationIssues: configuration.issues,
@@ -67,6 +68,7 @@ export async function GET(request: NextRequest) {
       },
       capabilities: {
         aiMode: configuration.aiMode,
+        aiProviderStatus: configuration.aiProviderStatus,
         directAudioUploads: configuration.directAudioUploads
       },
       latencyMs: Date.now() - startedAt,
@@ -88,6 +90,7 @@ export async function GET(request: NextRequest) {
         },
         capabilities: {
           aiMode: configuration.aiMode,
+          aiProviderStatus: configuration.aiProviderStatus,
           directAudioUploads: configuration.directAudioUploads
         },
         latencyMs: Date.now() - startedAt,
