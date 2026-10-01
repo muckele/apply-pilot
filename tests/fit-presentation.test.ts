@@ -79,6 +79,75 @@ test("job detail fit presentation keeps zero scored and avoids a fixed applicant
   assert.match(blankGuidance.suggestedCoverLetterAngle, /verified experience/i);
 });
 
+test("v3 fit presentation labels confidence as uncalibrated and explains unknown compensation", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation(
+    {
+      overallFitScore: 82,
+      compensationScore: null,
+      confidenceScore: 79,
+      keyMatchReason: "Legacy projection",
+      concerns: ["Legacy concern"],
+      suggestedResumeAngle: "Validated advice",
+      suggestedCoverLetterAngle: "Validated letter advice"
+    },
+    {
+      contractVersion: "3",
+      compensationAssessment: { score: null, reason: "missing_applicant_salary_target" },
+      confidenceAssessment: {
+        score: 79,
+        label: "Uncalibrated model self-assessment",
+        basis: "Based on cited submitted fields."
+      },
+      factualMatches: [{
+        claim: "TypeScript evidence matches the requirement.",
+        applicantEvidence: [{ ref: "resume.skills[0]", excerpt: "TypeScript" }],
+        jobEvidence: [{ ref: "job.requirements[0]", excerpt: "TypeScript" }],
+        supportedKeywords: ["TypeScript"]
+      }],
+      requirementGaps: [{
+        requirement: "Kubernetes",
+        jobRequirement: { ref: "job.preferredQualifications[0]", excerpt: "Kubernetes" },
+        missingKeywords: ["Kubernetes"]
+      }]
+    }
+  );
+
+  assert.equal(presentation.confidence?.label, "Uncalibrated model self-assessment");
+  assert.equal(presentation.confidence?.basis, "Based on cited submitted fields.");
+  assert.equal(presentation.compensation.score, null);
+  assert.match(presentation.compensation.explanation, /applicant salary target is missing/i);
+  assert.equal(presentation.factualMatches[0].claim, "TypeScript evidence matches the requirement.");
+  assert.equal(presentation.requirementGaps[0].requirement, "Kubernetes");
+  assert.equal(presentation.isLegacyAnalysis, false);
+});
+
+test("legacy fit presentation stays readable without inventing evidence links or confidence basis", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation(
+    {
+      overallFitScore: 0,
+      compensationScore: 0,
+      confidenceScore: 0,
+      keyMatchReason: "Legacy recorded reason",
+      concerns: ["Legacy recorded concern"],
+      suggestedResumeAngle: null,
+      suggestedCoverLetterAngle: null
+    },
+    { overallFitScore: 0, confidenceScore: 0 }
+  );
+
+  assert.equal(presentation.fitScore, 0);
+  assert.equal(presentation.compensation.score, 0);
+  assert.match(presentation.compensation.explanation, /legacy analysis/i);
+  assert.equal(presentation.confidence?.score, 0);
+  assert.equal(presentation.confidence?.label, "Uncalibrated model self-assessment");
+  assert.match(presentation.confidence?.basis ?? "", /legacy analysis did not record/i);
+  assert.deepEqual(presentation.factualMatches, [{ claim: "Legacy recorded reason", applicantEvidence: [], jobEvidence: [] }]);
+  assert.deepEqual(presentation.requirementGaps, [{ requirement: "Legacy recorded concern", jobRequirement: null }]);
+  assert.equal(presentation.isLegacyAnalysis, true);
+});
+
 function renderWithRouter(element: React.ReactElement) {
   const router = { back() {}, forward() {}, refresh() {}, push() {}, replace() {}, prefetch() {} };
   return renderToStaticMarkup(React.createElement(AppRouterContext.Provider, { value: router as never }, element));

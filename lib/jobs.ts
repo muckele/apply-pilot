@@ -1,7 +1,8 @@
 import type { NormalizedJob } from "@/lib/job-sources/types";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
 import { prisma } from "@/lib/prisma";
-import { scoreJobMatch } from "@/lib/ai/job-match";
+import { JOB_MATCH_PROMPT_VERSION, scoreJobMatch } from "@/lib/ai/job-match";
+import { buildJobMatchPostingUpdate } from "@/lib/jobs/job-match-projection";
 import { hashAiInput } from "@/lib/ai/usage";
 
 export async function upsertNormalizedJob({
@@ -123,16 +124,24 @@ export async function runJobMatch(
           preferredLocations: profile.preferredLocations,
           remotePreference: profile.remotePreference,
           salaryTargetMin: profile.salaryTargetMin,
+          salaryTargetMax: profile.salaryTargetMax,
           skillsToEmphasize: profile.skillsToEmphasize,
           skillsNotToExaggerate: profile.skillsNotToExaggerate
         }
       : null
   };
-  const inputHash = hashAiInput("jobMatchPrompt", "2", matchInput);
+  const inputHash = hashAiInput("jobMatchPrompt", JOB_MATCH_PROMPT_VERSION, matchInput);
 
   if (!options.force && job.overallFitScore !== null) {
     const existingAnalysis = await prisma.aIAnalysis.findFirst({
-      where: { userId, jobPostingId: job.id, type: "JOB_MATCH", inputHash, model: { not: "heuristic-local" } },
+      where: {
+        userId,
+        jobPostingId: job.id,
+        type: "JOB_MATCH",
+        promptVersion: JOB_MATCH_PROMPT_VERSION,
+        inputHash,
+        model: { not: "heuristic-local" }
+      },
       orderBy: { createdAt: "desc" }
     });
 
@@ -146,23 +155,7 @@ export async function runJobMatch(
   const updatedJob = await prisma.$transaction(async (tx) => {
     const updated = await tx.jobPosting.update({
       where: { id: job.id },
-      data: {
-        overallFitScore: match.overallFitScore,
-        resumeKeywordScore: match.resumeKeywordScore,
-        skillsMatchScore: match.skillsMatchScore,
-        experienceMatchScore: match.experienceMatchScore,
-        careerGoalScore: match.careerGoalScore,
-        locationWorkStyleScore: match.locationWorkStyleScore,
-        compensationScore: match.compensationScore,
-        confidenceScore: match.confidenceScore,
-        keyMatchReason: match.whyGoodMatch[0],
-        matchRecommendation: match.recommendation,
-        missingKeywords: match.missingKeywords,
-        supportedKeywords: match.supportedKeywords,
-        suggestedResumeAngle: match.suggestedResumeAngle,
-        suggestedCoverLetterAngle: match.suggestedCoverLetterAngle,
-        concerns: match.concerns
-      }
+      data: buildJobMatchPostingUpdate(match)
     });
 
     await tx.aIAnalysis.create({

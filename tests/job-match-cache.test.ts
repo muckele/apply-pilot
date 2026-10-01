@@ -16,17 +16,20 @@ test("runJobMatch excludes heuristic-local rows but reuses real-model rows", asy
   const originalAnalysis = prisma.aIAnalysis.findFirst;
   const oldKey = process.env.OPENAI_API_KEY;
   let modelFilter: unknown;
+  let promptVersion: unknown;
   try {
     delete process.env.OPENAI_API_KEY;
     prisma.jobPosting.findFirstOrThrow = (async () => job) as unknown as typeof originalJob;
     prisma.resume.findFirst = (async () => null) as unknown as typeof originalResume;
     prisma.userProfile.findUnique = (async () => null) as unknown as typeof originalProfile;
-    prisma.aIAnalysis.findFirst = (async (args: { where: { model: unknown } }) => {
+    prisma.aIAnalysis.findFirst = (async (args: { where: { model: unknown; promptVersion: unknown } }) => {
       modelFilter = args.where.model;
+      promptVersion = args.where.promptVersion;
       return modelFilter ? null : { model: "heuristic-local", output: { overallFitScore: 78 } };
     }) as unknown as typeof originalAnalysis;
     await assert.rejects(runJobMatch("user-1", job.id), /unavailable in local mode/);
     assert.deepEqual(modelFilter, { not: "heuristic-local" });
+    assert.equal(promptVersion, "3");
     prisma.aIAnalysis.findFirst = (async () => ({ model: "gpt-4o-mini", output: { overallFitScore: 81 } })) as unknown as typeof originalAnalysis;
     const cached = await runJobMatch("user-1", job.id);
     assert.equal(cached.cached, true);
