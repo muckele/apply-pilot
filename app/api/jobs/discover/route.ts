@@ -58,7 +58,8 @@ export async function POST(request: NextRequest) {
       metadata: {
         imported: result.imported,
         queries: result.queries,
-        scoreImported: input.scoreImported
+        scoreImported: input.scoreImported,
+        scoring: result.scoring
       }
     });
 

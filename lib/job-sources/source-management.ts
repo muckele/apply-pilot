@@ -1,7 +1,11 @@
 import type { JobSource, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
-import { importJobsFromSource, scoreTopImportedJobs } from "@/lib/job-sources/discovery";
+import {
+  importJobsFromSource,
+  scoreTopImportedJobs,
+  type DiscoveryScoringStopReason
+} from "@/lib/job-sources/discovery";
 import {
   assertSourceCanSync,
   buildCriteriaFromSource,
@@ -68,12 +72,14 @@ export async function runJobSourceSync({
   userId,
   source,
   options = {},
-  profile
+  profile,
+  scoringStopReason
 }: {
   userId: string;
   source: JobSource;
   options?: SourceRunOptions;
   profile?: UserProfile | null;
+  scoringStopReason?: DiscoveryScoringStopReason | null;
 }) {
   assertSourceCanSync(source);
 
@@ -88,14 +94,14 @@ export async function runJobSourceSync({
       profile: syncProfile
     });
     const aiSettings = await getOrCreateAiSettings(userId);
-    const scoredJobs = aiSettings.aiDiscoveryEnabled
-      ? await scoreTopImportedJobs({
-          userId,
-          jobs: result.imported,
-          profile: syncProfile,
-          limit: aiSettings.maxAnalysesPerSync
-        })
-      : [];
+    const scoring = await scoreTopImportedJobs({
+      userId,
+      jobs: result.imported,
+      profile: syncProfile,
+      limit: aiSettings.maxAnalysesPerSync,
+      enabled: aiSettings.aiDiscoveryEnabled && !scoringStopReason,
+      disabledReason: scoringStopReason ?? "DISABLED_BY_POLICY"
+    });
 
     await prisma.jobSource.update({
       where: { id: source.id },
@@ -108,7 +114,7 @@ export async function runJobSourceSync({
       }
     });
 
-    return { ...result, scoredJobs };
+    return { ...result, scoredJobs: scoring.jobs, scoring: scoring.summary };
   } catch (error) {
     const message = formatSyncError(error);
 

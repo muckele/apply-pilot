@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import {
+  combineDiscoveryScoringSummaries,
+  isSystemicDiscoveryScoringStopReason,
+  type DiscoveryScoringStopReason,
+  type DiscoveryScoringSummary
+} from "@/lib/job-sources/discovery";
 import { runJobSourceSync } from "@/lib/job-sources/source-management";
 import { getAllowedAuthEmails, isEmailAllowedForAuth, requiresEmailAllowlist } from "@/lib/auth-access";
 import { captureException, logger } from "@/lib/monitoring/logger";
@@ -97,8 +103,10 @@ async function runCron(request: NextRequest) {
     status: "success" | "error" | "skipped";
     imported: number;
     skipped?: number;
+    scoring?: DiscoveryScoringSummary;
     error?: string;
   }> = [];
+  const scoringStopReasonsByUser = new Map<string, DiscoveryScoringStopReason>();
 
   for (const source of sources) {
     if (!isEmailAllowedForAuth(source.user.email)) {
@@ -122,6 +130,7 @@ async function runCron(request: NextRequest) {
         userId: source.userId,
         source,
         profile: source.user.profile,
+        scoringStopReason: scoringStopReasonsByUser.get(source.userId),
         options: {
           limit: options.limitPerSource,
           location: options.location,
@@ -135,15 +144,20 @@ async function runCron(request: NextRequest) {
         userId: source.userId,
         status: "success",
         imported: result.imported.length,
-        skipped: result.skipped
+        skipped: result.skipped,
+        scoring: result.scoring
       });
+
+      if (isSystemicDiscoveryScoringStopReason(result.scoring.stopReason)) {
+        scoringStopReasonsByUser.set(source.userId, result.scoring.stopReason);
+      }
 
       await writeAuditLog({
         userId: source.userId,
         action: "job.discovery.cron.source.sync",
         resource: "JobSource",
         resourceId: source.id,
-        metadata: { imported: result.imported.length, skipped: result.skipped }
+        metadata: { imported: result.imported.length, skipped: result.skipped, scoring: result.scoring }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Cron source sync failed.";
@@ -165,11 +179,15 @@ async function runCron(request: NextRequest) {
 
   const imported = results.reduce((total, result) => total + result.imported, 0);
   const failed = results.filter((result) => result.status === "error").length;
+  const scoring = combineDiscoveryScoringSummaries(
+    results.flatMap((result) => result.scoring ? [result.scoring] : [])
+  );
 
   logger.info("cron.job_discovery.completed", {
     sources: sources.length,
     imported,
     failed,
+    scoring,
     maxSources,
     minSourceIntervalMinutes
   });
@@ -179,6 +197,7 @@ async function runCron(request: NextRequest) {
     sources: sources.length,
     imported,
     failed,
+    scoring,
     results
   });
 }

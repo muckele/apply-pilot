@@ -1,5 +1,7 @@
 import type { JobPosting, JobSource, JobSourceType, UserProfile } from "@prisma/client";
 
+import { PublicApiError } from "@/lib/api-errors";
+import { LocalAiUnavailableError } from "@/lib/ai/client";
 import { getJobSourceProvider } from "@/lib/job-sources";
 import { resolveDiscoveryLocation, resolveDiscoveryQueries } from "@/lib/job-sources/discovery-preferences";
 import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
@@ -53,6 +55,80 @@ export type DiscoveryAiScoreResult = {
   cached?: boolean;
   error?: string;
 };
+
+export type DiscoveryScoringStopReason =
+  | "NOT_REQUESTED"
+  | "DISABLED_BY_POLICY"
+  | "LIMIT_ZERO"
+  | "AI_UNAVAILABLE"
+  | "AI_CONFIGURATION_INVALID"
+  | "AI_BUDGET_EXCEEDED";
+
+export type DiscoveryScoringSummary = {
+  eligible: number;
+  attempted: number;
+  cached: number;
+  scored: number;
+  failed: number;
+  stopReason: DiscoveryScoringStopReason | null;
+};
+
+export type DiscoveryScoringResult = {
+  jobs: DiscoveryAiScoreResult[];
+  summary: DiscoveryScoringSummary;
+};
+
+type JobMatchRunner = typeof runJobMatch;
+
+const systemicConfigurationCodes = new Set([
+  "AI_MODEL_PRICING_UNKNOWN",
+  "AI_MODEL_PRICING_NOT_EFFECTIVE",
+  "AI_MODEL_PRICING_EXPIRED",
+  "AI_REQUEST_COST_LIMIT",
+  "AI_BUDGET_OWNER_REQUIRED",
+  "AI_PROVIDER_USAGE_EXCEEDED_RESERVATION"
+]);
+
+export function getDiscoveryScoringStopReason(error: unknown): DiscoveryScoringStopReason | null {
+  if (error instanceof LocalAiUnavailableError) {
+    return "AI_UNAVAILABLE";
+  }
+
+  if (!(error instanceof PublicApiError)) {
+    return null;
+  }
+
+  const code = typeof error.details?.code === "string" ? error.details.code : null;
+  if (code === "AI_BUDGET_EXCEEDED") {
+    return "AI_BUDGET_EXCEEDED";
+  }
+
+  return code && systemicConfigurationCodes.has(code) ? "AI_CONFIGURATION_INVALID" : null;
+}
+
+export function isSystemicDiscoveryScoringStopReason(
+  reason: DiscoveryScoringStopReason | null
+): reason is "AI_UNAVAILABLE" | "AI_CONFIGURATION_INVALID" | "AI_BUDGET_EXCEEDED" {
+  return reason === "AI_UNAVAILABLE" || reason === "AI_CONFIGURATION_INVALID" || reason === "AI_BUDGET_EXCEEDED";
+}
+
+export function combineDiscoveryScoringSummaries(
+  summaries: DiscoveryScoringSummary[]
+): DiscoveryScoringSummary {
+  return summaries.reduce<DiscoveryScoringSummary>(
+    (combined, summary) => ({
+      eligible: combined.eligible + summary.eligible,
+      attempted: combined.attempted + summary.attempted,
+      cached: combined.cached + summary.cached,
+      scored: combined.scored + summary.scored,
+      failed: combined.failed + summary.failed,
+      stopReason: isSystemicDiscoveryScoringStopReason(summary.stopReason)
+        ? summary.stopReason
+        : combined.stopReason ?? summary.stopReason
+    }),
+    { eligible: 0, attempted: 0, cached: 0, scored: 0, failed: 0, stopReason: null }
+  );
+}
 
 const sourceTypesForConfiguredSync: JobSourceType[] = [
   "GREENHOUSE",
@@ -419,27 +495,53 @@ export async function scoreTopImportedJobs({
   userId,
   jobs,
   profile,
-  limit
+  limit,
+  enabled = true,
+  disabledReason = "DISABLED_BY_POLICY",
+  jobMatchRunner = runJobMatch
 }: {
   userId: string;
   jobs: JobPosting[];
   profile: UserProfile | null;
   limit: number;
-}) {
-  const candidates = jobs
+  enabled?: boolean;
+  disabledReason?: DiscoveryScoringStopReason;
+  jobMatchRunner?: JobMatchRunner;
+}): Promise<DiscoveryScoringResult> {
+  const eligibleCandidates = jobs
     .map((job) => ({ job, relevance: scoreJobRelevance({ job: normalizedJobFromPosting(job), profile }) }))
     .filter(({ relevance }) => relevance.score >= 60)
     .sort((left, right) => {
       const scoreDifference = right.relevance.score - left.relevance.score;
       if (scoreDifference !== 0) return scoreDifference;
       return (right.job.datePosted?.getTime() ?? 0) - (left.job.datePosted?.getTime() ?? 0);
-    })
-    .slice(0, Math.max(0, limit));
+    });
+  const summary: DiscoveryScoringSummary = {
+    eligible: eligibleCandidates.length,
+    attempted: 0,
+    cached: 0,
+    scored: 0,
+    failed: 0,
+    stopReason: null
+  };
+
+  if (!enabled) {
+    summary.stopReason = disabledReason;
+    return { jobs: [], summary };
+  }
+
+  if (limit <= 0) {
+    summary.stopReason = "LIMIT_ZERO";
+    return { jobs: [], summary };
+  }
+
+  const candidates = eligibleCandidates.slice(0, limit);
   const results: DiscoveryAiScoreResult[] = [];
 
   for (const { job, relevance } of candidates) {
+    summary.attempted += 1;
     try {
-      const result = await runJobMatch(userId, job.id, { automation: true });
+      const result = await jobMatchRunner(userId, job.id, { automation: true });
       results.push({
         jobId: job.id,
         deterministicScore: relevance.score,
@@ -447,16 +549,27 @@ export async function scoreTopImportedJobs({
         score: result.job.overallFitScore ?? undefined,
         cached: result.cached
       });
+      summary.scored += 1;
+      if (result.cached) {
+        summary.cached += 1;
+      }
     } catch (error) {
+      summary.failed += 1;
       results.push({
         jobId: job.id,
         deterministicScore: relevance.score,
         error: error instanceof Error ? error.message : "Scoring failed."
       });
+
+      const stopReason = getDiscoveryScoringStopReason(error);
+      if (stopReason) {
+        summary.stopReason = stopReason;
+        break;
+      }
     }
   }
 
-  return results;
+  return { jobs: results, summary };
 }
 
 export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOptions) {
@@ -806,16 +919,22 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
     }
   }
 
-  const scoredJobs = scoreImported && aiSettings.aiDiscoveryEnabled
-    ? await scoreTopImportedJobs({ userId: options.userId, jobs: [...importedJobs.values()], profile, limit: maxJobsToScore })
-    : [];
+  const scoring = await scoreTopImportedJobs({
+    userId: options.userId,
+    jobs: [...importedJobs.values()],
+    profile,
+    limit: maxJobsToScore,
+    enabled: scoreImported && aiSettings.aiDiscoveryEnabled,
+    disabledReason: scoreImported ? "DISABLED_BY_POLICY" : "NOT_REQUESTED"
+  });
 
   return {
     queries,
     location,
     imported: importedJobs.size,
     jobs: [...importedJobs.values()].map(formatJob),
-    scoredJobs,
+    scoredJobs: scoring.jobs,
+    scoring: scoring.summary,
     reports,
     restrictedBoards: restrictedJobBoardPolicies
   };
