@@ -5,6 +5,8 @@ import { CheckCircle2, Loader2, Pencil, Play, Plus, Power, Trash2, Wifi } from "
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton, StatusBadge } from "@/components/ui";
+import type { DiscoveryScoringSummary } from "@/lib/job-sources/discovery";
+import { formatDiscoveryScoringSummary } from "@/lib/job-sources/scoring-presentation";
 
 type JobSourceItem = {
   id: string;
@@ -194,7 +196,7 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
         action === "test"
           ? `Test passed${json.sample?.title ? `: ${json.sample.title}` : "."}`
           : action === "sync"
-            ? `Sync complete: ${json.imported} imported or updated, ${json.skipped} filtered.`
+            ? `Sync complete: ${json.imported} imported or updated, ${json.skipped} filtered. ${formatDiscoveryScoringSummary(json.scoring as DiscoveryScoringSummary)}`
             : action === "toggle"
               ? `Sync ${source.syncEnabled ? "disabled" : "enabled"} for ${source.name}.`
               : "Source deleted.";
