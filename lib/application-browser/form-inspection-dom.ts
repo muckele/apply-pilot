@@ -397,6 +397,25 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
         const candidate = raw.trim().toLowerCase();
         return (limits.autocomplete as readonly string[]).includes(candidate) ? candidate : null;
       }][0];
+      const ariaTokenFor = [(control: Element, name: string): string | null => {
+        const raw = control.getAttribute(name);
+        if (raw === null) return null;
+        if (exceedsCodePointLimit(raw, 4_096) || encoder.encode(raw).byteLength > 4_096) {
+          fail("FORM_INSPECTION_OVERSIZE");
+        }
+        const token = raw.trim().toLowerCase();
+        return token.length > 0 ? token : null;
+      }][0];
+      const reportedRequired = [(control: Element): boolean =>
+        control.hasAttribute("required") || ariaTokenFor(control, "aria-required") === "true"][0];
+      const isNativeCustomCombobox = [(control: HTMLInputElement): boolean => {
+        const roles = ariaTokenFor(control, "role")?.split(/\s+/u) ?? [];
+        const ariaAutocomplete = ariaTokenFor(control, "aria-autocomplete");
+        return roles.includes("combobox") ||
+          ariaAutocomplete === "list" ||
+          ariaAutocomplete === "both" ||
+          ariaTokenFor(control, "aria-haspopup") === "listbox";
+      }][0];
       const lengthConstraints = [(control: HTMLInputElement | HTMLTextAreaElement): Pick<RawConstraints, "minLength" | "maxLength"> | null => {
         const minLength = control.minLength >= 0 ? control.minLength : null;
         const maxLength = control.maxLength >= 0 ? control.maxLength : null;
@@ -573,10 +592,25 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
               questionForCustom(source),
               helpFor(source),
               source instanceof HTMLElement && source.isContentEditable ? "RICH_TEXT" : "CUSTOM_COMBOBOX",
-              source.hasAttribute("required")
+              reportedRequired(source)
             );
             completenessRoots.add(source);
             addField({ field, control: source, choices: [], section: nearestSection(source, form) });
+            return;
+          }
+
+          if (source instanceof HTMLInputElement && isNativeCustomCombobox(source)) {
+            addField({
+              field: unsupportedField(
+                questionFor(source),
+                helpFor(source),
+                "CUSTOM_COMBOBOX",
+                reportedRequired(source)
+              ),
+              control: source,
+              choices: [],
+              section: nearestSection(source, form)
+            });
             return;
           }
 
@@ -587,6 +621,7 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
             if (!boundary) fail("FORM_STRUCTURE_UNSUPPORTED");
             const sameName: HTMLInputElement[] = [];
             for (const member of visibleRadios) {
+              if (isNativeCustomCombobox(member)) continue;
               if ((member.getAttribute("name") ?? "") !== name) continue;
               if (groupBoundary(member, form) !== boundary) fail("FORM_STRUCTURE_UNSUPPORTED");
               if (sameName.length >= limits.maxChoicesPerField) fail("FORM_INSPECTION_OVERSIZE");
@@ -610,7 +645,7 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
                 helpText: helpFor(boundary as Element),
                 fieldType: "RADIO_GROUP",
                 unsupportedReason: null,
-                required: sameName.some((member) => !isEffectivelyDisabled(member) && member.hasAttribute("required")),
+                required: sameName.some((member) => !isEffectivelyDisabled(member) && reportedRequired(member)),
                 autocomplete: null,
                 constraints: emptyConstraints(),
                 choices
@@ -628,6 +663,7 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
             const sameGroup: HTMLInputElement[] = [];
             if (name) {
               for (const member of visibleCheckboxes) {
+                if (isNativeCustomCombobox(member)) continue;
                 if (
                   (member.getAttribute("name") ?? "") !== name ||
                   groupBoundary(member, form) !== boundary
@@ -639,8 +675,8 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
             const hasActiveMember = sameGroup.some((member) => !isEffectivelyDisabled(member));
             const groupTitle = sameGroup.length >= 2 ? groupQuestion(sameGroup, boundary) : null;
             if (sameGroup.length >= 2 && hasActiveMember && groupTitle) {
-              const required = sameGroup[0].hasAttribute("required");
-              if (sameGroup.some((member) => member.hasAttribute("required") !== required)) {
+              const required = reportedRequired(sameGroup[0]);
+              if (sameGroup.some((member) => reportedRequired(member) !== required)) {
                 fail("FORM_STRUCTURE_UNSUPPORTED");
               }
               for (const member of sameGroup) consumed.add(member);
@@ -676,7 +712,7 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
                 helpText: helpFor(source),
                 fieldType: "CHECKBOX_BOOLEAN",
                 unsupportedReason: null,
-                required: source.hasAttribute("required"),
+                required: reportedRequired(source),
                 autocomplete: autocompleteFor(source),
                 constraints: emptyConstraints(),
                 choices: []
@@ -690,7 +726,7 @@ export async function extractSafeApplicationForm(page: Page): Promise<SafeApplic
 
           const question = questionFor(source);
           const helpText = helpFor(source);
-          const required = source.hasAttribute("required");
+          const required = reportedRequired(source);
           const autocomplete = autocompleteFor(source);
           const section = nearestSection(source, form);
 

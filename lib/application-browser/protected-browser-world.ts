@@ -131,8 +131,10 @@ function installProtectedBrowserWorld(input: Readonly<{
     const classifyNativeWriterFieldType = [(
       control: Element,
       inputType: string | null,
-      selectMultiple: boolean | null
+      selectMultiple: boolean | null,
+      customCombobox: boolean
     ): ProtectedWriterFieldType | null => {
+      if (customCombobox) return null;
       if (control instanceof NativeHTMLInputElement) {
         switch (inputType?.toLowerCase()) {
           case "text":
@@ -225,6 +227,26 @@ function installProtectedBrowserWorld(input: Readonly<{
     const hasRole = [(context: OperationContext, element: Element, role: string): boolean =>
       roleTokens(context, element).includes(role)
     ][0];
+    const ariaTokenFor = [(context: OperationContext, element: Element, name: string): string | null => {
+      const raw = element.getAttribute(name);
+      if (raw === null) return null;
+      if (raw.length > 4_096 || roleEncoder.encode(raw).byteLength > 4_096) {
+        fail("FORM_INSPECTION_OVERSIZE");
+      }
+      chargeString(context, raw);
+      const token = raw.trim().toLowerCase();
+      return token.length > 0 ? token : null;
+    }][0];
+    const reportedRequired = [(context: OperationContext, element: Element): boolean =>
+      element.hasAttribute("required") || ariaTokenFor(context, element, "aria-required") === "true"][0];
+    const isNativeCustomCombobox = [(context: OperationContext, element: Element): boolean => {
+      if (!(element instanceof NativeHTMLInputElement)) return false;
+      const ariaAutocomplete = ariaTokenFor(context, element, "aria-autocomplete");
+      return hasRole(context, element, "combobox") ||
+        ariaAutocomplete === "list" ||
+        ariaAutocomplete === "both" ||
+        ariaTokenFor(context, element, "aria-haspopup") === "listbox";
+    }][0];
     const composedParent = [(node: Node): Node | null | false => {
       const assignedSlot = (node as Node & { assignedSlot?: HTMLSlotElement | null }).assignedSlot;
       if (assignedSlot) return assignedSlot;
@@ -947,10 +969,25 @@ function installProtectedBrowserWorld(input: Readonly<{
               questionForCustom(source),
               helpFor(source),
               source instanceof HTMLElement && meteredContentEditable(context, source) ? "RICH_TEXT" : "CUSTOM_COMBOBOX",
-              source.hasAttribute("required")
+              reportedRequired(context, source)
             );
             completenessRoots.add(source);
             addField({ field, control: source, choices: [], section: nearestSection(source, form) });
+            continue;
+          }
+
+          if (source instanceof NativeHTMLInputElement && isNativeCustomCombobox(context, source)) {
+            addField({
+              field: unsupportedField(
+                questionFor(source),
+                helpFor(source),
+                "CUSTOM_COMBOBOX",
+                reportedRequired(context, source)
+              ),
+              control: source,
+              choices: [],
+              section: nearestSection(source, form)
+            });
             continue;
           }
 
@@ -962,6 +999,7 @@ function installProtectedBrowserWorld(input: Readonly<{
             const sameName: HTMLInputElement[] = [];
             for (const member of visibleRadios) {
               charge(context);
+              if (isNativeCustomCombobox(context, member)) continue;
               if (groupingName(member) !== name) continue;
               if (groupBoundary(member, form) !== boundary) fail("FORM_STRUCTURE_UNSUPPORTED");
               if (sameName.length >= limits.maxChoicesPerField) fail("FORM_INSPECTION_OVERSIZE");
@@ -991,7 +1029,7 @@ function installProtectedBrowserWorld(input: Readonly<{
             let required = false;
             for (const member of sameName) {
               charge(context);
-              if (!isEffectivelyDisabled(member) && member.hasAttribute("required")) required = true;
+              if (!isEffectivelyDisabled(member) && reportedRequired(context, member)) required = true;
             }
             addField({
               field: {
@@ -1018,6 +1056,7 @@ function installProtectedBrowserWorld(input: Readonly<{
             if (name) {
               for (const member of visibleCheckboxes) {
                 charge(context);
+                if (isNativeCustomCombobox(context, member)) continue;
                 if (
                   groupingName(member) !== name ||
                   groupBoundary(member, form) !== boundary
@@ -1033,10 +1072,10 @@ function installProtectedBrowserWorld(input: Readonly<{
             }
             const groupTitle = sameGroup.length >= 2 ? groupQuestion(sameGroup, boundary) : null;
             if (sameGroup.length >= 2 && hasActiveMember && groupTitle) {
-              const required = sameGroup[0].hasAttribute("required");
+              const required = reportedRequired(context, sameGroup[0]);
               for (const member of sameGroup) {
                 charge(context);
-                if (member.hasAttribute("required") !== required) {
+                if (reportedRequired(context, member) !== required) {
                   fail("FORM_STRUCTURE_UNSUPPORTED");
                 }
               }
@@ -1077,7 +1116,7 @@ function installProtectedBrowserWorld(input: Readonly<{
                 helpText: helpFor(source),
                 fieldType: "CHECKBOX_BOOLEAN",
                 unsupportedReason: null,
-                required: source.hasAttribute("required"),
+                required: reportedRequired(context, source),
                 autocomplete: autocompleteFor(source),
                 constraints: emptyConstraints(),
                 choices: []
@@ -1091,12 +1130,12 @@ function installProtectedBrowserWorld(input: Readonly<{
 
           const question = questionFor(source);
           const helpText = helpFor(source);
-          const required = source.hasAttribute("required");
+          const required = reportedRequired(context, source);
           const autocomplete = autocompleteFor(source);
           const section = nearestSection(source, form);
 
           if (source instanceof HTMLSelectElement) {
-            const writerFieldType = classifyNativeWriterFieldType(source, null, source.multiple);
+            const writerFieldType = classifyNativeWriterFieldType(source, null, source.multiple, false);
             const rawChoices: RawChoice[] = [];
             const choiceElements: Element[] = [];
             let invalidChoice = false;
@@ -1142,7 +1181,7 @@ function installProtectedBrowserWorld(input: Readonly<{
           }
 
           if (source instanceof HTMLTextAreaElement) {
-            const writerFieldType = classifyNativeWriterFieldType(source, null, null);
+            const writerFieldType = classifyNativeWriterFieldType(source, null, null, false);
             if (writerFieldType !== "TEXTAREA") return fail("FORM_INSPECTION_INVALID");
             const lengths = lengthConstraints(source);
             const field: RawField = lengths ? {
@@ -1160,7 +1199,12 @@ function installProtectedBrowserWorld(input: Readonly<{
           }
 
           const kind = inputKind(source);
-          const writerFieldType = classifyNativeWriterFieldType(source, kind, null);
+          const writerFieldType = classifyNativeWriterFieldType(
+            source,
+            kind,
+            null,
+            isNativeCustomCombobox(context, source)
+          );
           if (writerFieldType !== null) {
             const lengths = lengthConstraints(source);
             const field: RawField = lengths ? {
@@ -2201,7 +2245,8 @@ function installProtectedBrowserWorld(input: Readonly<{
             const liveFieldType = classifyNativeWriterFieldType(
               field.control,
               field.control instanceof NativeHTMLInputElement ? field.control.type : null,
-              field.control instanceof NativeHTMLSelectElement ? field.control.multiple : null
+              field.control instanceof NativeHTMLSelectElement ? field.control.multiple : null,
+              isNativeCustomCombobox(context, field.control)
             );
             if (liveFieldType !== rawBinding.fieldType) return reject();
 
@@ -2396,7 +2441,8 @@ function installProtectedBrowserWorld(input: Readonly<{
               : null,
             target.control instanceof NativeHTMLSelectElement
               ? Boolean(nativeApply(nativeSelectMultipleGet, target.control, []))
-              : null
+              : null,
+            isNativeCustomCombobox(context, target.control)
           );
           if (liveFieldType !== target.fieldType) return failed("TARGET_INVALID");
           candidate.semanticReferenceIds = graph.references.semanticReferenceIds;

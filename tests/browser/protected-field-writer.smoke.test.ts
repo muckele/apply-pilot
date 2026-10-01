@@ -5,6 +5,7 @@ import { chromium, type Browser, type Page } from "playwright";
 
 import { MISSING_CHROMIUM_MESSAGE } from "@/lib/application-browser/browser-runtime";
 import {
+  ApplicationFormCorrelationError,
   correlateProtectedApplicationFormExtraction,
   type CorrelatedProtectedApplicationFormExtraction
 } from "@/lib/application-browser/form-inspection-correlation";
@@ -49,8 +50,9 @@ type WriterFixture = Readonly<{
 async function writerFixture(
   observeSeal?: (
     extraction: ProtectedApplicationFormExtraction,
-    bindings: readonly ProtectedWriterTargetBinding[]
-  ) => void
+    bindings: readonly ProtectedWriterTargetBinding[],
+    page: Page
+  ) => void | Promise<void>
 ): Promise<WriterFixture> {
   let protectedSession: ProtectedApplicationBrowserSession | null = null;
   const fixture = await createFormFillFixturePage(browser, async (page) => {
@@ -65,17 +67,59 @@ async function writerFixture(
     report: extraction.report,
     fields: extraction.fields,
     async sealWriterTargets(bindings) {
-      observeSeal(extraction, bindings);
+      await observeSeal(extraction, bindings, fixture.page);
       await extraction.sealWriterTargets(bindings);
     },
     dispose: () => extraction.dispose()
   } : extraction;
-  const correlated = await correlateProtectedApplicationFormExtraction({
-    extraction: correlationExtraction,
-    authoritativeApplyHost: "fixture.invalid"
-  });
-  return { page: fixture.page, session, correlated, traps: fixture.traps };
+  try {
+    const correlated = await correlateProtectedApplicationFormExtraction({
+      extraction: correlationExtraction,
+      authoritativeApplyHost: "fixture.invalid"
+    });
+    return { page: fixture.page, session, correlated, traps: fixture.traps };
+  } catch (error) {
+    await extraction.dispose().catch(() => undefined);
+    await session.close().catch(() => undefined);
+    await fixture.page.context().close().catch(() => undefined);
+    throw error;
+  }
 }
+
+test("protected V2 rejects native custom-combobox semantics introduced at sealing or before write", async (context) => {
+  await context.test("sealing", async () => {
+    await assert.rejects(
+      writerFixture(async (_extraction, _bindings, page) => {
+        await page.locator("#text-empty").evaluate((control) => {
+          control.setAttribute("role", "combobox");
+        });
+      }),
+      (error: unknown) => error instanceof ApplicationFormCorrelationError
+    );
+  });
+
+  await context.test("write", async () => {
+    const value = await writerFixture();
+    try {
+      const field = fieldFor(value, "Empty text");
+      await value.page.locator("#text-empty").evaluate((control) => {
+        control.setAttribute("aria-autocomplete", "list");
+        control.setAttribute("aria-haspopup", "listbox");
+      });
+      assert.deepEqual(
+        await value.session.writeCandidateField(
+          value.correlated.candidate,
+          requestFor(field, { kind: "SCALAR", value: "must not write" })
+        ),
+        { status: "FAILED", reason: "CANDIDATE_INVALID" }
+      );
+      assert.equal(await value.page.locator("#text-empty").inputValue(), "");
+      assert.equal((await value.traps()).input, 0);
+    } finally {
+      await cleanup(value);
+    }
+  });
+});
 
 async function cleanup(value: WriterFixture): Promise<void> {
   await value.correlated.dispose().catch(() => undefined);
