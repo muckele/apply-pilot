@@ -6,7 +6,7 @@ import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
-import { getJobFitPresentation } from "@/lib/jobs/fit-presentation";
+import { getJobMatchAnalysisPresentation } from "@/lib/jobs/fit-presentation";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -22,7 +22,8 @@ function formatSalary(job: JobPosting) {
   return "Salary not listed";
 }
 
-function mapJobPosting(job: JobPosting) {
+function mapJobPosting(job: JobPosting, analysisOutput: unknown) {
+  const fitPresentation = getJobMatchAnalysisPresentation(job, analysisOutput);
   return {
     id: job.id,
     title: job.title,
@@ -31,11 +32,12 @@ function mapJobPosting(job: JobPosting) {
     remoteStatus: job.remoteStatus || "Work style not listed",
     salary: formatSalary(job),
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-    ...getJobFitPresentation(job),
+    ...fitPresentation,
     status: job.status,
     recommendation: job.matchRecommendation ?? "Review",
     sourceType: job.sourceType,
     keyReason:
+      fitPresentation.factualMatches[0]?.claim ??
       job.keyMatchReason ??
       "Imported from an allowed source. Run fit scoring to generate a targeted match summary.",
     missingKeywords: job.missingKeywords,
@@ -50,7 +52,7 @@ function mapJobPosting(job: JobPosting) {
 async function getJobDetail(id: string) {
   const userId = await requirePageUserId();
 
-  const [job, resumeVersions, coverLetters, application, contacts] = await Promise.all([
+  const [job, resumeVersions, coverLetters, application, contacts, matchAnalysis] = await Promise.all([
     prisma.jobPosting.findFirst({ where: { id, userId } }),
     prisma.resumeVersion.findMany({
       where: { userId, jobPostingId: id },
@@ -92,12 +94,17 @@ async function getJobDetail(id: string) {
         profileUrl: true,
         notes: true
       }
+    }),
+    prisma.aIAnalysis.findFirst({
+      where: { userId, jobPostingId: id, type: "JOB_MATCH" },
+      orderBy: { createdAt: "desc" },
+      select: { output: true }
     })
   ]);
 
   if (job) {
     return {
-      job: mapJobPosting(job),
+      job: mapJobPosting(job, matchAnalysis?.output),
       resumeVersions: resumeVersions.map(
         (version): JobResumeVersionOption => ({
           ...version,
@@ -183,7 +190,53 @@ export default async function JobDetailPage({ params }: Props) {
                 <StatusBadge status={job.recommendation} />
                 <StatusBadge status={job.sourceType} />
               </div>
-              <p className="text-sm leading-6 text-slate-700">{job.keyReason}</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+                  <p className="font-semibold text-slate-950">Confidence</p>
+                  {job.confidence ? (
+                    <>
+                      <p>{job.confidence.score}% · {job.confidence.label}</p>
+                      <p className="text-xs text-slate-500">Basis: {job.confidence.basis}</p>
+                    </>
+                  ) : (
+                    <p>Not recorded</p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm leading-6 text-slate-700">
+                  <p className="font-semibold text-slate-950">Compensation fit</p>
+                  <p>{job.compensation.score === null ? "Unknown" : `${job.compensation.score}%`}</p>
+                  <p className="text-xs text-slate-500">{job.compensation.explanation}</p>
+                </div>
+              </div>
+              {job.factualMatches.length ? (
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-950">
+                    {job.isLegacyAnalysis ? "Legacy match summary" : "Evidence-linked factual matches"}
+                  </h3>
+                  <ul className="mt-2 space-y-3 text-sm leading-6 text-slate-700">
+                    {job.factualMatches.map((match) => (
+                      <li
+                        key={`${match.claim}-${match.applicantEvidence.map((citation) => citation.ref).join("-")}`}
+                        className={job.isLegacyAnalysis
+                          ? "rounded-lg border border-slate-200 bg-slate-50 p-3"
+                          : "rounded-lg border border-emerald-100 bg-emerald-50 p-3"}
+                      >
+                        <p>{match.claim}</p>
+                        {match.applicantEvidence.length || match.jobEvidence.length ? (
+                          <p className="mt-1 text-xs text-emerald-800">
+                            Applicant refs: {match.applicantEvidence.map((citation) => citation.ref).join(", ") || "Legacy analysis: none"}
+                            {" · "}Job refs: {match.jobEvidence.map((citation) => citation.ref).join(", ") || "Legacy analysis: none"}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-xs text-emerald-800">Legacy analysis: evidence references were not recorded.</p>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="text-sm leading-6 text-slate-700">{job.keyReason}</p>
+              )}
               <div className="grid gap-4 md:grid-cols-2">
                 <div>
                   <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
@@ -220,12 +273,15 @@ export default async function JobDetailPage({ params }: Props) {
                   </div>
                 </div>
               </div>
-              {job.concerns.length ? (
+              {job.requirementGaps.length ? (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="text-xs font-semibold uppercase text-amber-900">Honesty checks</p>
+                  <p className="text-xs font-semibold uppercase text-amber-900">Requirement gaps</p>
                   <ul className="mt-2 space-y-1 text-sm leading-6 text-amber-900">
-                    {job.concerns.map((concern) => (
-                      <li key={concern}>{concern}</li>
+                    {job.requirementGaps.map((gap) => (
+                      <li key={`${gap.requirement}-${gap.jobRequirement?.ref ?? "legacy"}`}>
+                        {gap.requirement}
+                        {gap.jobRequirement ? <span className="ml-1 text-xs">({gap.jobRequirement.ref})</span> : null}
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -234,7 +290,7 @@ export default async function JobDetailPage({ params }: Props) {
           </Panel>
 
           <Panel>
-            <PanelHeader title="Resume optimization suggestions" />
+            <PanelHeader title="Resume optimization suggestions" description="Writing advice, not a factual finding." />
             <div className="space-y-4 p-5 text-sm leading-6 text-slate-700">
               <p>{job.suggestedResumeAngle}</p>
               <p className="rounded-lg border border-slate-200 bg-slate-50 p-3">

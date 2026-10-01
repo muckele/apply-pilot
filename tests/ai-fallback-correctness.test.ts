@@ -21,7 +21,7 @@ function local(mock = false) {
   if (mock) { process.env.OPENAI_API_KEY = "test-key"; process.env.OPENAI_MOCK_MODE = "true"; }
   else { delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_MOCK_MODE; }
 }
-const job = { title: "Software Engineer", company: "Acme", description: "React SQL AWS operations implementation" };
+const job = { title: "Software Engineer", company: "Acme", description: "React SQL AWS operations implementation Excel" };
 const alice = { job, resume: { summary: "Alice Example", skills: ["Excel"] } };
 const bob = { job, resume: { summary: "Bob Example", skills: ["Python"] } };
 
@@ -44,12 +44,23 @@ test("the real job-match path accepts a schema-valid model response", async () =
   const client = getOpenAIClient()!;
   const original = client.chat.completions.create;
   const output = {
+    contractVersion: "3",
     overallFitScore: 81, resumeKeywordScore: 70, skillsMatchScore: 70,
     experienceMatchScore: 80, careerGoalScore: 85, locationWorkStyleScore: 90,
-    compensationScore: null, confidenceScore: 75, whyGoodMatch: ["Evidence reviewed"],
-    concerns: [], missingKeywords: [], supportedKeywords: ["Excel"],
-    keywordsToEmphasize: ["Excel"], suggestedResumeAngle: "Emphasize Excel",
-    suggestedCoverLetterAngle: "Discuss evidence", recommendation: "consider"
+    compensationScore: null, confidenceScore: 75,
+    confidenceBasis: "Based on cited submitted fields.",
+    factualMatches: [{
+      applicantEvidence: [{ ref: "resume.skills[0]", excerpt: "Excel" }],
+      jobEvidence: [{ ref: "job.description", excerpt: "Excel" }],
+      supportedKeywords: ["Excel"]
+    }],
+    requirementGaps: [],
+    advice: {
+      keywordsToEmphasize: ["Excel"],
+      resumeAngle: "Emphasize supported Excel work.",
+      coverLetterAngle: "Discuss the cited evidence."
+    },
+    recommendation: "consider"
   };
   try {
     client.chat.completions.create = (async () => ({ choices: [{ message: { content: JSON.stringify(output) } }] })) as unknown as typeof original;
