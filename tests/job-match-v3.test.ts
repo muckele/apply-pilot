@@ -2,12 +2,38 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  buildJobMatchResponseJsonSchema,
+  buildJobMatchSystemPrompt,
   JOB_MATCH_PROMPT_VERSION,
+  jobMatchModelOutputSchema,
   normalizeJobMatchOutput,
   type MatchInput,
   type JobMatchModelOutput
 } from "@/lib/ai/job-match";
 import { buildJobMatchPostingUpdate } from "@/lib/jobs/job-match-projection";
+
+type ResponseSchemaView = {
+  properties: {
+    factualMatches: {
+      maxItems?: number;
+      items: { properties: {
+        applicantEvidence: { items: { properties: { ref: { enum: string[] } } } };
+        jobEvidence: { items: { properties: { ref: { enum: string[] } } } };
+      } };
+    };
+    requirementGaps: {
+      maxItems?: number;
+      items: { properties: {
+        jobRequirement: { properties: { ref: { enum: string[] } } };
+        missingKeywords: { minItems?: number };
+      } };
+    };
+  };
+};
+
+function responseSchemaView(input: MatchInput) {
+  return buildJobMatchResponseJsonSchema(input) as unknown as ResponseSchemaView;
+}
 
 const baseInput: MatchInput = {
   job: {
@@ -77,8 +103,8 @@ function cloneOutput() {
   return structuredClone(baseModelOutput);
 }
 
-test("JOB_MATCH uses the v3 prompt and cache contract", () => {
-  assert.equal(JOB_MATCH_PROMPT_VERSION, "3");
+test("JOB_MATCH uses prompt/cache revision 3.1 for the corrected v3 result contract", () => {
+  assert.equal(JOB_MATCH_PROMPT_VERSION, "3.1");
 });
 
 test("compensation keeps null distinct from a genuine numeric zero", () => {
@@ -253,4 +279,137 @@ test("a gap cannot label a keyword missing when submitted applicant evidence con
   };
 
   assert.throws(() => normalizeJobMatchOutput(baseInput, falseGap), /present in submitted applicant evidence/i);
+});
+
+test("the provider schema enumerates only submitted evidence refs at work-history item granularity", () => {
+  const input = structuredClone(baseInput);
+  input.resume!.workHistory = [
+    { role: "Engineer", bullets: ["Built TypeScript services"] },
+    { role: "Lead", bullets: ["Led incident response"] },
+    null
+  ];
+  const schema = responseSchemaView(input);
+  const match = schema.properties.factualMatches.items.properties;
+  const applicantRefs = match.applicantEvidence.items.properties.ref.enum;
+  const jobRefs = match.jobEvidence.items.properties.ref.enum;
+  const gapRefs = schema.properties.requirementGaps.items.properties.jobRequirement.properties.ref.enum;
+
+  assert.ok(applicantRefs.includes("resume.workHistory[0]"));
+  assert.ok(applicantRefs.includes("resume.workHistory[1]"));
+  assert.ok(!applicantRefs.includes("resume.workHistory"));
+  assert.ok(!applicantRefs.includes("resume.workHistory[1].bullets[0]"));
+  assert.ok(!applicantRefs.includes("resume.workHistory[2]"));
+  assert.ok(!applicantRefs.includes("profile.skillsNotToExaggerate[0]"));
+  assert.ok(jobRefs.includes("job.requirements[0]"));
+  assert.ok(!jobRefs.includes("job.requirements[1]"));
+  assert.deepEqual(gapRefs, ["job.requirements[0]", "job.preferredQualifications[0]"]);
+  assert.equal(schema.properties.requirementGaps.items.properties.missingKeywords.minItems, 1);
+
+  const opaqueWorkHistory = structuredClone(baseInput);
+  opaqueWorkHistory.resume!.workHistory = { role: "Engineer" };
+  const opaqueSchema = responseSchemaView(opaqueWorkHistory);
+  const opaqueRefs = opaqueSchema.properties.factualMatches.items.properties
+    .applicantEvidence.items.properties.ref.enum;
+  assert.ok(!opaqueRefs.includes("resume.workHistory"));
+});
+
+test("the input-specific prompt publishes exact refs and forbids work-history child paths", () => {
+  const input = structuredClone(baseInput);
+  input.resume!.workHistory = [{ role: "Engineer", bullets: ["Built TypeScript services"] }];
+  const prompt = buildJobMatchSystemPrompt(input);
+
+  assert.match(prompt, /Allowed applicant evidence references \(exact strings only\)/);
+  assert.match(prompt, /resume\.workHistory\[0\]/);
+  assert.match(prompt, /Never append child paths/);
+  assert.match(prompt, /Search every submitted applicant evidence field .*before returning a missing keyword/);
+  assert.doesNotMatch(prompt, /resume\.workHistory\[0\]\.bullets\[0\]/);
+});
+
+test("the provider schema closes evidence arrays when submitted refs are unavailable", () => {
+  const input = structuredClone(baseInput);
+  input.resume = null;
+  input.profile = null;
+  input.job.requirements = [];
+  input.job.preferredQualifications = [];
+  const schema = responseSchemaView(input);
+
+  assert.equal(schema.properties.factualMatches.maxItems, 0);
+  assert.equal(schema.properties.requirementGaps.maxItems, 0);
+  assert.deepEqual(
+    schema.properties.requirementGaps.items.properties.jobRequirement.properties.ref.enum,
+    ["__NO_SUBMITTED_GAP_REFERENCE__"]
+  );
+});
+
+test("blank scalar, indexed, and gap fields are never offered as evidence refs", () => {
+  const input = structuredClone(baseInput);
+  input.resume!.summary = "   ";
+  input.resume!.skills = ["", "TypeScript"];
+  input.resume!.workHistory = [false];
+  input.profile!.salaryTargetMin = 0;
+  input.job.salaryMin = 0;
+  input.job.requirements = ["  ", "TypeScript"];
+  input.job.preferredQualifications = [""];
+  const schema = responseSchemaView(input);
+  const match = schema.properties.factualMatches.items.properties;
+  const applicantRefs = match.applicantEvidence.items.properties.ref.enum;
+  const jobRefs = match.jobEvidence.items.properties.ref.enum;
+  const gapRefs = schema.properties.requirementGaps.items.properties.jobRequirement.properties.ref.enum;
+
+  assert.ok(!applicantRefs.includes("resume.summary"));
+  assert.ok(!applicantRefs.includes("resume.skills[0]"));
+  assert.ok(applicantRefs.includes("resume.skills[1]"));
+  assert.ok(applicantRefs.includes("resume.workHistory[0]"));
+  assert.ok(applicantRefs.includes("profile.salaryTargetMin"));
+  assert.ok(!jobRefs.includes("job.requirements[0]"));
+  assert.ok(jobRefs.includes("job.requirements[1]"));
+  assert.ok(jobRefs.includes("job.salaryMin"));
+  assert.deepEqual(gapRefs, ["job.requirements[1]"]);
+
+  const blankCitation = cloneOutput();
+  blankCitation.factualMatches[0].applicantEvidence[0] = {
+    ref: "resume.summary",
+    excerpt: "blank"
+  };
+  assert.throws(() => normalizeJobMatchOutput(input, blankCitation), /unknown applicant evidence reference/i);
+});
+
+test("work-history evidence accepts one submitted item but rejects invented child paths", () => {
+  const input = structuredClone(baseInput);
+  input.resume!.workHistory = [
+    { role: "Engineer", bullets: ["Built TypeScript services"] },
+    { role: "Lead", bullets: ["Led incident response"] }
+  ];
+  input.job.requirements = ["Incident response"];
+  const itemEvidence = cloneOutput();
+  itemEvidence.factualMatches[0] = {
+    applicantEvidence: [{ ref: "resume.workHistory[1]", excerpt: "incident response" }],
+    jobEvidence: [{ ref: "job.requirements[0]", excerpt: "Incident response" }],
+    supportedKeywords: ["Incident response"]
+  };
+  itemEvidence.requirementGaps = [];
+
+  assert.equal(normalizeJobMatchOutput(input, itemEvidence).factualMatches.length, 1);
+
+  const childPath = structuredClone(itemEvidence);
+  childPath.factualMatches[0].applicantEvidence[0].ref = "resume.workHistory[1].bullets[0]";
+  assert.throws(() => normalizeJobMatchOutput(input, childPath), /unknown applicant evidence reference/i);
+});
+
+test("missing-keyword validation searches positive profile evidence and requires a keyword", () => {
+  const input = structuredClone(baseInput);
+  input.profile!.preferredRoles = ["Software Engineering"];
+  input.job.requirements = ["TypeScript", "Software Engineering"];
+  const falseGap = cloneOutput();
+  falseGap.requirementGaps[0] = {
+    requirement: "Software Engineering",
+    jobRequirement: { ref: "job.requirements[1]", excerpt: "Software Engineering" },
+    missingKeywords: ["Software Engineering"]
+  };
+
+  assert.throws(() => normalizeJobMatchOutput(input, falseGap), /present in submitted applicant evidence/i);
+
+  const noKeyword = cloneOutput();
+  noKeyword.requirementGaps[0].missingKeywords = [];
+  assert.equal(jobMatchModelOutputSchema.safeParse(noKeyword).success, false);
 });

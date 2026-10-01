@@ -21,7 +21,8 @@ import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
 import { PublicApiError } from "@/lib/api-errors";
 
-export const JOB_MATCH_PROMPT_VERSION = "3";
+// Result contract remains v3; prompt/cache revision 3.1 adds input-specific refs.
+export const JOB_MATCH_PROMPT_VERSION = "3.1";
 export const JOB_MATCH_PROVIDER = "gemini" as const;
 export const JOB_MATCH_MODEL = "gemini-3.8-flash";
 export const JOB_MATCH_THINKING_LEVEL = "MEDIUM" as const;
@@ -156,7 +157,7 @@ export const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodType
   requirementGaps: z.array(z.object({
     requirement: z.string().min(1),
     jobRequirement: citationSchema,
-    missingKeywords: z.array(z.string().min(1))
+    missingKeywords: z.array(z.string().min(1)).min(1)
   }).strict()),
   advice: z.object({
     keywordsToEmphasize: z.array(z.string().min(1)),
@@ -168,74 +169,157 @@ export const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodType
 
 const jsonScore = { type: "number", minimum: 0, maximum: 100 } as const;
 const jsonString = { type: "string" } as const;
-const jsonCitation = {
-  type: "object",
-  additionalProperties: false,
-  properties: { ref: jsonString, excerpt: jsonString },
-  required: ["ref", "excerpt"]
-} as const;
+
+function referenceValueIsPresent(value: unknown) {
+  if (typeof value === "string") return value.trim().length > 0;
+  return value !== null && value !== undefined;
+}
+
+function exactReferences(entries: Array<[string, unknown]>) {
+  return entries.filter(([, value]) => referenceValueIsPresent(value)).map(([ref]) => ref);
+}
+
+function indexedReferences(prefix: string, values: unknown) {
+  return Array.isArray(values)
+    ? values.flatMap((value, index) => referenceValueIsPresent(value) ? [`${prefix}[${index}]`] : [])
+    : [];
+}
+
+export function getJobMatchEvidenceReferences(input: MatchInput) {
+  const workHistoryReferences = indexedReferences("resume.workHistory", input.resume?.workHistory);
+  const applicant = [
+    ...exactReferences([
+      ["resume.summary", input.resume?.summary],
+      ["resume.rawText", input.resume?.rawText]
+    ]),
+    ...indexedReferences("resume.skills", input.resume?.skills),
+    ...indexedReferences("resume.achievements", input.resume?.achievements),
+    ...workHistoryReferences,
+    ...exactReferences([["profile.careerGoals", input.profile?.careerGoals]]),
+    ...indexedReferences("profile.preferredRoles", input.profile?.preferredRoles),
+    ...indexedReferences("profile.preferredLocations", input.profile?.preferredLocations),
+    ...exactReferences([
+      ["profile.remotePreference", input.profile?.remotePreference],
+      ["profile.salaryTargetMin", input.profile?.salaryTargetMin],
+      ["profile.salaryTargetMax", input.profile?.salaryTargetMax]
+    ]),
+    ...indexedReferences("profile.skillsToEmphasize", input.profile?.skillsToEmphasize)
+  ];
+  const job = [
+    ...exactReferences([
+      ["job.title", input.job.title],
+      ["job.company", input.job.company],
+      ["job.location", input.job.location],
+      ["job.remoteStatus", input.job.remoteStatus],
+      ["job.salaryMin", input.job.salaryMin],
+      ["job.salaryMax", input.job.salaryMax],
+      ["job.description", input.job.description]
+    ]),
+    ...indexedReferences("job.requirements", input.job.requirements),
+    ...indexedReferences("job.preferredQualifications", input.job.preferredQualifications),
+    ...indexedReferences("job.detectedTechStack", input.job.detectedTechStack)
+  ];
+  const gap = [
+    ...indexedReferences("job.requirements", input.job.requirements),
+    ...indexedReferences("job.preferredQualifications", input.job.preferredQualifications)
+  ];
+  return { applicant, job, gap };
+}
+
+function jsonCitation(refs: string[], emptySentinel: string) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      ref: { type: "string", enum: refs.length ? refs : [emptySentinel] },
+      excerpt: jsonString
+    },
+    required: ["ref", "excerpt"]
+  };
+}
 
 // Kept explicit so the exact provider request is reviewable and does not rely on
-// a provider-specific Zod converter at runtime.
-export const JOB_MATCH_RESPONSE_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    contractVersion: { type: "string", enum: ["3"] },
-    overallFitScore: jsonScore,
-    resumeKeywordScore: jsonScore,
-    skillsMatchScore: jsonScore,
-    experienceMatchScore: jsonScore,
-    careerGoalScore: jsonScore,
-    locationWorkStyleScore: jsonScore,
-    compensationScore: { type: ["number", "null"], minimum: 0, maximum: 100 },
-    confidenceScore: jsonScore,
-    confidenceBasis: jsonString,
-    factualMatches: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          applicantEvidence: { type: "array", minItems: 1, items: jsonCitation },
-          jobEvidence: { type: "array", minItems: 1, items: jsonCitation },
-          supportedKeywords: { type: "array", minItems: 1, items: jsonString }
-        },
-        required: ["applicantEvidence", "jobEvidence", "supportedKeywords"]
-      }
-    },
-    requirementGaps: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          requirement: jsonString,
-          jobRequirement: jsonCitation,
-          missingKeywords: { type: "array", items: jsonString }
-        },
-        required: ["requirement", "jobRequirement", "missingKeywords"]
-      }
-    },
-    advice: {
+// a provider-specific Zod converter at runtime. Reference enums are derived from
+// the submitted input; local semantic validation remains authoritative.
+export function buildJobMatchResponseJsonSchema(input: MatchInput) {
+  const refs = getJobMatchEvidenceReferences(input);
+  const applicantCitation = jsonCitation(refs.applicant, "__NO_SUBMITTED_APPLICANT_REFERENCE__");
+  const jobCitation = jsonCitation(refs.job, "__NO_SUBMITTED_JOB_REFERENCE__");
+  const gapCitation = jsonCitation(refs.gap, "__NO_SUBMITTED_GAP_REFERENCE__");
+  const factualMatches: Record<string, unknown> = {
+    type: "array",
+    items: {
       type: "object",
       additionalProperties: false,
       properties: {
-        keywordsToEmphasize: { type: "array", items: jsonString },
-        resumeAngle: jsonString,
-        coverLetterAngle: jsonString
+        applicantEvidence: { type: "array", minItems: 1, items: applicantCitation },
+        jobEvidence: { type: "array", minItems: 1, items: jobCitation },
+        supportedKeywords: { type: "array", minItems: 1, items: jsonString }
       },
-      required: ["keywordsToEmphasize", "resumeAngle", "coverLetterAngle"]
+      required: ["applicantEvidence", "jobEvidence", "supportedKeywords"]
+    }
+  };
+  if (!refs.applicant.length || !refs.job.length) factualMatches.maxItems = 0;
+  const requirementGaps: Record<string, unknown> = {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        requirement: jsonString,
+        jobRequirement: gapCitation,
+        missingKeywords: { type: "array", minItems: 1, items: jsonString }
+      },
+      required: ["requirement", "jobRequirement", "missingKeywords"]
+    }
+  };
+  if (!refs.gap.length) requirementGaps.maxItems = 0;
+
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      contractVersion: { type: "string", enum: ["3"] },
+      overallFitScore: jsonScore,
+      resumeKeywordScore: jsonScore,
+      skillsMatchScore: jsonScore,
+      experienceMatchScore: jsonScore,
+      careerGoalScore: jsonScore,
+      locationWorkStyleScore: jsonScore,
+      compensationScore: { type: ["number", "null"], minimum: 0, maximum: 100 },
+      confidenceScore: jsonScore,
+      confidenceBasis: jsonString,
+      factualMatches,
+      requirementGaps,
+      advice: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          keywordsToEmphasize: { type: "array", items: jsonString },
+          resumeAngle: jsonString,
+          coverLetterAngle: jsonString
+        },
+        required: ["keywordsToEmphasize", "resumeAngle", "coverLetterAngle"]
+      },
+      recommendation: { type: "string", enum: ["apply now", "consider", "skip"] }
     },
-    recommendation: { type: "string", enum: ["apply now", "consider", "skip"] }
-  },
-  required: [
-    "contractVersion", "overallFitScore", "resumeKeywordScore", "skillsMatchScore",
-    "experienceMatchScore", "careerGoalScore", "locationWorkStyleScore",
-    "compensationScore", "confidenceScore", "confidenceBasis", "factualMatches",
-    "requirementGaps", "advice", "recommendation"
-  ]
-} as const;
+    required: [
+      "contractVersion", "overallFitScore", "resumeKeywordScore", "skillsMatchScore",
+      "experienceMatchScore", "careerGoalScore", "locationWorkStyleScore",
+      "compensationScore", "confidenceScore", "confidenceBasis", "factualMatches",
+      "requirementGaps", "advice", "recommendation"
+    ]
+  };
+}
+
+export function buildJobMatchSystemPrompt(input: MatchInput) {
+  const refs = getJobMatchEvidenceReferences(input);
+  return `${jobMatchPrompt.trim()}\n\n` +
+    `Allowed applicant evidence references (exact strings only): ${JSON.stringify(refs.applicant)}\n` +
+    `Allowed job evidence references (exact strings only): ${JSON.stringify(refs.job)}\n` +
+    `Allowed requirement-gap references (exact strings only): ${JSON.stringify(refs.gap)}\n` +
+    "Never append child paths to any listed reference. If an allowlist is empty, return no item that requires it.";
+}
 
 type ResolvedEvidence = { found: true; value: unknown } | { found: false };
 
@@ -243,13 +327,13 @@ function indexedValue(ref: string, prefix: string, values: unknown[] | undefined
   const match = ref.match(new RegExp(`^${prefix.replace(".", "\\.")}\\[(\\d+)\\]$`));
   if (!match || !values) return { found: false };
   const index = Number(match[1]);
-  return Number.isSafeInteger(index) && index >= 0 && index < values.length
-    ? { found: true, value: values[index] }
-    : { found: false };
+  if (!Number.isSafeInteger(index) || index < 0 || index >= values.length) return { found: false };
+  const value = values[index];
+  return referenceValueIsPresent(value) ? { found: true, value } : { found: false };
 }
 
 function exactValue(ref: string, values: Record<string, unknown>): ResolvedEvidence {
-  return Object.prototype.hasOwnProperty.call(values, ref) && values[ref] !== null && values[ref] !== undefined
+  return Object.prototype.hasOwnProperty.call(values, ref) && referenceValueIsPresent(values[ref])
     ? { found: true, value: values[ref] }
     : { found: false };
 }
@@ -258,7 +342,6 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
   const exact = exactValue(ref, {
     "resume.summary": input.resume?.summary,
     "resume.rawText": input.resume?.rawText,
-    "resume.workHistory": input.resume?.workHistory,
     "profile.careerGoals": input.profile?.careerGoals,
     "profile.remotePreference": input.profile?.remotePreference,
     "profile.salaryTargetMin": input.profile?.salaryTargetMin,
@@ -269,6 +352,11 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
   const indexed = [
     indexedValue(ref, "resume.skills", input.resume?.skills),
     indexedValue(ref, "resume.achievements", input.resume?.achievements),
+    indexedValue(
+      ref,
+      "resume.workHistory",
+      Array.isArray(input.resume?.workHistory) ? input.resume.workHistory : undefined
+    ),
     indexedValue(ref, "profile.preferredRoles", input.profile?.preferredRoles),
     indexedValue(ref, "profile.preferredLocations", input.profile?.preferredLocations),
     indexedValue(ref, "profile.skillsToEmphasize", input.profile?.skillsToEmphasize)
@@ -339,6 +427,12 @@ function applicantEvidenceText(input: MatchInput) {
     input.resume?.workHistory,
     ...(input.resume?.skills ?? []),
     ...(input.resume?.achievements ?? []),
+    input.profile?.careerGoals,
+    ...(input.profile?.preferredRoles ?? []),
+    ...(input.profile?.preferredLocations ?? []),
+    input.profile?.remotePreference,
+    input.profile?.salaryTargetMin,
+    input.profile?.salaryTargetMax,
     ...(input.profile?.skillsToEmphasize ?? [])
   ].filter((value) => value !== null && value !== undefined);
   return comparable(values.map(evidenceText).join("\n"));
@@ -474,7 +568,14 @@ export async function scoreJobMatch(
   userId?: string,
   options: AiInvocationOptions = {}
 ) {
-  const { policy } = assertAiInputWithinLimits("JOB_MATCH", jobMatchPrompt, input);
+  const systemPrompt = buildJobMatchSystemPrompt(input);
+  const responseJsonSchema = buildJobMatchResponseJsonSchema(input);
+  // The provider may count structured-output schema tokens as request input, so
+  // include the dynamic schema in the same preflight ceiling and reservation.
+  const { policy } = assertAiInputWithinLimits("JOB_MATCH", systemPrompt, {
+    matchInput: input,
+    responseJsonSchema
+  });
   const inputHash = hashAiInput("jobMatchPrompt", JOB_MATCH_PROMPT_VERSION, input);
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (getAiRuntimeMode(JOB_MATCH_PROVIDER) !== JOB_MATCH_PROVIDER || !apiKey) {
@@ -565,9 +666,9 @@ export async function scoreJobMatch(
     const response = await callGeminiJsonProvider({
       apiKey,
       model: JOB_MATCH_MODEL,
-      systemPrompt: jobMatchPrompt,
+      systemPrompt,
       payload: input,
-      responseJsonSchema: JOB_MATCH_RESPONSE_JSON_SCHEMA,
+      responseJsonSchema,
       maxOutputTokens: policy.maxOutputTokens,
       thinkingLevel: JOB_MATCH_THINKING_LEVEL
     });

@@ -3,12 +3,28 @@ import { test, type TestContext } from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  buildJobMatchResponseJsonSchema,
+  buildJobMatchSystemPrompt,
   JOB_MATCH_MODEL,
   scoreJobMatch,
   type JobMatchModelOutput,
   type MatchInput
 } from "@/lib/ai/job-match";
+import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { prisma } from "@/lib/prisma";
+
+type GeminiRequestView = {
+  systemInstruction: { parts: Array<{ text: string }> };
+  generationConfig: {
+    responseJsonSchema: {
+      properties: {
+        factualMatches: { items: { properties: {
+          applicantEvidence: { items: { properties: { ref: { enum: string[] } } } };
+        } } };
+      };
+    };
+  };
+};
 
 const input: MatchInput = {
   job: {
@@ -25,7 +41,8 @@ const input: MatchInput = {
     summary: "Platform engineer",
     rawText: "Built reliable TypeScript services.",
     skills: ["TypeScript"],
-    achievements: []
+    achievements: [],
+    workHistory: [{ role: "Platform Engineer", bullets: ["Built reliable TypeScript services."] }]
   },
   profile: {
     salaryTargetMin: 125_000,
@@ -177,11 +194,42 @@ test("manual JOB_MATCH requires confirmation before reservation or provider call
   assert.equal(calls, 0);
 });
 
+test("dynamic response-schema tokens fail preflight before cache, reservation, or provider", async (t) => {
+  paidEnvironment(t);
+  const oversized = structuredClone(input);
+  oversized.resume!.skills = Array.from({ length: 2_500 }, (_, index) => `SyntheticSkill${index}`);
+  const systemPrompt = buildJobMatchSystemPrompt(oversized);
+  const responseJsonSchema = buildJobMatchResponseJsonSchema(oversized);
+
+  assert.doesNotThrow(() => assertAiInputWithinLimits("JOB_MATCH", systemPrompt, oversized));
+  assert.throws(
+    () => assertAiInputWithinLimits("JOB_MATCH", systemPrompt, { matchInput: oversized, responseJsonSchema }),
+    /56,000-token input limit/
+  );
+
+  let cacheReads = 0;
+  let providerCalls = 0;
+  stub(t, prisma.aIResponseCache, "findFirst", async () => { cacheReads += 1; return null; });
+  stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
+
+  await assert.rejects(
+    scoreJobMatch(oversized, "user-1", { highCostConfirmed: true }),
+    /56,000-token input limit/
+  );
+  assert.equal(cacheReads, 0);
+  assert.equal(providerCalls, 0);
+});
+
 test("confirmed JOB_MATCH reserves exact cost, validates v3 evidence, bills thinking and caches raw output", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
   let calls = 0;
-  stub(t, globalThis, "fetch", async () => { calls += 1; return providerResponse(output); });
+  const requestBodies: GeminiRequestView[] = [];
+  stub(t, globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    calls += 1;
+    requestBodies.push(JSON.parse(String(init?.body)) as GeminiRequestView);
+    return providerResponse(output);
+  });
 
   const result = await scoreJobMatch(input, "user-1", { highCostConfirmed: true });
 
@@ -191,6 +239,13 @@ test("confirmed JOB_MATCH reserves exact cost, validates v3 evidence, bills thin
   assert.equal(result.usage.outputTokens, 50);
   assert.equal(result.usage.estimatedCostMicros, 263);
   assert.deepEqual(result.supportedKeywords, ["TypeScript"]);
+  const requestBody = requestBodies[0];
+  assert.ok(requestBody);
+  const applicantRefEnum = requestBody.generationConfig.responseJsonSchema.properties
+    .factualMatches.items.properties.applicantEvidence.items.properties.ref.enum;
+  assert.ok(applicantRefEnum.includes("resume.workHistory[0]"));
+  assert.ok(!applicantRefEnum.includes("resume.workHistory[0].bullets[0]"));
+  assert.match(requestBody.systemInstruction.parts[0].text, /exact strings only/);
   assert.equal(ledger.reservations.length, 1);
   assert.deepEqual({
     provider: ledger.reservations[0].provider,

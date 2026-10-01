@@ -5,7 +5,7 @@ import { runJobMatch } from "@/lib/jobs";
 import { JOB_MATCH_MODEL } from "@/lib/ai/job-match";
 import { prisma } from "@/lib/prisma";
 
-test("runJobMatch reuses only v3 rows from the pinned Gemini JOB_MATCH model", async () => {
+test("runJobMatch reuses only current v3.1 rows from the pinned Gemini JOB_MATCH model", async () => {
   const job = {
     id: "job-1", title: "Engineer", company: "Acme", description: "React",
     location: null, remoteStatus: null, salaryMin: null, salaryMax: null,
@@ -34,7 +34,7 @@ test("runJobMatch reuses only v3 rows from the pinned Gemini JOB_MATCH model", a
     }) as unknown as typeof originalAnalysis;
     await assert.rejects(runJobMatch("user-1", job.id), /unavailable in local mode/);
     assert.equal(modelFilter, JOB_MATCH_MODEL);
-    assert.equal(promptVersion, "3");
+    assert.equal(promptVersion, "3.1");
     prisma.aIAnalysis.findFirst = (async () => ({ model: JOB_MATCH_MODEL, output: { overallFitScore: 81 } })) as unknown as typeof originalAnalysis;
     const cached = await runJobMatch("user-1", job.id);
     assert.equal(cached.cached, true);
