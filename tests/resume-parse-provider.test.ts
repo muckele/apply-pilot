@@ -552,6 +552,18 @@ test("numeric month-year work dates remain valid", () => {
   assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
 });
 
+test("a work location may follow dates within the record header", () => {
+  const source = resumeText.replace("Remote\n2022 - Present", "2022 - Present\nSydney, NSW");
+  const output = structuredClone(parsedOutput);
+  output.workHistory[0].sourceText = output.workHistory[0].sourceText.replace(
+    "Remote\n2022 - Present",
+    "2022 - Present\nSydney, NSW"
+  );
+  output.workHistory[0].location = "Sydney, NSW";
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
+});
+
 test("atomic record fields cannot absorb multiline records", () => {
   const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.`;
   const output = emptyParsedResume();

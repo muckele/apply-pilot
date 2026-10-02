@@ -492,11 +492,8 @@ function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
     item.sourceText.indexOf(item.company) + item.company.length,
     item.sourceText.indexOf(item.title) + item.title.length
   );
-  const firstDetailIndex = firstFactIndex(
-    item.sourceText,
-    [item.startDate, item.endDate, ...item.bullets]
-  );
-  const appearsInHeader = locationIndex >= coreEnd && locationIndex < firstDetailIndex;
+  const firstNarrativeIndex = firstFactIndex(item.sourceText, item.bullets);
+  const appearsInHeader = locationIndex >= coreEnd && locationIndex < firstNarrativeIndex;
   const explicitlyLabeled = item.sourceText.split(/\r?\n/).some((line) =>
     line.includes(item.location!) && /\b(?:location|based\s+in)\b/i.test(line)
   );
