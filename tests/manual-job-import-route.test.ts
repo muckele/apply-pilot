@@ -180,6 +180,55 @@ test("an audit write failure after persistence cannot turn a real import into an
   assert.equal(result.application.id, [...state.applications.values()][0]?.id);
 });
 
+test("import-only persists structured evidence without requesting scoring", async (t) => {
+  const state = setup(t);
+  const response = await invoke({
+    ...posting,
+    runMatch: false,
+    salaryMin: 0,
+    salaryMax: 120_000,
+    datePosted: "2026-07-08",
+    applyUrl: "https://example.test/jobs/123/apply",
+    requirements: ["Four years of client-facing experience"],
+    preferredQualifications: ["Early-stage company experience"],
+    detectedTechStack: ["SQL"]
+  });
+
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.scoring.status, "not_requested");
+  const persisted = [...state.jobs.values()][0];
+  assert.equal(persisted?.salaryMin, 0);
+  assert.equal(persisted?.salaryMax, 120_000);
+  assert.equal((persisted?.datePosted as Date | undefined)?.toISOString(), "2026-07-08T00:00:00.000Z");
+  assert.equal(persisted?.sourceUrl, posting.sourceUrl);
+  assert.equal(persisted?.applyUrl, "https://example.test/jobs/123/apply");
+  assert.equal(persisted?.description, posting.description);
+  assert.deepEqual(persisted?.requirements, ["Four years of client-facing experience"]);
+  assert.deepEqual(persisted?.preferredQualifications, ["Early-stage company experience"]);
+  assert.deepEqual(persisted?.detectedTechStack, ["SQL"]);
+  assert.equal(state.scoreWrites, 0);
+});
+
+test("whitespace-only salary values remain unknown before persistence", async (t) => {
+  const state = setup(t);
+  const response = await invoke({ ...posting, runMatch: false, salaryMin: "   ", salaryMax: "\t" });
+
+  assert.equal(response.status, 200);
+  const persisted = [...state.jobs.values()][0];
+  assert.equal(persisted?.salaryMin, undefined);
+  assert.equal(persisted?.salaryMax, undefined);
+});
+
+test("invalid salary ordering fails before persistence", async (t) => {
+  const state = setup(t);
+  const response = await invoke({ ...posting, runMatch: false, salaryMin: 120_000, salaryMax: 90_000 });
+
+  assert.equal(response.status, 422);
+  assert.equal(state.jobs.size, 0);
+  assert.equal(state.applications.size, 0);
+});
+
 test("unexpected scoring error preserves import identity and reports scoring failure", async (t) => {
   const state = setup(t, { unexpectedError: true });
   const response = await invoke(posting);
