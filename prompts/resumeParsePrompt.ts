@@ -5,10 +5,13 @@ Return only JSON matching contractVersion 3 and the supplied response schema.
 
 Source fidelity rules:
 - Every non-null factual string must be copied verbatim from the submitted resume text. You may normalize surrounding whitespace only.
+- Copy the complete contiguous contact/header block into contactInfo.sourceText, including the candidate name and any headline or contact lines. Copy the name into contactInfo.name when present.
 - summary must be a verbatim excerpt from a summary/profile section, or an empty string when no such excerpt exists.
 - Do not infer, paraphrase, standardize, combine, embellish, or invent employers, titles, dates, locations, tools, credentials, metrics, responsibilities, or accomplishments.
-- Keep each work-history role, project, education record, and certification separate. Do not merge records.
+- For every work-history role, project, education record, and certification, copy its complete contiguous source block into sourceText. Keep records separate and in source order; never merge blocks.
+- Each structured field for a record must occur verbatim inside that record's sourceText.
 - Represent every factual line beneath a recognized section heading; never omit a role, item, or section line.
+- For skills and achievements, return verbatim source entries in source order rather than paraphrased or inferred labels.
 - Use null for an unavailable nullable field and an empty array only when the source genuinely contains no items for that section.
 - sectionStatus must cover summary, skills, workHistory, projects, education, certifications, and achievements. Mark a section present when the source contains it and absent only when it does not.
 - Put bounded ambiguity or source-quality notes in warnings. Never resolve an ambiguity by guessing.

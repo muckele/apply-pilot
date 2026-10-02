@@ -15,6 +15,7 @@ import {
   getOrCreateAiSettings,
   hashAiInput,
   reconcileAiReservation,
+  reconcileStaleAiReservations,
   reserveAiBudget
 } from "@/lib/ai/application-plan-budget";
 import {
@@ -38,6 +39,7 @@ export const RESUME_PARSE_PROMPT_VERSION = "3";
 type ResumeSectionStatus = "present" | "absent";
 
 type ResumeWorkHistoryItem = {
+  sourceText: string;
   company: string;
   title: string;
   location: string | null;
@@ -47,6 +49,7 @@ type ResumeWorkHistoryItem = {
 };
 
 type ResumeProjectItem = {
+  sourceText: string;
   name: string;
   description: string | null;
   technologies: string[];
@@ -54,6 +57,7 @@ type ResumeProjectItem = {
 };
 
 type ResumeEducationItem = {
+  sourceText: string;
   institution: string;
   credential: string | null;
   fieldOfStudy: string | null;
@@ -63,6 +67,7 @@ type ResumeEducationItem = {
 };
 
 type ResumeCertificationItem = {
+  sourceText: string;
   name: string;
   issuer: string | null;
   date: string | null;
@@ -72,6 +77,8 @@ type ResumeCertificationItem = {
 export type ParsedResume = {
   contractVersion: "3";
   contactInfo: {
+    sourceText: string;
+    name: string | null;
     email: string | null;
     phone: string | null;
     location: string | null;
@@ -112,6 +119,7 @@ export type TailoredResumeOutput = {
 
 const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
 const boundedSourceString = z.string().trim().min(1).max(2_000);
+const boundedSourceBlock = z.string().trim().min(1).max(20_000);
 const nullableSourceString = z.union([boundedSourceString, z.null()]);
 const sourceStringList = z.array(boundedSourceString).max(100);
 const sectionStatusSchema = z.enum(["present", "absent"]);
@@ -119,6 +127,8 @@ const sectionStatusSchema = z.enum(["present", "absent"]);
 export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> = z.object({
   contractVersion: z.literal("3"),
   contactInfo: z.object({
+    sourceText: z.string().trim().max(20_000),
+    name: nullableSourceString,
     email: nullableSourceString,
     phone: nullableSourceString,
     location: nullableSourceString,
@@ -129,6 +139,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> 
   summary: z.string().trim().max(2_000),
   skills: sourceStringList,
   workHistory: z.array(z.object({
+    sourceText: boundedSourceBlock,
     company: boundedSourceString,
     title: boundedSourceString,
     location: nullableSourceString,
@@ -137,12 +148,14 @@ export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> 
     bullets: sourceStringList
   }).strict()).max(50),
   projects: z.array(z.object({
+    sourceText: boundedSourceBlock,
     name: boundedSourceString,
     description: nullableSourceString,
     technologies: sourceStringList,
     bullets: sourceStringList
   }).strict()).max(50),
   education: z.array(z.object({
+    sourceText: boundedSourceBlock,
     institution: boundedSourceString,
     credential: nullableSourceString,
     fieldOfStudy: nullableSourceString,
@@ -151,6 +164,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> 
     details: sourceStringList
   }).strict()).max(30),
   certifications: z.array(z.object({
+    sourceText: boundedSourceBlock,
     name: boundedSourceString,
     issuer: nullableSourceString,
     date: nullableSourceString,
@@ -182,6 +196,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
       type: "object",
       additionalProperties: false,
       properties: {
+        sourceText: jsonString,
+        name: nullableJsonString,
         email: nullableJsonString,
         phone: nullableJsonString,
         location: nullableJsonString,
@@ -189,7 +205,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         github: nullableJsonString,
         portfolio: nullableJsonString
       },
-      required: ["email", "phone", "location", "linkedin", "github", "portfolio"]
+      required: ["sourceText", "name", "email", "phone", "location", "linkedin", "github", "portfolio"]
     },
     summary: jsonString,
     skills: jsonStringArray,
@@ -199,6 +215,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
+          sourceText: jsonString,
           company: jsonString,
           title: jsonString,
           location: nullableJsonString,
@@ -206,7 +223,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           endDate: nullableJsonString,
           bullets: jsonStringArray
         },
-        required: ["company", "title", "location", "startDate", "endDate", "bullets"]
+        required: ["sourceText", "company", "title", "location", "startDate", "endDate", "bullets"]
       }
     },
     projects: {
@@ -215,12 +232,13 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
+          sourceText: jsonString,
           name: jsonString,
           description: nullableJsonString,
           technologies: jsonStringArray,
           bullets: jsonStringArray
         },
-        required: ["name", "description", "technologies", "bullets"]
+        required: ["sourceText", "name", "description", "technologies", "bullets"]
       }
     },
     education: {
@@ -229,6 +247,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
+          sourceText: jsonString,
           institution: jsonString,
           credential: nullableJsonString,
           fieldOfStudy: nullableJsonString,
@@ -236,7 +255,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           endDate: nullableJsonString,
           details: jsonStringArray
         },
-        required: ["institution", "credential", "fieldOfStudy", "startDate", "endDate", "details"]
+        required: ["sourceText", "institution", "credential", "fieldOfStudy", "startDate", "endDate", "details"]
       }
     },
     certifications: {
@@ -245,12 +264,13 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
+          sourceText: jsonString,
           name: jsonString,
           issuer: nullableJsonString,
           date: nullableJsonString,
           expirationDate: nullableJsonString
         },
-        required: ["name", "issuer", "date", "expirationDate"]
+        required: ["sourceText", "name", "issuer", "date", "expirationDate"]
       }
     },
     achievements: jsonStringArray,
@@ -331,29 +351,49 @@ function hasSectionHeading(source: string, section: keyof ParsedResume["sectionS
   return source.split(/\r?\n/).some((line) => sectionHeadings[section].test(line.trim().replace(/:$/, "")));
 }
 
-function sectionFacts(output: ParsedResume, section: keyof ParsedResume["sectionStatus"]): string[] {
-  const present = (values: Array<string | null>) => values.filter((value): value is string => Boolean(value));
+function contactSourceBlock(source: string) {
+  const lines = source.split(/\r?\n/);
+  const boundaries = lines.flatMap((line, index) => {
+    const heading = line.trim().replace(/:$/, "");
+    return sectionForHeading(line) || otherSectionHeading.test(heading)
+      ? [{ index, contact: /^CONTACT$/i.test(heading) }]
+      : [];
+  });
+  if (boundaries.length === 0) {
+    throw new PublicApiError(
+      "Resume structure could not be validated because no supported section headings were found. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", retryable: false }
+    );
+  }
+  const blocks: string[] = [];
+  const preambleEnd = boundaries[0]?.index ?? lines.length;
+  const preamble = lines.slice(0, preambleEnd).join("\n").trim();
+  if (preamble) blocks.push(preamble);
+  boundaries.forEach((boundary, boundaryIndex) => {
+    if (!boundary.contact) return;
+    const end = boundaries[boundaryIndex + 1]?.index ?? lines.length;
+    const body = lines.slice(boundary.index + 1, end).join("\n").trim();
+    if (body) blocks.push(body);
+  });
+  if (blocks.length > 1) {
+    throw new PublicApiError(
+      "Resume contact structure is split across multiple source blocks and cannot be validated safely. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section: "contactInfo", retryable: false }
+    );
+  }
+  return blocks[0] ?? "";
+}
+
+function sectionBlocks(output: ParsedResume, section: keyof ParsedResume["sectionStatus"]): string[] {
   if (section === "summary") return output.summary ? [output.summary] : [];
   if (section === "skills") return output.skills;
   if (section === "achievements") return output.achievements;
-  if (section === "workHistory") {
-    return output.workHistory.flatMap((item) => present([
-      item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets
-    ]));
-  }
-  if (section === "projects") {
-    return output.projects.flatMap((item) => present([
-      item.name, item.description, ...item.technologies, ...item.bullets
-    ]));
-  }
-  if (section === "education") {
-    return output.education.flatMap((item) => present([
-      item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate, ...item.details
-    ]));
-  }
-  return output.certifications.flatMap((item) => present([
-    item.name, item.issuer, item.date, item.expirationDate
-  ]));
+  if (section === "workHistory") return output.workHistory.map((item) => item.sourceText);
+  if (section === "projects") return output.projects.map((item) => item.sourceText);
+  if (section === "education") return output.education.map((item) => item.sourceText);
+  return output.certifications.map((item) => item.sourceText);
 }
 
 function assertRecognizedSectionCoverage(source: string, output: ParsedResume) {
@@ -363,6 +403,13 @@ function assertRecognizedSectionCoverage(source: string, output: ParsedResume) {
     const heading = line.trim().replace(/:$/, "");
     return section || otherSectionHeading.test(heading) ? [{ index, section }] : [];
   });
+  if (!headings.some((heading) => heading.section !== null)) {
+    throw new PublicApiError(
+      "Resume structure could not be validated because no supported section headings were found. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", retryable: false }
+    );
+  }
   const bodyLines = new Map<keyof ParsedResume["sectionStatus"], string[]>();
   headings.forEach((heading, headingIndex) => {
     if (!heading.section) return;
@@ -373,41 +420,48 @@ function assertRecognizedSectionCoverage(source: string, output: ParsedResume) {
   });
 
   for (const [section, sourceLines] of bodyLines) {
-    const fragments = sectionFacts(output, section)
-      .flatMap((fact) => fact.split(/\r?\n/))
-      .map((fact) => fact.trim())
-      .filter(Boolean);
-    for (const sourceLine of sourceLines) {
-      let remaining = sourceLine.trim();
-      while (remaining && fragments.length) {
-        let matchIndex = -1;
-        for (let index = 0; index < fragments.length; index += 1) {
-          if (
-            remaining.includes(fragments[index]) &&
-            (matchIndex < 0 || fragments[index].length > fragments[matchIndex].length)
-          ) {
-            matchIndex = index;
-          }
-        }
-        if (matchIndex < 0) break;
-        const [fragment] = fragments.splice(matchIndex, 1);
-        remaining = remaining.replace(fragment, "");
-      }
-      if (/[\p{L}\p{N}]/u.test(remaining)) {
+    const body = sourceLines.join("\n").trim();
+    const blocks = sectionBlocks(output, section);
+    let cursor = 0;
+    const coveredRanges: Array<{ start: number; end: number }> = [];
+    for (const block of blocks) {
+      const start = body.indexOf(block, cursor);
+      if (start < 0) {
         const label = section === "workHistory" ? "work history" : section;
         throw new PublicApiError(
-          `Resume parsing is incomplete for ${label}; source content was not represented. No master resume was changed.`,
+          `Resume parsing returned ${label} content outside its source section. No master resume was changed.`,
           422,
-          { code: "RESUME_PARSE_INCOMPLETE", section, retryable: false }
+          { code: "RESUME_PARSE_INVALID_OUTPUT", section, retryable: false }
         );
       }
+      coveredRanges.push({ start, end: start + block.length });
+      cursor = start + block.length;
     }
-    if (fragments.length) {
+    const characters = body.split("");
+    for (const range of coveredRanges) {
+      characters.fill(" ", range.start, range.end);
+    }
+    let remaining = characters.join("");
+    if (section === "skills") {
+      remaining = remaining.replace(/\b(?:and|with|tools?|technologies|proficient|in)\b/gi, "");
+    }
+    if (/[\p{L}\p{N}]/u.test(remaining)) {
       const label = section === "workHistory" ? "work history" : section;
       throw new PublicApiError(
-        `Resume parsing returned ${label} facts outside that source section. No master resume was changed.`,
+        `Resume parsing is incomplete for ${label}; source content was not represented. No master resume was changed.`,
         422,
-        { code: "RESUME_PARSE_INVALID_OUTPUT", section, retryable: false }
+        { code: "RESUME_PARSE_INCOMPLETE", section, retryable: false }
+      );
+    }
+  }
+
+  for (const section of Object.keys(sectionHeadings) as Array<keyof ParsedResume["sectionStatus"]>) {
+    if (sectionBlocks(output, section).length > 0 && !bodyLines.has(section)) {
+      const label = section === "workHistory" ? "work history" : section;
+      throw new PublicApiError(
+        `Resume parsing returned ${label} content without a supported source heading. No master resume was changed.`,
+        422,
+        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, retryable: false }
       );
     }
   }
@@ -456,39 +510,68 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     }
   }
 
+  const contactBlock = contactSourceBlock(source);
+  if (output.contactInfo.sourceText !== contactBlock) {
+    throw new PublicApiError(
+      "Resume parsing did not preserve the complete contact/header source block. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", retryable: false }
+    );
+  }
   for (const [key, item] of Object.entries(output.contactInfo)) {
-    assertSourceSupported(source, item, `contactInfo.${key}`);
+    if (key === "sourceText") continue;
+    assertSourceSupported(contactBlock, item, `contactInfo.${key}`);
+  }
+  const sourceEmails = [...source.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0]);
+  if (sourceEmails.length > 0 && (!output.contactInfo.email || !sourceEmails.includes(output.contactInfo.email))) {
+    throw new PublicApiError(
+      "Resume parsing omitted or changed an email address present in the source. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", retryable: false }
+    );
   }
   assertSourceSupported(source, output.summary, "summary");
   output.skills.forEach((item, index) => assertSourceSupported(source, item, `skills[${index}]`));
   output.achievements.forEach((item, index) => assertSourceSupported(source, item, `achievements[${index}]`));
   output.workHistory.forEach((item, index) => {
-    assertSourceSupported(source, item.company, `workHistory[${index}].company`);
-    assertSourceSupported(source, item.title, `workHistory[${index}].title`);
-    assertSourceSupported(source, item.location, `workHistory[${index}].location`);
-    assertSourceSupported(source, item.startDate, `workHistory[${index}].startDate`);
-    assertSourceSupported(source, item.endDate, `workHistory[${index}].endDate`);
-    item.bullets.forEach((entry, entryIndex) => assertSourceSupported(source, entry, `workHistory[${index}].bullets[${entryIndex}]`));
+    assertSourceSupported(source, item.sourceText, `workHistory[${index}].sourceText`);
+    assertSourceSupported(item.sourceText, item.company, `workHistory[${index}].company`);
+    assertSourceSupported(item.sourceText, item.title, `workHistory[${index}].title`);
+    assertSourceSupported(item.sourceText, item.location, `workHistory[${index}].location`);
+    assertSourceSupported(item.sourceText, item.startDate, `workHistory[${index}].startDate`);
+    assertSourceSupported(item.sourceText, item.endDate, `workHistory[${index}].endDate`);
+    item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `workHistory[${index}].bullets[${entryIndex}]`));
+    const dateTokens = item.sourceText.match(/\b(?:19|20)\d{2}\b|\b(?:present|current)\b/gi)?.length ?? 0;
+    if (dateTokens > 2) {
+      throw new PublicApiError(
+        `Resume parsing appears to merge multiple roles into workHistory[${index}]. No master resume was changed.`,
+        422,
+        { code: "RESUME_PARSE_MERGED_RECORDS", section: "workHistory", retryable: false }
+      );
+    }
   });
   output.projects.forEach((item, index) => {
-    assertSourceSupported(source, item.name, `projects[${index}].name`);
-    assertSourceSupported(source, item.description, `projects[${index}].description`);
-    item.technologies.forEach((entry, entryIndex) => assertSourceSupported(source, entry, `projects[${index}].technologies[${entryIndex}]`));
-    item.bullets.forEach((entry, entryIndex) => assertSourceSupported(source, entry, `projects[${index}].bullets[${entryIndex}]`));
+    assertSourceSupported(source, item.sourceText, `projects[${index}].sourceText`);
+    assertSourceSupported(item.sourceText, item.name, `projects[${index}].name`);
+    assertSourceSupported(item.sourceText, item.description, `projects[${index}].description`);
+    item.technologies.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].technologies[${entryIndex}]`));
+    item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].bullets[${entryIndex}]`));
   });
   output.education.forEach((item, index) => {
-    assertSourceSupported(source, item.institution, `education[${index}].institution`);
-    assertSourceSupported(source, item.credential, `education[${index}].credential`);
-    assertSourceSupported(source, item.fieldOfStudy, `education[${index}].fieldOfStudy`);
-    assertSourceSupported(source, item.startDate, `education[${index}].startDate`);
-    assertSourceSupported(source, item.endDate, `education[${index}].endDate`);
-    item.details.forEach((entry, entryIndex) => assertSourceSupported(source, entry, `education[${index}].details[${entryIndex}]`));
+    assertSourceSupported(source, item.sourceText, `education[${index}].sourceText`);
+    assertSourceSupported(item.sourceText, item.institution, `education[${index}].institution`);
+    assertSourceSupported(item.sourceText, item.credential, `education[${index}].credential`);
+    assertSourceSupported(item.sourceText, item.fieldOfStudy, `education[${index}].fieldOfStudy`);
+    assertSourceSupported(item.sourceText, item.startDate, `education[${index}].startDate`);
+    assertSourceSupported(item.sourceText, item.endDate, `education[${index}].endDate`);
+    item.details.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `education[${index}].details[${entryIndex}]`));
   });
   output.certifications.forEach((item, index) => {
-    assertSourceSupported(source, item.name, `certifications[${index}].name`);
-    assertSourceSupported(source, item.issuer, `certifications[${index}].issuer`);
-    assertSourceSupported(source, item.date, `certifications[${index}].date`);
-    assertSourceSupported(source, item.expirationDate, `certifications[${index}].expirationDate`);
+    assertSourceSupported(source, item.sourceText, `certifications[${index}].sourceText`);
+    assertSourceSupported(item.sourceText, item.name, `certifications[${index}].name`);
+    assertSourceSupported(item.sourceText, item.issuer, `certifications[${index}].issuer`);
+    assertSourceSupported(item.sourceText, item.date, `certifications[${index}].date`);
+    assertSourceSupported(item.sourceText, item.expirationDate, `certifications[${index}].expirationDate`);
   });
   assertRecognizedSectionCoverage(source, output);
   return output;
@@ -657,6 +740,28 @@ export async function parseResumeTextWithMeta(
     };
   }
 
+  const maximumCostMicros = estimateAiCostMicros({
+    model,
+    inputTokens: policy.maxInputTokens,
+    outputTokens: policy.maxOutputTokens
+  });
+  const financial = getAiFinancialPolicy();
+  if (maximumCostMicros > financial.maximumRequestCents * 10_000) {
+    throw new PublicApiError("This request exceeds the configured per-request AI limit.", 429, {
+      code: "AI_REQUEST_COST_LIMIT",
+      maximumCostMicros
+    });
+  }
+  if (!options.highCostConfirmed || !options.dataSharingConfirmed) {
+    throw new PublicApiError("Confirm sending the complete resume text and this AI request's maximum cost before continuing.", 428, {
+      code: "AI_COST_CONFIRMATION_REQUIRED",
+      maximumCostMicros,
+      provider,
+      dataType: "resume_text"
+    });
+  }
+
+  await reconcileStaleAiReservations(userId);
   const activePriorAttempt = await prisma.aIBudgetReservation.findFirst({
     where: {
       userId,
@@ -683,27 +788,6 @@ export async function parseResumeTextWithMeta(
       409,
       { code: "AI_DUPLICATE_IN_PROGRESS", retryable: true }
     );
-  }
-
-  const maximumCostMicros = estimateAiCostMicros({
-    model,
-    inputTokens: policy.maxInputTokens,
-    outputTokens: policy.maxOutputTokens
-  });
-  const financial = getAiFinancialPolicy();
-  if (maximumCostMicros > financial.maximumRequestCents * 10_000) {
-    throw new PublicApiError("This request exceeds the configured per-request AI limit.", 429, {
-      code: "AI_REQUEST_COST_LIMIT",
-      maximumCostMicros
-    });
-  }
-  if (!options.highCostConfirmed || !options.dataSharingConfirmed) {
-    throw new PublicApiError("Confirm sending the complete resume text and this AI request's maximum cost before continuing.", 428, {
-      code: "AI_COST_CONFIRMATION_REQUIRED",
-      maximumCostMicros,
-      provider,
-      dataType: "resume_text"
-    });
   }
 
   const reservation = await reserveAiBudget({

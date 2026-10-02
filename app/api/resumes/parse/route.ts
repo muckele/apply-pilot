@@ -19,34 +19,66 @@ import { prisma } from "@/lib/prisma";
 export const runtime = "nodejs";
 
 type ResumeParseClient = typeof prisma | Prisma.TransactionClient;
-const RESUME_PARSE_REPLAY_WINDOW_MS = 15 * 60_000;
 
 async function findResumeParseReplay(
   client: ResumeParseClient,
   userId: string,
+  submissionId: string,
   submissionHash: string,
   rawText: string,
   isMaster: boolean,
-  requireRequestedState = true
+  requireRequestedState = true,
+  allowContentFallback = true
 ) {
-  const analysis = await client.aIAnalysis.findFirst({
+  let analysis = await client.aIAnalysis.findFirst({
     where: {
       userId,
       type: "RESUME_PARSE",
       promptName: "resumeParsePrompt",
       promptVersion: RESUME_PARSE_PROMPT_VERSION,
-      input: { path: ["submissionHash"], equals: submissionHash },
-      createdAt: { gt: new Date(Date.now() - RESUME_PARSE_REPLAY_WINDOW_MS) }
+      input: { path: ["submissionId"], equals: submissionId }
     },
     orderBy: { createdAt: "desc" }
   });
+  const matchedAttempt = Boolean(analysis);
+  if (analysis?.input && typeof analysis.input === "object" && !Array.isArray(analysis.input)) {
+    const priorHash = (analysis.input as Record<string, unknown>).submissionHash;
+    if (priorHash !== submissionHash) {
+      throw new PublicApiError(
+        "This resume-parse attempt identifier was already used for different source data. Start a new parse attempt.",
+        409,
+        { code: "RESUME_PARSE_IDEMPOTENCY_CONFLICT", retryable: false }
+      );
+    }
+  } else if (!analysis && allowContentFallback) {
+    analysis = await client.aIAnalysis.findFirst({
+      where: {
+        userId,
+        type: "RESUME_PARSE",
+        promptName: "resumeParsePrompt",
+        promptVersion: RESUME_PARSE_PROMPT_VERSION,
+        input: { path: ["submissionHash"], equals: submissionHash }
+      },
+      orderBy: { createdAt: "desc" }
+    });
+  }
   if (!analysis || !analysis.input || typeof analysis.input !== "object" || Array.isArray(analysis.input)) {
     return null;
   }
   const resumeId = (analysis.input as Record<string, unknown>).resumeId;
   if (typeof resumeId !== "string") return null;
   const resume = await client.resume.findFirst({ where: { id: resumeId, userId } });
-  if (!resume || (requireRequestedState && resume.isMaster !== isMaster)) return null;
+  if (!resume) return null;
+  if (requireRequestedState && resume.isMaster !== isMaster) {
+    if (matchedAttempt) {
+      throw new PublicApiError(
+        "This resume-parse attempt already committed, but its master state has since changed. Start a new parse attempt if you intend to change the master resume.",
+        409,
+        { code: "RESUME_PARSE_COMMITTED_STATE_CHANGED", retryable: false }
+      );
+    }
+    return null;
+  }
   return {
     resume,
     parsed: validateParsedResumeOutput(rawText, analysis.output),
@@ -95,6 +127,7 @@ export async function POST(request: NextRequest) {
     const contentType = request.headers.get("content-type") ?? "";
     let title = "Master Resume";
     let isMaster = true;
+    let submissionId = "";
     let rawText = "";
     let fileBuffer: Buffer | undefined;
     let filePath: string | undefined;
@@ -104,6 +137,7 @@ export async function POST(request: NextRequest) {
     if (contentType.includes("multipart/form-data")) {
       const formData = await request.formData();
       const input = resumeParseSchema.parse({
+        submissionId: formData.get("submissionId"),
         title: formData.get("title") ?? "Master Resume",
         pastedText: formData.get("pastedText") ?? undefined,
         isMaster: formData.get("isMaster") !== "false"
@@ -111,6 +145,7 @@ export async function POST(request: NextRequest) {
       const file = formData.get("file");
       title = input.title;
       isMaster = input.isMaster;
+      submissionId = input.submissionId;
       rawText = input.pastedText ?? "";
 
       if (file instanceof File && file.size > 0) {
@@ -124,6 +159,7 @@ export async function POST(request: NextRequest) {
       const input = resumeParseSchema.parse(await request.json());
       title = input.title;
       isMaster = input.isMaster;
+      submissionId = input.submissionId;
       rawText = input.pastedText ?? "";
     }
 
@@ -145,7 +181,9 @@ export async function POST(request: NextRequest) {
       rawText,
       sourceDescriptor
     });
-    const existing = await findResumeParseReplay(prisma, userId, submissionHash, rawText, isMaster);
+    const existing = await findResumeParseReplay(
+      prisma, userId, submissionId, submissionHash, rawText, isMaster
+    );
     if (existing) return NextResponse.json(existing);
 
     const parsedResult = await parseResumeTextWithMeta(rawText, userId, aiInvocationFromRequest(request));
@@ -153,7 +191,9 @@ export async function POST(request: NextRequest) {
 
     try {
       const result = await prisma.$transaction(async (tx) => {
-        const raced = await findResumeParseReplay(tx, userId, submissionHash, rawText, isMaster);
+        const raced = await findResumeParseReplay(
+          tx, userId, submissionId, submissionHash, rawText, isMaster
+        );
         if (raced) return raced;
         if (fileBuffer && originalName) {
           filePath = await savePrivateFile({
@@ -200,6 +240,7 @@ export async function POST(request: NextRequest) {
             inputHash: parsedResult.meta.requestHash,
             input: {
               resumeId: resume.id,
+              submissionId,
               submissionHash,
               providerRequestHash: parsedResult.meta.requestHash
             },
@@ -226,7 +267,16 @@ export async function POST(request: NextRequest) {
     } catch {
       let replay;
       try {
-        replay = await findResumeParseReplay(prisma, userId, submissionHash, rawText, isMaster, false);
+        replay = await findResumeParseReplay(
+          prisma,
+          userId,
+          submissionId,
+          submissionHash,
+          rawText,
+          isMaster,
+          false,
+          false
+        );
       } catch {
         throw new PublicApiError(
           "The resume save outcome could not be confirmed. Check the Master resume profile before retrying; Apply Pilot will not retry automatically.",
@@ -235,6 +285,18 @@ export async function POST(request: NextRequest) {
         );
       }
       if (replay) {
+        if (filePath && replay.resume.filePath !== filePath) {
+          try {
+            await deletePrivateFile({ userId, filePath });
+            filePath = undefined;
+          } catch {
+            throw new PublicApiError(
+              "The resume save replayed, but cleanup of an unreferenced private file could not be confirmed.",
+              503,
+              { code: "RESUME_PARSE_FILE_CLEANUP_UNCERTAIN", retryable: false }
+            );
+          }
+        }
         if (replay.resume.isMaster !== isMaster) {
           throw new PublicApiError(
             "The resume save committed, but its master state changed before confirmation. Check the Master resume profile; do not retry automatically.",

@@ -16,6 +16,14 @@ test("the Resumes page delegates parsing to a client workflow instead of a nativ
 
 type FetchHandler = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+function submissionId(call: { init?: RequestInit }) {
+  assert.ok(call.init?.body instanceof FormData);
+  const value = call.init.body.get("submissionId");
+  assert.ok(typeof value === "string");
+  assert.match(value, /^[0-9a-f-]{36}$/i);
+  return value;
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -99,6 +107,7 @@ test("resume upload confirms recipient and cost, then presents validated save pl
   try {
     await act(async () => { mounted.submit(); });
     assert.equal(mounted.fetchCalls.length, 2);
+    assert.equal(submissionId(mounted.fetchCalls[0]!), submissionId(mounted.fetchCalls[1]!));
     assert.match(confirmation, /complete resume text.*Google Gemini/i);
     assert.equal(new Headers(mounted.fetchCalls[1]?.init?.headers).get("x-ai-data-confirmed"), "true");
     assert.match(mounted.container.textContent ?? "", /Master resume saved/i);
@@ -133,6 +142,31 @@ test("an uncertain response is never retried automatically and directs the user 
     assert.match(mounted.container.textContent ?? "", /status could not be confirmed/i);
     assert.match(mounted.container.textContent ?? "", /check the Master resume profile before retrying/i);
     assert.equal(mounted.container.querySelector<HTMLButtonElement>("button[type='submit']")?.disabled, false);
+  } finally { await mounted.cleanup(); }
+});
+
+test("an uncertain manual retry reuses its attempt id and a confirmed save rotates it", async () => {
+  let calls = 0;
+  const success = () => new Response(JSON.stringify({
+    resume: { id: "resume-1", title: "Jordan Master Resume", isMaster: true },
+    parsed: { warnings: [] },
+    replayed: calls > 2
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const mounted = await mountForm(async () => {
+    calls += 1;
+    if (calls === 1) throw new TypeError("connection dropped after dispatch");
+    return success();
+  });
+  try {
+    await act(async () => { mounted.submit(); });
+    await act(async () => { mounted.submit(); });
+    assert.equal(mounted.fetchCalls.length, 2);
+    const uncertainId = submissionId(mounted.fetchCalls[0]!);
+    assert.equal(submissionId(mounted.fetchCalls[1]!), uncertainId);
+
+    await act(async () => { mounted.submit(); });
+    assert.equal(mounted.fetchCalls.length, 3);
+    assert.notEqual(submissionId(mounted.fetchCalls[2]!), uncertainId);
   } finally { await mounted.cleanup(); }
 });
 

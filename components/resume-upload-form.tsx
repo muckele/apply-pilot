@@ -14,6 +14,7 @@ type FormResult =
 export function ResumeUploadForm() {
   const router = useRouter();
   const pendingRef = useRef(false);
+  const submissionIdRef = useRef(crypto.randomUUID());
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<FormResult | null>(null);
 
@@ -24,6 +25,7 @@ export function ResumeUploadForm() {
     setPending(true);
     setResult(null);
     const formData = new FormData(event.currentTarget);
+    formData.set("submissionId", submissionIdRef.current);
     try {
       const response = await fetchWithAiCostConfirmation("/api/resumes/parse", {
         method: "POST",
@@ -60,6 +62,7 @@ export function ResumeUploadForm() {
         ? body.parsed.warnings.filter((warning): warning is string => typeof warning === "string")
         : [];
       setResult({ kind: "success", replayed: body.replayed, warnings });
+      submissionIdRef.current = crypto.randomUUID();
       router.refresh();
     } catch (error) {
       if (error instanceof Error && /canceled before any provider charge/i.test(error.message)) {
@@ -74,7 +77,11 @@ export function ResumeUploadForm() {
   }
 
   return (
-    <form className="space-y-4 p-5" onSubmit={submit}>
+    <form
+      className="space-y-4 p-5"
+      onChange={() => { submissionIdRef.current = crypto.randomUUID(); }}
+      onSubmit={submit}
+    >
       <label className="block text-sm font-medium text-slate-700">
         Resume title
         <input name="title" defaultValue="Master Resume" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />

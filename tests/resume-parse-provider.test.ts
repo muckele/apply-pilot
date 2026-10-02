@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import OpenAI from "openai";
 
-import { parseResumeTextWithMeta, validateParsedResumeOutput } from "@/lib/ai/resume";
+import { parseResumeTextWithMeta, validateParsedResumeOutput, type ParsedResume } from "@/lib/ai/resume";
 import { getOpenAIClient } from "@/lib/ai/client";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
@@ -30,9 +30,11 @@ Example University
 B.S. Business
 2021`;
 
-const parsedOutput = {
+const parsedOutput: ParsedResume = {
   contractVersion: "3",
   contactInfo: {
+    sourceText: "Jordan Example\njordan@example.test",
+    name: "Jordan Example",
     email: "jordan@example.test",
     phone: null,
     location: null,
@@ -43,6 +45,7 @@ const parsedOutput = {
   summary: "Customer success manager supporting technical onboarding.",
   skills: ["Customer Success", "SQL"],
   workHistory: [{
+    sourceText: "Customer Success Manager\nExample Co\nRemote\n2022 - Present\nLed customer onboarding.\nImproved retention by 10%.",
     company: "Example Co",
     title: "Customer Success Manager",
     location: "Remote",
@@ -52,6 +55,7 @@ const parsedOutput = {
   }],
   projects: [],
   education: [{
+    sourceText: "Example University\nB.S. Business\n2021",
     institution: "Example University",
     credential: "B.S.",
     fieldOfStudy: "Business",
@@ -60,10 +64,10 @@ const parsedOutput = {
     details: []
   }],
   certifications: [],
-  achievements: ["Improved retention by 10%."],
+  achievements: [],
   sectionStatus: {
     summary: "present", skills: "present", workHistory: "present", projects: "absent",
-    education: "present", certifications: "absent", achievements: "present"
+    education: "present", certifications: "absent", achievements: "absent"
   },
   warnings: []
 };
@@ -119,7 +123,8 @@ function installLedger(t: TestContext, cachedOutput?: unknown, options: {
   const cacheWrites: Array<Record<string, unknown>> = [];
 
   stub(t, prisma.aIResponseCache, "findFirst", async () => cachedOutput ? { output: cachedOutput } : null);
-  stub(t, prisma.aIBudgetReservation, "findMany", async () => []);
+  stub(t, prisma.aIBudgetReservation, "findMany", async () =>
+    reservation?.status === "RESERVED" ? [{ id: reservation.id }] : []);
   stub(t, prisma.aIBudgetReservation, "findFirst", async () =>
     reservation && ["RESERVED", "UNCERTAIN"].includes(String(reservation.status)) ? reservation : null);
   stub(t, prisma.aISettings, "upsert", async () => ({
@@ -285,6 +290,86 @@ test("every factual line in a recognized section must be represented", () => {
   );
 });
 
+test("contact facts detected in the source cannot be silently omitted", () => {
+  const missingContact = structuredClone(parsedOutput);
+  missingContact.contactInfo.email = null;
+
+  assert.throws(
+    () => validateParsedResumeOutput(resumeText, missingContact),
+    /omitted or changed an email address/i
+  );
+});
+
+test("the complete contact header is preserved as source evidence", () => {
+  const incompleteContact = structuredClone(parsedOutput);
+  incompleteContact.contactInfo.sourceText = "jordan@example.test";
+
+  assert.throws(
+    () => validateParsedResumeOutput(resumeText, incompleteContact),
+    /complete contact\/header source block/i
+  );
+});
+
+test("an explicit contact section can supply the complete contact source block", () => {
+  const contactSectionSource = resumeText.replace(
+    "Jordan Example\njordan@example.test",
+    "CONTACT\nJordan Example\njordan@example.test"
+  );
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(contactSectionSource, parsedOutput));
+});
+
+test("unheaded source structure fails closed instead of silently dropping work history", () => {
+  const unheadedSource = `Jordan Example\njordan@example.test\nEngineer\nExample Co\n2022 - Present`;
+  const empty = structuredClone(parsedOutput);
+  empty.summary = "";
+  empty.skills = [];
+  empty.workHistory = [];
+  empty.education = [];
+  empty.achievements = [];
+  for (const section of Object.keys(empty.sectionStatus) as Array<keyof typeof empty.sectionStatus>) {
+    empty.sectionStatus[section] = "absent";
+  }
+
+  assert.throws(
+    () => validateParsedResumeOutput(unheadedSource, empty),
+    /no supported section headings/i
+  );
+});
+
+test("contiguous record evidence accepts ordinary connector text", () => {
+  const connectorSource = resumeText.replace(
+    "Customer Success Manager\nExample Co\nRemote",
+    "Engineer at Example Co\nRemote"
+  );
+  const connector = structuredClone(parsedOutput);
+  connector.workHistory[0].sourceText = connector.workHistory[0].sourceText.replace(
+    "Customer Success Manager\nExample Co\nRemote",
+    "Engineer at Example Co\nRemote"
+  );
+  connector.workHistory[0].title = "Engineer";
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(connectorSource, connector));
+});
+
+test("one evidence block cannot merge two dated work-history records", () => {
+  const secondRole = "Account Manager\nSecond Example Co\n2020 - 2022\nSupported enterprise renewals.";
+  const mergedSource = resumeText.replace("\nSKILLS\n", `\n${secondRole}\n\nSKILLS\n`);
+  const merged = structuredClone(parsedOutput);
+  merged.workHistory[0].sourceText = `${merged.workHistory[0].sourceText}\n\n${secondRole}`;
+  merged.workHistory[0].bullets.push(
+    "Account Manager",
+    "Second Example Co",
+    "2020 - 2022",
+    "Supported enterprise renewals."
+  );
+
+  assert.throws(
+    () => validateParsedResumeOutput(mergedSource, merged),
+    /merge multiple roles/i
+  );
+});
+
 test("a validated cache replay avoids confirmation, reservation, and a duplicate provider call", async (t) => {
   environment(t);
   const ledger = installLedger(t, parsedOutput);
@@ -364,7 +449,7 @@ test("a durable-cache failure becomes uncertain and cannot trigger a second paid
   assert.equal(providerCalls, 1);
 });
 
-test("an existing reserved request blocks transport before stale reconciliation can open a duplicate", async (t) => {
+test("an abandoned reserved request becomes uncertain before transport and remains blocked", async (t) => {
   environment(t);
   const ledger = installLedger(t, undefined, { priorStatus: "RESERVED" });
   let providerCalls = 0;
@@ -379,10 +464,12 @@ test("an existing reserved request blocks transport before stale reconciliation 
       dataSharingConfirmed: true
     }),
     (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "AI_DUPLICATE_IN_PROGRESS"
+      error.details?.code === "RESUME_PARSE_PRIOR_OUTCOME_UNCERTAIN" &&
+      error.details.retryable === false
   );
   assert.equal(providerCalls, 0);
   assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.reconciliations[0]?.status, "UNCERTAIN");
 });
 
 test("OpenAI configuration retains the same confirmation, validation, and reservation contract", async (t) => {
