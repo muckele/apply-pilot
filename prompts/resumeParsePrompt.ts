@@ -11,7 +11,7 @@ Source fidelity rules:
 - For every work-history role, project, education record, and certification, copy its complete contiguous source block into sourceText. Keep records separate and in source order; never merge blocks.
 - Each structured field for a record must occur verbatim inside that record's sourceText.
 - Put only date-shaped source text in date fields (for example a year, month/year, date range, or Present), never an organization, title, credential, or record name.
-- Put only an explicit or header-positioned place/remote value in a work-history location field; never use it to absorb a title or another record.
+- Put an unlabeled value in a work-history location field only when it is a standalone remote/work-mode or country value. Other places require explicit Location:/based in source labeling; never use the field to absorb a title or another record.
 - Never put another record's title, organization, project name, institution, or certification name into bullets, details, or technologies. Bullet/detail entries must retain an explicit source bullet marker or terminal sentence punctuation; technology entries must retain a bullet marker or source delimiter.
 - Represent every factual line beneath a recognized section heading; never omit a role, item, or section line.
 - For skills and achievements, return verbatim source entries in source order rather than paraphrased or inferred labels.

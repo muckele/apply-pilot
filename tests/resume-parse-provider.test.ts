@@ -459,6 +459,26 @@ test("a place-shaped professional word fails closed instead of forcing a contact
   );
 });
 
+test("an unpunctuated region-shaped contact line fails closed as ambiguous", () => {
+  const contactHeader = "Jordan Example\nSydney NSW\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const location = structuredClone(parsedOutput);
+  location.contactInfo.sourceText = contactHeader;
+  location.contactInfo.location = "Sydney NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, location),
+    /ambiguous contact/i
+  );
+
+  const headline = structuredClone(location);
+  headline.contactInfo.location = null;
+  headline.contactInfo.headline = "Sydney NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, headline),
+    /ambiguous contact/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
@@ -599,6 +619,26 @@ test("a country-shaped second title after dates cannot become a work location", 
   );
 });
 
+test("a country-shaped second title before dates cannot become a work location", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nProduct Lead, UK\n2020\nLed beta.`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\nProduct Lead, UK\n2020\nLed beta.",
+    company: "Alpha Co",
+    title: "Engineer",
+    location: "Product Lead, UK",
+    startDate: "2020",
+    endDate: null,
+    bullets: ["Led beta."]
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid workHistory date or location/i
+  );
+});
+
 test("numeric month-year work dates remain valid", () => {
   const source = resumeText.replace("2022 - Present", "05/2020 - 06/2023");
   const output = structuredClone(parsedOutput);
@@ -612,12 +652,27 @@ test("numeric month-year work dates remain valid", () => {
   assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
 });
 
-test("a work location may follow dates within the record header", () => {
+test("an unlabelled work location after dates fails closed as ambiguous", () => {
   const source = resumeText.replace("Remote\n2022 - Present", "2022 - Present\nSydney, NSW");
   const output = structuredClone(parsedOutput);
   output.workHistory[0].sourceText = output.workHistory[0].sourceText.replace(
     "Remote\n2022 - Present",
     "2022 - Present\nSydney, NSW"
+  );
+  output.workHistory[0].location = "Sydney, NSW";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid workHistory date or location/i
+  );
+});
+
+test("an explicitly labelled work location may follow dates", () => {
+  const source = resumeText.replace("Remote\n2022 - Present", "2022 - Present\nLocation: Sydney, NSW");
+  const output = structuredClone(parsedOutput);
+  output.workHistory[0].sourceText = output.workHistory[0].sourceText.replace(
+    "Remote\n2022 - Present",
+    "2022 - Present\nLocation: Sydney, NSW"
   );
   output.workHistory[0].location = "Sydney, NSW";
 

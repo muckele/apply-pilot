@@ -445,6 +445,11 @@ function looksLikeProfessionalDescriptor(line: string) {
 
 function classifyContactLocation(line: string): "location" | "not_location" | "ambiguous" {
   if (/^\s*(?:location|address)\s*:/i.test(line)) return "location";
+  const tokens = line.trim().split(/\s+/);
+  const trailingToken = tokens.at(-1);
+  if (!line.includes(",") && tokens.length > 1 && trailingToken && commonRegionAbbreviations.has(trailingToken)) {
+    return "ambiguous";
+  }
   const suffix = line.split(",").at(-1)?.trim();
   const hasCountryOrRemote = /\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line);
   const hasRegionSuffix = Boolean(
@@ -493,6 +498,12 @@ function firstFactIndex(sourceText: string, values: Array<string | null>) {
   return first;
 }
 
+function isUnambiguousStandaloneWorkLocation(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return /^(?:remote|hybrid|on[- ]?site|in[- ]person|usa|uk)$/i.test(normalized) ||
+    englishRegionNames.has(normalized);
+}
+
 function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
   if (!item.location) return;
   const locationIndex = item.sourceText.indexOf(item.location);
@@ -501,11 +512,13 @@ function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
     item.sourceText.indexOf(item.title) + item.title.length
   );
   const firstNarrativeIndex = firstFactIndex(item.sourceText, item.bullets);
-  const appearsInHeader = locationIndex >= coreEnd && locationIndex < firstNarrativeIndex;
+  const appearsInRecordHeader =
+    locationIndex >= coreEnd &&
+    locationIndex < firstNarrativeIndex;
   const explicitlyLabeled = item.sourceText.split(/\r?\n/).some((line) =>
     line.includes(item.location!) && /\b(?:location|based\s+in)\b/i.test(line)
   );
-  if (explicitlyLabeled || (appearsInHeader && classifyContactLocation(item.location) === "location")) return;
+  if (appearsInRecordHeader && (explicitlyLabeled || isUnambiguousStandaloneWorkLocation(item.location))) return;
   throw new PublicApiError(
     "Resume parsing returned an invalid workHistory date or location that could conceal a merged record. No master resume was changed.",
     422,
