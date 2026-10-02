@@ -30,6 +30,7 @@ const parsedOutput = {
   contactInfo: {
     sourceText: "Jordan Example\njordan@example.test",
     name: "Jordan Example",
+    headline: null,
     email: "jordan@example.test", phone: null, location: null,
     linkedin: null, github: null, portfolio: null
   },

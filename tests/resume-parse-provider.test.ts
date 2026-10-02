@@ -35,6 +35,7 @@ const parsedOutput: ParsedResume = {
   contactInfo: {
     sourceText: "Jordan Example\njordan@example.test",
     name: "Jordan Example",
+    headline: null,
     email: "jordan@example.test",
     phone: null,
     location: null,
@@ -71,6 +72,21 @@ const parsedOutput: ParsedResume = {
   },
   warnings: []
 };
+
+function emptyParsedResume() {
+  const output = structuredClone(parsedOutput);
+  output.summary = "";
+  output.skills = [];
+  output.workHistory = [];
+  output.projects = [];
+  output.education = [];
+  output.certifications = [];
+  output.achievements = [];
+  for (const section of Object.keys(output.sectionStatus) as Array<keyof typeof output.sectionStatus>) {
+    output.sectionStatus[section] = "absent";
+  }
+  return output;
+}
 
 function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
   const methods = owner as Record<string, unknown>;
@@ -296,7 +312,7 @@ test("contact facts detected in the source cannot be silently omitted", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(resumeText, missingContact),
-    /omitted or changed an email address/i
+    /omitted or changed contactInfo.email/i
   );
 });
 
@@ -308,6 +324,31 @@ test("the complete contact header is preserved as source evidence", () => {
     () => validateParsedResumeOutput(resumeText, incompleteContact),
     /complete contact\/header source block/i
   );
+});
+
+test("phone, location, headline, and LinkedIn facts cannot remain only in raw contact evidence", () => {
+  const contactHeader = [
+    "Jordan Example",
+    "Customer Success Leader",
+    "jordan@example.test",
+    "+1 (555) 010-1000",
+    "New York, NY",
+    "linkedin.com/in/jordan-example"
+  ].join("\n");
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const incomplete = structuredClone(parsedOutput);
+  incomplete.contactInfo.sourceText = contactHeader;
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, incomplete),
+    /omitted or changed contactInfo.phone/i
+  );
+
+  incomplete.contactInfo.headline = "Customer Success Leader";
+  incomplete.contactInfo.phone = "+1 (555) 010-1000";
+  incomplete.contactInfo.location = "New York, NY";
+  incomplete.contactInfo.linkedin = "linkedin.com/in/jordan-example";
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, incomplete));
 });
 
 test("an explicit contact section can supply the complete contact source block", () => {
@@ -366,8 +407,99 @@ test("one evidence block cannot merge two dated work-history records", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(mergedSource, merged),
-    /merge multiple roles/i
+    /ambiguous workHistory detail.*merged record boundary/i
   );
+});
+
+test("adjacent dateless roles cannot be disguised as work-history bullets", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.",
+    company: "Alpha Co",
+    title: "Engineer",
+    location: null,
+    startDate: null,
+    endDate: null,
+    bullets: ["Built alpha.", "Manager", "Beta Co", "Led beta."]
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /ambiguous workHistory detail.*merged record boundary/i
+  );
+});
+
+test("adjacent projects cannot be disguised as project bullets", () => {
+  const source = `Jordan Example\njordan@example.test\n\nPROJECTS\nProject Alpha\nBuilt alpha.\nProject Beta\nBuilt beta.`;
+  const output = emptyParsedResume();
+  output.projects = [{
+    sourceText: "Project Alpha\nBuilt alpha.\nProject Beta\nBuilt beta.",
+    name: "Project Alpha",
+    description: "Built alpha.",
+    technologies: [],
+    bullets: ["Project Beta", "Built beta."]
+  }];
+  output.sectionStatus.projects = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /ambiguous projects detail.*merged record boundary/i
+  );
+});
+
+test("adjacent education records cannot be disguised as details", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEDUCATION\nAlpha University\nB.S. Math\nBeta University\nM.S. Science`;
+  const output = emptyParsedResume();
+  output.education = [{
+    sourceText: "Alpha University\nB.S. Math\nBeta University\nM.S. Science",
+    institution: "Alpha University",
+    credential: "B.S.",
+    fieldOfStudy: "Math",
+    startDate: null,
+    endDate: null,
+    details: ["Beta University", "M.S. Science"]
+  }];
+  output.sectionStatus.education = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /ambiguous education detail.*merged record boundary/i
+  );
+});
+
+test("adjacent certifications must each have typed record fields", () => {
+  const source = `Jordan Example\njordan@example.test\n\nCERTIFICATIONS\nAWS Certified\nAmazon\nScrum Master\nScrum Alliance`;
+  const output = emptyParsedResume();
+  output.certifications = [{
+    sourceText: "AWS Certified\nAmazon\nScrum Master\nScrum Alliance",
+    name: "AWS Certified",
+    issuer: "Amazon",
+    date: null,
+    expirationDate: null
+  }];
+  output.sectionStatus.certifications = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /did not represent every factual line in certifications/i
+  );
+});
+
+test("a legitimate dated role may retain a later year inside a narrative bullet", () => {
+  const source = resumeText.replace(
+    "Improved retention by 10%.",
+    "Improved retention by 10%.\nWon a 2024 service award."
+  );
+  const output = structuredClone(parsedOutput);
+  output.workHistory[0].sourceText = output.workHistory[0].sourceText.replace(
+    "Improved retention by 10%.",
+    "Improved retention by 10%.\nWon a 2024 service award."
+  );
+  output.workHistory[0].bullets.push("Won a 2024 service award.");
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
 });
 
 test("a validated cache replay avoids confirmation, reservation, and a duplicate provider call", async (t) => {
