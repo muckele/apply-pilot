@@ -59,7 +59,9 @@ export type AiCallContext = {
   highCostConfirmed?: boolean;
 };
 
-export type AiInvocationOptions = Pick<AiCallContext, "automation" | "highCostConfirmed">;
+export type AiInvocationOptions = Pick<AiCallContext, "automation" | "highCostConfirmed"> & {
+  dataSharingConfirmed?: boolean;
+};
 
 export type GeneratedJsonResult<T> = {
   data: T;

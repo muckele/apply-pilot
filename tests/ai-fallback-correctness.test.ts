@@ -155,46 +155,12 @@ test("local tailoring cannot assign a fixed persona or scores to Alice or Bob", 
   }
 });
 
-test("local parser extracts supplied facts and excludes explicit skill negations", async () => {
+test("resume parsing fails closed instead of replacing structured sections with a local heuristic", async () => {
   local();
-  const parsed = await parseResumeText("Alice Example\nalice@example.com\n(555) 123-4567\nPython\nI do not know SQL\nNo experience with React\nnot proficient in AWS");
-  assert.equal(parsed.contactInfo.email, "alice@example.com");
-  assert.match(parsed.contactInfo.phone ?? "", /555/);
-  assert.ok(parsed.skills.includes("Python"));
-  for (const skill of ["SQL", "React", "AWS"]) assert.ok(!parsed.skills.includes(skill), skill);
-});
-
-test("local parser excludes comma-separated negated skills", async () => {
-  local();
-  const parsed = await parseResumeText("No experience with React, SQL, or AWS.");
-  for (const skill of ["React", "SQL", "AWS"]) assert.ok(!parsed.skills.includes(skill), skill);
-});
-
-test("local parser excludes a skill after a wrapped negation phrase", async () => {
-  local();
-  const parsed = await parseResumeText("No experience with\nReact.");
-  assert.ok(!parsed.skills.includes("React"));
-});
-
-test("local parser keeps an affirmative skill in a separate sentence", async () => {
-  local();
-  const parsed = await parseResumeText("Experienced with Python. I do not know SQL.");
-  assert.ok(parsed.skills.includes("Python"));
-  assert.ok(!parsed.skills.includes("SQL"));
-});
-
-test("local parser keeps Python after a negated skill list", async () => {
-  local();
-  const parsed = await parseResumeText("No experience with React, SQL, or AWS.\nExperienced with Python.");
-  for (const skill of ["React", "SQL", "AWS"]) assert.ok(!parsed.skills.includes(skill), skill);
-  assert.ok(parsed.skills.includes("Python"));
-});
-
-test("local parser keeps Python after a contrasting affirmative clause", async () => {
-  local();
-  const parsed = await parseResumeText("No experience with React, but experienced with Python.");
-  assert.ok(!parsed.skills.includes("React"));
-  assert.ok(parsed.skills.includes("Python"));
+  await assert.rejects(
+    parseResumeText("EXPERIENCE\nEngineer — Example Co\nEDUCATION\nExample University"),
+    LocalAiUnavailableError
+  );
 });
 
 test("real client failures and invalid responses never become local fallback", async () => {

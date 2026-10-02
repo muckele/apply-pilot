@@ -66,7 +66,7 @@ async function invokeRoute(path: string, handler: () => Promise<Response>) {
     ));
 }
 
-test("resume parsing reports its actual local model to persistence", async (t) => {
+test("unavailable resume parsing fails closed and cannot persist heuristic output", async (t) => {
   setEnv(t, {
     OPENAI_API_KEY: undefined,
     OPENAI_MOCK_MODE: undefined,
@@ -74,11 +74,15 @@ test("resume parsing reports its actual local model to persistence", async (t) =
     AI_ENABLED: "false"
   });
   const { parseResumeTextWithMeta } = await import("@/lib/ai/resume");
-  const parsed = await parseResumeTextWithMeta("Alice Example\nPython");
-  assert.equal(parsed.meta.model, "heuristic-local");
+  const { LocalAiUnavailableError } = await import("@/lib/ai/client");
+  await assert.rejects(
+    parseResumeTextWithMeta("EXPERIENCE\nEngineer — Example Co\nEDUCATION\nExample University"),
+    LocalAiUnavailableError
+  );
   const source = route("app/api/resumes/parse/route.ts");
   assert.match(source, /model: parsedResult\.meta\.model/);
-  assert.match(source, /confidence: parsedResult\.meta\.mocked \? null : 70/);
+  assert.match(source, /confidence: null/);
+  assert.doesNotMatch(source, /heuristic-local|confidence: parsedResult\.meta\.mocked \? null : 70/);
 });
 
 test("successful local drafts and feedback do not claim numeric AI confidence", () => {
