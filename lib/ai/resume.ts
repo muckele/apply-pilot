@@ -448,6 +448,7 @@ function classifyContactLocation(line: string): "location" | "not_location" | "a
   if (/^\s*(?:location|address)\s*:/i.test(line)) return "location";
   const trimmed = line.trim();
   if (isStandaloneContactLocation(trimmed)) return "location";
+  if (commonRegionAbbreviations.has(trimmed.toUpperCase())) return "ambiguous";
   const tokens = trimmed.split(/\s+/);
   const trailingToken = tokens.at(-1);
   if (!line.includes(",") && tokens.length > 1 && trailingToken && commonRegionAbbreviations.has(trailingToken)) {

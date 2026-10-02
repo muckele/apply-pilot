@@ -519,6 +519,26 @@ test("an unlabeled city-region contact line fails closed as ambiguous", () => {
   );
 });
 
+test("a standalone region code fails closed as an ambiguous contact line", () => {
+  const contactHeader = "Jordan Example\nNSW\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const location = structuredClone(parsedOutput);
+  location.contactInfo.sourceText = contactHeader;
+  location.contactInfo.location = "NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, location),
+    /ambiguous contact/i
+  );
+
+  const headline = structuredClone(location);
+  headline.contactInfo.location = null;
+  headline.contactInfo.headline = "NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, headline),
+    /ambiguous contact/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
