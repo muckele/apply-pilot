@@ -434,7 +434,62 @@ function looksLikeContactLocation(line: string) {
   if (/\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line)) return true;
   const suffix = line.split(",").at(-1)?.trim();
   if (!suffix || suffix === line.trim()) return false;
-  return /^[A-Z]{2}$/i.test(suffix) || englishRegionNames.has(suffix.toLowerCase());
+  return /^[A-Z]{2,3}$/.test(suffix) || englishRegionNames.has(suffix.toLowerCase());
+}
+
+const resumeDateAtom = [
+  "(?:present|current|ongoing|now)",
+  "(?:(?:19|20)\\d{2})",
+  "(?:(?:19|20)\\d{2}[-/.]\\d{1,2}(?:[-/.]\\d{1,2})?)",
+  "(?:\\d{1,2}[-/.]\\d{1,2}(?:[-/.](?:\\d{2}|\\d{4}))?)",
+  "(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?[,]?\\s+)?(?:19|20)\\d{2})",
+  "(?:(?:q[1-4]|spring|summer|fall|autumn|winter)\\s+(?:19|20)\\d{2})"
+].join("|");
+const resumeDatePattern = new RegExp(
+  `^(?:(?:issued|expires?|expiration|completed|graduated|expected|anticipated)[:\\s]+)?(?:${resumeDateAtom})(?:\\s*(?:-|–|—|to|through)\\s*(?:${resumeDateAtom}))?$`,
+  "i"
+);
+
+function assertResumeDate(value: string | null, section: string, semanticLabel = `${section} date`) {
+  if (value === null || resumeDatePattern.test(value)) return;
+  throw new PublicApiError(
+    `Resume parsing returned an invalid ${semanticLabel} that could conceal a merged record. No master resume was changed.`,
+    422,
+    { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, retryable: false }
+  );
+}
+
+function firstFactIndex(sourceText: string, values: Array<string | null>) {
+  let first = Number.POSITIVE_INFINITY;
+  for (const value of values) {
+    if (!value) continue;
+    const index = sourceText.indexOf(value);
+    if (index >= 0) first = Math.min(first, index);
+  }
+  return first;
+}
+
+function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
+  if (!item.location || looksLikeContactLocation(item.location)) return;
+  const locationIndex = item.sourceText.indexOf(item.location);
+  const coreEnd = Math.max(
+    item.sourceText.indexOf(item.company) + item.company.length,
+    item.sourceText.indexOf(item.title) + item.title.length
+  );
+  const firstDetailIndex = firstFactIndex(
+    item.sourceText,
+    [item.startDate, item.endDate, ...item.bullets]
+  );
+  const appearsInHeader = locationIndex >= coreEnd && locationIndex < firstDetailIndex;
+  const explicitlyLabeled = item.sourceText.split(/\r?\n/).some((line) =>
+    line.includes(item.location!) && /\b(?:location|based\s+in)\b/i.test(line)
+  );
+  if (appearsInHeader || explicitlyLabeled) return;
+  throw new PublicApiError(
+    "Resume parsing returned an invalid workHistory date or location that could conceal a merged record. No master resume was changed.",
+    422,
+    { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section: "workHistory", retryable: false }
+  );
 }
 
 function sectionForHeading(line: string): keyof ParsedResume["sectionStatus"] | null {
@@ -754,6 +809,9 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.startDate, `workHistory[${index}].startDate`);
     assertSourceSupported(item.sourceText, item.endDate, `workHistory[${index}].endDate`);
     item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `workHistory[${index}].bullets[${entryIndex}]`));
+    assertResumeDate(item.startDate, "workHistory", "workHistory date or location");
+    assertResumeDate(item.endDate, "workHistory", "workHistory date or location");
+    assertWorkLocationSemantics(item);
     assertUnambiguousNarrativeEntries(item.bullets, "workHistory");
     assertCompleteFactCoverage(
       item.sourceText,
@@ -786,6 +844,8 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.startDate, `education[${index}].startDate`);
     assertSourceSupported(item.sourceText, item.endDate, `education[${index}].endDate`);
     item.details.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `education[${index}].details[${entryIndex}]`));
+    assertResumeDate(item.startDate, "education");
+    assertResumeDate(item.endDate, "education");
     assertUnambiguousNarrativeEntries(item.details, "education");
     assertCompleteFactCoverage(
       item.sourceText,
@@ -800,6 +860,8 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.issuer, `certifications[${index}].issuer`);
     assertSourceSupported(item.sourceText, item.date, `certifications[${index}].date`);
     assertSourceSupported(item.sourceText, item.expirationDate, `certifications[${index}].expirationDate`);
+    assertResumeDate(item.date, "certifications", "certification date");
+    assertResumeDate(item.expirationDate, "certifications", "certification date");
     assertCompleteFactCoverage(
       item.sourceText,
       [item.name, item.issuer, item.date, item.expirationDate],

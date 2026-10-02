@@ -368,6 +368,23 @@ test("an international city-country line is location, never a headline substitut
   );
 });
 
+test("an international city-region line is location, never a headline substitute", () => {
+  const contactHeader = "Jordan Example\nSydney, NSW\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const correct = structuredClone(parsedOutput);
+  correct.contactInfo.sourceText = contactHeader;
+  correct.contactInfo.location = "Sydney, NSW";
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, correct));
+
+  const wrong = structuredClone(correct);
+  wrong.contactInfo.location = null;
+  wrong.contactInfo.headline = "Sydney, NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, wrong),
+    /omitted or changed contactInfo.location/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
@@ -448,6 +465,26 @@ test("adjacent dateless roles cannot be disguised as work-history bullets", () =
   );
 });
 
+test("adjacent work records cannot be reassigned to location and date fields", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co",
+    company: "Alpha Co",
+    title: "Engineer",
+    location: "Manager",
+    startDate: "Beta Co",
+    endDate: null,
+    bullets: ["Built alpha."]
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid workHistory date or location/i
+  );
+});
+
 test("atomic record fields cannot absorb multiline records", () => {
   const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.`;
   const output = emptyParsedResume();
@@ -506,6 +543,26 @@ test("adjacent education records cannot be disguised as details", () => {
   );
 });
 
+test("adjacent education records cannot be reassigned to date fields", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEDUCATION\nAlpha University\nB.S. Math\nBeta University\nM.S. Science`;
+  const output = emptyParsedResume();
+  output.education = [{
+    sourceText: "Alpha University\nB.S. Math\nBeta University\nM.S. Science",
+    institution: "Alpha University",
+    credential: "B.S.",
+    fieldOfStudy: "Math",
+    startDate: "Beta University",
+    endDate: "M.S. Science",
+    details: []
+  }];
+  output.sectionStatus.education = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid education date/i
+  );
+});
+
 test("adjacent certifications must each have typed record fields", () => {
   const source = `Jordan Example\njordan@example.test\n\nCERTIFICATIONS\nAWS Certified\nAmazon\nScrum Master\nScrum Alliance`;
   const output = emptyParsedResume();
@@ -521,6 +578,24 @@ test("adjacent certifications must each have typed record fields", () => {
   assert.throws(
     () => validateParsedResumeOutput(source, output),
     /did not represent every factual line in certifications/i
+  );
+});
+
+test("adjacent certifications cannot be reassigned to date fields", () => {
+  const source = `Jordan Example\njordan@example.test\n\nCERTIFICATIONS\nAWS Certified\nAmazon\nScrum Master\nScrum Alliance`;
+  const output = emptyParsedResume();
+  output.certifications = [{
+    sourceText: "AWS Certified\nAmazon\nScrum Master\nScrum Alliance",
+    name: "AWS Certified",
+    issuer: "Amazon",
+    date: "Scrum Master",
+    expirationDate: "Scrum Alliance"
+  }];
+  output.sectionStatus.certifications = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid certification date/i
   );
 });
 
