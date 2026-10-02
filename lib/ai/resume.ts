@@ -436,20 +436,28 @@ const commonRegionAbbreviations = new Set([
   ..."ACT NSW NT QLD SA TAS VIC WA".split(" ")
 ]);
 
-const professionalDescriptorPattern = /\b(?:accountant|administrator|analyst|architect|attorney|consultant|coordinator|designer|developer|director|engineer|executive|founder|leader|manager|officer|owner|president|recruiter|scientist|specialist|strategist|cpa|cfa|mba|ph\.?d\.?|rn|esq)\b/i;
+const professionalDescriptorPattern = /\b(?:accountant|administrator|analyst|architect|attorney|chief|consultant|coordinator|designer|developer|director|engineer|executive|founder|leader|manager|officer|owner|president|recruiter|scientist|specialist|staff|strategist|cpa|cfa|mba|ph\.?d\.?|rn|esq)\b/i;
+const credentialDescriptorPattern = /^(?:cpa|cfa|mba|ph\.?d\.?|rn|esq)$/i;
 
 function looksLikeProfessionalDescriptor(line: string) {
   return professionalDescriptorPattern.test(line);
 }
 
-function looksLikeContactLocation(line: string) {
-  if (/^\s*(?:location|address)\s*:/i.test(line)) return true;
-  if (/\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line)) return true;
+function classifyContactLocation(line: string): "location" | "not_location" | "ambiguous" {
+  if (/^\s*(?:location|address)\s*:/i.test(line)) return "location";
   const suffix = line.split(",").at(-1)?.trim();
-  if (!suffix || suffix === line.trim()) return false;
-  const prefix = line.slice(0, line.lastIndexOf(","));
-  if (looksLikeProfessionalDescriptor(prefix)) return false;
-  return commonRegionAbbreviations.has(suffix) || englishRegionNames.has(suffix.toLowerCase());
+  const hasCountryOrRemote = /\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line);
+  const hasRegionSuffix = Boolean(
+    suffix &&
+    suffix !== line.trim() &&
+    (commonRegionAbbreviations.has(suffix) || englishRegionNames.has(suffix.toLowerCase()))
+  );
+  if (!hasCountryOrRemote && !hasRegionSuffix) return "not_location";
+  const prefix = hasRegionSuffix ? line.slice(0, line.lastIndexOf(",")).trim() : line.trim();
+  if (looksLikeProfessionalDescriptor(prefix)) {
+    return credentialDescriptorPattern.test(prefix) ? "not_location" : "ambiguous";
+  }
+  return "location";
 }
 
 const resumeDateAtom = [
@@ -497,7 +505,7 @@ function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
   const explicitlyLabeled = item.sourceText.split(/\r?\n/).some((line) =>
     line.includes(item.location!) && /\b(?:location|based\s+in)\b/i.test(line)
   );
-  if (explicitlyLabeled || (appearsInHeader && !looksLikeProfessionalDescriptor(item.location))) return;
+  if (explicitlyLabeled || (appearsInHeader && classifyContactLocation(item.location) === "location")) return;
   throw new PublicApiError(
     "Resume parsing returned an invalid workHistory date or location that could conceal a merged record. No master resume was changed.",
     422,
@@ -609,14 +617,19 @@ function assertTypedContactCompleteness(contactBlock: string, contactInfo: Parse
       requireLineValue(line, contactInfo.portfolio, "portfolio");
       usedLines.add(index);
     }
-    if (
-      !emailPattern.test(line) &&
-      !phonePattern.test(line) &&
-      !urlPattern.test(line) &&
-      looksLikeContactLocation(line)
-    ) {
-      requireLineValue(line, contactInfo.location, "location");
-      usedLines.add(index);
+    if (!emailPattern.test(line) && !phonePattern.test(line) && !urlPattern.test(line)) {
+      const locationClassification = classifyContactLocation(line);
+      if (locationClassification === "ambiguous") {
+        throw new PublicApiError(
+          "Resume parsing returned an ambiguous contact/header line between a professional headline and location. No master resume was changed.",
+          422,
+          { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section: "contactInfo", retryable: false }
+        );
+      }
+      if (locationClassification === "location") {
+        requireLineValue(line, contactInfo.location, "location");
+        usedLines.add(index);
+      }
     }
   });
 

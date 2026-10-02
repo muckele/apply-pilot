@@ -419,6 +419,46 @@ test("a credential headline ending in a region code is not a location", () => {
   );
 });
 
+test("a professional headline ending in a country code fails closed as ambiguous", () => {
+  const contactHeader = "Jordan Example\nEngineering Leader, UK\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const headline = structuredClone(parsedOutput);
+  headline.contactInfo.sourceText = contactHeader;
+  headline.contactInfo.headline = "Engineering Leader, UK";
+  assert.throws(
+    () => validateParsedResumeOutput(source, headline),
+    /ambiguous contact/i
+  );
+
+  const location = structuredClone(headline);
+  location.contactInfo.headline = null;
+  location.contactInfo.location = "Engineering Leader, UK";
+  assert.throws(
+    () => validateParsedResumeOutput(source, location),
+    /ambiguous contact/i
+  );
+});
+
+test("a place-shaped professional word fails closed instead of forcing a contact type", () => {
+  const contactHeader = "Jordan Example\nLeader, SK\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const location = structuredClone(parsedOutput);
+  location.contactInfo.sourceText = contactHeader;
+  location.contactInfo.location = "Leader, SK";
+  assert.throws(
+    () => validateParsedResumeOutput(source, location),
+    /ambiguous contact/i
+  );
+
+  const headline = structuredClone(location);
+  headline.contactInfo.location = null;
+  headline.contactInfo.headline = "Leader, SK";
+  assert.throws(
+    () => validateParsedResumeOutput(source, headline),
+    /ambiguous contact/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
@@ -530,6 +570,26 @@ test("a region-shaped second title cannot become the first record location", () 
     startDate: "2020",
     endDate: null,
     bullets: ["Built alpha.", "Led beta."]
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid workHistory date or location/i
+  );
+});
+
+test("a country-shaped second title after dates cannot become a work location", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\n2020\nChief of Staff, UK\nLed beta.`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\n2020\nChief of Staff, UK\nLed beta.",
+    company: "Alpha Co",
+    title: "Engineer",
+    location: "Chief of Staff, UK",
+    startDate: "2020",
+    endDate: null,
+    bullets: ["Led beta."]
   }];
   output.sectionStatus.workHistory = "present";
 
