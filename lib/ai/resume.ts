@@ -119,7 +119,7 @@ export type TailoredResumeOutput = {
 };
 
 const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
-const boundedSourceString = z.string().trim().min(1).max(2_000);
+const boundedSourceString = z.string().trim().min(1).max(2_000).refine((value) => !/[\r\n]/.test(value));
 const boundedSourceBlock = z.string().trim().min(1).max(20_000);
 const nullableSourceString = z.union([boundedSourceString, z.null()]);
 const nullableContactSourceString = z.union([
@@ -417,6 +417,26 @@ const sectionHeadings: Record<keyof ParsedResume["sectionStatus"], RegExp> = {
 
 const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING)?|PUBLICATIONS?|REFERENCES?|ADDITIONAL\s+INFORMATION)$/i;
 
+const englishRegionNames = (() => {
+  const names = new Set<string>();
+  const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
+  for (let first = 65; first <= 90; first += 1) {
+    for (let second = 65; second <= 90; second += 1) {
+      const code = String.fromCharCode(first, second);
+      const name = displayNames.of(code);
+      if (name && name !== code) names.add(name.toLowerCase());
+    }
+  }
+  return names;
+})();
+
+function looksLikeContactLocation(line: string) {
+  if (/\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line)) return true;
+  const suffix = line.split(",").at(-1)?.trim();
+  if (!suffix || suffix === line.trim()) return false;
+  return /^[A-Z]{2}$/i.test(suffix) || englishRegionNames.has(suffix.toLowerCase());
+}
+
 function sectionForHeading(line: string): keyof ParsedResume["sectionStatus"] | null {
   const heading = line.trim().replace(/:$/, "");
   for (const [section, pattern] of Object.entries(sectionHeadings)) {
@@ -525,7 +545,7 @@ function assertTypedContactCompleteness(contactBlock: string, contactInfo: Parse
       !emailPattern.test(line) &&
       !phonePattern.test(line) &&
       !urlPattern.test(line) &&
-      /(?:,\s*[A-Z]{2}\b|\b(?:remote|united states|usa|canada|united kingdom|uk)\b)/i.test(line)
+      looksLikeContactLocation(line)
     ) {
       requireLineValue(line, contactInfo.location, "location");
       usedLines.add(index);

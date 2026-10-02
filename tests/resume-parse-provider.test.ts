@@ -351,6 +351,23 @@ test("phone, location, headline, and LinkedIn facts cannot remain only in raw co
   assert.doesNotThrow(() => validateParsedResumeOutput(source, incomplete));
 });
 
+test("an international city-country line is location, never a headline substitute", () => {
+  const contactHeader = "Jordan Example\nBerlin, Germany\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const correct = structuredClone(parsedOutput);
+  correct.contactInfo.sourceText = contactHeader;
+  correct.contactInfo.location = "Berlin, Germany";
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, correct));
+
+  const wrong = structuredClone(correct);
+  wrong.contactInfo.location = null;
+  wrong.contactInfo.headline = "Berlin, Germany";
+  assert.throws(
+    () => validateParsedResumeOutput(source, wrong),
+    /omitted or changed contactInfo.location/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
@@ -428,6 +445,26 @@ test("adjacent dateless roles cannot be disguised as work-history bullets", () =
   assert.throws(
     () => validateParsedResumeOutput(source, output),
     /ambiguous workHistory detail.*merged record boundary/i
+  );
+});
+
+test("atomic record fields cannot absorb multiline records", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.",
+    company: "Alpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.",
+    title: "Engineer",
+    location: null,
+    startDate: null,
+    endDate: null,
+    bullets: []
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid structured result/i
   );
 });
 
