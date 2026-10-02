@@ -26,6 +26,7 @@ test("product layout owns a scoped theme without importing public landing styles
   assert.match(shell, /data-app-shell/);
   assert.match(shell, /className="product-skip-link"/);
   assert.match(shell, /id="product-main"/);
+  assert.match(shell, /absolute inset-x-4 bottom-44/);
   assert.match(css, /--product-chrome: #020a08/);
   assert.match(css, /--product-mint: #5bd894/);
   assert.match(css, /:focus-visible/);

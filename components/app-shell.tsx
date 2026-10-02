@@ -15,7 +15,7 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
           <ApplyPilotLogo subtitle="Human-in-the-loop" tone="dark" />
         </div>
         <ProductNav className="max-h-[calc(100vh-18rem)] overflow-y-auto px-3 py-5" />
-        <div className="absolute inset-x-4 bottom-32">
+        <div className="absolute inset-x-4 bottom-44">
           <AuthMenu tone="dark" />
         </div>
         <div className="absolute inset-x-4 bottom-4 rounded-xl border border-brand-500/30 bg-white/[0.04] p-4 text-xs text-brand-100">
