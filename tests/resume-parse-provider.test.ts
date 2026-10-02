@@ -385,6 +385,23 @@ test("an international city-region line is location, never a headline substitute
   );
 });
 
+test("a professional headline ending in an acronym is not a location", () => {
+  const contactHeader = "Jordan Example\nEngineering Leader, AI\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const correct = structuredClone(parsedOutput);
+  correct.contactInfo.sourceText = contactHeader;
+  correct.contactInfo.headline = "Engineering Leader, AI";
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, correct));
+
+  const wrong = structuredClone(correct);
+  wrong.contactInfo.headline = null;
+  wrong.contactInfo.location = "Engineering Leader, AI";
+  assert.throws(
+    () => validateParsedResumeOutput(source, wrong),
+    /professional headline/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
@@ -483,6 +500,19 @@ test("adjacent work records cannot be reassigned to location and date fields", (
     () => validateParsedResumeOutput(source, output),
     /invalid workHistory date or location/i
   );
+});
+
+test("numeric month-year work dates remain valid", () => {
+  const source = resumeText.replace("2022 - Present", "05/2020 - 06/2023");
+  const output = structuredClone(parsedOutput);
+  output.workHistory[0].sourceText = output.workHistory[0].sourceText.replace(
+    "2022 - Present",
+    "05/2020 - 06/2023"
+  );
+  output.workHistory[0].startDate = "05/2020";
+  output.workHistory[0].endDate = "06/2023";
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
 });
 
 test("atomic record fields cannot absorb multiline records", () => {

@@ -430,17 +430,24 @@ const englishRegionNames = (() => {
   return names;
 })();
 
+const commonRegionAbbreviations = new Set([
+  ..."AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "),
+  ..."AB BC MB NB NL NS NT NU ON PE QC SK YT".split(" "),
+  ..."ACT NSW NT QLD SA TAS VIC WA".split(" ")
+]);
+
 function looksLikeContactLocation(line: string) {
   if (/\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line)) return true;
   const suffix = line.split(",").at(-1)?.trim();
   if (!suffix || suffix === line.trim()) return false;
-  return /^[A-Z]{2,3}$/.test(suffix) || englishRegionNames.has(suffix.toLowerCase());
+  return commonRegionAbbreviations.has(suffix) || englishRegionNames.has(suffix.toLowerCase());
 }
 
 const resumeDateAtom = [
   "(?:present|current|ongoing|now)",
   "(?:(?:19|20)\\d{2})",
   "(?:(?:19|20)\\d{2}[-/.]\\d{1,2}(?:[-/.]\\d{1,2})?)",
+  "(?:\\d{1,2}[-/.](?:19|20)\\d{2})",
   "(?:\\d{1,2}[-/.]\\d{1,2}(?:[-/.](?:\\d{2}|\\d{4}))?)",
   "(?:(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+(?:\\d{1,2}(?:st|nd|rd|th)?[,]?\\s+)?(?:19|20)\\d{2})",
   "(?:(?:q[1-4]|spring|summer|fall|autumn|winter)\\s+(?:19|20)\\d{2})"
