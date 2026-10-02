@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Import, Loader2 } from "lucide-react";
 import Link from "next/link";
 
-import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import { PrimaryButton, SecondaryButton, type UiTone } from "@/components/ui";
 import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 type ImportResult = {
@@ -32,7 +32,7 @@ function optionalLineList(formData: FormData, name: string) {
   return items.length ? items : undefined;
 }
 
-export function ManualJobImportForm() {
+export function ManualJobImportForm({ tone = "default" }: { tone?: UiTone } = {}) {
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
 
@@ -82,7 +82,7 @@ export function ManualJobImportForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className={`space-y-4 ${tone === "branded" ? "product-form" : ""}`}>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm font-medium text-slate-700">
           Job title
@@ -154,24 +154,32 @@ export function ManualJobImportForm() {
           />
         </label>
       </div>
-      <p className="text-xs leading-5 text-slate-500">
+      <p className={`text-xs leading-5 ${tone === "branded" ? "product-themed-muted" : "text-slate-500"}`}>
         Import only saves the job without requesting AI scoring. You can score it later from the job page.
       </p>
       <div className="flex flex-wrap gap-2">
-        <PrimaryButton type="submit" value="false" disabled={pending}>
+        <PrimaryButton type="submit" value="false" disabled={pending} tone={tone}>
           {pending ? <Loader2 className="mr-2 animate-spin" size={16} aria-hidden="true" /> : <Import className="mr-2" size={16} aria-hidden="true" />}
           Import only
         </PrimaryButton>
-        <SecondaryButton type="submit" value="true" disabled={pending}>
+        <SecondaryButton type="submit" value="true" disabled={pending} tone={tone}>
           Import and score
         </SecondaryButton>
       </div>
       {result ? (
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+        <div className={`rounded-lg border p-3 text-sm ${tone === "branded"
+          ? "error" in result
+            ? "product-callout-danger"
+            : "uncertain" in result
+              ? "product-callout-warning"
+              : result.scoring.status === "failed" || result.scoring.status === "unavailable"
+                ? "product-callout-warning"
+                : "product-callout-success"
+          : "border-slate-200 bg-slate-50 text-slate-700"}`}>
           {"error" in result ? (
-            <p className="text-red-700">Import failed: {result.error}</p>
+            <p className={tone === "branded" ? "" : "text-red-700"}>Import failed: {result.error}</p>
           ) : "uncertain" in result ? (
-            <p className="text-amber-800">{result.uncertain}</p>
+            <p className={tone === "branded" ? "" : "text-amber-800"}>{result.uncertain}</p>
           ) : (
             <>
               <p>
@@ -185,7 +193,7 @@ export function ManualJobImportForm() {
                   <>Imported {result.job.company} · {result.job.title}. Match scoring was not requested.</>
                 )}
               </p>
-              <Link href={`/jobs/${result.job.id}`} className="mt-2 inline-block font-semibold text-brand-700 underline">
+              <Link href={`/jobs/${result.job.id}`} className={`mt-2 inline-block font-semibold underline ${tone === "branded" ? "product-themed-accent" : "text-brand-700"}`}>
                 Open imported job
               </Link>
             </>

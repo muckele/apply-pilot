@@ -77,120 +77,123 @@ export default async function DashboardPage() {
   }));
 
   return (
-    <>
+    <div className="product-page product-page-themed">
       <PageHeader
         title="Dashboard"
         description="Best matches, follow-ups, interviews, and weekly job-search activity in one place."
+        tone="branded"
         action={
-          <ButtonLink href="/jobs">
+          <ButtonLink href="/jobs" tone="branded">
             <Plus className="mr-2" size={16} aria-hidden="true" />
             Import job
           </ButtonLink>
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="Saved" value={savedThisWeek} detail="This week" />
-        <MetricCard label="Applied" value={appliedThisWeek} detail="This week" />
-        <MetricCard label="Interviews" value={upcomingInterviews} detail="Upcoming" />
-        <MetricCard label="Follow-ups" value={followUpsDue} detail="Need action" />
-        <MetricCard label="Resume versions" value={resumeVersions} detail="Created" />
-        <MetricCard label="Avg. fit" value={formatAverageFit(avgFit._avg.overallFitScore)} detail="Scored jobs" />
+      <div className="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+        <MetricCard label="Saved" value={savedThisWeek} detail="This week" tone="branded" />
+        <MetricCard label="Applied" value={appliedThisWeek} detail="This week" tone="branded" />
+        <MetricCard label="Interviews" value={upcomingInterviews} detail="Upcoming" tone="branded" />
+        <MetricCard label="Follow-ups" value={followUpsDue} detail="Need action" tone="branded" />
+        <MetricCard label="Resume versions" value={resumeVersions} detail="Created" tone="branded" />
+        <MetricCard label="Avg. fit" value={formatAverageFit(avgFit._avg.overallFitScore)} detail="Scored jobs" tone="branded" />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.8fr)]">
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-950">Best scored matches</h2>
-            <ButtonLink href="/jobs" variant="secondary">View jobs</ButtonLink>
+            <h2 className="product-themed-title text-sm font-semibold tracking-[-0.01em]">Best scored matches</h2>
+            <ButtonLink href="/jobs" variant="secondary" tone="branded">View jobs</ButtonLink>
           </div>
           {jobCards.length ? (
-            jobCards.map((job) => <JobCard key={job.id} job={job} />)
+            jobCards.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
-            <Panel>
-              <div className="p-5 text-sm text-slate-600">No scored jobs yet. Review a job and run fit scoring when available.</div>
+            <Panel tone="branded">
+              <div className="product-themed-muted p-5 text-sm">No scored jobs yet. Review a job and run fit scoring when available.</div>
             </Panel>
           )}
         </section>
 
         <div className="space-y-6">
-          <Panel>
+          <Panel tone="branded">
             <PanelHeader
               title="Applications needing follow-up"
-              action={<TrendingUp size={17} className="text-brand-600" aria-hidden="true" />}
+              action={<TrendingUp size={17} className="product-themed-accent" aria-hidden="true" />}
+              tone="branded"
             />
-            <div className="divide-y divide-slate-100">
+            <div className="product-divider divide-y">
               {applicationsNeedingFollowUp.length ? (
                 applicationsNeedingFollowUp.map((application) => (
                   <div key={application.id} className="px-5 py-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-slate-950">{application.jobPosting.company}</p>
-                        <p className="text-xs text-slate-500">{application.jobPosting.title}</p>
+                        <p className="product-themed-title text-sm font-semibold">{application.jobPosting.company}</p>
+                        <p className="product-themed-muted text-xs">{application.jobPosting.title}</p>
                       </div>
-                      <ScoreBadge score={application.jobPosting.overallFitScore} />
+                      <ScoreBadge score={application.jobPosting.overallFitScore} tone="branded" />
                     </div>
-                    <p className="mt-2 text-sm text-slate-700">{application.nextAction ?? "Review next step."}</p>
-                    <p className="mt-1 text-xs text-slate-500">Due {formatDate(application.followUpDueAt)}</p>
+                    <p className="product-themed-copy mt-2 text-sm">{application.nextAction ?? "Review next step."}</p>
+                    <p className="product-themed-muted mt-1 text-xs">Due {formatDate(application.followUpDueAt)}</p>
                   </div>
                 ))
               ) : (
-                <div className="px-5 py-4 text-sm text-slate-600">No follow-ups need attention.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No follow-ups need attention.</div>
               )}
             </div>
           </Panel>
 
-          <Panel>
+          <Panel tone="branded">
             <PanelHeader
               title="Recruiter emails"
               description="Gmail snippets are shown only after connecting Gmail with readonly access."
-              action={<Mail size={17} className="text-brand-600" aria-hidden="true" />}
+              action={<Mail size={17} className="product-themed-accent" aria-hidden="true" />}
+              tone="branded"
             />
-            <div className="divide-y divide-slate-100">
+            <div className="product-divider divide-y">
               {recruiterEmails.length ? (
                 recruiterEmails.map((email) => (
-                  <div key={email.id} className="px-5 py-4 text-sm text-slate-700">
-                    <p className="font-semibold text-slate-950">{email.subject}</p>
-                    <p className="mt-1 text-xs text-slate-500">{email.fromEmail ?? "Unknown sender"}</p>
+                  <div key={email.id} className="product-themed-copy px-5 py-4 text-sm">
+                    <p className="product-themed-title font-semibold">{email.subject}</p>
+                    <p className="product-themed-muted mt-1 text-xs">{email.fromEmail ?? "Unknown sender"}</p>
                   </div>
                 ))
               ) : (
-                <div className="px-5 py-4 text-sm text-slate-700">No saved recruiter messages yet.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No saved recruiter messages yet.</div>
               )}
             </div>
           </Panel>
 
-          <Panel>
-            <PanelHeader title="Upcoming interviews" action={<CalendarClock size={17} className="text-brand-600" />} />
-            <div className="divide-y divide-slate-100">
+          <Panel tone="branded">
+            <PanelHeader title="Upcoming interviews" action={<CalendarClock size={17} className="product-themed-accent" />} tone="branded" />
+            <div className="product-divider divide-y">
               {upcomingInterviews ? (
-                <div className="px-5 py-4 text-sm text-slate-700">{upcomingInterviews} interview(s) scheduled.</div>
+                <div className="product-themed-copy px-5 py-4 text-sm">{upcomingInterviews} interview(s) scheduled.</div>
               ) : (
-                <div className="px-5 py-4 text-sm text-slate-700">No upcoming interviews.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No upcoming interviews.</div>
               )}
             </div>
           </Panel>
 
-          <Panel>
-            <PanelHeader title="Open tasks" />
-            <div className="divide-y divide-slate-100">
+          <Panel tone="branded">
+            <PanelHeader title="Open tasks" tone="branded" />
+            <div className="product-divider divide-y">
               {openTasks.length ? (
                 openTasks.map((task) => (
                   <div key={task.id} className="flex items-center justify-between gap-3 px-5 py-3">
                     <div>
-                      <p className="text-sm font-medium text-slate-800">{task.title}</p>
-                      <p className="text-xs text-slate-500">Due {formatDate(task.dueAt)}</p>
+                      <p className="product-themed-copy text-sm font-medium">{task.title}</p>
+                      <p className="product-themed-muted text-xs">Due {formatDate(task.dueAt)}</p>
                     </div>
-                    <StatusBadge status={task.priority} />
+                    <StatusBadge status={task.priority} tone="branded" />
                   </div>
                 ))
               ) : (
-                <div className="px-5 py-4 text-sm text-slate-600">No open tasks.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No open tasks.</div>
               )}
             </div>
           </Panel>
         </div>
       </div>
-    </>
+    </div>
   );
 }

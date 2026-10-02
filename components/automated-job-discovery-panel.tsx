@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AlertTriangle, Bot, CheckCircle2, ExternalLink, Loader2, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-import { PrimaryButton, SecondaryButton, StatusBadge } from "@/components/ui";
+import { PrimaryButton, SecondaryButton, StatusBadge, type UiTone } from "@/components/ui";
 import type { DiscoveryScoringSummary } from "@/lib/job-sources/discovery";
 import type { JobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
 import { formatDiscoveryScoringSummary } from "@/lib/job-sources/scoring-presentation";
@@ -43,9 +43,11 @@ type DiscoveryResult = {
 };
 
 export function AutomatedJobDiscoveryPanel({
-  initialPreferences
+  initialPreferences,
+  tone = "default"
 }: {
   initialPreferences: JobDiscoveryPreferences;
+  tone?: UiTone;
 }) {
   const router = useRouter();
   const [queryText, setQueryText] = useState(initialPreferences.targetSearches.join(", "));
@@ -106,7 +108,7 @@ export function AutomatedJobDiscoveryPanel({
 
   return (
     <div className="space-y-5">
-      <form onSubmit={runDiscovery} className="space-y-4">
+      <form onSubmit={runDiscovery} className={`space-y-4 ${tone === "branded" ? "product-form" : ""}`}>
         <label className="block text-sm font-medium text-slate-700">
           Target searches
           <textarea
@@ -140,7 +142,7 @@ export function AutomatedJobDiscoveryPanel({
             />
           </label>
         </div>
-        <div className="grid gap-2 text-sm text-slate-700">
+        <div className={`grid gap-2 text-sm ${tone === "branded" ? "product-themed-copy" : "text-slate-700"}`}>
           <label className="inline-flex items-center gap-2">
             <input
               name="remoteOnly"
@@ -162,54 +164,56 @@ export function AutomatedJobDiscoveryPanel({
             Run AI fit scoring on the first matches
           </label>
         </div>
-        <PrimaryButton type="submit" disabled={pending} className="w-full gap-2">
+        <PrimaryButton type="submit" disabled={pending} className="w-full gap-2" tone={tone}>
           {pending ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
           Run automated discovery
         </PrimaryButton>
       </form>
 
       {formError ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{formError}</div>
+        <div className={`rounded-lg border p-3 text-sm ${tone === "branded" ? "product-callout-danger" : "border-red-200 bg-red-50 text-red-700"}`}>{formError}</div>
       ) : null}
 
       {result?.error ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{result.error}</div>
+        <div className={`rounded-lg border p-3 text-sm ${tone === "branded" ? "product-callout-danger" : "border-red-200 bg-red-50 text-red-700"}`}>{result.error}</div>
       ) : null}
 
       {result && !result.error ? (
         <div className="space-y-4">
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-900">
+          <div className={`rounded-lg border p-4 ${tone === "branded" ? "product-callout-success" : "border-emerald-200 bg-emerald-50"}`}>
+            <div className={`flex items-center gap-2 text-sm font-semibold ${tone === "branded" ? "" : "text-emerald-900"}`}>
               <CheckCircle2 size={16} aria-hidden="true" />
               {result.imported} jobs imported or updated
             </div>
-            <p className="mt-1 text-xs leading-5 text-emerald-800">
+            <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "" : "text-emerald-800"}`}>
               Searched {result.queries.length} target terms {result.location ? `around ${result.location}` : "without a location restriction"}.
             </p>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+          <div className={`rounded-lg border p-4 text-sm ${tone === "branded" ? "product-callout-neutral" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
             {formatDiscoveryScoringSummary(result.scoring)}
           </div>
 
           {result.jobs.length ? (
             <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase text-slate-500">Recent imports</p>
+              <p className={`text-xs font-semibold uppercase tracking-[0.08em] ${tone === "branded" ? "product-themed-accent" : "text-slate-500"}`}>Recent imports</p>
               <div className="space-y-2">
                 {result.jobs.slice(0, 6).map((job) => (
                   <Link
                     key={job.id}
                     href={`/jobs/${job.id}`}
-                    className="block rounded-lg border border-slate-200 bg-white p-3 text-sm hover:border-brand-200 hover:bg-brand-50"
+                    className={tone === "branded"
+                      ? "product-themed-subtle block rounded-lg border p-3 text-sm transition-colors"
+                      : "block rounded-lg border border-slate-200 bg-white p-3 text-sm hover:border-brand-200 hover:bg-brand-50"}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-semibold text-slate-950">{job.title}</p>
-                        <p className="mt-1 text-xs text-slate-600">
+                        <p className={`font-semibold ${tone === "branded" ? "product-themed-title" : "text-slate-950"}`}>{job.title}</p>
+                        <p className={`mt-1 text-xs ${tone === "branded" ? "product-themed-muted" : "text-slate-600"}`}>
                           {job.company} · {job.location || "Location not listed"}
                         </p>
                       </div>
-                      <StatusBadge status={job.sourceType} />
+                      <StatusBadge status={job.sourceType} tone={tone} />
                     </div>
                   </Link>
                 ))}
@@ -218,18 +222,18 @@ export function AutomatedJobDiscoveryPanel({
           ) : null}
 
           <div className="space-y-2">
-            <p className="text-xs font-semibold uppercase text-slate-500">Source run</p>
+            <p className={`text-xs font-semibold uppercase tracking-[0.08em] ${tone === "branded" ? "product-themed-accent" : "text-slate-500"}`}>Source run</p>
             <div className="space-y-2">
               {result.reports.map((report) => (
-                <div key={`${report.name}-${report.type}`} className="rounded-lg border border-slate-200 bg-white p-3">
+                <div key={`${report.name}-${report.type}`} className={tone === "branded" ? "product-themed-subtle rounded-lg border p-3" : "rounded-lg border border-slate-200 bg-white p-3"}>
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
-                      <Bot size={15} className="shrink-0 text-slate-400" aria-hidden="true" />
-                      <p className="truncate text-sm font-semibold text-slate-900">{report.name}</p>
+                      <Bot size={15} className={`shrink-0 ${tone === "branded" ? "product-themed-accent" : "text-slate-400"}`} aria-hidden="true" />
+                      <p className={`truncate text-sm font-semibold ${tone === "branded" ? "product-themed-title" : "text-slate-900"}`}>{report.name}</p>
                     </div>
-                    <StatusBadge status={report.status} />
+                    <StatusBadge status={report.status} tone={tone} />
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                  <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "product-themed-muted" : "text-slate-600"}`}>
                     {report.imported} imported
                     {typeof report.skipped === "number" ? ` · ${report.skipped} filtered` : ""}
                     {report.bestRelevanceScore ? ` · best relevance ${report.bestRelevanceScore}%` : ""}. {report.details}
@@ -239,25 +243,25 @@ export function AutomatedJobDiscoveryPanel({
             </div>
           </div>
 
-          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
+          <div className={`rounded-lg border p-4 ${tone === "branded" ? "product-callout-warning" : "border-amber-200 bg-amber-50"}`}>
+            <div className={`flex items-center gap-2 text-sm font-semibold ${tone === "branded" ? "" : "text-amber-900"}`}>
               <AlertTriangle size={16} aria-hidden="true" />
               Restricted job boards
             </div>
             <div className="mt-3 space-y-3">
               {result.restrictedBoards.map((board) => (
-                <div key={board.name} className="rounded-lg border border-amber-200 bg-white p-3">
+                <div key={board.name} className={tone === "branded" ? "rounded-lg border border-current/20 bg-black/[0.03] p-3" : "rounded-lg border border-amber-200 bg-white p-3"}>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-sm font-semibold text-slate-950">{board.name}</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-600">{board.reason}</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-700">{board.allowedPath}</p>
+                      <p className={`text-sm font-semibold ${tone === "branded" ? "" : "text-slate-950"}`}>{board.name}</p>
+                      <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "opacity-80" : "text-slate-600"}`}>{board.reason}</p>
+                      <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "" : "text-slate-700"}`}>{board.allowedPath}</p>
                     </div>
                     <a
                       href={board.policyUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-amber-800 hover:text-amber-950"
+                      className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold ${tone === "branded" ? "hover:opacity-75" : "text-amber-800 hover:text-amber-950"}`}
                     >
                       Policy
                       <ExternalLink size={13} aria-hidden="true" />
@@ -268,7 +272,7 @@ export function AutomatedJobDiscoveryPanel({
             </div>
           </div>
 
-          <SecondaryButton type="button" onClick={() => router.refresh()} className="w-full">
+          <SecondaryButton type="button" onClick={() => router.refresh()} className="w-full" tone={tone}>
             Refresh jobs
           </SecondaryButton>
         </div>
