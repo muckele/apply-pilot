@@ -679,6 +679,38 @@ test("an explicitly labelled work location may follow dates", () => {
   assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
 });
 
+test("a Location Manager title is not an explicit work-location label", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nLocation Manager\n2020\nLed beta.`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\nLocation Manager\n2020\nLed beta.",
+    company: "Alpha Co",
+    title: "Engineer",
+    location: "Location Manager",
+    startDate: "2020",
+    endDate: null,
+    bullets: ["Led beta."]
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid workHistory date or location/i
+  );
+});
+
+test("an explicit based-in work location remains fully represented", () => {
+  const source = resumeText.replace("Remote", "Based in Sydney, NSW");
+  const output = structuredClone(parsedOutput);
+  output.workHistory[0].sourceText = output.workHistory[0].sourceText.replace(
+    "Remote",
+    "Based in Sydney, NSW"
+  );
+  output.workHistory[0].location = "Sydney, NSW";
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
+});
+
 test("atomic record fields cannot absorb multiline records", () => {
   const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nManager\nBeta Co\nLed beta.`;
   const output = emptyParsedResume();

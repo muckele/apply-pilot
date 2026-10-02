@@ -516,7 +516,7 @@ function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
     locationIndex >= coreEnd &&
     locationIndex < firstNarrativeIndex;
   const explicitlyLabeled = item.sourceText.split(/\r?\n/).some((line) =>
-    line.includes(item.location!) && /\b(?:location|based\s+in)\b/i.test(line)
+    line.includes(item.location!) && /^\s*(?:location\s*:|based\s+in\b)/i.test(line)
   );
   if (appearsInRecordHeader && (explicitlyLabeled || isUnambiguousStandaloneWorkLocation(item.location))) return;
   throw new PublicApiError(
@@ -856,7 +856,7 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
       item.sourceText,
       [item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets],
       "workHistory",
-      /\b(?:company|employer|title|role|location|dates?|from|to|at|for|responsibilities|achievements)\b/gi
+      /\b(?:(?:based\s+in)|company|employer|title|role|location|dates?|from|to|at|for|responsibilities|achievements)\b/gi
     );
   });
   output.projects.forEach((item, index) => {
