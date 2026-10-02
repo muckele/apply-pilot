@@ -3,10 +3,12 @@ import { Menu } from "lucide-react";
 import { AuthMenu } from "@/components/auth-menu";
 import { ApplyPilotLogo } from "@/components/brand/apply-pilot-logo";
 import { ProductNav } from "@/components/product-nav";
+import { ThemePreferenceSync } from "@/components/theme-preference-sync";
 
 export async function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="product-shell min-h-screen" data-app-shell>
+      <ThemePreferenceSync />
       <a className="product-skip-link" href="#product-main">
         Skip to content
       </a>

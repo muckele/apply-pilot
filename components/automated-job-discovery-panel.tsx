@@ -142,7 +142,7 @@ export function AutomatedJobDiscoveryPanel({
             />
           </label>
         </div>
-        <div className={`grid gap-2 text-sm ${tone === "branded" ? "text-[#d6dfdb]" : "text-slate-700"}`}>
+        <div className={`grid gap-2 text-sm ${tone === "branded" ? "product-themed-copy" : "text-slate-700"}`}>
           <label className="inline-flex items-center gap-2">
             <input
               name="remoteOnly"
@@ -181,11 +181,11 @@ export function AutomatedJobDiscoveryPanel({
       {result && !result.error ? (
         <div className="space-y-4">
           <div className={`rounded-lg border p-4 ${tone === "branded" ? "product-callout-success" : "border-emerald-200 bg-emerald-50"}`}>
-            <div className={`flex items-center gap-2 text-sm font-semibold ${tone === "branded" ? "text-[#dff8e9]" : "text-emerald-900"}`}>
+            <div className={`flex items-center gap-2 text-sm font-semibold ${tone === "branded" ? "" : "text-emerald-900"}`}>
               <CheckCircle2 size={16} aria-hidden="true" />
               {result.imported} jobs imported or updated
             </div>
-            <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "text-[#bce9ce]" : "text-emerald-800"}`}>
+            <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "" : "text-emerald-800"}`}>
               Searched {result.queries.length} target terms {result.location ? `around ${result.location}` : "without a location restriction"}.
             </p>
           </div>
@@ -196,20 +196,20 @@ export function AutomatedJobDiscoveryPanel({
 
           {result.jobs.length ? (
             <div className="space-y-2">
-              <p className={`text-xs font-semibold uppercase tracking-[0.08em] ${tone === "branded" ? "text-brand-300" : "text-slate-500"}`}>Recent imports</p>
+              <p className={`text-xs font-semibold uppercase tracking-[0.08em] ${tone === "branded" ? "product-themed-accent" : "text-slate-500"}`}>Recent imports</p>
               <div className="space-y-2">
                 {result.jobs.slice(0, 6).map((job) => (
                   <Link
                     key={job.id}
                     href={`/jobs/${job.id}`}
                     className={tone === "branded"
-                      ? "block rounded-lg border border-white/10 bg-white/[0.025] p-3 text-sm transition-colors hover:border-brand-400/45 hover:bg-brand-500/[0.07]"
+                      ? "product-themed-subtle block rounded-lg border p-3 text-sm transition-colors"
                       : "block rounded-lg border border-slate-200 bg-white p-3 text-sm hover:border-brand-200 hover:bg-brand-50"}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className={`font-semibold ${tone === "branded" ? "text-[#f3f6f2]" : "text-slate-950"}`}>{job.title}</p>
-                        <p className={`mt-1 text-xs ${tone === "branded" ? "text-[#aeb9b5]" : "text-slate-600"}`}>
+                        <p className={`font-semibold ${tone === "branded" ? "product-themed-title" : "text-slate-950"}`}>{job.title}</p>
+                        <p className={`mt-1 text-xs ${tone === "branded" ? "product-themed-muted" : "text-slate-600"}`}>
                           {job.company} · {job.location || "Location not listed"}
                         </p>
                       </div>
@@ -222,18 +222,18 @@ export function AutomatedJobDiscoveryPanel({
           ) : null}
 
           <div className="space-y-2">
-            <p className={`text-xs font-semibold uppercase tracking-[0.08em] ${tone === "branded" ? "text-brand-300" : "text-slate-500"}`}>Source run</p>
+            <p className={`text-xs font-semibold uppercase tracking-[0.08em] ${tone === "branded" ? "product-themed-accent" : "text-slate-500"}`}>Source run</p>
             <div className="space-y-2">
               {result.reports.map((report) => (
-                <div key={`${report.name}-${report.type}`} className={tone === "branded" ? "rounded-lg border border-white/10 bg-white/[0.025] p-3" : "rounded-lg border border-slate-200 bg-white p-3"}>
+                <div key={`${report.name}-${report.type}`} className={tone === "branded" ? "product-themed-subtle rounded-lg border p-3" : "rounded-lg border border-slate-200 bg-white p-3"}>
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
-                      <Bot size={15} className={`shrink-0 ${tone === "branded" ? "text-brand-300" : "text-slate-400"}`} aria-hidden="true" />
-                      <p className={`truncate text-sm font-semibold ${tone === "branded" ? "text-[#f3f6f2]" : "text-slate-900"}`}>{report.name}</p>
+                      <Bot size={15} className={`shrink-0 ${tone === "branded" ? "product-themed-accent" : "text-slate-400"}`} aria-hidden="true" />
+                      <p className={`truncate text-sm font-semibold ${tone === "branded" ? "product-themed-title" : "text-slate-900"}`}>{report.name}</p>
                     </div>
                     <StatusBadge status={report.status} tone={tone} />
                   </div>
-                  <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "text-[#aeb9b5]" : "text-slate-600"}`}>
+                  <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "product-themed-muted" : "text-slate-600"}`}>
                     {report.imported} imported
                     {typeof report.skipped === "number" ? ` · ${report.skipped} filtered` : ""}
                     {report.bestRelevanceScore ? ` · best relevance ${report.bestRelevanceScore}%` : ""}. {report.details}
@@ -244,24 +244,24 @@ export function AutomatedJobDiscoveryPanel({
           </div>
 
           <div className={`rounded-lg border p-4 ${tone === "branded" ? "product-callout-warning" : "border-amber-200 bg-amber-50"}`}>
-            <div className={`flex items-center gap-2 text-sm font-semibold ${tone === "branded" ? "text-[#f1dfb0]" : "text-amber-900"}`}>
+            <div className={`flex items-center gap-2 text-sm font-semibold ${tone === "branded" ? "" : "text-amber-900"}`}>
               <AlertTriangle size={16} aria-hidden="true" />
               Restricted job boards
             </div>
             <div className="mt-3 space-y-3">
               {result.restrictedBoards.map((board) => (
-                <div key={board.name} className={tone === "branded" ? "rounded-lg border border-[#d7b45f]/25 bg-black/10 p-3" : "rounded-lg border border-amber-200 bg-white p-3"}>
+                <div key={board.name} className={tone === "branded" ? "rounded-lg border border-current/20 bg-black/[0.03] p-3" : "rounded-lg border border-amber-200 bg-white p-3"}>
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className={`text-sm font-semibold ${tone === "branded" ? "text-[#fff4d5]" : "text-slate-950"}`}>{board.name}</p>
-                      <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "text-[#dccb9f]" : "text-slate-600"}`}>{board.reason}</p>
-                      <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "text-[#f1dfb0]" : "text-slate-700"}`}>{board.allowedPath}</p>
+                      <p className={`text-sm font-semibold ${tone === "branded" ? "" : "text-slate-950"}`}>{board.name}</p>
+                      <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "opacity-80" : "text-slate-600"}`}>{board.reason}</p>
+                      <p className={`mt-1 text-xs leading-5 ${tone === "branded" ? "" : "text-slate-700"}`}>{board.allowedPath}</p>
                     </div>
                     <a
                       href={board.policyUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold ${tone === "branded" ? "text-[#f1dfb0] hover:text-[#fff4d5]" : "text-amber-800 hover:text-amber-950"}`}
+                      className={`inline-flex shrink-0 items-center gap-1 text-xs font-semibold ${tone === "branded" ? "hover:opacity-75" : "text-amber-800 hover:text-amber-950"}`}
                     >
                       Policy
                       <ExternalLink size={13} aria-hidden="true" />

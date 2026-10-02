@@ -154,7 +154,7 @@ export function ManualJobImportForm({ tone = "default" }: { tone?: UiTone } = {}
           />
         </label>
       </div>
-      <p className={`text-xs leading-5 ${tone === "branded" ? "text-[#aeb9b5]" : "text-slate-500"}`}>
+      <p className={`text-xs leading-5 ${tone === "branded" ? "product-themed-muted" : "text-slate-500"}`}>
         Import only saves the job without requesting AI scoring. You can score it later from the job page.
       </p>
       <div className="flex flex-wrap gap-2">
@@ -177,9 +177,9 @@ export function ManualJobImportForm({ tone = "default" }: { tone?: UiTone } = {}
                 : "product-callout-success"
           : "border-slate-200 bg-slate-50 text-slate-700"}`}>
           {"error" in result ? (
-            <p className={tone === "branded" ? "text-[#ffd8d4]" : "text-red-700"}>Import failed: {result.error}</p>
+            <p className={tone === "branded" ? "" : "text-red-700"}>Import failed: {result.error}</p>
           ) : "uncertain" in result ? (
-            <p className={tone === "branded" ? "text-[#f1dfb0]" : "text-amber-800"}>{result.uncertain}</p>
+            <p className={tone === "branded" ? "" : "text-amber-800"}>{result.uncertain}</p>
           ) : (
             <>
               <p>
@@ -193,7 +193,7 @@ export function ManualJobImportForm({ tone = "default" }: { tone?: UiTone } = {}
                   <>Imported {result.job.company} · {result.job.title}. Match scoring was not requested.</>
                 )}
               </p>
-              <Link href={`/jobs/${result.job.id}`} className={`mt-2 inline-block font-semibold underline ${tone === "branded" ? "text-brand-300" : "text-brand-700"}`}>
+              <Link href={`/jobs/${result.job.id}`} className={`mt-2 inline-block font-semibold underline ${tone === "branded" ? "product-themed-accent" : "text-brand-700"}`}>
                 Open imported job
               </Link>
             </>

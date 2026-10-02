@@ -65,17 +65,17 @@ export function JobCrmActions({
   }
 
   const buttonClass = tone === "branded"
-    ? "inline-flex min-h-11 items-center gap-2 rounded-lg border border-[rgba(106,183,152,0.38)] bg-[#071411]/80 px-3 py-2 text-sm font-semibold text-[#e8eeeb] transition-colors hover:border-brand-300 hover:bg-brand-500/10 hover:text-brand-300 disabled:cursor-not-allowed disabled:opacity-60"
+    ? "product-secondary-action inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
     : "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60";
   const appliedButtonClass = tone === "branded"
-    ? "inline-flex min-h-11 items-center gap-2 rounded-lg border border-brand-400/50 bg-brand-500/10 px-3 py-2 text-sm font-semibold text-brand-200 transition-colors hover:border-brand-300 hover:bg-brand-500/20 hover:text-brand-100 disabled:cursor-not-allowed disabled:opacity-60"
+    ? "product-secondary-action inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
     : "inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60";
 
   return (
     <div className={compact ? "space-y-2" : "space-y-3"}>
       {!compact ? (
         <div className="grid gap-3">
-          <label className={`block text-xs font-medium ${tone === "branded" ? "text-[#d9e0dd]" : "text-slate-600"}`}>
+          <label className={`block text-xs font-medium ${tone === "branded" ? "product-themed-copy" : "text-slate-600"}`}>
             Resume version used
             <select
               value={resumeVersionId}
@@ -90,7 +90,7 @@ export function JobCrmActions({
               ))}
             </select>
           </label>
-          <label className={`block text-xs font-medium ${tone === "branded" ? "text-[#d9e0dd]" : "text-slate-600"}`}>
+          <label className={`block text-xs font-medium ${tone === "branded" ? "product-themed-copy" : "text-slate-600"}`}>
             Cover letter used
             <select
               value={coverLetterVersionId}

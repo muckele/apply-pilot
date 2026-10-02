@@ -77,7 +77,7 @@ export default async function DashboardPage() {
   }));
 
   return (
-    <div className="product-page product-page-dark">
+    <div className="product-page product-page-themed">
       <PageHeader
         title="Dashboard"
         description="Best matches, follow-ups, interviews, and weekly job-search activity in one place."
@@ -102,14 +102,14 @@ export default async function DashboardPage() {
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.8fr)]">
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold tracking-[-0.01em] text-[#f3f6f2]">Best scored matches</h2>
+            <h2 className="product-themed-title text-sm font-semibold tracking-[-0.01em]">Best scored matches</h2>
             <ButtonLink href="/jobs" variant="secondary" tone="branded">View jobs</ButtonLink>
           </div>
           {jobCards.length ? (
             jobCards.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
             <Panel tone="branded">
-              <div className="p-5 text-sm text-[#aeb9b5]">No scored jobs yet. Review a job and run fit scoring when available.</div>
+              <div className="product-themed-muted p-5 text-sm">No scored jobs yet. Review a job and run fit scoring when available.</div>
             </Panel>
           )}
         </section>
@@ -118,7 +118,7 @@ export default async function DashboardPage() {
           <Panel tone="branded">
             <PanelHeader
               title="Applications needing follow-up"
-              action={<TrendingUp size={17} className="text-brand-300" aria-hidden="true" />}
+              action={<TrendingUp size={17} className="product-themed-accent" aria-hidden="true" />}
               tone="branded"
             />
             <div className="product-divider divide-y">
@@ -127,17 +127,17 @@ export default async function DashboardPage() {
                   <div key={application.id} className="px-5 py-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-[#f3f6f2]">{application.jobPosting.company}</p>
-                        <p className="text-xs text-[#aeb9b5]">{application.jobPosting.title}</p>
+                        <p className="product-themed-title text-sm font-semibold">{application.jobPosting.company}</p>
+                        <p className="product-themed-muted text-xs">{application.jobPosting.title}</p>
                       </div>
                       <ScoreBadge score={application.jobPosting.overallFitScore} tone="branded" />
                     </div>
-                    <p className="mt-2 text-sm text-[#d6dfdb]">{application.nextAction ?? "Review next step."}</p>
-                    <p className="mt-1 text-xs text-[#aeb9b5]">Due {formatDate(application.followUpDueAt)}</p>
+                    <p className="product-themed-copy mt-2 text-sm">{application.nextAction ?? "Review next step."}</p>
+                    <p className="product-themed-muted mt-1 text-xs">Due {formatDate(application.followUpDueAt)}</p>
                   </div>
                 ))
               ) : (
-                <div className="px-5 py-4 text-sm text-[#aeb9b5]">No follow-ups need attention.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No follow-ups need attention.</div>
               )}
             </div>
           </Panel>
@@ -146,30 +146,30 @@ export default async function DashboardPage() {
             <PanelHeader
               title="Recruiter emails"
               description="Gmail snippets are shown only after connecting Gmail with readonly access."
-              action={<Mail size={17} className="text-brand-300" aria-hidden="true" />}
+              action={<Mail size={17} className="product-themed-accent" aria-hidden="true" />}
               tone="branded"
             />
             <div className="product-divider divide-y">
               {recruiterEmails.length ? (
                 recruiterEmails.map((email) => (
-                  <div key={email.id} className="px-5 py-4 text-sm text-[#d6dfdb]">
-                    <p className="font-semibold text-[#f3f6f2]">{email.subject}</p>
-                    <p className="mt-1 text-xs text-[#aeb9b5]">{email.fromEmail ?? "Unknown sender"}</p>
+                  <div key={email.id} className="product-themed-copy px-5 py-4 text-sm">
+                    <p className="product-themed-title font-semibold">{email.subject}</p>
+                    <p className="product-themed-muted mt-1 text-xs">{email.fromEmail ?? "Unknown sender"}</p>
                   </div>
                 ))
               ) : (
-                <div className="px-5 py-4 text-sm text-[#aeb9b5]">No saved recruiter messages yet.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No saved recruiter messages yet.</div>
               )}
             </div>
           </Panel>
 
           <Panel tone="branded">
-            <PanelHeader title="Upcoming interviews" action={<CalendarClock size={17} className="text-brand-300" />} tone="branded" />
+            <PanelHeader title="Upcoming interviews" action={<CalendarClock size={17} className="product-themed-accent" />} tone="branded" />
             <div className="product-divider divide-y">
               {upcomingInterviews ? (
-                <div className="px-5 py-4 text-sm text-[#d6dfdb]">{upcomingInterviews} interview(s) scheduled.</div>
+                <div className="product-themed-copy px-5 py-4 text-sm">{upcomingInterviews} interview(s) scheduled.</div>
               ) : (
-                <div className="px-5 py-4 text-sm text-[#aeb9b5]">No upcoming interviews.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No upcoming interviews.</div>
               )}
             </div>
           </Panel>
@@ -181,14 +181,14 @@ export default async function DashboardPage() {
                 openTasks.map((task) => (
                   <div key={task.id} className="flex items-center justify-between gap-3 px-5 py-3">
                     <div>
-                      <p className="text-sm font-medium text-[#e2e8e5]">{task.title}</p>
-                      <p className="text-xs text-[#aeb9b5]">Due {formatDate(task.dueAt)}</p>
+                      <p className="product-themed-copy text-sm font-medium">{task.title}</p>
+                      <p className="product-themed-muted text-xs">Due {formatDate(task.dueAt)}</p>
                     </div>
                     <StatusBadge status={task.priority} tone="branded" />
                   </div>
                 ))
               ) : (
-                <div className="px-5 py-4 text-sm text-[#aeb9b5]">No open tasks.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">No open tasks.</div>
               )}
             </div>
           </Panel>

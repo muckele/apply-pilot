@@ -1,5 +1,6 @@
 import { AccountDataControls } from "@/components/account-data-controls";
 import { ProfileSettingsForm, type ProfileSettingsData } from "@/components/profile-settings-form";
+import { ThemePreferenceControl } from "@/components/theme-preference-control";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -46,13 +47,23 @@ export default async function ProfileSettingsPage() {
           <ProfileSettingsForm initialProfile={initialProfile} />
         </Panel>
 
-        <Panel>
-          <PanelHeader
-            title="Account data"
-            description="Export your private CRM data or permanently delete your account records."
-          />
-          <AccountDataControls />
-        </Panel>
+        <div className="space-y-6">
+          <Panel>
+            <PanelHeader
+              title="Appearance"
+              description="Choose how the refreshed Dashboard and Jobs workspace looks on this browser."
+            />
+            <ThemePreferenceControl />
+          </Panel>
+
+          <Panel>
+            <PanelHeader
+              title="Account data"
+              description="Export your private CRM data or permanently delete your account records."
+            />
+            <AccountDataControls />
+          </Panel>
+        </div>
       </div>
     </>
   );
