@@ -27,8 +27,16 @@ test("product layout owns a scoped theme without importing public landing styles
   assert.match(shell, /className="product-skip-link"/);
   assert.match(shell, /id="product-main"/);
   assert.match(shell, /absolute inset-x-4 bottom-44/);
-  assert.match(css, /--product-chrome: #020a08/);
+  assert.match(css, /--product-canvas: #020a08/);
+  assert.match(css, /--product-surface: #071411/);
   assert.match(css, /--product-mint: #5bd894/);
+  assert.match(css, /color-scheme: light/);
+  assert.match(css, /\.product-shell:has\(\.product-page-dark\)/);
+  assert.match(css, /color-scheme: dark/);
+  assert.match(css, /\.product-surface/);
+  assert.match(css, /\.product-callout-success/);
+  assert.match(css, /\.product-callout-warning/);
+  assert.match(css, /\.product-callout-danger/);
   assert.match(css, /:focus-visible/);
   assert.match(css, /min-height: 44px/);
   assert.match(css, /@media \(min-width: 380px\)/);
@@ -68,13 +76,33 @@ test("branded primitives opt in without replacing default styling", () => {
     )
   );
 
-  assert.match(branded, /tracking-\[-0\.035em\]/);
-  assert.match(branded, /border-brand-100/);
-  assert.match(branded, /bg-brand-300/);
-  assert.match(branded, /text-brand-950/);
+  assert.match(branded, /tracking-\[-0\.04em\]/);
+  assert.match(branded, /product-surface/);
+  assert.match(branded, /bg-gradient-to-br/);
+  assert.match(branded, /text-\[#03110b\]/);
+  assert.match(branded, /text-\[#f3f6f2\]/);
   assert.match(defaults, /text-slate-950/);
   assert.match(defaults, /border-slate-200/);
   assert.match(defaults, /bg-brand-600/);
+});
+
+test("Dashboard and Jobs style their real content and result states, not only product chrome", () => {
+  const dashboard = source("app/(product)/dashboard/page.tsx");
+  const jobs = source("app/(product)/jobs/page.tsx");
+  const jobCard = source("components/job-card.tsx");
+  const discovery = source("components/automated-job-discovery-panel.tsx");
+  const manualImport = source("components/manual-job-import-form.tsx");
+
+  assert.match(dashboard, /product-page product-page-dark/);
+  assert.match(jobs, /product-page product-page-dark/);
+  assert.match(dashboard, /text-\[#f3f6f2\]/);
+  assert.match(dashboard, /product-divider/);
+  assert.match(jobs, /product-surface/);
+  assert.match(jobCard, /product-surface-raised/);
+  for (const resultClass of ["product-callout-success", "product-callout-warning", "product-callout-danger"]) {
+    assert.match(discovery, new RegExp(resultClass));
+    assert.match(manualImport, new RegExp(resultClass));
+  }
 });
 
 test("Jobs keeps labeled filters and the expanded import-only workflow", () => {

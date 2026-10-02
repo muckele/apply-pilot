@@ -163,7 +163,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
   });
 
   return (
-    <div className="product-page">
+    <div className="product-page product-page-dark">
       <PageHeader
         title="Jobs"
         description="Discover, import, deduplicate, and score recent jobs from compliant APIs, ATS feeds, RSS feeds, and permitted company career pages."
@@ -172,10 +172,10 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <section className="space-y-4">
-          <form className="rounded-xl border border-brand-100 bg-white p-4 shadow-soft" aria-label="Filter jobs">
+          <form className="product-surface rounded-xl border p-4" aria-label="Filter jobs">
             <div className="relative flex-1">
               <label className="sr-only" htmlFor="job-search">Search jobs</label>
-              <Search className="absolute left-3 top-3.5 text-brand-600" size={17} aria-hidden="true" />
+              <Search className="absolute left-3 top-3.5 text-brand-300" size={17} aria-hidden="true" />
               <input
                 id="job-search"
                 name="q"
@@ -246,7 +246,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
                 aria-label="Minimum fit score"
                 className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
               />
-              <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-brand-400 bg-brand-300 px-3 py-2 text-sm font-semibold text-brand-950 transition-colors hover:border-brand-300 hover:bg-brand-200">
+              <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-brand-300 bg-gradient-to-br from-[#62dc9a] to-[#4ccf88] px-3 py-2 text-sm font-semibold text-[#03110b] shadow-[0_12px_34px_rgba(43,202,122,0.12)] transition-colors hover:border-[#73e3a6] hover:from-[#73e3a6] hover:to-[#59d793]">
                 <Filter size={16} aria-hidden="true" />
                 Apply filters
               </button>
@@ -272,9 +272,9 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
           {jobs.length ? (
             jobs.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
-            <div className="rounded-xl border border-dashed border-brand-200 bg-white p-8 text-center shadow-soft">
-              <p className="text-sm font-semibold text-slate-950">No jobs imported yet</p>
-              <p className="mt-1 text-sm text-slate-600">Run automated discovery to populate your CRM.</p>
+            <div className="product-surface rounded-xl border border-dashed p-8 text-center">
+              <p className="text-sm font-semibold text-[#f3f6f2]">No jobs imported yet</p>
+              <p className="mt-1 text-sm text-[#aeb9b5]">Run automated discovery to populate your CRM.</p>
             </div>
           )}
         </section>

@@ -1,20 +1,52 @@
 .product-shell {
-  --product-chrome: #020a08;
-  --product-chrome-soft: #04110e;
-  --product-surface-dark: #071411;
+  --product-canvas: #020a08;
+  --product-canvas-soft: #04110e;
+  --product-surface: #071411;
   --product-surface-raised: #0a1815;
-  --product-text-on-dark: #f3f6f2;
-  --product-muted-on-dark: #aeb9b5;
+  --product-text: #f3f6f2;
+  --product-muted: #aeb9b5;
+  --product-muted-quiet: #778681;
   --product-mint: #5bd894;
   --product-mint-strong: #38c979;
   --product-mint-deep: #1d8c5d;
-  --product-border-dark: rgba(166, 204, 190, 0.22);
+  --product-border: rgba(166, 204, 190, 0.22);
   --product-border-strong: rgba(106, 183, 152, 0.38);
   min-height: 100vh;
+  position: relative;
+  isolation: isolate;
   color: #17202a;
+  color-scheme: light;
   background:
     radial-gradient(circle at 82% 0%, rgba(126, 224, 167, 0.11), transparent 30rem),
     #f7fafc;
+}
+
+.product-shell:has(.product-page-dark) {
+  color: var(--product-text);
+  color-scheme: dark;
+  background:
+    radial-gradient(circle at 78% 2%, rgba(20, 115, 76, 0.14), transparent 31rem),
+    radial-gradient(circle at 22% 76%, rgba(10, 83, 58, 0.1), transparent 34rem),
+    var(--product-canvas);
+}
+
+.product-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  display: none;
+  opacity: 0.2;
+  background-image:
+    linear-gradient(rgba(65, 132, 107, 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(65, 132, 107, 0.15) 1px, transparent 1px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(90deg, #000 0 40px, transparent 40px calc(100% - 40px), #000 calc(100% - 40px));
+}
+
+.product-shell:has(.product-page-dark)::before {
+  display: block;
 }
 
 .product-skip-link {
@@ -25,7 +57,7 @@
   transform: translateY(-180%);
   border-radius: 8px;
   padding: 12px 16px;
-  color: #031812;
+  color: #03110b;
   background: var(--product-mint);
   font-weight: 700;
   transition: transform 180ms ease;
@@ -37,15 +69,16 @@
 
 .product-sidebar,
 .product-mobile-header {
-  color: var(--product-text-on-dark);
+  color: var(--product-text);
   background:
     radial-gradient(circle at 28% 8%, rgba(56, 201, 121, 0.14), transparent 19rem),
-    var(--product-chrome);
+    rgba(2, 10, 8, 0.94);
 }
 
 .product-sidebar {
   isolation: isolate;
   overflow: hidden;
+  box-shadow: 24px 0 60px rgba(0, 0, 0, 0.14);
 }
 
 .product-sidebar::before {
@@ -61,44 +94,115 @@
   background-size: 22px 22px;
 }
 
+.product-main {
+  position: relative;
+}
+
+.product-page {
+  min-width: 0;
+  padding-bottom: 2rem;
+}
+
 .product-shell :is(a, button, input, select, textarea, summary):focus-visible {
   outline: 2px solid var(--product-mint-deep);
   outline-offset: 3px;
 }
 
+.product-shell:has(.product-page-dark) :is(a, button, input, select, textarea, summary):focus-visible,
 .product-sidebar :is(a, button, summary):focus-visible,
 .product-mobile-header :is(a, button, summary):focus-visible {
   outline-color: var(--product-mint);
 }
 
-.product-page {
-  min-width: 0;
-}
-
 .product-form label {
-  color: #334155;
+  color: #d9e0dd;
 }
 
 .product-form :is(input:not([type="checkbox"]), select, textarea),
-.product-filter-control {
+.product-filter-control,
+.product-control {
   min-height: 44px;
-  border-color: #bfe8cf;
-  color: #17202a;
-  background: #fff;
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+  border-color: var(--product-border);
+  color: var(--product-text);
+  background: rgba(2, 10, 8, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
 }
 
 .product-form textarea {
   min-height: auto;
 }
 
+.product-form :is(input:not([type="checkbox"]), select, textarea)::placeholder,
+.product-filter-control::placeholder,
+.product-control::placeholder {
+  color: #80908a;
+  opacity: 1;
+}
+
 .product-form :is(input:not([type="checkbox"]), select, textarea):hover,
-.product-filter-control:hover {
-  border-color: #7ee0a7;
+.product-filter-control:hover,
+.product-control:hover {
+  border-color: var(--product-border-strong);
+  background: rgba(7, 20, 17, 0.94);
+}
+
+.product-form :is(input:not([type="checkbox"]), select, textarea):focus,
+.product-filter-control:focus,
+.product-control:focus {
+  border-color: var(--product-mint-strong);
+  box-shadow: 0 0 0 3px rgba(56, 201, 121, 0.12);
 }
 
 .product-form input[type="checkbox"] {
-  accent-color: var(--product-mint-deep);
+  accent-color: var(--product-mint-strong);
+}
+
+.product-form select option,
+.product-filter-control option,
+.product-control option {
+  color: var(--product-text);
+  background: var(--product-surface);
+}
+
+.product-surface {
+  border-color: var(--product-border);
+  background: linear-gradient(145deg, rgba(7, 20, 17, 0.96), rgba(4, 14, 11, 0.9));
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.product-surface-raised {
+  border-color: var(--product-border-strong);
+  background: linear-gradient(145deg, rgba(10, 24, 21, 0.98), rgba(5, 17, 14, 0.96));
+  box-shadow: 0 26px 72px rgba(0, 0, 0, 0.2), 0 0 42px rgba(35, 205, 125, 0.035);
+}
+
+.product-divider > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(166, 204, 190, 0.13);
+}
+
+.product-callout-neutral {
+  border-color: var(--product-border);
+  color: #d6dfdb;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.product-callout-success {
+  border-color: rgba(91, 216, 148, 0.34);
+  color: #dff8e9;
+  background: rgba(29, 140, 93, 0.12);
+}
+
+.product-callout-warning {
+  border-color: rgba(215, 180, 95, 0.38);
+  color: #f1dfb0;
+  background: rgba(145, 107, 31, 0.13);
+}
+
+.product-callout-danger {
+  border-color: rgba(240, 124, 118, 0.38);
+  color: #ffd8d4;
+  background: rgba(157, 58, 53, 0.13);
 }
 
 .product-filter-grid {
