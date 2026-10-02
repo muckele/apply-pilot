@@ -77,47 +77,49 @@ export default async function DashboardPage() {
   }));
 
   return (
-    <>
+    <div className="product-page">
       <PageHeader
         title="Dashboard"
         description="Best matches, follow-ups, interviews, and weekly job-search activity in one place."
+        tone="branded"
         action={
-          <ButtonLink href="/jobs">
+          <ButtonLink href="/jobs" tone="branded">
             <Plus className="mr-2" size={16} aria-hidden="true" />
             Import job
           </ButtonLink>
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        <MetricCard label="Saved" value={savedThisWeek} detail="This week" />
-        <MetricCard label="Applied" value={appliedThisWeek} detail="This week" />
-        <MetricCard label="Interviews" value={upcomingInterviews} detail="Upcoming" />
-        <MetricCard label="Follow-ups" value={followUpsDue} detail="Need action" />
-        <MetricCard label="Resume versions" value={resumeVersions} detail="Created" />
-        <MetricCard label="Avg. fit" value={formatAverageFit(avgFit._avg.overallFitScore)} detail="Scored jobs" />
+      <div className="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
+        <MetricCard label="Saved" value={savedThisWeek} detail="This week" tone="branded" />
+        <MetricCard label="Applied" value={appliedThisWeek} detail="This week" tone="branded" />
+        <MetricCard label="Interviews" value={upcomingInterviews} detail="Upcoming" tone="branded" />
+        <MetricCard label="Follow-ups" value={followUpsDue} detail="Need action" tone="branded" />
+        <MetricCard label="Resume versions" value={resumeVersions} detail="Created" tone="branded" />
+        <MetricCard label="Avg. fit" value={formatAverageFit(avgFit._avg.overallFitScore)} detail="Scored jobs" tone="branded" />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.8fr)]">
         <section className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-slate-950">Best scored matches</h2>
-            <ButtonLink href="/jobs" variant="secondary">View jobs</ButtonLink>
+            <h2 className="text-sm font-semibold tracking-[-0.01em] text-ink">Best scored matches</h2>
+            <ButtonLink href="/jobs" variant="secondary" tone="branded">View jobs</ButtonLink>
           </div>
           {jobCards.length ? (
-            jobCards.map((job) => <JobCard key={job.id} job={job} />)
+            jobCards.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
-            <Panel>
+            <Panel tone="branded">
               <div className="p-5 text-sm text-slate-600">No scored jobs yet. Review a job and run fit scoring when available.</div>
             </Panel>
           )}
         </section>
 
         <div className="space-y-6">
-          <Panel>
+          <Panel tone="branded">
             <PanelHeader
               title="Applications needing follow-up"
               action={<TrendingUp size={17} className="text-brand-600" aria-hidden="true" />}
+              tone="branded"
             />
             <div className="divide-y divide-slate-100">
               {applicationsNeedingFollowUp.length ? (
@@ -140,11 +142,12 @@ export default async function DashboardPage() {
             </div>
           </Panel>
 
-          <Panel>
+          <Panel tone="branded">
             <PanelHeader
               title="Recruiter emails"
               description="Gmail snippets are shown only after connecting Gmail with readonly access."
               action={<Mail size={17} className="text-brand-600" aria-hidden="true" />}
+              tone="branded"
             />
             <div className="divide-y divide-slate-100">
               {recruiterEmails.length ? (
@@ -160,8 +163,8 @@ export default async function DashboardPage() {
             </div>
           </Panel>
 
-          <Panel>
-            <PanelHeader title="Upcoming interviews" action={<CalendarClock size={17} className="text-brand-600" />} />
+          <Panel tone="branded">
+            <PanelHeader title="Upcoming interviews" action={<CalendarClock size={17} className="text-brand-600" />} tone="branded" />
             <div className="divide-y divide-slate-100">
               {upcomingInterviews ? (
                 <div className="px-5 py-4 text-sm text-slate-700">{upcomingInterviews} interview(s) scheduled.</div>
@@ -171,8 +174,8 @@ export default async function DashboardPage() {
             </div>
           </Panel>
 
-          <Panel>
-            <PanelHeader title="Open tasks" />
+          <Panel tone="branded">
+            <PanelHeader title="Open tasks" tone="branded" />
             <div className="divide-y divide-slate-100">
               {openTasks.length ? (
                 openTasks.map((task) => (
@@ -181,7 +184,7 @@ export default async function DashboardPage() {
                       <p className="text-sm font-medium text-slate-800">{task.title}</p>
                       <p className="text-xs text-slate-500">Due {formatDate(task.dueAt)}</p>
                     </div>
-                    <StatusBadge status={task.priority} />
+                    <StatusBadge status={task.priority} tone="branded" />
                   </div>
                 ))
               ) : (
@@ -191,6 +194,6 @@ export default async function DashboardPage() {
           </Panel>
         </div>
       </div>
-    </>
+    </div>
   );
 }

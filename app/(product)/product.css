@@ -1,0 +1,137 @@
+.product-shell {
+  --product-chrome: #020a08;
+  --product-chrome-soft: #04110e;
+  --product-surface-dark: #071411;
+  --product-surface-raised: #0a1815;
+  --product-text-on-dark: #f3f6f2;
+  --product-muted-on-dark: #aeb9b5;
+  --product-mint: #5bd894;
+  --product-mint-strong: #38c979;
+  --product-mint-deep: #1d8c5d;
+  --product-border-dark: rgba(166, 204, 190, 0.22);
+  --product-border-strong: rgba(106, 183, 152, 0.38);
+  min-height: 100vh;
+  color: #17202a;
+  background:
+    radial-gradient(circle at 82% 0%, rgba(126, 224, 167, 0.11), transparent 30rem),
+    #f7fafc;
+}
+
+.product-skip-link {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 100;
+  transform: translateY(-180%);
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: #031812;
+  background: var(--product-mint);
+  font-weight: 700;
+  transition: transform 180ms ease;
+}
+
+.product-skip-link:focus {
+  transform: translateY(0);
+}
+
+.product-sidebar,
+.product-mobile-header {
+  color: var(--product-text-on-dark);
+  background:
+    radial-gradient(circle at 28% 8%, rgba(56, 201, 121, 0.14), transparent 19rem),
+    var(--product-chrome);
+}
+
+.product-sidebar {
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.product-sidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.18;
+  background-image:
+    linear-gradient(rgba(65, 132, 107, 0.2) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(65, 132, 107, 0.2) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.product-shell :is(a, button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--product-mint-deep);
+  outline-offset: 3px;
+}
+
+.product-sidebar :is(a, button, summary):focus-visible,
+.product-mobile-header :is(a, button, summary):focus-visible {
+  outline-color: var(--product-mint);
+}
+
+.product-page {
+  min-width: 0;
+}
+
+.product-form label {
+  color: #334155;
+}
+
+.product-form :is(input:not([type="checkbox"]), select, textarea),
+.product-filter-control {
+  min-height: 44px;
+  border-color: #bfe8cf;
+  color: #17202a;
+  background: #fff;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.product-form textarea {
+  min-height: auto;
+}
+
+.product-form :is(input:not([type="checkbox"]), select, textarea):hover,
+.product-filter-control:hover {
+  border-color: #7ee0a7;
+}
+
+.product-form input[type="checkbox"] {
+  accent-color: var(--product-mint-deep);
+}
+
+.product-filter-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 380px) {
+  .product-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 768px) {
+  .product-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1280px) {
+  .product-filter-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .product-shell *,
+  .product-shell *::before,
+  .product-shell *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Import, Loader2 } from "lucide-react";
 import Link from "next/link";
 
-import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import { PrimaryButton, SecondaryButton, type UiTone } from "@/components/ui";
 import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 type ImportResult = {
@@ -32,7 +32,7 @@ function optionalLineList(formData: FormData, name: string) {
   return items.length ? items : undefined;
 }
 
-export function ManualJobImportForm() {
+export function ManualJobImportForm({ tone = "default" }: { tone?: UiTone } = {}) {
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<ImportResult | null>(null);
 
@@ -82,7 +82,7 @@ export function ManualJobImportForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className={`space-y-4 ${tone === "branded" ? "product-form" : ""}`}>
       <div className="grid gap-3 md:grid-cols-2">
         <label className="text-sm font-medium text-slate-700">
           Job title
@@ -158,11 +158,11 @@ export function ManualJobImportForm() {
         Import only saves the job without requesting AI scoring. You can score it later from the job page.
       </p>
       <div className="flex flex-wrap gap-2">
-        <PrimaryButton type="submit" value="false" disabled={pending}>
+        <PrimaryButton type="submit" value="false" disabled={pending} tone={tone}>
           {pending ? <Loader2 className="mr-2 animate-spin" size={16} aria-hidden="true" /> : <Import className="mr-2" size={16} aria-hidden="true" />}
           Import only
         </PrimaryButton>
-        <SecondaryButton type="submit" value="true" disabled={pending}>
+        <SecondaryButton type="submit" value="true" disabled={pending} tone={tone}>
           Import and score
         </SecondaryButton>
       </div>

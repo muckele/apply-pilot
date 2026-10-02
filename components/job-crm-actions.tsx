@@ -4,6 +4,8 @@ import { useState } from "react";
 import { CheckCircle2, Loader2, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import type { UiTone } from "@/components/ui";
+
 type JobCrmActionsProps = {
   jobId: string;
   compact?: boolean;
@@ -11,6 +13,7 @@ type JobCrmActionsProps = {
   coverLetters?: Array<{ id: string; title: string }>;
   defaultResumeVersionId?: string | null;
   defaultCoverLetterVersionId?: string | null;
+  tone?: UiTone;
 };
 
 export function JobCrmActions({
@@ -19,7 +22,8 @@ export function JobCrmActions({
   resumeVersions = [],
   coverLetters = [],
   defaultResumeVersionId = null,
-  defaultCoverLetterVersionId = null
+  defaultCoverLetterVersionId = null,
+  tone = "default"
 }: JobCrmActionsProps) {
   const router = useRouter();
   const [pending, setPending] = useState<"save" | "applied" | null>(null);
@@ -60,8 +64,12 @@ export function JobCrmActions({
     router.refresh();
   }
 
-  const buttonClass =
-    "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60";
+  const buttonClass = tone === "branded"
+    ? "inline-flex min-h-11 items-center gap-2 rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-semibold text-brand-800 transition-colors hover:border-brand-300 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-60"
+    : "inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60";
+  const appliedButtonClass = tone === "branded"
+    ? "inline-flex min-h-11 items-center gap-2 rounded-lg border border-brand-600 bg-brand-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:border-brand-700 hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+    : "inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60";
 
   return (
     <div className={compact ? "space-y-2" : "space-y-3"}>
@@ -115,7 +123,7 @@ export function JobCrmActions({
         </button>
         <button
           type="button"
-          className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className={appliedButtonClass}
           disabled={Boolean(pending)}
           onClick={() => updateApplication("applied")}
         >

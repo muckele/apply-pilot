@@ -163,26 +163,30 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
   });
 
   return (
-    <>
+    <div className="product-page">
       <PageHeader
         title="Jobs"
         description="Discover, import, deduplicate, and score recent jobs from compliant APIs, ATS feeds, RSS feeds, and permitted company career pages."
+        tone="branded"
       />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <section className="space-y-4">
-          <form className="rounded-lg border border-slate-200 bg-white p-3 shadow-soft">
+          <form className="rounded-xl border border-brand-100 bg-white p-4 shadow-soft" aria-label="Filter jobs">
             <div className="relative flex-1">
-              <Search className="absolute left-3 top-2.5 text-slate-400" size={17} aria-hidden="true" />
+              <label className="sr-only" htmlFor="job-search">Search jobs</label>
+              <Search className="absolute left-3 top-3.5 text-brand-600" size={17} aria-hidden="true" />
               <input
+                id="job-search"
                 name="q"
                 defaultValue={filters.q}
                 placeholder="Search title, company, keyword, or location"
-                className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-3 text-sm"
+                className="product-filter-control w-full rounded-lg border py-2 pl-9 pr-3 text-sm"
               />
             </div>
-            <div className="mt-3 grid gap-3 md:grid-cols-3 xl:grid-cols-4">
-              <select name="source" defaultValue={filters.source} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+            <div className="product-filter-grid mt-3">
+              <label className="sr-only" htmlFor="job-source">Source</label>
+              <select id="job-source" name="source" defaultValue={filters.source} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
                 <option value="">All sources</option>
                 {sourceTypes.map((source) => (
                   <option key={source} value={source}>
@@ -190,7 +194,8 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
                   </option>
                 ))}
               </select>
-              <select name="status" defaultValue={filters.status} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <label className="sr-only" htmlFor="job-status">Status</label>
+              <select id="job-status" name="status" defaultValue={filters.status} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
                 <option value="">All statuses</option>
                 {postingStatuses.map((status) => (
                   <option key={status} value={status}>
@@ -198,7 +203,8 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
                   </option>
                 ))}
               </select>
-              <select name="workStyle" defaultValue={filters.workStyle} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <label className="sr-only" htmlFor="job-work-style">Work style</label>
+              <select id="job-work-style" name="workStyle" defaultValue={filters.workStyle} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
                 <option value="">Any work style</option>
                 {workStyles.map((workStyle) => (
                   <option key={workStyle} value={workStyle}>
@@ -206,34 +212,41 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
                   </option>
                 ))}
               </select>
-              <select name="datePosted" defaultValue={filters.datePosted || ""} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
+              <label className="sr-only" htmlFor="job-date-posted">Date posted</label>
+              <select id="job-date-posted" name="datePosted" defaultValue={filters.datePosted || ""} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
                 <option value="">Any date</option>
                 <option value="7">Last 7 days</option>
                 <option value="14">Last 14 days</option>
                 <option value="30">Last 30 days</option>
               </select>
               <input
+                id="job-company"
                 name="company"
                 defaultValue={filters.company}
                 placeholder="Company"
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                aria-label="Company"
+                className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
               />
               <input
+                id="job-role-type"
                 name="roleType"
                 defaultValue={filters.roleType}
                 placeholder="Role type"
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                aria-label="Role type"
+                className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
               />
               <input
+                id="job-min-fit-score"
                 name="minFitScore"
                 type="number"
                 min={0}
                 max={100}
                 defaultValue={filters.minFitScore || ""}
                 placeholder="Minimum fit score"
-                className="rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                aria-label="Minimum fit score"
+                className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
               />
-              <button className="inline-flex items-center justify-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+              <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-brand-400 bg-brand-300 px-3 py-2 text-sm font-semibold text-brand-950 transition-colors hover:border-brand-300 hover:bg-brand-200">
                 <Filter size={16} aria-hidden="true" />
                 Apply filters
               </button>
@@ -252,14 +265,14 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
             ]
               .filter(Boolean)
               .map((filter) => (
-                <StatusBadge key={String(filter)} status={String(filter)} />
+                <StatusBadge key={String(filter)} status={String(filter)} tone="branded" />
               ))}
           </div>
 
           {jobs.length ? (
-            jobs.map((job) => <JobCard key={job.id} job={job} />)
+            jobs.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
-            <div className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center">
+            <div className="rounded-xl border border-dashed border-brand-200 bg-white p-8 text-center shadow-soft">
               <p className="text-sm font-semibold text-slate-950">No jobs imported yet</p>
               <p className="mt-1 text-sm text-slate-600">Run automated discovery to populate your CRM.</p>
             </div>
@@ -267,30 +280,33 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
         </section>
 
         <aside className="space-y-6">
-          <Panel className="h-fit">
+          <Panel className="h-fit" tone="branded">
             <PanelHeader
               title="Automated discovery"
               description="Search allowed sources and import matches without auto-applying."
+              tone="branded"
             />
             <div className="p-5">
               <AutomatedJobDiscoveryPanel
                 key={userId}
                 initialPreferences={initialDiscoveryPreferences}
+                tone="branded"
               />
             </div>
           </Panel>
 
-          <Panel className="h-fit">
+          <Panel className="h-fit" tone="branded">
             <PanelHeader
               title="Manual job import"
               description="Paste job details from a permitted source or a job board you reviewed manually."
+              tone="branded"
             />
             <div className="p-5">
-              <ManualJobImportForm />
+              <ManualJobImportForm tone="branded" />
             </div>
           </Panel>
         </aside>
       </div>
-    </>
+    </div>
   );
 }

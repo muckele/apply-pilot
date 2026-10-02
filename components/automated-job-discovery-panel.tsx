@@ -5,7 +5,7 @@ import Link from "next/link";
 import { AlertTriangle, Bot, CheckCircle2, ExternalLink, Loader2, Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-import { PrimaryButton, SecondaryButton, StatusBadge } from "@/components/ui";
+import { PrimaryButton, SecondaryButton, StatusBadge, type UiTone } from "@/components/ui";
 import type { DiscoveryScoringSummary } from "@/lib/job-sources/discovery";
 import type { JobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
 import { formatDiscoveryScoringSummary } from "@/lib/job-sources/scoring-presentation";
@@ -43,9 +43,11 @@ type DiscoveryResult = {
 };
 
 export function AutomatedJobDiscoveryPanel({
-  initialPreferences
+  initialPreferences,
+  tone = "default"
 }: {
   initialPreferences: JobDiscoveryPreferences;
+  tone?: UiTone;
 }) {
   const router = useRouter();
   const [queryText, setQueryText] = useState(initialPreferences.targetSearches.join(", "));
@@ -106,7 +108,7 @@ export function AutomatedJobDiscoveryPanel({
 
   return (
     <div className="space-y-5">
-      <form onSubmit={runDiscovery} className="space-y-4">
+      <form onSubmit={runDiscovery} className={`space-y-4 ${tone === "branded" ? "product-form" : ""}`}>
         <label className="block text-sm font-medium text-slate-700">
           Target searches
           <textarea
@@ -162,7 +164,7 @@ export function AutomatedJobDiscoveryPanel({
             Run AI fit scoring on the first matches
           </label>
         </div>
-        <PrimaryButton type="submit" disabled={pending} className="w-full gap-2">
+        <PrimaryButton type="submit" disabled={pending} className="w-full gap-2" tone={tone}>
           {pending ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Search size={16} aria-hidden="true" />}
           Run automated discovery
         </PrimaryButton>
@@ -209,7 +211,7 @@ export function AutomatedJobDiscoveryPanel({
                           {job.company} · {job.location || "Location not listed"}
                         </p>
                       </div>
-                      <StatusBadge status={job.sourceType} />
+                      <StatusBadge status={job.sourceType} tone={tone} />
                     </div>
                   </Link>
                 ))}
@@ -227,7 +229,7 @@ export function AutomatedJobDiscoveryPanel({
                       <Bot size={15} className="shrink-0 text-slate-400" aria-hidden="true" />
                       <p className="truncate text-sm font-semibold text-slate-900">{report.name}</p>
                     </div>
-                    <StatusBadge status={report.status} />
+                    <StatusBadge status={report.status} tone={tone} />
                   </div>
                   <p className="mt-1 text-xs leading-5 text-slate-600">
                     {report.imported} imported
@@ -268,7 +270,7 @@ export function AutomatedJobDiscoveryPanel({
             </div>
           </div>
 
-          <SecondaryButton type="button" onClick={() => router.refresh()} className="w-full">
+          <SecondaryButton type="button" onClick={() => router.refresh()} className="w-full" tone={tone}>
             Refresh jobs
           </SecondaryButton>
         </div>
