@@ -436,33 +436,39 @@ const commonRegionAbbreviations = new Set([
   ..."ACT NSW NT QLD SA TAS VIC WA".split(" ")
 ]);
 
-const professionalDescriptorPattern = /\b(?:accountant|administrator|analyst|architect|attorney|chief|consultant|coordinator|designer|developer|director|engineer|executive|founder|leader|manager|officer|owner|president|recruiter|scientist|specialist|staff|strategist|cpa|cfa|mba|ph\.?d\.?|rn|esq)\b/i;
 const credentialDescriptorPattern = /^(?:cpa|cfa|mba|ph\.?d\.?|rn|esq)$/i;
 
-function looksLikeProfessionalDescriptor(line: string) {
-  return professionalDescriptorPattern.test(line);
+function isStandaloneContactLocation(line: string) {
+  const normalized = line.trim().toLowerCase();
+  return /^(?:remote|hybrid|on[- ]?site|in[- ]person|usa|uk)$/i.test(normalized) ||
+    englishRegionNames.has(normalized);
 }
 
 function classifyContactLocation(line: string): "location" | "not_location" | "ambiguous" {
   if (/^\s*(?:location|address)\s*:/i.test(line)) return "location";
-  const tokens = line.trim().split(/\s+/);
+  const trimmed = line.trim();
+  if (isStandaloneContactLocation(trimmed)) return "location";
+  const tokens = trimmed.split(/\s+/);
   const trailingToken = tokens.at(-1);
   if (!line.includes(",") && tokens.length > 1 && trailingToken && commonRegionAbbreviations.has(trailingToken)) {
-    return "ambiguous";
+    const prefix = tokens.slice(0, -1).join(" ");
+    return credentialDescriptorPattern.test(prefix) ? "not_location" : "ambiguous";
   }
   const suffix = line.split(",").at(-1)?.trim();
   const hasCountryOrRemote = /\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line);
+  const hasCountrySuffix = [...englishRegionNames].some((country) =>
+    trimmed.toLowerCase().endsWith(` ${country}`)
+  );
   const hasRegionSuffix = Boolean(
     suffix &&
-    suffix !== line.trim() &&
+    suffix !== trimmed &&
     (commonRegionAbbreviations.has(suffix) || englishRegionNames.has(suffix.toLowerCase()))
   );
-  if (!hasCountryOrRemote && !hasRegionSuffix) return "not_location";
-  const prefix = hasRegionSuffix ? line.slice(0, line.lastIndexOf(",")).trim() : line.trim();
-  if (looksLikeProfessionalDescriptor(prefix)) {
-    return credentialDescriptorPattern.test(prefix) ? "not_location" : "ambiguous";
-  }
-  return "location";
+  if (!hasCountryOrRemote && !hasCountrySuffix && !hasRegionSuffix) return "not_location";
+  const prefix = line.includes(",")
+    ? line.slice(0, line.lastIndexOf(",")).trim()
+    : tokens.slice(0, -1).join(" ");
+  return credentialDescriptorPattern.test(prefix) ? "not_location" : "ambiguous";
 }
 
 const resumeDateAtom = [

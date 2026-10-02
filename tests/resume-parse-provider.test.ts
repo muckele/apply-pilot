@@ -332,7 +332,7 @@ test("phone, location, headline, and LinkedIn facts cannot remain only in raw co
     "Customer Success Leader",
     "jordan@example.test",
     "+1 (555) 010-1000",
-    "New York, NY",
+    "Location: New York, NY",
     "linkedin.com/in/jordan-example"
   ].join("\n");
   const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
@@ -351,8 +351,8 @@ test("phone, location, headline, and LinkedIn facts cannot remain only in raw co
   assert.doesNotThrow(() => validateParsedResumeOutput(source, incomplete));
 });
 
-test("an international city-country line is location, never a headline substitute", () => {
-  const contactHeader = "Jordan Example\nBerlin, Germany\njordan@example.test";
+test("an explicitly labelled international city-country line is a location", () => {
+  const contactHeader = "Jordan Example\nLocation: Berlin, Germany\njordan@example.test";
   const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
   const correct = structuredClone(parsedOutput);
   correct.contactInfo.sourceText = contactHeader;
@@ -368,8 +368,8 @@ test("an international city-country line is location, never a headline substitut
   );
 });
 
-test("an international city-region line is location, never a headline substitute", () => {
-  const contactHeader = "Jordan Example\nSydney, NSW\njordan@example.test";
+test("an explicitly labelled international city-region line is a location", () => {
+  const contactHeader = "Jordan Example\nLocation: Sydney, NSW\njordan@example.test";
   const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
   const correct = structuredClone(parsedOutput);
   correct.contactInfo.sourceText = contactHeader;
@@ -439,6 +439,26 @@ test("a professional headline ending in a country code fails closed as ambiguous
   );
 });
 
+test("an unlisted professional headline ending in a country code fails ambiguous", () => {
+  const contactHeader = "Jordan Example\nProduct Lead, UK\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const headline = structuredClone(parsedOutput);
+  headline.contactInfo.sourceText = contactHeader;
+  headline.contactInfo.headline = "Product Lead, UK";
+  assert.throws(
+    () => validateParsedResumeOutput(source, headline),
+    /ambiguous contact/i
+  );
+
+  const location = structuredClone(headline);
+  location.contactInfo.headline = null;
+  location.contactInfo.location = "Product Lead, UK";
+  assert.throws(
+    () => validateParsedResumeOutput(source, location),
+    /ambiguous contact/i
+  );
+});
+
 test("a place-shaped professional word fails closed instead of forcing a contact type", () => {
   const contactHeader = "Jordan Example\nLeader, SK\njordan@example.test";
   const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
@@ -473,6 +493,26 @@ test("an unpunctuated region-shaped contact line fails closed as ambiguous", () 
   const headline = structuredClone(location);
   headline.contactInfo.location = null;
   headline.contactInfo.headline = "Sydney NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, headline),
+    /ambiguous contact/i
+  );
+});
+
+test("an unlabeled city-region contact line fails closed as ambiguous", () => {
+  const contactHeader = "Jordan Example\nSydney, NSW\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const location = structuredClone(parsedOutput);
+  location.contactInfo.sourceText = contactHeader;
+  location.contactInfo.location = "Sydney, NSW";
+  assert.throws(
+    () => validateParsedResumeOutput(source, location),
+    /ambiguous contact/i
+  );
+
+  const headline = structuredClone(location);
+  headline.contactInfo.location = null;
+  headline.contactInfo.headline = "Sydney, NSW";
   assert.throws(
     () => validateParsedResumeOutput(source, headline),
     /ambiguous contact/i

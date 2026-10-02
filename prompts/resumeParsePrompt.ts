@@ -6,6 +6,7 @@ Return only JSON matching contractVersion 3 and the supplied response schema.
 Source fidelity rules:
 - Every non-null factual string must be copied verbatim from the submitted resume text. You may normalize surrounding whitespace only.
 - Copy the complete contiguous contact/header block into contactInfo.sourceText, including the candidate name and any headline or contact lines. Copy the name and professional headline into contactInfo.name and contactInfo.headline when present, and represent every remaining contact fact in its typed field.
+- Use contactInfo.location only for an explicit Location:/Address: line or a standalone remote/country value. Do not guess whether an unlabeled city/region- or country-shaped line is a location or professional headline.
 - summary must be a verbatim excerpt from a summary/profile section, or an empty string when no such excerpt exists.
 - Do not infer, paraphrase, standardize, combine, embellish, or invent employers, titles, dates, locations, tools, credentials, metrics, responsibilities, or accomplishments.
 - For every work-history role, project, education record, and certification, copy its complete contiguous source block into sourceText. Keep records separate and in source order; never merge blocks.
