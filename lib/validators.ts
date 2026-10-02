@@ -7,6 +7,13 @@ const optionalList = z.array(z.string().trim().min(1).max(120)).max(50).optional
 const optionalNullablePositiveInt = z
   .union([z.number().int().positive(), z.null()])
   .optional();
+const optionalNonnegativeInt = z.preprocess(
+  (value) =>
+    value === null || (typeof value === "string" && value.trim() === "")
+      ? undefined
+      : value,
+  z.coerce.number().int().nonnegative().optional()
+);
 
 export const jobSourceTypes = [
   "MANUAL",
@@ -28,19 +35,27 @@ export const manualJobImportSchema = z.object({
   company: z.string().min(2),
   location: z.string().optional().default(""),
   remoteStatus: z.string().optional(),
-  salaryMin: z.coerce.number().int().positive().optional(),
-  salaryMax: z.coerce.number().int().positive().optional(),
+  salaryMin: optionalNonnegativeInt,
+  salaryMax: optionalNonnegativeInt,
   datePosted: z.coerce.date().optional(),
   sourceUrl: z.string().url(),
   applyUrl: z.string().url().optional(),
   description: z.string().min(25),
-  requirements: z.array(z.string()).optional().default([]),
-  preferredQualifications: z.array(z.string()).optional().default([]),
-  benefits: z.array(z.string()).optional().default([]),
-  detectedTechStack: z.array(z.string()).optional().default([]),
+  requirements: z.array(z.string()).optional(),
+  preferredQualifications: z.array(z.string()).optional(),
+  benefits: z.array(z.string()).optional(),
+  detectedTechStack: z.array(z.string()).optional(),
   seniorityLevel: z.string().optional(),
   companySize: z.string().optional(),
   runMatch: z.boolean().optional().default(true)
+}).superRefine((input, context) => {
+  if (input.salaryMin !== undefined && input.salaryMax !== undefined && input.salaryMin > input.salaryMax) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["salaryMin"],
+      message: "Minimum salary cannot exceed maximum salary."
+    });
+  }
 });
 
 export const resumeParseSchema = z.object({

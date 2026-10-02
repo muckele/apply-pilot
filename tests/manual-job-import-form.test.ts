@@ -78,3 +78,143 @@ test("manual import form distinguishes scored, unavailable, failed and full impo
   assert.match(invalid.text, /Import failed: Invalid request/);
   assert.equal(invalid.link, undefined);
 });
+
+test("manual import form can submit evidence-complete job data without requesting a score", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
+    url: "https://app.example.test/jobs/import"
+  });
+  const prior = new Map<string, PropertyDescriptor | undefined>();
+  let requestBody: Record<string, unknown> | null = null;
+  const globals = {
+    window: dom.window, self: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node, Event: dom.window.Event, FormData: dom.window.FormData,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        job, application, match: null, scoring: { status: "not_requested" }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    prior.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  }
+  const container = dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => { root.render(createElement(ManualJobImportForm)); });
+    for (const [name, value] of Object.entries({
+      title: "Solutions Engineer",
+      company: "Example Co",
+      location: "United States",
+      sourceUrl: "https://example.test/jobs/123",
+      applyUrl: "https://example.test/jobs/123/apply",
+      description: "A synthetic role requiring customer discovery and SQL experience.",
+      salaryMin: "0",
+      salaryMax: "120000",
+      datePosted: "2026-07-08",
+      requirements: "Four years of client-facing experience\nSQL experience",
+      preferredQualifications: "Early-stage company experience"
+    })) {
+      const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name='${name}']`);
+      assert.ok(input, `expected ${name} input`);
+      input.value = value;
+    }
+    const importOnly = container.querySelector<HTMLButtonElement>("button[value='false']");
+    assert.ok(importOnly, "expected an explicit import-only action");
+    await act(async () => { importOnly.click(); });
+
+    assert.deepEqual(requestBody, {
+      title: "Solutions Engineer",
+      company: "Example Co",
+      location: "United States",
+      remoteStatus: "Remote",
+      salaryMin: 0,
+      salaryMax: 120000,
+      datePosted: "2026-07-08",
+      sourceUrl: "https://example.test/jobs/123",
+      applyUrl: "https://example.test/jobs/123/apply",
+      description: "A synthetic role requiring customer discovery and SQL experience.",
+      requirements: ["Four years of client-facing experience", "SQL experience"],
+      preferredQualifications: ["Early-stage company experience"],
+      runMatch: false
+    });
+    assert.match(container.textContent ?? "", /Match scoring was not requested/);
+
+    const importAndScore = container.querySelector<HTMLButtonElement>("button[value='true']");
+    assert.ok(importAndScore, "expected an explicit import-and-score action");
+    await act(async () => { importAndScore.click(); });
+    assert.equal((requestBody as Record<string, unknown> | null)?.runMatch, true);
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [name, descriptor] of prior) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+    dom.window.close();
+  }
+});
+
+test("import-only bypasses the AI cost-confirmation prompt and retry path", async () => {
+  const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
+    url: "https://app.example.test/jobs/import"
+  });
+  let confirmations = 0;
+  let requests = 0;
+  const requestHeaders: Headers[] = [];
+  dom.window.confirm = () => {
+    confirmations += 1;
+    return true;
+  };
+  const prior = new Map<string, PropertyDescriptor | undefined>();
+  const globals = {
+    window: dom.window, self: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+    Node: dom.window.Node, Event: dom.window.Event, FormData: dom.window.FormData,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requests += 1;
+      requestHeaders.push(new Headers(init?.headers));
+      return new Response(JSON.stringify({
+        error: "Confirm this AI request's maximum cost before continuing.",
+        code: "AI_COST_CONFIRMATION_REQUIRED",
+        maximumCostMicros: 72_720
+      }), { status: 428, headers: { "content-type": "application/json" } });
+    }
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    prior.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+  }
+  const container = dom.window.document.getElementById("root");
+  assert.ok(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => { root.render(createElement(ManualJobImportForm)); });
+    for (const [name, value] of Object.entries({
+      title: "Solutions Engineer",
+      company: "Example Co",
+      sourceUrl: "https://example.test/jobs/123",
+      description: "A synthetic role requiring customer discovery and SQL experience."
+    })) {
+      const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[name='${name}']`);
+      assert.ok(input);
+      input.value = value;
+    }
+    const importOnly = container.querySelector<HTMLButtonElement>("button[value='false']");
+    assert.ok(importOnly);
+    await act(async () => { importOnly.click(); });
+
+    assert.equal(requests, 1);
+    assert.equal(confirmations, 0);
+    assert.equal(requestHeaders[0]?.has("x-ai-cost-confirmed"), false);
+  } finally {
+    await act(async () => { root.unmount(); });
+    for (const [name, descriptor] of prior) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
+    dom.window.close();
+  }
+});

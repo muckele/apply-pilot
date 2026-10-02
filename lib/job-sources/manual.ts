@@ -20,9 +20,13 @@ export class ManualJobImportProvider implements JobSourceProvider {
       company: String(rawJob.company ?? ""),
       location: String(rawJob.location ?? ""),
       remoteStatus: rawJob.remoteStatus ? String(rawJob.remoteStatus) : undefined,
-      salaryMin: rawJob.salaryMin ? Number(rawJob.salaryMin) : undefined,
-      salaryMax: rawJob.salaryMax ? Number(rawJob.salaryMax) : undefined,
-      datePosted: rawJob.datePosted ? new Date(String(rawJob.datePosted)) : undefined,
+      salaryMin: typeof rawJob.salaryMin === "number" ? rawJob.salaryMin : undefined,
+      salaryMax: typeof rawJob.salaryMax === "number" ? rawJob.salaryMax : undefined,
+      datePosted: rawJob.datePosted instanceof Date
+        ? rawJob.datePosted
+        : rawJob.datePosted
+          ? new Date(String(rawJob.datePosted))
+          : undefined,
       sourceUrl: String(rawJob.sourceUrl ?? rawJob.applyUrl ?? ""),
       applyUrl: rawJob.applyUrl ? String(rawJob.applyUrl) : undefined,
       description,
