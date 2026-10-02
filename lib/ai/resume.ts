@@ -436,10 +436,19 @@ const commonRegionAbbreviations = new Set([
   ..."ACT NSW NT QLD SA TAS VIC WA".split(" ")
 ]);
 
+const professionalDescriptorPattern = /\b(?:accountant|administrator|analyst|architect|attorney|consultant|coordinator|designer|developer|director|engineer|executive|founder|leader|manager|officer|owner|president|recruiter|scientist|specialist|strategist|cpa|cfa|mba|ph\.?d\.?|rn|esq)\b/i;
+
+function looksLikeProfessionalDescriptor(line: string) {
+  return professionalDescriptorPattern.test(line);
+}
+
 function looksLikeContactLocation(line: string) {
+  if (/^\s*(?:location|address)\s*:/i.test(line)) return true;
   if (/\b(?:remote|united states|usa|canada|united kingdom|uk)\b/i.test(line)) return true;
   const suffix = line.split(",").at(-1)?.trim();
   if (!suffix || suffix === line.trim()) return false;
+  const prefix = line.slice(0, line.lastIndexOf(","));
+  if (looksLikeProfessionalDescriptor(prefix)) return false;
   return commonRegionAbbreviations.has(suffix) || englishRegionNames.has(suffix.toLowerCase());
 }
 
@@ -477,7 +486,7 @@ function firstFactIndex(sourceText: string, values: Array<string | null>) {
 }
 
 function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
-  if (!item.location || looksLikeContactLocation(item.location)) return;
+  if (!item.location) return;
   const locationIndex = item.sourceText.indexOf(item.location);
   const coreEnd = Math.max(
     item.sourceText.indexOf(item.company) + item.company.length,
@@ -491,7 +500,7 @@ function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
   const explicitlyLabeled = item.sourceText.split(/\r?\n/).some((line) =>
     line.includes(item.location!) && /\b(?:location|based\s+in)\b/i.test(line)
   );
-  if (appearsInHeader || explicitlyLabeled) return;
+  if (explicitlyLabeled || (appearsInHeader && !looksLikeProfessionalDescriptor(item.location))) return;
   throw new PublicApiError(
     "Resume parsing returned an invalid workHistory date or location that could conceal a merged record. No master resume was changed.",
     422,

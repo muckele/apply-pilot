@@ -402,6 +402,23 @@ test("a professional headline ending in an acronym is not a location", () => {
   );
 });
 
+test("a credential headline ending in a region code is not a location", () => {
+  const contactHeader = "Jordan Example\nCPA, CA\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const correct = structuredClone(parsedOutput);
+  correct.contactInfo.sourceText = contactHeader;
+  correct.contactInfo.headline = "CPA, CA";
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, correct));
+
+  const wrong = structuredClone(correct);
+  wrong.contactInfo.headline = null;
+  wrong.contactInfo.location = "CPA, CA";
+  assert.throws(
+    () => validateParsedResumeOutput(source, wrong),
+    /professional headline/i
+  );
+});
+
 test("an explicit contact section can supply the complete contact source block", () => {
   const contactSectionSource = resumeText.replace(
     "Jordan Example\njordan@example.test",
@@ -493,6 +510,26 @@ test("adjacent work records cannot be reassigned to location and date fields", (
     startDate: "Beta Co",
     endDate: null,
     bullets: ["Built alpha."]
+  }];
+  output.sectionStatus.workHistory = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    /invalid workHistory date or location/i
+  );
+});
+
+test("a region-shaped second title cannot become the first record location", () => {
+  const source = `Jordan Example\njordan@example.test\n\nEXPERIENCE\nEngineer\nAlpha Co\nBuilt alpha.\nRegional Manager, NSW\n2020\nLed beta.`;
+  const output = emptyParsedResume();
+  output.workHistory = [{
+    sourceText: "Engineer\nAlpha Co\nBuilt alpha.\nRegional Manager, NSW\n2020\nLed beta.",
+    company: "Alpha Co",
+    title: "Engineer",
+    location: "Regional Manager, NSW",
+    startDate: "2020",
+    endDate: null,
+    bullets: ["Built alpha.", "Led beta."]
   }];
   output.sectionStatus.workHistory = "present";
 
