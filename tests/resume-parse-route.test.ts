@@ -43,7 +43,8 @@ const parsedOutput = {
   certifications: [],
   achievements: [],
   sectionStatus: {
-    workHistory: "present", projects: "absent", education: "present", certifications: "absent"
+    summary: "present", skills: "absent", workHistory: "present", projects: "absent",
+    education: "present", certifications: "absent", achievements: "absent"
   },
   warnings: []
 };
@@ -68,7 +69,8 @@ function environment(t: TestContext) {
     GEMINI_API_KEY: "synthetic-never-log",
     GEMINI_FAST_MODEL: "gemini-3.8-flash",
     OPENAI_API_KEY: undefined,
-    OPENAI_MOCK_MODE: undefined
+    OPENAI_MOCK_MODE: undefined,
+    FILE_STORAGE_DRIVER: "database"
   };
   for (const [name, value] of Object.entries(changes)) {
     const prior = process.env[name];
@@ -89,19 +91,29 @@ async function invoke(body: unknown, headers: Record<string, string> = {}) {
       { type: "request", phase: "action", headers: new Headers(), cookies: {} } as never,
       () => POST(new Request("http://localhost/api/resumes/parse", {
         method: "POST",
-        headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify(body)
+        headers: body instanceof FormData ? headers : { "content-type": "application/json", ...headers },
+        body: body instanceof FormData ? body : JSON.stringify(body)
       }) as NextRequest)
     ));
 }
 
-function setup(t: TestContext, output: unknown = parsedOutput, cached = true) {
+function setup(t: TestContext, output: unknown = parsedOutput, cached = true, options: {
+  throwAfterCommitOnce?: boolean;
+} = {}) {
   environment(t);
   const resumes: Array<Record<string, unknown>> = [];
   const analyses: Array<Record<string, unknown>> = [];
   const audits: Array<Record<string, unknown>> = [];
+  const storedFiles: Array<Record<string, unknown>> = [];
   let transactions = 0;
   let demotions = 0;
+  let throwAfterCommit = options.throwAfterCommitOnce === true;
+
+  function findAnalysis({ where }: { where: { input?: { equals?: unknown } } }) {
+    const submissionHash = where.input?.equals;
+    return [...analyses].reverse().find((analysis) =>
+      (analysis.input as Record<string, unknown> | undefined)?.submissionHash === submissionHash) ?? null;
+  }
 
   stub(t, prisma.user, "upsert", async () => ({ id: "demo-user" }));
   stub(t, prisma, "$queryRaw", async () => [{ count: 1 }]);
@@ -112,13 +124,13 @@ function setup(t: TestContext, output: unknown = parsedOutput, cached = true) {
   }));
   stub(t, prisma.aIResponseCache, "findFirst", async () => cached ? { output } : null);
   stub(t, prisma.aIBudgetReservation, "findFirst", async () => null);
-  stub(t, prisma.aIAnalysis, "findFirst", async () => analyses.at(-1) ?? null);
+  stub(t, prisma.aIAnalysis, "findFirst", async (args: { where: { input?: { equals?: unknown } } }) => findAnalysis(args));
   stub(t, prisma.resume, "findFirst", async ({ where }: { where: { id?: string; userId: string } }) =>
     resumes.find((resume) => resume.id === where.id && resume.userId === where.userId) ?? null);
 
   const tx = {
     aIAnalysis: {
-      findFirst: async () => analyses.at(-1) ?? null,
+      findFirst: async (args: { where: { input?: { equals?: unknown } } }) => findAnalysis(args),
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const analysis = { id: `analysis-${analyses.length + 1}`, createdAt: new Date(), ...data };
         analyses.push(analysis);
@@ -128,7 +140,17 @@ function setup(t: TestContext, output: unknown = parsedOutput, cached = true) {
     resume: {
       findFirst: async ({ where }: { where: { id?: string; userId: string } }) =>
         resumes.find((resume) => resume.id === where.id && resume.userId === where.userId) ?? null,
-      updateMany: async () => { demotions += 1; return { count: 1 }; },
+      updateMany: async () => {
+        demotions += 1;
+        let count = 0;
+        resumes.forEach((resume) => {
+          if (resume.isMaster === true) {
+            resume.isMaster = false;
+            count += 1;
+          }
+        });
+        return { count };
+      },
       create: async ({ data }: { data: Record<string, unknown> }) => {
         const resume = { id: `resume-${resumes.length + 1}`, ...data };
         resumes.push(resume);
@@ -140,22 +162,41 @@ function setup(t: TestContext, output: unknown = parsedOutput, cached = true) {
         audits.push(data);
         return { id: `audit-${audits.length}`, ...data };
       }
+    },
+    storedFile: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        const stored = { id: `stored-${storedFiles.length + 1}`, ...data };
+        storedFiles.push(stored);
+        return { id: stored.id };
+      }
     }
   };
   stub(t, prisma, "$transaction", async (callback: (client: typeof tx) => unknown) => {
     transactions += 1;
-    return callback(tx);
+    const result = await callback(tx);
+    if (throwAfterCommit) {
+      throwAfterCommit = false;
+      throw new Error("synthetic lost commit acknowledgement");
+    }
+    return result;
   });
 
   stub(t, prisma.resume, "updateMany", async () => { throw new Error("master switch must be transactional"); });
   stub(t, prisma.resume, "create", async () => { throw new Error("resume create must be transactional"); });
   stub(t, prisma.aIAnalysis, "create", async () => { throw new Error("analysis create must be transactional"); });
   stub(t, prisma.auditLog, "create", async () => { throw new Error("audit create must be transactional"); });
+  stub(t, prisma.storedFile, "create", async () => { throw new Error("stored file create must be transactional"); });
+  stub(t, prisma.storedFile, "deleteMany", async ({ where }: { where: { id: string; userId: string } }) => {
+    const index = storedFiles.findIndex((file) => file.id === where.id && file.userId === where.userId);
+    if (index >= 0) storedFiles.splice(index, 1);
+    return { count: index >= 0 ? 1 : 0 };
+  });
 
   return {
     resumes,
     analyses,
     audits,
+    storedFiles,
     get transactions() { return transactions; },
     get demotions() { return demotions; }
   };
@@ -197,6 +238,53 @@ test("an ambiguous client retry replays the committed resume without another mas
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);
   assert.equal(state.transactions, 1);
+});
+
+test("a lost commit acknowledgement is recovered as a committed replay, not a false no-change error", async (t) => {
+  const state = setup(t, parsedOutput, true, { throwAfterCommitOnce: true });
+  const response = await invoke({ title: "Jordan Master Resume", pastedText: resumeText, isMaster: true });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.replayed, true);
+  assert.equal(body.resume.isMaster, true);
+  assert.equal(state.resumes.length, 1);
+  assert.equal(state.analyses.length, 1);
+});
+
+test("a historical non-master replay creates a fresh current master", async (t) => {
+  const state = setup(t);
+  const request = { title: "Jordan Master Resume", pastedText: resumeText, isMaster: true };
+  const first = await invoke(request);
+  assert.equal(first.status, 200);
+  state.resumes[0]!.isMaster = false;
+
+  const restored = await invoke(request);
+  assert.equal(restored.status, 200);
+  const body = await restored.json();
+  assert.equal(body.replayed, false);
+  assert.equal(body.resume.isMaster, true);
+  assert.equal(state.resumes.length, 2);
+  assert.equal(state.analyses.length, 2);
+});
+
+test("a file with pasted-equivalent text has distinct replay identity and private storage provenance", async (t) => {
+  const state = setup(t);
+  const first = await invoke({ title: "Jordan Master Resume", pastedText: resumeText, isMaster: true });
+  assert.equal(first.status, 200);
+
+  const form = new FormData();
+  form.set("title", "Jordan Master Resume");
+  form.set("file", new File([resumeText], "jordan-resume.txt", { type: "text/plain" }));
+  const uploaded = await invoke(form);
+
+  assert.equal(uploaded.status, 200);
+  const body = await uploaded.json();
+  assert.equal(body.replayed, false);
+  assert.equal(body.resume.originalName, "jordan-resume.txt");
+  assert.equal(body.resume.filePath, "db://stored-1");
+  assert.equal(state.resumes.length, 2);
+  assert.equal(state.storedFiles.length, 1);
 });
 
 test("incomplete provider output leaves the old master untouched and surfaces the failed section", async (t) => {

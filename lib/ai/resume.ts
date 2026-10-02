@@ -1,3 +1,4 @@
+import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
@@ -86,10 +87,13 @@ export type ParsedResume = {
   certifications: ResumeCertificationItem[];
   achievements: string[];
   sectionStatus: {
+    summary: ResumeSectionStatus;
+    skills: ResumeSectionStatus;
     workHistory: ResumeSectionStatus;
     projects: ResumeSectionStatus;
     education: ResumeSectionStatus;
     certifications: ResumeSectionStatus;
+    achievements: ResumeSectionStatus;
   };
   warnings: string[];
 };
@@ -154,10 +158,13 @@ export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> 
   }).strict()).max(50),
   achievements: sourceStringList,
   sectionStatus: z.object({
+    summary: sectionStatusSchema,
+    skills: sectionStatusSchema,
     workHistory: sectionStatusSchema,
     projects: sectionStatusSchema,
     education: sectionStatusSchema,
-    certifications: sectionStatusSchema
+    certifications: sectionStatusSchema,
+    achievements: sectionStatusSchema
   }).strict(),
   warnings: z.array(z.string().trim().min(1).max(500)).max(20)
 }).strict();
@@ -251,12 +258,17 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
       type: "object",
       additionalProperties: false,
       properties: {
+        summary: { type: "string", enum: ["present", "absent"] },
+        skills: { type: "string", enum: ["present", "absent"] },
         workHistory: { type: "string", enum: ["present", "absent"] },
         projects: { type: "string", enum: ["present", "absent"] },
         education: { type: "string", enum: ["present", "absent"] },
-        certifications: { type: "string", enum: ["present", "absent"] }
+        certifications: { type: "string", enum: ["present", "absent"] },
+        achievements: { type: "string", enum: ["present", "absent"] }
       },
-      required: ["workHistory", "projects", "education", "certifications"]
+      required: [
+        "summary", "skills", "workHistory", "projects", "education", "certifications", "achievements"
+      ]
     },
     warnings: jsonStringArray
   },
@@ -284,13 +296,9 @@ const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknow
   resumeText: z.string()
 });
 
-function comparableSourceText(value: string) {
-  return value.normalize("NFKC").replace(/[\u2012-\u2015]/g, "-").replace(/\s+/g, " ").trim().toLocaleLowerCase();
-}
-
 function assertSourceSupported(source: string, value: string | null, path: string) {
   if (value === null || value === "") return;
-  if (!comparableSourceText(source).includes(comparableSourceText(value))) {
+  if (!source.includes(value)) {
     throw new PublicApiError(
       `Resume parsing returned ${path} that is not supported by the submitted resume source.`,
       422,
@@ -300,14 +308,109 @@ function assertSourceSupported(source: string, value: string | null, path: strin
 }
 
 const sectionHeadings: Record<keyof ParsedResume["sectionStatus"], RegExp> = {
+  summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
+  skills: /^(?:(?:TECHNICAL\s+|KEY\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
   workHistory: /^(?:WORK|PROFESSIONAL|EMPLOYMENT|CAREER)?\s*(?:EXPERIENCE|HISTORY)$/i,
   projects: /^(?:SELECTED\s+|PROFESSIONAL\s+)?PROJECTS?$/i,
   education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
-  certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i
+  certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
+  achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
 };
+
+const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING)?|PUBLICATIONS?|REFERENCES?|ADDITIONAL\s+INFORMATION)$/i;
+
+function sectionForHeading(line: string): keyof ParsedResume["sectionStatus"] | null {
+  const heading = line.trim().replace(/:$/, "");
+  for (const [section, pattern] of Object.entries(sectionHeadings)) {
+    if (pattern.test(heading)) return section as keyof ParsedResume["sectionStatus"];
+  }
+  return null;
+}
 
 function hasSectionHeading(source: string, section: keyof ParsedResume["sectionStatus"]) {
   return source.split(/\r?\n/).some((line) => sectionHeadings[section].test(line.trim().replace(/:$/, "")));
+}
+
+function sectionFacts(output: ParsedResume, section: keyof ParsedResume["sectionStatus"]): string[] {
+  const present = (values: Array<string | null>) => values.filter((value): value is string => Boolean(value));
+  if (section === "summary") return output.summary ? [output.summary] : [];
+  if (section === "skills") return output.skills;
+  if (section === "achievements") return output.achievements;
+  if (section === "workHistory") {
+    return output.workHistory.flatMap((item) => present([
+      item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets
+    ]));
+  }
+  if (section === "projects") {
+    return output.projects.flatMap((item) => present([
+      item.name, item.description, ...item.technologies, ...item.bullets
+    ]));
+  }
+  if (section === "education") {
+    return output.education.flatMap((item) => present([
+      item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate, ...item.details
+    ]));
+  }
+  return output.certifications.flatMap((item) => present([
+    item.name, item.issuer, item.date, item.expirationDate
+  ]));
+}
+
+function assertRecognizedSectionCoverage(source: string, output: ParsedResume) {
+  const lines = source.split(/\r?\n/);
+  const headings = lines.flatMap((line, index) => {
+    const section = sectionForHeading(line);
+    const heading = line.trim().replace(/:$/, "");
+    return section || otherSectionHeading.test(heading) ? [{ index, section }] : [];
+  });
+  const bodyLines = new Map<keyof ParsedResume["sectionStatus"], string[]>();
+  headings.forEach((heading, headingIndex) => {
+    if (!heading.section) return;
+    const end = headings[headingIndex + 1]?.index ?? lines.length;
+    const existing = bodyLines.get(heading.section) ?? [];
+    existing.push(...lines.slice(heading.index + 1, end));
+    bodyLines.set(heading.section, existing);
+  });
+
+  for (const [section, sourceLines] of bodyLines) {
+    const fragments = sectionFacts(output, section)
+      .flatMap((fact) => fact.split(/\r?\n/))
+      .map((fact) => fact.trim())
+      .filter(Boolean);
+    for (const sourceLine of sourceLines) {
+      let remaining = sourceLine.trim();
+      while (remaining && fragments.length) {
+        let matchIndex = -1;
+        for (let index = 0; index < fragments.length; index += 1) {
+          if (
+            remaining.includes(fragments[index]) &&
+            (matchIndex < 0 || fragments[index].length > fragments[matchIndex].length)
+          ) {
+            matchIndex = index;
+          }
+        }
+        if (matchIndex < 0) break;
+        const [fragment] = fragments.splice(matchIndex, 1);
+        remaining = remaining.replace(fragment, "");
+      }
+      if (/[\p{L}\p{N}]/u.test(remaining)) {
+        const label = section === "workHistory" ? "work history" : section;
+        throw new PublicApiError(
+          `Resume parsing is incomplete for ${label}; source content was not represented. No master resume was changed.`,
+          422,
+          { code: "RESUME_PARSE_INCOMPLETE", section, retryable: false }
+        );
+      }
+    }
+    if (fragments.length) {
+      const label = section === "workHistory" ? "work history" : section;
+      throw new PublicApiError(
+        `Resume parsing returned ${label} facts outside that source section. No master resume was changed.`,
+        422,
+        { code: "RESUME_PARSE_INVALID_OUTPUT", section, retryable: false }
+      );
+    }
+  }
 }
 
 export function validateParsedResumeOutput(source: string, value: unknown): ParsedResume {
@@ -320,10 +423,13 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
   }
   const output = parsed.data;
   const sections: Array<[keyof ParsedResume["sectionStatus"], unknown[]]> = [
+    ["summary", output.summary ? [output.summary] : []],
+    ["skills", output.skills],
     ["workHistory", output.workHistory],
     ["projects", output.projects],
     ["education", output.education],
-    ["certifications", output.certifications]
+    ["certifications", output.certifications],
+    ["achievements", output.achievements]
   ];
   for (const [section, items] of sections) {
     const label = section === "workHistory" ? "work history" : section;
@@ -384,6 +490,7 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(source, item.date, `certifications[${index}].date`);
     assertSourceSupported(source, item.expirationDate, `certifications[${index}].expirationDate`);
   });
+  assertRecognizedSectionCoverage(source, output);
   return output;
 }
 
@@ -423,7 +530,17 @@ async function callOpenAiResumeProvider(input: {
         { role: "user", content: JSON.stringify({ resumeText: input.text }) }
       ]
     });
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof OpenAI.APIError &&
+      typeof error.status === "number" &&
+      error.status >= 400 &&
+      error.status < 500
+    ) {
+      throw new ResumeProviderError("OpenAI rejected resume parsing before completion.", {
+        billingDisposition: "not_charged"
+      });
+    }
     throw new ResumeProviderError("OpenAI resume parsing outcome is uncertain.", {});
   }
   const usage = response.usage;
@@ -435,7 +552,14 @@ async function callOpenAiResumeProvider(input: {
     outputTokens: usage.completion_tokens,
     cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? 0
   };
-  const content = response.choices[0]?.message.content;
+  const choice = response.choices[0];
+  if (choice?.finish_reason !== "stop") {
+    throw new ResumeProviderError(
+      `OpenAI did not complete the structured response (finish reason: ${String(choice?.finish_reason ?? "missing")}).`,
+      { usage: providerUsage }
+    );
+  }
+  const content = choice.message.content;
   if (!content) {
     throw new ResumeProviderError("OpenAI returned an empty structured response.", {
       usage: providerUsage
@@ -533,7 +657,7 @@ export async function parseResumeTextWithMeta(
     };
   }
 
-  const ambiguousPriorAttempt = await prisma.aIBudgetReservation.findFirst({
+  const activePriorAttempt = await prisma.aIBudgetReservation.findFirst({
     where: {
       userId,
       provider,
@@ -542,15 +666,22 @@ export async function parseResumeTextWithMeta(
       promptName: "resumeParsePrompt",
       promptVersion: RESUME_PARSE_PROMPT_VERSION,
       requestHash,
-      status: "UNCERTAIN"
+      status: { in: ["RESERVED", "UNCERTAIN"] }
     },
-    select: { id: true }
+    select: { id: true, status: true }
   });
-  if (ambiguousPriorAttempt) {
+  if (activePriorAttempt?.status === "UNCERTAIN") {
     throw new PublicApiError(
       "An identical resume parse already reached the configured AI provider with an uncertain outcome. No master resume was changed; review AI usage instead of retrying.",
       409,
       { code: "RESUME_PARSE_PRIOR_OUTCOME_UNCERTAIN", retryable: false }
+    );
+  }
+  if (activePriorAttempt) {
+    throw new PublicApiError(
+      "An identical resume parse is still reserved or running. No second provider call was started.",
+      409,
+      { code: "AI_DUPLICATE_IN_PROGRESS", retryable: true }
     );
   }
 
@@ -622,15 +753,22 @@ export async function parseResumeTextWithMeta(
       });
     }
     const data = validateParsedResumeOutput(text, response.value);
-    await reconcileAiReservation({
-      reservationId: reservation.id,
-      status: "SUCCEEDED",
-      actualCostMicros,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cachedInputTokens: usage.cachedInputTokens,
-      cacheOutput: data
-    });
+    try {
+      await reconcileAiReservation({
+        reservationId: reservation.id,
+        status: "SUCCEEDED",
+        actualCostMicros,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cachedInputTokens: usage.cachedInputTokens,
+        cacheOutput: data
+      });
+    } catch {
+      throw new ResumeProviderError(
+        "The validated resume result could not be recorded durably, so an identical paid retry is blocked.",
+        { usage, billingDisposition: "uncertain" }
+      );
+    }
     reconciled = true;
     return {
       data,

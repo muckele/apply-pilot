@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -10,7 +11,7 @@ import {
 } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
 import { checkRateLimit } from "@/lib/security/rate-limit";
-import { savePrivateFile } from "@/lib/storage/private-files";
+import { deletePrivateFile, savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 import { resumeParseSchema } from "@/lib/validators";
 import { prisma } from "@/lib/prisma";
@@ -18,12 +19,15 @@ import { prisma } from "@/lib/prisma";
 export const runtime = "nodejs";
 
 type ResumeParseClient = typeof prisma | Prisma.TransactionClient;
+const RESUME_PARSE_REPLAY_WINDOW_MS = 15 * 60_000;
 
 async function findResumeParseReplay(
   client: ResumeParseClient,
   userId: string,
   submissionHash: string,
-  rawText: string
+  rawText: string,
+  isMaster: boolean,
+  requireRequestedState = true
 ) {
   const analysis = await client.aIAnalysis.findFirst({
     where: {
@@ -31,7 +35,8 @@ async function findResumeParseReplay(
       type: "RESUME_PARSE",
       promptName: "resumeParsePrompt",
       promptVersion: RESUME_PARSE_PROMPT_VERSION,
-      input: { path: ["submissionHash"], equals: submissionHash }
+      input: { path: ["submissionHash"], equals: submissionHash },
+      createdAt: { gt: new Date(Date.now() - RESUME_PARSE_REPLAY_WINDOW_MS) }
     },
     orderBy: { createdAt: "desc" }
   });
@@ -41,7 +46,7 @@ async function findResumeParseReplay(
   const resumeId = (analysis.input as Record<string, unknown>).resumeId;
   if (typeof resumeId !== "string") return null;
   const resume = await client.resume.findFirst({ where: { id: resumeId, userId } });
-  if (!resume) return null;
+  if (!resume || (requireRequestedState && resume.isMaster !== isMaster)) return null;
   return {
     resume,
     parsed: validateParsedResumeOutput(rawText, analysis.output),
@@ -126,27 +131,39 @@ export async function POST(request: NextRequest) {
       throw new PublicApiError("Upload a resume file or paste resume text before parsing.");
     }
 
-    const submissionHash = hashAiInput("resumeSubmission", "1", { title, isMaster, rawText });
-    const existing = await findResumeParseReplay(prisma, userId, submissionHash, rawText);
+    const sourceDescriptor = fileBuffer
+      ? {
+          kind: "file",
+          originalName,
+          mimeType: mimeType ?? null,
+          contentHash: createHash("sha256").update(fileBuffer).digest("hex")
+        }
+      : { kind: "paste" };
+    const submissionHash = hashAiInput("resumeSubmission", "2", {
+      title,
+      isMaster,
+      rawText,
+      sourceDescriptor
+    });
+    const existing = await findResumeParseReplay(prisma, userId, submissionHash, rawText, isMaster);
     if (existing) return NextResponse.json(existing);
 
     const parsedResult = await parseResumeTextWithMeta(rawText, userId, aiInvocationFromRequest(request));
     const parsed = parsedResult.data;
 
-    if (fileBuffer && originalName) {
-      filePath = await savePrivateFile({
-        userId,
-        category: "resumes",
-        filename: originalName,
-        contentType: mimeType,
-        buffer: fileBuffer
-      });
-    }
-
     try {
       const result = await prisma.$transaction(async (tx) => {
-        const raced = await findResumeParseReplay(tx, userId, submissionHash, rawText);
+        const raced = await findResumeParseReplay(tx, userId, submissionHash, rawText, isMaster);
         if (raced) return raced;
+        if (fileBuffer && originalName) {
+          filePath = await savePrivateFile({
+            userId,
+            category: "resumes",
+            filename: originalName,
+            contentType: mimeType,
+            buffer: fileBuffer
+          }, tx);
+        }
         if (isMaster) {
           await tx.resume.updateMany({
             where: { userId, isMaster: true },
@@ -206,10 +223,37 @@ export async function POST(request: NextRequest) {
         return { resume, parsed, replayed: false as const };
       }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
       return NextResponse.json(result);
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
-        const replay = await findResumeParseReplay(prisma, userId, submissionHash, rawText);
-        if (replay) return NextResponse.json(replay);
+    } catch {
+      let replay;
+      try {
+        replay = await findResumeParseReplay(prisma, userId, submissionHash, rawText, isMaster, false);
+      } catch {
+        throw new PublicApiError(
+          "The resume save outcome could not be confirmed. Check the Master resume profile before retrying; Apply Pilot will not retry automatically.",
+          503,
+          { code: "RESUME_PARSE_SAVE_OUTCOME_UNCERTAIN", retryable: false }
+        );
+      }
+      if (replay) {
+        if (replay.resume.isMaster !== isMaster) {
+          throw new PublicApiError(
+            "The resume save committed, but its master state changed before confirmation. Check the Master resume profile; do not retry automatically.",
+            409,
+            { code: "RESUME_PARSE_COMMITTED_STATE_CHANGED", retryable: false }
+          );
+        }
+        return NextResponse.json(replay);
+      }
+      if (filePath) {
+        try {
+          await deletePrivateFile({ userId, filePath });
+        } catch {
+          throw new PublicApiError(
+            "The resume was not saved, but private-file cleanup could not be confirmed. Do not retry until storage is reviewed.",
+            503,
+            { code: "RESUME_PARSE_FILE_CLEANUP_UNCERTAIN", retryable: false }
+          );
+        }
       }
       throw new PublicApiError(
         "The resume was parsed but could not be saved. No master resume was changed; retrying will reuse the validated parse when available.",

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import OpenAI from "openai";
 
-import { parseResumeTextWithMeta } from "@/lib/ai/resume";
+import { parseResumeTextWithMeta, validateParsedResumeOutput } from "@/lib/ai/resume";
 import { getOpenAIClient } from "@/lib/ai/client";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
@@ -61,10 +62,8 @@ const parsedOutput = {
   certifications: [],
   achievements: ["Improved retention by 10%."],
   sectionStatus: {
-    workHistory: "present",
-    projects: "absent",
-    education: "present",
-    certifications: "absent"
+    summary: "present", skills: "present", workHistory: "present", projects: "absent",
+    education: "present", certifications: "absent", achievements: "present"
   },
   warnings: []
 };
@@ -107,8 +106,14 @@ function providerResponse(value: unknown, usage = {
   }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
-function installLedger(t: TestContext, cachedOutput?: unknown) {
-  let reservation: Record<string, unknown> | null = null;
+function installLedger(t: TestContext, cachedOutput?: unknown, options: {
+  failSucceededReconciliation?: boolean;
+  priorStatus?: "RESERVED" | "UNCERTAIN";
+} = {}) {
+  let reservation: Record<string, unknown> | null = options.priorStatus
+    ? { id: "prior-reservation", status: options.priorStatus }
+    : null;
+  let failSucceededReconciliation = options.failSucceededReconciliation === true;
   const reservations: Array<Record<string, unknown>> = [];
   const reconciliations: Array<Record<string, unknown>> = [];
   const cacheWrites: Array<Record<string, unknown>> = [];
@@ -116,7 +121,7 @@ function installLedger(t: TestContext, cachedOutput?: unknown) {
   stub(t, prisma.aIResponseCache, "findFirst", async () => cachedOutput ? { output: cachedOutput } : null);
   stub(t, prisma.aIBudgetReservation, "findMany", async () => []);
   stub(t, prisma.aIBudgetReservation, "findFirst", async () =>
-    reservation?.status === "UNCERTAIN" ? reservation : null);
+    reservation && ["RESERVED", "UNCERTAIN"].includes(String(reservation.status)) ? reservation : null);
   stub(t, prisma.aISettings, "upsert", async () => ({
     monthlyBudgetCents: 500,
     automationBudgetCents: 150,
@@ -137,6 +142,10 @@ function installLedger(t: TestContext, cachedOutput?: unknown) {
       },
       findUniqueOrThrow: async () => reservation,
       update: async ({ data }: { data: Record<string, unknown> }) => {
+        if (data.status === "SUCCEEDED" && failSucceededReconciliation) {
+          failSucceededReconciliation = false;
+          throw new Error("synthetic durable cache failure");
+        }
         reconciliations.push(data);
         reservation = { ...reservation, ...data };
         return reservation;
@@ -241,6 +250,41 @@ test("a source section heading cannot be silently replaced with an empty structu
   assert.equal(ledger.cacheWrites.length, 0);
 });
 
+test("summary and skills headings cannot be silently discarded", () => {
+  const incomplete = structuredClone(parsedOutput);
+  incomplete.summary = "";
+  incomplete.skills = [];
+  incomplete.sectionStatus.summary = "absent";
+  incomplete.sectionStatus.skills = "absent";
+
+  assert.throws(
+    () => validateParsedResumeOutput(resumeText, incomplete),
+    /incomplete.*summary/i
+  );
+});
+
+test("adjacent source lines cannot be combined into one factual field", () => {
+  const combined = structuredClone(parsedOutput);
+  combined.workHistory[0].company = "Customer Success Manager Example Co";
+
+  assert.throws(
+    () => validateParsedResumeOutput(resumeText, combined),
+    /not supported by the submitted resume source/i
+  );
+});
+
+test("every factual line in a recognized section must be represented", () => {
+  const twoRoleSource = resumeText.replace(
+    "\nSKILLS\n",
+    "\nAccount Manager\nSecond Example Co\n2020 - 2022\nSupported enterprise renewals.\n\nSKILLS\n"
+  );
+
+  assert.throws(
+    () => validateParsedResumeOutput(twoRoleSource, parsedOutput),
+    /incomplete.*work history.*not represented/i
+  );
+});
+
 test("a validated cache replay avoids confirmation, reservation, and a duplicate provider call", async (t) => {
   environment(t);
   const ledger = installLedger(t, parsedOutput);
@@ -290,6 +334,57 @@ test("an uncertain provider outcome durably blocks an identical second paid call
   assert.equal(ledger.reservations.length, 1);
 });
 
+test("a durable-cache failure becomes uncertain and cannot trigger a second paid call", async (t) => {
+  environment(t);
+  const ledger = installLedger(t, undefined, { failSucceededReconciliation: true });
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    return providerResponse(parsedOutput);
+  });
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_PROVIDER_UNCERTAIN"
+  );
+  assert.equal(ledger.reconciliations[0]?.status, "UNCERTAIN");
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_PRIOR_OUTCOME_UNCERTAIN"
+  );
+  assert.equal(providerCalls, 1);
+});
+
+test("an existing reserved request blocks transport before stale reconciliation can open a duplicate", async (t) => {
+  environment(t);
+  const ledger = installLedger(t, undefined, { priorStatus: "RESERVED" });
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    throw new Error("must not call");
+  });
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "AI_DUPLICATE_IN_PROGRESS"
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
 test("OpenAI configuration retains the same confirmation, validation, and reservation contract", async (t) => {
   environment(t);
   process.env.AI_PROVIDER = "openai";
@@ -300,7 +395,7 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
   const client = getOpenAIClient();
   assert.ok(client);
   stub(t, client.chat.completions, "create", async () => ({
-    choices: [{ message: { content: JSON.stringify(parsedOutput) } }],
+    choices: [{ finish_reason: "stop", message: { content: JSON.stringify(parsedOutput) } }],
     usage: {
       prompt_tokens: 160,
       completion_tokens: 80,
@@ -319,4 +414,59 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
   assert.equal(ledger.reservations[0]?.provider, "openai");
   assert.equal(ledger.reservations[0]?.maximumCostMicros, 7_050);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
+});
+
+test("OpenAI must report a complete stop before structured output can be accepted", async (t) => {
+  environment(t);
+  process.env.AI_PROVIDER = "openai";
+  process.env.OPENAI_API_KEY = "synthetic-never-log";
+  process.env.OPENAI_MODEL = "gpt-4o-mini";
+  delete process.env.GEMINI_API_KEY;
+  const ledger = installLedger(t);
+  const client = getOpenAIClient();
+  assert.ok(client);
+  stub(t, client.chat.completions, "create", async () => ({
+    choices: [{ finish_reason: "length", message: { content: JSON.stringify(parsedOutput) } }],
+    usage: { prompt_tokens: 160, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 0 } }
+  }));
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_PROVIDER_INVALID"
+  );
+  assert.equal(ledger.reconciliations[0]?.status, "FAILED");
+  assert.equal(ledger.cacheWrites.length, 0);
+});
+
+test("a definite OpenAI client rejection is recorded as not charged and remains retryable", async (t) => {
+  environment(t);
+  process.env.AI_PROVIDER = "openai";
+  process.env.OPENAI_API_KEY = "synthetic-never-log";
+  process.env.OPENAI_MODEL = "gpt-4o-mini";
+  delete process.env.GEMINI_API_KEY;
+  const ledger = installLedger(t);
+  const client = getOpenAIClient();
+  assert.ok(client);
+  const rejection = Object.assign(Object.create(OpenAI.BadRequestError.prototype), {
+    name: "BadRequestError",
+    message: "synthetic invalid request",
+    status: 400
+  });
+  stub(t, client.chat.completions, "create", async () => { throw rejection; });
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_PROVIDER_REJECTED" &&
+      error.details.retryable === true
+  );
+  assert.equal(ledger.reconciliations[0]?.status, "FAILED");
+  assert.equal(ledger.reconciliations[0]?.actualCostMicros, 0);
 });

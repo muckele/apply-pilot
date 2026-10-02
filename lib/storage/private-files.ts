@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Prisma } from "@prisma/client";
 
 import { del } from "@vercel/blob";
 
@@ -13,6 +14,8 @@ type PrivateFileInput = {
   contentType?: string | null;
   buffer: Buffer;
 };
+
+type PrivateFileClient = typeof prisma | Prisma.TransactionClient;
 
 function sanitizeFilename(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 160) || "upload.bin";
@@ -44,11 +47,11 @@ export async function savePrivateFile({
   filename,
   contentType,
   buffer
-}: PrivateFileInput) {
+}: PrivateFileInput, client: PrivateFileClient = prisma) {
   const safeName = sanitizeFilename(filename);
 
   if (storageDriver() === "database") {
-    const storedFile = await prisma.storedFile.create({
+    const storedFile = await client.storedFile.create({
       data: {
         userId,
         category,
@@ -69,6 +72,31 @@ export async function savePrivateFile({
   await writeFile(filePath, buffer);
 
   return filePath;
+}
+
+export async function deletePrivateFile({
+  userId,
+  filePath,
+  client = prisma
+}: {
+  userId: string;
+  filePath: string;
+  client?: PrivateFileClient;
+}) {
+  if (filePath.startsWith("db://")) {
+    const id = filePath.slice("db://".length);
+    if (!id) throw new Error("Invalid private database file reference.");
+    await client.storedFile.deleteMany({ where: { id, userId } });
+    return;
+  }
+
+  const userDir = userUploadDirectory(userId);
+  const resolvedPath = path.resolve(filePath);
+  const relative = path.relative(userDir, resolvedPath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("Refusing to delete a private file outside the user's upload directory.");
+  }
+  await rm(resolvedPath, { force: true });
 }
 
 export async function deletePrivateLocalFilesForUser(userId: string) {
