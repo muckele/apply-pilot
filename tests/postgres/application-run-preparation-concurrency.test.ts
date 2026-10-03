@@ -613,6 +613,7 @@ function fixedCleanPlan(label: string) {
     unknownEvidenceIds: [],
     exaggeratedEvidenceIds: [],
     inventedNumericClaims: [],
+    projectionOmissions: [],
     model,
     provider,
     promptVersion,

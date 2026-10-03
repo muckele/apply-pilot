@@ -26,6 +26,7 @@ type FakeResumeVersion = {
   fullText: string;
   resume: {
     userId: string;
+    rawText: string;
     summary: string | null;
     skills: string[];
     achievements: string[];
@@ -118,6 +119,7 @@ function baseRun() {
         fullText: "Authoritative assigned resume contents",
         resume: {
           userId: USER_ID,
+          rawText: "Lossless assigned resume source fallback",
           summary: "Master summary that must not replace the assigned version summary",
           skills: ["TypeScript", "SQL"],
           achievements: ["Reduced onboarding time by 20%"],
@@ -351,6 +353,12 @@ function cleanPlan(overrides: Record<string, unknown> = {}) {
     unknownEvidenceIds: [],
     exaggeratedEvidenceIds: [],
     inventedNumericClaims: [],
+    projectionOmissions: [{
+      sourcePath: "resume.skills",
+      omittedIds: ["skill-31"],
+      omittedCount: 1,
+      truncatedIds: []
+    }],
     model: "kimi-k2.5",
     provider: "kimi" as const,
     promptVersion: "1",
@@ -418,8 +426,13 @@ test("existing-policy TX1 commits before the real planner seam and TX2 persists 
   assert.equal((fake.state.run.applicationPlanSnapshot as Record<string, unknown>).userId, undefined);
   assert.ok(plannerInput);
   const serializedInput = JSON.stringify(plannerInput);
-  assert.doesNotMatch(serializedInput, /rawText|contactInfo|filePath|email|phone|answer.?vault/i);
+  assert.doesNotMatch(serializedInput, /contactInfo|filePath|email|phone|answer.?vault/i);
+  assert.match(serializedInput, /Lossless assigned resume source fallback/);
   assert.match(serializedInput, /Customer-facing engineer/);
+  assert.deepEqual(
+    (fake.state.run.applicationPlanSnapshot as Record<string, unknown>).projectionOmissions,
+    [{ sourcePath: "resume.skills", omittedIds: ["skill-31"], omittedCount: 1, truncatedIds: [] }]
+  );
 
   const plannerIndex = fake.operations.indexOf("planner");
   assert.ok(fake.operations.slice(0, plannerIndex).some((entry) => entry.endsWith(":commit")));

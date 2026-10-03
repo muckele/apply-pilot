@@ -61,6 +61,7 @@ const PREPARATION_RUN_SELECT = {
           resume: {
             select: {
               userId: true,
+              rawText: true,
               summary: true,
               skills: true,
               achievements: true,
@@ -363,7 +364,13 @@ function applicationPlanSnapshot(result: PlannerResult): Prisma.InputJsonObject 
     coverLetterAngle: result.coverLetterAngle,
     riskFlags: [...result.riskFlags],
     recommendedNextActions: [...result.recommendedNextActions],
-    confidenceScore: result.confidenceScore
+    confidenceScore: result.confidenceScore,
+    projectionOmissions: result.projectionOmissions.map((entry) => ({
+      sourcePath: entry.sourcePath,
+      omittedIds: [...entry.omittedIds],
+      omittedCount: entry.omittedCount,
+      truncatedIds: [...entry.truncatedIds]
+    }))
   };
 }
 
@@ -616,6 +623,7 @@ export function createApplicationRunOrchestrator(
           detectedTechStack: [...run.jobPosting.detectedTechStack]
         },
         resume: {
+          rawText: assignedResume.resume?.rawText ?? assignedResume.fullText,
           summary: assignedResume.summary,
           skills: [...assignedResume.skills],
           achievements: assignedResume.resume ? [...assignedResume.resume.achievements] : [],

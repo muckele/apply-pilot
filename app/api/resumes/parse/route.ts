@@ -81,7 +81,7 @@ async function findResumeParseReplay(
   }
   return {
     resume,
-    parsed: validateParsedResumeOutput(rawText, analysis.output),
+    parsed: validateParsedResumeOutput(rawText, analysis.output, { allowLegacy: false }),
     replayed: true as const
   };
 }

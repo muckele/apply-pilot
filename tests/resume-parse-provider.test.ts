@@ -80,6 +80,10 @@ const parsedOutput: ParsedResume = {
   warnings: []
 };
 
+function currentParsedOutput() {
+  return validateParsedResumeOutput(resumeText, parsedOutput);
+}
+
 function emptyParsedResume() {
   const output = structuredClone(parsedOutput);
   output.summary = "";
@@ -237,20 +241,20 @@ test("Gemini resume parsing requires combined data and maximum-cost confirmation
     (error: unknown) => error instanceof PublicApiError &&
       error.status === 428 &&
       error.details?.code === "AI_COST_CONFIRMATION_REQUIRED" &&
-      error.details.maximumCostMicros === 38_250 &&
+      error.details.maximumCostMicros === 99_000 &&
       error.details.provider === "gemini" &&
       error.details.dataType === "resume_text"
   );
   assert.equal(providerCalls, 0);
 });
 
-test("confirmed Gemini parsing uses the configured model, typed response schema, reservation, and source-backed v3 output", async (t) => {
+test("confirmed Gemini parsing uses the configured model, typed response schema, reservation, and source-backed v5 output", async (t) => {
   environment(t);
   const ledger = installLedger(t);
   const requests: Array<Record<string, unknown>> = [];
   stub(t, globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
     requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-    return providerResponse(parsedOutput);
+    return providerResponse(currentParsedOutput());
   });
 
   const result = await parseResumeTextWithMeta(resumeText, "user-1", {
@@ -260,16 +264,18 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
 
   assert.equal(result.meta.provider, "gemini");
   assert.equal(result.meta.model, "gemini-3.8-flash");
-  assert.equal(result.meta.promptVersion, "4");
+  assert.equal(result.meta.promptVersion, "5");
   assert.equal(result.meta.outputTokens, 100);
   assert.deepEqual(result.data.workHistory, parsedOutput.workHistory);
   assert.deepEqual(result.data.education, parsedOutput.education);
   const generationConfig = requests[0]?.generationConfig as Record<string, unknown>;
   const responseSchema = generationConfig.responseJsonSchema as Record<string, unknown>;
   assert.equal(responseSchema.additionalProperties, false);
+  assert.equal(generationConfig.maxOutputTokens, 24_000);
+  assert.deepEqual(generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(ledger.reservations[0]?.provider, "gemini");
   assert.equal(ledger.reservations[0]?.feature, "RESUME_PARSE");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 38_250);
+  assert.equal(ledger.reservations[0]?.maximumCostMicros, 99_000);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });
@@ -277,7 +283,7 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
 test("unsupported parsed facts fail validation, consume only known usage, and are never cached", async (t) => {
   environment(t);
   const ledger = installLedger(t);
-  const unsupported = structuredClone(parsedOutput);
+  const unsupported = currentParsedOutput();
   unsupported.workHistory[0].bullets[0] = "Invented unsupported accomplishment.";
   stub(t, globalThis, "fetch", async () => providerResponse(unsupported));
 
@@ -286,7 +292,13 @@ test("unsupported parsed facts fail validation, consume only known usage, and ar
       highCostConfirmed: true,
       dataSharingConfirmed: true
     }),
-    /not supported by the submitted resume source/i
+    (error: unknown) => error instanceof PublicApiError &&
+      /not supported by the submitted resume source/i.test(error.message) &&
+      error.details?.fieldPath === "workHistory[0].bullets[0]" &&
+      error.details.provider === "gemini" &&
+      error.details.billingStatus === "known" &&
+      typeof error.details.actualCostMicros === "number" &&
+      error.details.actualCostMicros > 0
   );
   assert.equal(ledger.reconciliations[0]?.status, "FAILED");
   assert.equal(ledger.cacheWrites.length, 0);
@@ -295,7 +307,7 @@ test("unsupported parsed facts fail validation, consume only known usage, and ar
 test("a source section heading cannot be silently replaced with an empty structured section", async (t) => {
   environment(t);
   const ledger = installLedger(t);
-  const incomplete = structuredClone(parsedOutput);
+  const incomplete = currentParsedOutput();
   incomplete.workHistory = [];
   incomplete.sectionStatus.workHistory = "absent";
   stub(t, globalThis, "fetch", async () => providerResponse(incomplete));
@@ -305,7 +317,7 @@ test("a source section heading cannot be silently replaced with an empty structu
       highCostConfirmed: true,
       dataSharingConfirmed: true
     }),
-    /incomplete.*work history/i
+    /incomplete.*work history|record order|adjacent records/i
   );
   assert.equal(ledger.reconciliations[0]?.status, "FAILED");
   assert.equal(ledger.cacheWrites.length, 0);
@@ -342,7 +354,9 @@ test("every factual line in a recognized section must be represented", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(twoRoleSource, parsedOutput),
-    /incomplete.*work history.*not represented/i
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_INCOMPLETE" &&
+      error.details?.fieldPath === "sourceSections[2].recordBlocks"
   );
 });
 
@@ -635,7 +649,9 @@ test("one evidence block cannot merge two dated work-history records", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(mergedSource, merged),
-    /ambiguous workHistory detail.*merged record boundary/i
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "sourceSections[2].recordBlocks[0]"
   );
 });
 
@@ -1011,19 +1027,19 @@ test("one project record cannot absorb a second pipe-delimited project header", 
   );
 });
 
-test("resume parse schema and prompt version require nullable project dates", () => {
+test("resume parse schema and prompt version require nullable project dates in v5", () => {
   const projectItems = RESUME_PARSE_RESPONSE_JSON_SCHEMA.properties.projects.items;
 
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "4");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "5");
   assert.deepEqual(projectItems.properties.date.type, ["string", "null"]);
   assert.ok(projectItems.required.includes("date"));
   assert.match(resumeParsePrompt, /project date/i);
   assert.match(resumeParsePrompt, /name \| description \| date/i);
 });
 
-test("a version-three cache entry cannot be replayed as a version-four parse", async (t) => {
+test("a version-four cache entry cannot be replayed as a version-five parse", async (t) => {
   environment(t);
-  installLedger(t, parsedOutput, { cachedPromptVersion: "3" });
+  installLedger(t, parsedOutput, { cachedPromptVersion: "4" });
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
 
@@ -1090,7 +1106,9 @@ test("adjacent certifications must each have typed record fields", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(source, output),
-    /did not represent every factual line in certifications/i
+    (error) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "certifications[0].sourceText"
   );
 });
 
@@ -1129,7 +1147,7 @@ test("a legitimate dated role may retain a later year inside a narrative bullet"
 
 test("a validated cache replay avoids confirmation, reservation, and a duplicate provider call", async (t) => {
   environment(t);
-  const ledger = installLedger(t, parsedOutput);
+  const ledger = installLedger(t, currentParsedOutput());
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
 
@@ -1158,7 +1176,10 @@ test("an uncertain provider outcome durably blocks an identical second paid call
     (error: unknown) => error instanceof PublicApiError &&
       error.status === 503 &&
       error.details?.code === "RESUME_PARSE_PROVIDER_UNCERTAIN" &&
-      error.details.retryable === false
+      error.details.retryable === false &&
+      error.details.provider === "gemini" &&
+      error.details.billingStatus === "uncertain" &&
+      error.details.actualCostMicros === null
   );
   assert.equal(ledger.reconciliations[0]?.status, "UNCERTAIN");
 
@@ -1182,7 +1203,7 @@ test("a durable-cache failure becomes uncertain and cannot trigger a second paid
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(parsedOutput);
+    return providerResponse(currentParsedOutput());
   });
 
   await assert.rejects(
@@ -1238,14 +1259,18 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
   const ledger = installLedger(t);
   const client = getOpenAIClient();
   assert.ok(client);
-  stub(t, client.chat.completions, "create", async () => ({
-    choices: [{ finish_reason: "stop", message: { content: JSON.stringify(parsedOutput) } }],
-    usage: {
-      prompt_tokens: 160,
-      completion_tokens: 80,
-      prompt_tokens_details: { cached_tokens: 0 }
-    }
-  }));
+  let openAiRequest: { max_tokens?: number } | undefined;
+  stub(t, client.chat.completions, "create", async (request: unknown) => {
+    openAiRequest = request as { max_tokens?: number };
+    return {
+      choices: [{ finish_reason: "stop", message: { content: JSON.stringify(currentParsedOutput()) } }],
+      usage: {
+        prompt_tokens: 160,
+        completion_tokens: 80,
+        prompt_tokens_details: { cached_tokens: 0 }
+      }
+    };
+  });
   stub(t, globalThis, "fetch", async () => { throw new Error("Gemini transport must not be used"); });
 
   const result = await parseResumeTextWithMeta(resumeText, "user-1", {
@@ -1255,8 +1280,9 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
 
   assert.equal(result.meta.provider, "openai");
   assert.equal(result.meta.model, "gpt-4o-mini");
+  assert.equal(openAiRequest?.max_tokens, 16_000);
   assert.equal(ledger.reservations[0]?.provider, "openai");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 7_050);
+  assert.equal(ledger.reservations[0]?.maximumCostMicros, 11_400);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
 });
 
@@ -1270,7 +1296,7 @@ test("OpenAI must report a complete stop before structured output can be accepte
   const client = getOpenAIClient();
   assert.ok(client);
   stub(t, client.chat.completions, "create", async () => ({
-    choices: [{ finish_reason: "length", message: { content: JSON.stringify(parsedOutput) } }],
+    choices: [{ finish_reason: "length", message: { content: JSON.stringify(currentParsedOutput()) } }],
     usage: { prompt_tokens: 160, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 0 } }
   }));
 
@@ -1280,7 +1306,10 @@ test("OpenAI must report a complete stop before structured output can be accepte
       dataSharingConfirmed: true
     }),
     (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "RESUME_PARSE_PROVIDER_INVALID"
+      error.details?.code === "RESUME_PARSE_PROVIDER_INVALID" &&
+      error.details.provider === "openai" &&
+      error.details.billingStatus === "known" &&
+      typeof error.details.actualCostMicros === "number"
   );
   assert.equal(ledger.reconciliations[0]?.status, "FAILED");
   assert.equal(ledger.cacheWrites.length, 0);
@@ -1309,7 +1338,10 @@ test("a definite OpenAI client rejection is recorded as not charged and remains 
     }),
     (error: unknown) => error instanceof PublicApiError &&
       error.details?.code === "RESUME_PARSE_PROVIDER_REJECTED" &&
-      error.details.retryable === true
+      error.details.retryable === true &&
+      error.details.provider === "openai" &&
+      error.details.billingStatus === "not_charged" &&
+      error.details.actualCostMicros === 0
   );
   assert.equal(ledger.reconciliations[0]?.status, "FAILED");
   assert.equal(ledger.reconciliations[0]?.actualCostMicros, 0);
