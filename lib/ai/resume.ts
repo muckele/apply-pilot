@@ -34,7 +34,7 @@ import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
-export const RESUME_PARSE_PROMPT_VERSION = "3";
+export const RESUME_PARSE_PROMPT_VERSION = "4";
 
 type ResumeSectionStatus = "present" | "absent";
 
@@ -52,6 +52,7 @@ type ResumeProjectItem = {
   sourceText: string;
   name: string;
   description: string | null;
+  date: string | null;
   technologies: string[];
   bullets: string[];
 };
@@ -157,6 +158,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> 
     sourceText: boundedSourceBlock,
     name: boundedSourceString,
     description: nullableSourceString,
+    date: nullableSourceString,
     technologies: sourceStringList,
     bullets: sourceStringList
   }).strict()).max(50),
@@ -242,10 +244,11 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           sourceText: jsonString,
           name: jsonString,
           description: nullableJsonString,
+          date: nullableJsonString,
           technologies: jsonStringArray,
           bullets: jsonStringArray
         },
-        required: ["sourceText", "name", "description", "technologies", "bullets"]
+        required: ["sourceText", "name", "description", "date", "technologies", "bullets"]
       }
     },
     education: {
@@ -329,7 +332,7 @@ function assertSourceSupported(source: string, value: string | null, path: strin
     throw new PublicApiError(
       `Resume parsing returned ${path} that is not supported by the submitted resume source.`,
       422,
-      { code: "RESUME_PARSE_UNSUPPORTED_FACT", retryable: false }
+      { code: "RESUME_PARSE_UNSUPPORTED_FACT", fieldPath: path, retryable: false }
     );
   }
 }
@@ -379,30 +382,34 @@ function assertCompleteFactCoverage(
   }
 }
 
-function assertUnambiguousNarrativeEntries(entries: string[], section: string) {
-  for (const entry of entries) {
-    const explicitBullet = /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry);
-    const completeStatement = !/[\r\n]/.test(entry) && /[.!?…]$/u.test(entry);
-    if (!explicitBullet && !completeStatement) {
+function isUnambiguousNarrativeEntry(entry: string) {
+  const explicitBullet = /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry);
+  const completeStatement = !/[\r\n]/.test(entry) && /[.!?…]$/u.test(entry);
+  return explicitBullet || completeStatement;
+}
+
+function assertUnambiguousNarrativeEntries(entries: string[], section: string, fieldPath: string) {
+  entries.forEach((entry, index) => {
+    if (!isUnambiguousNarrativeEntry(entry)) {
       throw new PublicApiError(
         `Resume parsing returned an ambiguous ${section} detail that could be a merged record boundary. No master resume was changed.`,
         422,
-        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, retryable: false }
+        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath: `${fieldPath}[${index}]`, retryable: false }
       );
     }
-  }
+  });
 }
 
-function assertUnambiguousTechnologyEntries(entries: string[], section: string) {
-  for (const entry of entries) {
+function assertUnambiguousTechnologyEntries(entries: string[], section: string, fieldPath: string) {
+  entries.forEach((entry, index) => {
     if (!/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry) && !/[,/|]/.test(entry)) {
       throw new PublicApiError(
         `Resume parsing returned an ambiguous ${section} technology line that could be a merged record boundary. No master resume was changed.`,
         422,
-        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, retryable: false }
+        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath: `${fieldPath}[${index}]`, retryable: false }
       );
     }
-  }
+  });
 }
 
 const sectionHeadings: Record<keyof ParsedResume["sectionStatus"], RegExp> = {
@@ -486,13 +493,101 @@ const resumeDatePattern = new RegExp(
   "i"
 );
 
-function assertResumeDate(value: string | null, section: string, semanticLabel = `${section} date`) {
+function assertResumeDate(
+  value: string | null,
+  section: string,
+  semanticLabel = `${section} date`,
+  fieldPath?: string
+) {
   if (value === null || resumeDatePattern.test(value)) return;
   throw new PublicApiError(
     `Resume parsing returned an invalid ${semanticLabel} that could conceal a merged record. No master resume was changed.`,
     422,
-    { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, retryable: false }
+    { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, ...(fieldPath ? { fieldPath } : {}), retryable: false }
   );
+}
+
+function hasExactDelimitedProjectHeader(item: ResumeProjectItem) {
+  if (!item.description || !item.date) return false;
+  const firstLine = item.sourceText.split(/\r?\n/, 1)[0] ?? "";
+  const parts = firstLine.split(" | ");
+  return parts.length === 3 &&
+    parts[0] === item.name &&
+    parts[1] === item.description &&
+    parts[2] === item.date;
+}
+
+function assertProjectStructure(item: ResumeProjectItem, fieldPath: string) {
+  const exactDelimitedHeader = hasExactDelimitedProjectHeader(item);
+  const firstLineParts = (item.sourceText.split(/\r?\n/, 1)[0] ?? "").split(" | ");
+  if (
+    !item.date &&
+    firstLineParts.length === 3 &&
+    firstLineParts[0] === item.name &&
+    resumeDatePattern.test(firstLineParts[2] ?? "")
+  ) {
+    throw new PublicApiError(
+      "Resume parsing omitted a project date present in the source header. No master resume was changed.",
+      422,
+      {
+        code: "RESUME_PARSE_INCOMPLETE",
+        section: "projects",
+        fieldPath: `${fieldPath}.date`,
+        retryable: false
+      }
+    );
+  }
+  if (item.description && !isUnambiguousNarrativeEntry(item.description) && !exactDelimitedHeader) {
+    throw new PublicApiError(
+      "Resume parsing returned an ambiguous projects detail that could be a merged record boundary. No master resume was changed.",
+      422,
+      {
+        code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+        section: "projects",
+        fieldPath: `${fieldPath}.description`,
+        retryable: false
+      }
+    );
+  }
+
+  if (item.date) {
+    const nameEnd = item.sourceText.indexOf(item.name) + item.name.length;
+    const dateIndex = item.sourceText.indexOf(item.date, nameEnd);
+    const firstDetailIndex = firstFactIndex(
+      item.sourceText,
+      [item.description, ...item.technologies, ...item.bullets]
+    );
+    if (!exactDelimitedHeader && !(dateIndex >= nameEnd && dateIndex < firstDetailIndex)) {
+      throw new PublicApiError(
+        "Resume parsing returned an invalid projects date position that could conceal a merged record. No master resume was changed.",
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          section: "projects",
+          fieldPath: `${fieldPath}.date`,
+          retryable: false
+        }
+      );
+    }
+  }
+
+  item.sourceText.split(/\r?\n/).forEach((line, lineIndex) => {
+    const parts = line.split(" | ");
+    const finalPart = parts.at(-1) ?? "";
+    const looksLikeDatedProjectHeader = parts.length >= 3 && resumeDatePattern.test(finalPart);
+    if (looksLikeDatedProjectHeader && !(lineIndex === 0 && exactDelimitedHeader)) {
+      throw new PublicApiError(
+        "Resume parsing returned a projects source block containing an adjacent project header. No master resume was changed.",
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          section: "projects",
+          fieldPath: `${fieldPath}.sourceText`,
+          retryable: false
+        }
+      );
+    }
+  });
 }
 
 function firstFactIndex(sourceText: string, values: Array<string | null>) {
@@ -765,11 +860,33 @@ function assertRecognizedSectionCoverage(source: string, output: ParsedResume) {
   }
 }
 
+function zodFieldPath(path: Array<string | number>) {
+  return path.reduce<string>((result, part) =>
+    typeof part === "number" ? `${result}[${part}]` : result ? `${result}.${String(part)}` : String(part), "");
+}
+
+function normalizeLegacyProjectDates(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  if (record.contractVersion !== "3" || !Array.isArray(record.projects)) return value;
+  let changed = false;
+  const projects = record.projects.map((project) => {
+    if (!project || typeof project !== "object" || Array.isArray(project) || Object.hasOwn(project, "date")) {
+      return project;
+    }
+    changed = true;
+    return { ...(project as Record<string, unknown>), date: null };
+  });
+  return changed ? { ...record, projects } : value;
+}
+
 export function validateParsedResumeOutput(source: string, value: unknown): ParsedResume {
-  const parsed = parsedResumeSchema.safeParse(value);
+  const parsed = parsedResumeSchema.safeParse(normalizeLegacyProjectDates(value));
   if (!parsed.success) {
+    const fieldPath = zodFieldPath(parsed.error.issues[0]?.path ?? []);
     throw new PublicApiError("Resume parsing returned an invalid structured result. No master resume was changed.", 422, {
       code: "RESUME_PARSE_INVALID_OUTPUT",
+      ...(fieldPath ? { fieldPath } : {}),
       retryable: false
     });
   }
@@ -855,10 +972,10 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.startDate, `workHistory[${index}].startDate`);
     assertSourceSupported(item.sourceText, item.endDate, `workHistory[${index}].endDate`);
     item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `workHistory[${index}].bullets[${entryIndex}]`));
-    assertResumeDate(item.startDate, "workHistory", "workHistory date or location");
-    assertResumeDate(item.endDate, "workHistory", "workHistory date or location");
+    assertResumeDate(item.startDate, "workHistory", "workHistory date or location", `workHistory[${index}].startDate`);
+    assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
     assertWorkLocationSemantics(item);
-    assertUnambiguousNarrativeEntries(item.bullets, "workHistory");
+    assertUnambiguousNarrativeEntries(item.bullets, "workHistory", `workHistory[${index}].bullets`);
     assertCompleteFactCoverage(
       item.sourceText,
       [item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets],
@@ -870,16 +987,18 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(source, item.sourceText, `projects[${index}].sourceText`);
     assertSourceSupported(item.sourceText, item.name, `projects[${index}].name`);
     assertSourceSupported(item.sourceText, item.description, `projects[${index}].description`);
+    assertSourceSupported(item.sourceText, item.date, `projects[${index}].date`);
     item.technologies.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].technologies[${entryIndex}]`));
     item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].bullets[${entryIndex}]`));
-    if (item.description) assertUnambiguousNarrativeEntries([item.description], "projects");
-    assertUnambiguousTechnologyEntries(item.technologies, "projects");
-    assertUnambiguousNarrativeEntries(item.bullets, "projects");
+    assertResumeDate(item.date, "projects", "projects date", `projects[${index}].date`);
+    assertProjectStructure(item, `projects[${index}]`);
+    assertUnambiguousTechnologyEntries(item.technologies, "projects", `projects[${index}].technologies`);
+    assertUnambiguousNarrativeEntries(item.bullets, "projects", `projects[${index}].bullets`);
     assertCompleteFactCoverage(
       item.sourceText,
-      [item.name, item.description, ...item.technologies, ...item.bullets],
+      [item.name, item.description, item.date, ...item.technologies, ...item.bullets],
       "projects",
-      /\b(?:project|name|description|technologies|technology|tech|tools?|details)\b/gi
+      /\b(?:project|name|description|date|year|technologies|technology|tech|tools?|details)\b/gi
     );
   });
   output.education.forEach((item, index) => {
@@ -890,9 +1009,9 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.startDate, `education[${index}].startDate`);
     assertSourceSupported(item.sourceText, item.endDate, `education[${index}].endDate`);
     item.details.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `education[${index}].details[${entryIndex}]`));
-    assertResumeDate(item.startDate, "education");
-    assertResumeDate(item.endDate, "education");
-    assertUnambiguousNarrativeEntries(item.details, "education");
+    assertResumeDate(item.startDate, "education", "education date", `education[${index}].startDate`);
+    assertResumeDate(item.endDate, "education", "education date", `education[${index}].endDate`);
+    assertUnambiguousNarrativeEntries(item.details, "education", `education[${index}].details`);
     assertCompleteFactCoverage(
       item.sourceText,
       [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate, ...item.details],
@@ -906,8 +1025,8 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.issuer, `certifications[${index}].issuer`);
     assertSourceSupported(item.sourceText, item.date, `certifications[${index}].date`);
     assertSourceSupported(item.sourceText, item.expirationDate, `certifications[${index}].expirationDate`);
-    assertResumeDate(item.date, "certifications", "certification date");
-    assertResumeDate(item.expirationDate, "certifications", "certification date");
+    assertResumeDate(item.date, "certifications", "certification date", `certifications[${index}].date`);
+    assertResumeDate(item.expirationDate, "certifications", "certification date", `certifications[${index}].expirationDate`);
     assertCompleteFactCoverage(
       item.sourceText,
       [item.name, item.issuer, item.date, item.expirationDate],
@@ -949,7 +1068,7 @@ async function callOpenAiResumeProvider(input: {
       model: input.model,
       temperature: 0,
       max_tokens: input.maxOutputTokens,
-      response_format: zodResponseFormat(parsedResumeSchema, "resume_parse_v3"),
+      response_format: zodResponseFormat(parsedResumeSchema, "resume_parse_v4"),
       messages: [
         { role: "system", content: resumeParsePrompt },
         { role: "user", content: JSON.stringify({ resumeText: input.text }) }

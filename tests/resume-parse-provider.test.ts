@@ -2,10 +2,17 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import OpenAI from "openai";
 
-import { parseResumeTextWithMeta, validateParsedResumeOutput, type ParsedResume } from "@/lib/ai/resume";
+import {
+  parseResumeTextWithMeta,
+  RESUME_PARSE_PROMPT_VERSION,
+  RESUME_PARSE_RESPONSE_JSON_SCHEMA,
+  validateParsedResumeOutput,
+  type ParsedResume
+} from "@/lib/ai/resume";
 import { getOpenAIClient } from "@/lib/ai/client";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
+import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -88,6 +95,35 @@ function emptyParsedResume() {
   return output;
 }
 
+function syntheticProjectResume() {
+  const source = `Jordan Example
+jordan@example.test
+
+PROJECTS
+Apply Pilot | Independent Job Search Application | 2026
+Built a controlled application workflow.
+BehaviorOps Health | Internal Operations Platform in Development | 2026
+Designed a privacy-aware operations platform.`;
+  const output = emptyParsedResume();
+  output.projects = [{
+    sourceText: "Apply Pilot | Independent Job Search Application | 2026\nBuilt a controlled application workflow.",
+    name: "Apply Pilot",
+    description: "Independent Job Search Application",
+    date: "2026",
+    technologies: [],
+    bullets: ["Built a controlled application workflow."]
+  }, {
+    sourceText: "BehaviorOps Health | Internal Operations Platform in Development | 2026\nDesigned a privacy-aware operations platform.",
+    name: "BehaviorOps Health",
+    description: "Internal Operations Platform in Development",
+    date: "2026",
+    technologies: [],
+    bullets: ["Designed a privacy-aware operations platform."]
+  }];
+  output.sectionStatus.projects = "present";
+  return { source, output };
+}
+
 function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
   const methods = owner as Record<string, unknown>;
   const original = methods[name];
@@ -129,6 +165,7 @@ function providerResponse(value: unknown, usage = {
 function installLedger(t: TestContext, cachedOutput?: unknown, options: {
   failSucceededReconciliation?: boolean;
   priorStatus?: "RESERVED" | "UNCERTAIN";
+  cachedPromptVersion?: string;
 } = {}) {
   let reservation: Record<string, unknown> | null = options.priorStatus
     ? { id: "prior-reservation", status: options.priorStatus }
@@ -138,7 +175,10 @@ function installLedger(t: TestContext, cachedOutput?: unknown, options: {
   const reconciliations: Array<Record<string, unknown>> = [];
   const cacheWrites: Array<Record<string, unknown>> = [];
 
-  stub(t, prisma.aIResponseCache, "findFirst", async () => cachedOutput ? { output: cachedOutput } : null);
+  stub(t, prisma.aIResponseCache, "findFirst", async ({ where }: { where: { promptVersion: string } }) =>
+    cachedOutput && where.promptVersion === (options.cachedPromptVersion ?? RESUME_PARSE_PROMPT_VERSION)
+      ? { output: cachedOutput }
+      : null);
   stub(t, prisma.aIBudgetReservation, "findMany", async () =>
     reservation?.status === "RESERVED" ? [{ id: reservation.id }] : []);
   stub(t, prisma.aIBudgetReservation, "findFirst", async () =>
@@ -220,7 +260,7 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
 
   assert.equal(result.meta.provider, "gemini");
   assert.equal(result.meta.model, "gemini-3.8-flash");
-  assert.equal(result.meta.promptVersion, "3");
+  assert.equal(result.meta.promptVersion, "4");
   assert.equal(result.meta.outputTokens, 100);
   assert.deepEqual(result.data.workHistory, parsedOutput.workHistory);
   assert.deepEqual(result.data.education, parsedOutput.education);
@@ -798,6 +838,7 @@ test("adjacent projects cannot be disguised as project bullets", () => {
     sourceText: "Project Alpha\nBuilt alpha.\nProject Beta\nBuilt beta.",
     name: "Project Alpha",
     description: "Built alpha.",
+    date: null,
     technologies: [],
     bullets: ["Project Beta", "Built beta."]
   }];
@@ -805,8 +846,194 @@ test("adjacent projects cannot be disguised as project bullets", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(source, output),
-    /ambiguous projects detail.*merged record boundary/i
+    (error: unknown) => error instanceof PublicApiError &&
+      /ambiguous projects detail.*merged record boundary/i.test(error.message) &&
+      error.details?.fieldPath === "projects[0].bullets[0]"
   );
+});
+
+test("pipe-delimited project headers preserve unpunctuated subtitles and years as separate records", () => {
+  const { source, output } = syntheticProjectResume();
+
+  const parsed = validateParsedResumeOutput(source, output);
+
+  assert.equal(parsed.projects.length, 2);
+  assert.deepEqual(parsed.projects.map((project) => project.description), [
+    "Independent Job Search Application",
+    "Internal Operations Platform in Development"
+  ]);
+  assert.deepEqual(parsed.projects.map((project) => project.date), ["2026", "2026"]);
+  assert.deepEqual(parsed.projects.map((project) => project.bullets), [
+    ["Built a controlled application workflow."],
+    ["Designed a privacy-aware operations platform."]
+  ]);
+});
+
+test("legacy project arrays without a date field remain readable with an explicit null date", () => {
+  const source = `Jordan Example\njordan@example.test\n\nPROJECTS\nProject Alpha\nBuilt a controlled application workflow.`;
+  const output = emptyParsedResume();
+  (output as unknown as { projects: Array<Record<string, unknown>> }).projects = [{
+    sourceText: "Project Alpha\nBuilt a controlled application workflow.",
+    name: "Project Alpha",
+    description: "Built a controlled application workflow.",
+    technologies: [],
+    bullets: []
+  }];
+  output.sectionStatus.projects = "present";
+
+  const parsed = validateParsedResumeOutput(source, output);
+
+  assert.deepEqual(parsed.projects.map((project) => project.date), [null]);
+});
+
+test("a project year in source cannot be silently omitted by a legacy-shaped result", () => {
+  const { source, output } = syntheticProjectResume();
+  delete (output.projects[0] as unknown as Record<string, unknown>).date;
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_INCOMPLETE" &&
+      error.details?.section === "projects"
+  );
+});
+
+test("an unpunctuated project description is rejected without exact first-line delimiter evidence", () => {
+  const source = `Jordan Example\njordan@example.test\n\nPROJECTS\nApply Pilot\nIndependent Job Search Application\n2026\nBuilt a controlled application workflow.`;
+  const output = emptyParsedResume();
+  output.projects = [{
+    sourceText: "Apply Pilot\nIndependent Job Search Application\n2026\nBuilt a controlled application workflow.",
+    name: "Apply Pilot",
+    description: "Independent Job Search Application",
+    date: "2026",
+    technologies: [],
+    bullets: ["Built a controlled application workflow."]
+  }];
+  output.sectionStatus.projects = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "projects[0].description"
+  );
+});
+
+test("a two-part project header cannot use the dated subtitle exception", () => {
+  const source = `Jordan Example\njordan@example.test\n\nPROJECTS\nApply Pilot | Independent Job Search Application\nBuilt a controlled application workflow.`;
+  const output = emptyParsedResume();
+  output.projects = [{
+    sourceText: "Apply Pilot | Independent Job Search Application\nBuilt a controlled application workflow.",
+    name: "Apply Pilot",
+    description: "Independent Job Search Application",
+    date: null,
+    technologies: [],
+    bullets: ["Built a controlled application workflow."]
+  }];
+  output.sectionStatus.projects = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "projects[0].description"
+  );
+});
+
+test("a project description cannot absorb the header delimiter and year", () => {
+  const { source, output } = syntheticProjectResume();
+  output.projects[0]!.description = "Independent Job Search Application | 2026";
+  output.projects[0]!.date = null;
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_INCOMPLETE" &&
+      error.details?.fieldPath === "projects[0].date"
+  );
+});
+
+test("a project date must be date-shaped and reports only its rejected field path", () => {
+  const { source, output } = syntheticProjectResume();
+  output.projects[0]!.sourceText = output.projects[0]!.sourceText.replace("2026", "Beta Project");
+  output.projects[0]!.date = "Beta Project";
+  const changedSource = source.replace(
+    "Apply Pilot | Independent Job Search Application | 2026",
+    "Apply Pilot | Independent Job Search Application | Beta Project"
+  );
+
+  assert.throws(
+    () => validateParsedResumeOutput(changedSource, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "projects[0].date" &&
+      !JSON.stringify(error.details).includes("Beta Project")
+  );
+});
+
+test("a project date remains valid when the same year also appears in its name", () => {
+  const source = `Jordan Example\njordan@example.test\n\nPROJECTS\nProject 2026\n2026\nBuilt a controlled application workflow.`;
+  const output = emptyParsedResume();
+  output.projects = [{
+    sourceText: "Project 2026\n2026\nBuilt a controlled application workflow.",
+    name: "Project 2026",
+    description: "Built a controlled application workflow.",
+    date: "2026",
+    technologies: [],
+    bullets: []
+  }];
+  output.sectionStatus.projects = "present";
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, output));
+});
+
+test("one project record cannot absorb a second pipe-delimited project header", () => {
+  const { source, output } = syntheticProjectResume();
+  const merged = emptyParsedResume();
+  merged.projects = [{
+    sourceText: output.projects.map((project) => project.sourceText).join("\n"),
+    name: "Apply Pilot",
+    description: "Independent Job Search Application",
+    date: "2026",
+    technologies: ["BehaviorOps Health | Internal Operations Platform in Development | 2026"],
+    bullets: [
+      "Built a controlled application workflow.",
+      "Designed a privacy-aware operations platform."
+    ]
+  }];
+  merged.sectionStatus.projects = "present";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, merged),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "projects[0].sourceText"
+  );
+});
+
+test("resume parse schema and prompt version require nullable project dates", () => {
+  const projectItems = RESUME_PARSE_RESPONSE_JSON_SCHEMA.properties.projects.items;
+
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "4");
+  assert.deepEqual(projectItems.properties.date.type, ["string", "null"]);
+  assert.ok(projectItems.required.includes("date"));
+  assert.match(resumeParsePrompt, /project date/i);
+  assert.match(resumeParsePrompt, /name \| description \| date/i);
+});
+
+test("a version-three cache entry cannot be replayed as a version-four parse", async (t) => {
+  environment(t);
+  installLedger(t, parsedOutput, { cachedPromptVersion: "3" });
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1"),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.status === 428 &&
+      error.details?.code === "AI_COST_CONFIRMATION_REQUIRED"
+  );
+  assert.equal(providerCalls, 0);
 });
 
 test("adjacent education records cannot be disguised as details", () => {
