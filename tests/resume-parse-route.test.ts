@@ -256,7 +256,7 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "3");
+  assert.equal(state.analyses[0]?.promptVersion, "4");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });

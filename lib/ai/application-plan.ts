@@ -184,7 +184,7 @@ function condenseWorkHistory(value: unknown): CondensedEntry[] {
   return roles;
 }
 
-// Projects keep name, a bounded technology list, and bounded highlights only.
+// Projects keep name, date, a bounded technology list, and bounded highlights only.
 function condenseProjects(value: unknown): CondensedEntry[] {
   if (!Array.isArray(value)) return [];
   const projects: CondensedEntry[] = [];
@@ -193,12 +193,15 @@ function condenseProjects(value: unknown): CondensedEntry[] {
     if (!record) continue;
     const name = boundedText(record.name ?? record.title, BOUNDS.shortTextChars);
     if (!name) continue;
+    const date = boundedText(record.date ?? record.year, 40);
     const technologies = boundedStringArray(
       record.technologies ?? record.tech ?? record.stack,
       BOUNDS.projectTechnologies,
       BOUNDS.listTextChars
     );
-    const heading = (technologies.length ? `${name} (${technologies.join(", ")})` : name).slice(0, BOUNDS.projectHeadingChars);
+    const datedName = date ? `${name}, ${date}` : name;
+    const heading = (technologies.length ? `${datedName} (${technologies.join(", ")})` : datedName)
+      .slice(0, BOUNDS.projectHeadingChars);
     const highlights = Array.isArray(record.highlights)
       ? boundedStringArray(record.highlights, BOUNDS.projectHighlights, BOUNDS.detailChars)
       : boundedStringArray([record.description], BOUNDS.projectHighlights, BOUNDS.detailChars);

@@ -61,7 +61,7 @@ function fixtureInput(): ApplicationPlanInput {
           email: "hidden@example.com"
         }
       ],
-      projects: [{ name: "Status Dashboard", technologies: ["React"], highlights: ["Built a status dashboard"] }],
+      projects: [{ name: "Status Dashboard", date: "2026", technologies: ["React"], highlights: ["Built a status dashboard"] }],
       education: [{ credential: "BS", field: "Computer Science", institution: "Hidden University", address: "123 Hidden St" }],
       certifications: [{ name: "AWS Cloud Practitioner", issuer: "Amazon" }]
     },
@@ -103,6 +103,15 @@ test("catalog IDs are deterministic and repeatable across builds", () => {
       "profile-goals-1",
       "profile-skill-1"
     ]
+  );
+});
+
+test("project dates remain visible in downstream application-plan evidence", () => {
+  const payload = buildApplicationPlanPayload(fixtureInput());
+
+  assert.equal(
+    payload.evidenceCatalog.find((entry) => entry.id === "project-1")?.text,
+    "Status Dashboard, 2026 (React)"
   );
 });
 
