@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { test, type TestContext } from "node:test";
 import type { NextRequest } from "next/server";
 
 import { prisma } from "@/lib/prisma";
+import { buildApplicationPlanPayload } from "@/lib/ai/application-plan";
+import { getJobMatchEvidenceReferences, type MatchInput } from "@/lib/ai/job-match";
+import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
 import { deletePrivateLocalFilesForUser } from "@/lib/storage/private-files";
+import {
+  syntheticDocxExtractedText,
+  syntheticDocxProviderOutput
+} from "@/tests/fixtures/resume-contract-v5-data";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -26,7 +33,33 @@ B.S. Business
 2021`;
 
 const parsedOutput = {
-  contractVersion: "3",
+  contractVersion: "5",
+  sourceSections: [
+    {
+      section: "contactInfo",
+      heading: null,
+      sourceText: "Jordan Example\njordan@example.test",
+      recordBlocks: ["Jordan Example\njordan@example.test"]
+    },
+    {
+      section: "summary",
+      heading: "SUMMARY",
+      sourceText: "Customer success manager supporting technical onboarding.",
+      recordBlocks: ["Customer success manager supporting technical onboarding."]
+    },
+    {
+      section: "workHistory",
+      heading: "EXPERIENCE",
+      sourceText: "Customer Success Manager\nExample Co\nRemote\n2022 - Present\nLed customer onboarding.",
+      recordBlocks: ["Customer Success Manager\nExample Co\nRemote\n2022 - Present\nLed customer onboarding."]
+    },
+    {
+      section: "education",
+      heading: "EDUCATION",
+      sourceText: "Example University\nB.S. Business\n2021",
+      recordBlocks: ["Example University\nB.S. Business\n2021"]
+    }
+  ],
   contactInfo: {
     sourceText: "Jordan Example\njordan@example.test",
     name: "Jordan Example",
@@ -256,7 +289,7 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "4");
+  assert.equal(state.analyses[0]?.promptVersion, "5");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });
@@ -392,6 +425,92 @@ test("a file with pasted-equivalent text has distinct replay identity and privat
   assert.equal(state.storedFiles.length, 1);
 });
 
+test("synthetic DOCX runs extraction through v5 validation, persistence stubs, and all canonical consumers", async (t) => {
+  const providerOutput = syntheticDocxProviderOutput();
+  const state = setup(t, providerOutput, true);
+  stub(t, globalThis, "fetch", async () => { throw new Error("synthetic DOCX cache replay must not call a provider"); });
+  const fixture = await readFile(new URL("./fixtures/synthetic-resume-contract-v5.docx", import.meta.url));
+  const form = new FormData();
+  form.set("submissionId", SUBMISSION_ID_2);
+  form.set("title", "Complete Synthetic Resume");
+  form.set("file", new File([fixture], "synthetic-resume-contract-v5.docx", {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  }));
+
+  const response = await invoke(form);
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.resume.rawText, syntheticDocxExtractedText);
+  assert.equal(body.parsed.contractVersion, "5");
+  assert.equal(body.parsed.education[1].fieldOfStudy, "Business Administration");
+  assert.equal(body.parsed.education[0].details[0].includes("480-hour"), true);
+  assert.equal(body.parsed.certifications[0].details[0], "Credential ID: SYN-12345");
+  assert.equal(body.parsed.sourceSections.at(-1).section, "additional");
+  assert.equal(state.resumes.length, 1);
+  assert.equal(state.analyses.length, 1);
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "5");
+  assert.equal(state.audits.length, 1);
+
+  const reachableSource = body.parsed.sourceSections.flatMap((section: {
+    heading: string | null;
+    sourceText: string;
+  }) => [section.heading, section.sourceText]).filter(Boolean).join("\n");
+  for (const line of syntheticDocxExtractedText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+    assert.ok(reachableSource.includes(line), `unreachable source line: ${line}`);
+  }
+
+  const resumeInput = {
+    rawText: body.resume.rawText,
+    summary: body.resume.summary,
+    skills: body.resume.skills,
+    achievements: body.resume.achievements,
+    workHistory: body.resume.workHistory,
+    projects: body.resume.projects,
+    education: body.resume.education,
+    certifications: body.resume.certifications
+  };
+  const planner = buildApplicationPlanPayload({
+    job: {
+      title: "Operations Engineer",
+      company: "Example Co",
+      description: "Build TypeScript and SQL workflows.",
+      requirements: ["TypeScript", "SQL"]
+    },
+    resume: resumeInput
+  });
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "project-1-highlight-1"));
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "education-2" && item.text.includes("Business Administration")));
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "certification-1-detail-1"));
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "raw-source-1"));
+
+  const matchInput: MatchInput = {
+    job: {
+      title: "Operations Engineer",
+      company: "Example Co",
+      description: "Build TypeScript and SQL workflows.",
+      requirements: ["TypeScript", "SQL"]
+    },
+    resume: resumeInput
+  };
+  const refs = getJobMatchEvidenceReferences(matchInput).applicant;
+  assert.ok(refs.includes("resume.projects[0]"));
+  assert.ok(refs.includes("resume.education[1]"));
+  assert.ok(refs.includes("resume.certifications[0]"));
+  assert.ok(refs.includes("resume.rawText"));
+
+  const tailoring = buildResumeTailoringPayload(
+    matchInput.job,
+    { ...resumeInput, filePath: "/private/synthetic.docx", contactInfo: body.resume.contactInfo },
+    { careerGoals: "Reliable operations", email: "private@example.test" }
+  );
+  assert.ok(tailoring.resume);
+  assert.equal(tailoring.resume.rawText, syntheticDocxExtractedText);
+  assert.deepEqual(tailoring.resume.projects, body.resume.projects);
+  assert.ok(!("filePath" in tailoring.resume));
+  assert.ok(!("contactInfo" in tailoring.resume));
+});
+
 test("a losing local-storage transaction removes its unreferenced private file", async (t) => {
   const state = setup(t, parsedOutput, true, { simulateLocalLoserRace: true });
   t.after(async () => { await deletePrivateLocalFilesForUser("demo-user"); });
@@ -410,7 +529,7 @@ test("a losing local-storage transaction removes its unreferenced private file",
   await assert.rejects(access(state.rolledBackFilePath));
 });
 
-test("incomplete provider output leaves the old master untouched and surfaces the failed section", async (t) => {
+test("incomplete provider output leaves the old master untouched and surfaces the failed record boundary", async (t) => {
   const incomplete = structuredClone(parsedOutput);
   incomplete.workHistory = [];
   incomplete.sectionStatus.workHistory = "absent";
@@ -420,8 +539,9 @@ test("incomplete provider output leaves the old master untouched and surfaces th
 
   assert.equal(response.status, 422);
   const body = await response.json();
-  assert.equal(body.code, "RESUME_PARSE_INCOMPLETE");
+  assert.equal(body.code, "RESUME_PARSE_STRUCTURE_AMBIGUOUS");
   assert.equal(body.section, "workHistory");
+  assert.equal(body.fieldPath, "sourceSections[2].recordBlocks[0]");
   assert.equal(body.retryable, false);
   assert.equal(state.transactions, 0);
   assert.equal(state.demotions, 0);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { tailorResume } from "@/lib/ai/resume";
+import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -21,7 +22,11 @@ export async function POST(_request: NextRequest, { params }: Params) {
       prisma.userProfile.findUnique({ where: { userId } })
     ]);
 
-    const tailored = await tailorResume({ job, resume, profile }, resume?.rawText ?? "", userId);
+    const tailored = await tailorResume(
+      buildResumeTailoringPayload(job, resume, profile),
+      resume?.rawText ?? "",
+      userId
+    );
     const version = await prisma.resumeVersion.create({
       data: {
         userId,

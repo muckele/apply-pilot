@@ -115,6 +115,9 @@ export type MatchInput = {
     skills?: string[];
     achievements?: string[];
     workHistory?: unknown;
+    projects?: unknown;
+    education?: unknown;
+    certifications?: unknown;
   } | null;
   profile?: {
     careerGoals?: string | null;
@@ -195,6 +198,9 @@ export function getJobMatchEvidenceReferences(input: MatchInput) {
     ...indexedReferences("resume.skills", input.resume?.skills),
     ...indexedReferences("resume.achievements", input.resume?.achievements),
     ...workHistoryReferences,
+    ...indexedReferences("resume.projects", input.resume?.projects),
+    ...indexedReferences("resume.education", input.resume?.education),
+    ...indexedReferences("resume.certifications", input.resume?.certifications),
     ...exactReferences([["profile.careerGoals", input.profile?.careerGoals]]),
     ...indexedReferences("profile.preferredRoles", input.profile?.preferredRoles),
     ...indexedReferences("profile.preferredLocations", input.profile?.preferredLocations),
@@ -357,6 +363,13 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
       "resume.workHistory",
       Array.isArray(input.resume?.workHistory) ? input.resume.workHistory : undefined
     ),
+    indexedValue(ref, "resume.projects", Array.isArray(input.resume?.projects) ? input.resume.projects : undefined),
+    indexedValue(ref, "resume.education", Array.isArray(input.resume?.education) ? input.resume.education : undefined),
+    indexedValue(
+      ref,
+      "resume.certifications",
+      Array.isArray(input.resume?.certifications) ? input.resume.certifications : undefined
+    ),
     indexedValue(ref, "profile.preferredRoles", input.profile?.preferredRoles),
     indexedValue(ref, "profile.preferredLocations", input.profile?.preferredLocations),
     indexedValue(ref, "profile.skillsToEmphasize", input.profile?.skillsToEmphasize)
@@ -425,6 +438,9 @@ function applicantEvidenceText(input: MatchInput) {
     input.resume?.summary,
     input.resume?.rawText,
     input.resume?.workHistory,
+    input.resume?.projects,
+    input.resume?.education,
+    input.resume?.certifications,
     ...(input.resume?.skills ?? []),
     ...(input.resume?.achievements ?? []),
     input.profile?.careerGoals,

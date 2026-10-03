@@ -115,7 +115,10 @@ export async function runJobMatch(
           rawText: resume.rawText,
           skills: resume.skills,
           achievements: resume.achievements,
-          workHistory: resume.workHistory
+          workHistory: resume.workHistory,
+          projects: resume.projects,
+          education: resume.education,
+          certifications: resume.certifications
         }
       : null,
     profile: profile

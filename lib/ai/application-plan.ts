@@ -14,6 +14,7 @@ export type EvidenceSourceType =
   | "PROJECT"
   | "EDUCATION"
   | "CERTIFICATION"
+  | "RAW_SOURCE"
   | "PROFILE";
 
 export type EvidenceCatalogEntry = {
@@ -45,6 +46,7 @@ export type ApplicationPlanInput = {
     detectedTechStack?: string[];
   };
   resume?: {
+    rawText?: string | null;
     summary?: string | null;
     skills?: string[];
     achievements?: string[];
@@ -87,6 +89,14 @@ export type ApplicationPlanPayload = {
     salaryTargetMin: number | null;
   } | null;
   doNotExaggerate: string[];
+  projectionOmissions: ProjectionOmission[];
+};
+
+export type ProjectionOmission = {
+  sourcePath: string;
+  omittedIds: string[];
+  omittedCount: number;
+  truncatedIds: string[];
 };
 
 // Hard bounds keep the payload inside the 12,000-token APPLICATION_PLAN policy.
@@ -94,22 +104,22 @@ export type ApplicationPlanPayload = {
 // ~28 KB ≈ 11k estimated tokens) stays under the policy with margin.
 // Never raise the policy instead.
 const BOUNDS = {
-  descriptionChars: 2_000,
-  requirementTextChars: 200,
+  descriptionChars: 1_000,
+  requirementTextChars: 150,
   requirements: 12,
   preferred: 6,
   tech: 12,
   techTextChars: 40,
-  summaryChars: 1_000,
-  shortTextChars: 200,
-  educationTextChars: 120,
-  certificationChars: 120,
-  skillTextChars: 50,
-  listTextChars: 60,
-  listItemChars: 80,
+  summaryChars: 600,
+  shortTextChars: 120,
+  educationTextChars: 80,
+  certificationChars: 80,
+  skillTextChars: 40,
+  listTextChars: 40,
+  listItemChars: 60,
   skills: 30,
   achievements: 5,
-  detailChars: 200,
+  detailChars: 100,
   workRoles: 4,
   workHighlights: 3,
   projects: 3,
@@ -122,7 +132,8 @@ const BOUNDS = {
   preferredRoles: 6,
   preferredLocations: 6,
   skillsToEmphasize: 12,
-  doNotExaggerate: 12
+  doNotExaggerate: 12,
+  rawSourceChars: 2_500
 } as const;
 
 function boundedText(value: unknown, maxChars: number): string | null {
@@ -131,15 +142,77 @@ function boundedText(value: unknown, maxChars: number): string | null {
   return trimmed ? trimmed.slice(0, maxChars) : null;
 }
 
-function boundedStringArray(value: unknown, maxItems: number, maxChars: number): string[] {
-  if (!Array.isArray(value)) return [];
-  const items: string[] = [];
-  for (const item of value) {
-    const text = boundedText(item, maxChars);
-    if (text) items.push(text);
-    if (items.length >= maxItems) break;
+function recordProjectionOmission(
+  omissions: ProjectionOmission[],
+  sourcePath: string,
+  omittedIds: string[] = [],
+  truncatedIds: string[] = []
+) {
+  if (!omittedIds.length && !truncatedIds.length) return;
+  const existing = omissions.find((entry) => entry.sourcePath === sourcePath);
+  if (existing) {
+    existing.omittedIds.push(...omittedIds.filter((id) => !existing.omittedIds.includes(id)));
+    existing.omittedCount = existing.omittedIds.length;
+    existing.truncatedIds.push(...truncatedIds.filter((id) => !existing.truncatedIds.includes(id)));
+    return;
   }
-  return items;
+  omissions.push({ sourcePath, omittedIds, omittedCount: omittedIds.length, truncatedIds });
+}
+
+function boundedProjectedText(
+  value: unknown,
+  maxChars: number,
+  id: string,
+  sourcePath: string,
+  omissions: ProjectionOmission[]
+) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > maxChars) recordProjectionOmission(omissions, sourcePath, [], [id]);
+  return trimmed.slice(0, maxChars);
+}
+
+function recordArrayBound(
+  value: unknown,
+  maxItems: number,
+  idPrefix: string,
+  sourcePath: string,
+  omissions: ProjectionOmission[]
+) {
+  if (!Array.isArray(value) || value.length <= maxItems) return;
+  recordProjectionOmission(
+    omissions,
+    sourcePath,
+    value.slice(maxItems).map((_, index) => `${idPrefix}-${maxItems + index + 1}`)
+  );
+}
+
+function projectedStringArray(
+  value: unknown,
+  maxItems: number,
+  maxChars: number,
+  idPrefix: string,
+  sourcePath: string,
+  omissions: ProjectionOmission[]
+) {
+  if (!Array.isArray(value)) return [];
+  const selected: string[] = [];
+  const omittedIds: string[] = [];
+  const truncatedIds: string[] = [];
+  value.forEach((item, index) => {
+    const id = `${idPrefix}-${index + 1}`;
+    if (selected.length >= maxItems) {
+      if (typeof item === "string" && item.trim()) omittedIds.push(id);
+      return;
+    }
+    if (typeof item !== "string" || !item.trim()) return;
+    const trimmed = item.trim();
+    if (trimmed.length > maxChars) truncatedIds.push(id);
+    selected.push(trimmed.slice(0, maxChars));
+  });
+  recordProjectionOmission(omissions, sourcePath, omittedIds, truncatedIds);
+  return selected;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -156,55 +229,85 @@ type CondensedEntry = { heading: string; highlights: string[] };
 
 // Defensively reads the Json work-history field, keeping only title/company/dates and
 // bounded highlights. Contact-like and unlisted fields are dropped by omission.
-function condenseWorkHistory(value: unknown): CondensedEntry[] {
+function condenseWorkHistory(value: unknown, omissions: ProjectionOmission[]): CondensedEntry[] {
   if (!Array.isArray(value)) return [];
+  recordArrayBound(value, BOUNDS.workRoles, "work", "resume.workHistory", omissions);
   const roles: CondensedEntry[] = [];
-  for (const item of value) {
+  for (const [sourceIndex, item] of value.entries()) {
     const record = asRecord(item);
     if (!record) continue;
-    const title = boundedText(record.title ?? record.role ?? record.position, BOUNDS.shortTextChars);
-    const company = boundedText(record.company ?? record.organization ?? record.employer, BOUNDS.shortTextChars);
-    const start = boundedText(record.startDate ?? record.start, 40);
-    const end = boundedText(record.endDate ?? record.end, 40);
-    const heading = [
+    const id = `work-${sourceIndex + 1}`;
+    const basePath = `resume.workHistory[${sourceIndex}]`;
+    const title = boundedProjectedText(record.title ?? record.role ?? record.position, BOUNDS.shortTextChars, id, basePath, omissions);
+    const company = boundedProjectedText(record.company ?? record.organization ?? record.employer, BOUNDS.shortTextChars, id, basePath, omissions);
+    const start = boundedProjectedText(record.startDate ?? record.start, 40, id, basePath, omissions);
+    const end = boundedProjectedText(record.endDate ?? record.end, 40, id, basePath, omissions);
+    const unboundedHeading = [
       [title, company].filter(Boolean).join(" at "),
       start || end ? [start, end ?? "present"].filter(Boolean).join(" – ") : ""
     ]
       .filter(Boolean)
-      .join(", ")
-      .slice(0, BOUNDS.detailChars);
+      .join(", ");
+    if (unboundedHeading.length > BOUNDS.detailChars) {
+      recordProjectionOmission(omissions, basePath, [], [id]);
+    }
+    const heading = unboundedHeading.slice(0, BOUNDS.detailChars);
     if (!heading) continue;
     const highlightSource = record.highlights ?? record.achievements ?? record.bullets ?? record.responsibilities;
     roles.push({
       heading,
-      highlights: boundedStringArray(highlightSource, BOUNDS.workHighlights, BOUNDS.detailChars)
+      highlights: projectedStringArray(
+        highlightSource,
+        BOUNDS.workHighlights,
+        BOUNDS.detailChars,
+        `work-${sourceIndex + 1}-highlight`,
+        `resume.workHistory[${sourceIndex}].highlights`,
+        omissions
+      )
     });
     if (roles.length >= BOUNDS.workRoles) break;
   }
   return roles;
 }
 
-// Projects keep name, date, a bounded technology list, and bounded highlights only.
-function condenseProjects(value: unknown): CondensedEntry[] {
+// Projects keep name, subtitle, date, technologies, and source bullets.
+function condenseProjects(value: unknown, omissions: ProjectionOmission[]): CondensedEntry[] {
   if (!Array.isArray(value)) return [];
+  recordArrayBound(value, BOUNDS.projects, "project", "resume.projects", omissions);
   const projects: CondensedEntry[] = [];
-  for (const item of value) {
+  for (const [sourceIndex, item] of value.entries()) {
     const record = asRecord(item);
     if (!record) continue;
-    const name = boundedText(record.name ?? record.title, BOUNDS.shortTextChars);
+    const id = `project-${sourceIndex + 1}`;
+    const basePath = `resume.projects[${sourceIndex}]`;
+    const name = boundedProjectedText(record.name ?? record.title, BOUNDS.shortTextChars, id, basePath, omissions);
     if (!name) continue;
-    const date = boundedText(record.date ?? record.year, 40);
-    const technologies = boundedStringArray(
+    const description = boundedProjectedText(record.description ?? record.subtitle, BOUNDS.detailChars, id, basePath, omissions);
+    const date = boundedProjectedText(record.date ?? record.year, 40, id, basePath, omissions);
+    const technologies = projectedStringArray(
       record.technologies ?? record.tech ?? record.stack,
       BOUNDS.projectTechnologies,
-      BOUNDS.listTextChars
+      BOUNDS.listTextChars,
+      `project-${sourceIndex + 1}-technology`,
+      `resume.projects[${sourceIndex}].technologies`,
+      omissions
     );
-    const datedName = date ? `${name}, ${date}` : name;
-    const heading = (technologies.length ? `${datedName} (${technologies.join(", ")})` : datedName)
-      .slice(0, BOUNDS.projectHeadingChars);
-    const highlights = Array.isArray(record.highlights)
-      ? boundedStringArray(record.highlights, BOUNDS.projectHighlights, BOUNDS.detailChars)
-      : boundedStringArray([record.description], BOUNDS.projectHighlights, BOUNDS.detailChars);
+    const namedProject = description ? `${name} — ${description}` : name;
+    const datedName = date ? `${namedProject}, ${date}` : namedProject;
+    const unboundedHeading = technologies.length ? `${datedName} (${technologies.join(", ")})` : datedName;
+    if (unboundedHeading.length > BOUNDS.projectHeadingChars) {
+      recordProjectionOmission(omissions, basePath, [], [id]);
+    }
+    const heading = unboundedHeading.slice(0, BOUNDS.projectHeadingChars);
+    const highlightSource = record.bullets ?? record.highlights ?? record.achievements ?? [];
+    const highlights = projectedStringArray(
+      highlightSource,
+      BOUNDS.projectHighlights,
+      BOUNDS.detailChars,
+      `project-${sourceIndex + 1}-highlight`,
+      `resume.projects[${sourceIndex}].highlights`,
+      omissions
+    );
     projects.push({ heading, highlights });
     if (projects.length >= BOUNDS.projects) break;
   }
@@ -213,14 +316,23 @@ function condenseProjects(value: unknown): CondensedEntry[] {
 
 // Education keeps credential + field only; institution names, addresses, and any
 // personal details are deliberately omitted.
-function condenseEducation(value: unknown): string[] {
+function condenseEducation(value: unknown, omissions: ProjectionOmission[]): string[] {
   if (!Array.isArray(value)) return [];
+  recordArrayBound(value, BOUNDS.education, "education", "resume.education", omissions);
   const entries: string[] = [];
-  for (const item of value) {
+  for (const [sourceIndex, item] of value.entries()) {
     const record = asRecord(item);
     if (!record) continue;
-    const credential = boundedText(record.credential ?? record.degree, BOUNDS.educationTextChars);
-    const field = boundedText(record.field ?? record.areaOfStudy ?? record.major, BOUNDS.educationTextChars);
+    const id = `education-${sourceIndex + 1}`;
+    const basePath = `resume.education[${sourceIndex}]`;
+    const credential = boundedProjectedText(record.credential ?? record.degree, BOUNDS.educationTextChars, id, basePath, omissions);
+    const field = boundedProjectedText(
+      record.fieldOfStudy ?? record.field ?? record.areaOfStudy ?? record.major,
+      BOUNDS.educationTextChars,
+      id,
+      basePath,
+      omissions
+    );
     const text = [credential, field].filter(Boolean).join(" — ");
     if (text) entries.push(text);
     if (entries.length >= BOUNDS.education) break;
@@ -228,16 +340,33 @@ function condenseEducation(value: unknown): string[] {
   return entries;
 }
 
-// Certifications keep the credential name only.
-function condenseCertifications(value: unknown): string[] {
+function condenseCertifications(value: unknown, omissions: ProjectionOmission[]): CondensedEntry[] {
   if (!Array.isArray(value)) return [];
-  const entries: string[] = [];
-  for (const item of value) {
+  recordArrayBound(value, BOUNDS.certifications, "certification", "resume.certifications", omissions);
+  const entries: CondensedEntry[] = [];
+  for (const [sourceIndex, item] of value.entries()) {
     const record = asRecord(item);
+    const id = `certification-${sourceIndex + 1}`;
     const text = typeof item === "string"
-      ? boundedText(item, BOUNDS.certificationChars)
-      : boundedText(record?.name ?? record?.title ?? record?.certification, BOUNDS.certificationChars);
-    if (text) entries.push(text);
+      ? boundedProjectedText(item, BOUNDS.certificationChars, id, `resume.certifications[${sourceIndex}]`, omissions)
+      : boundedProjectedText(
+          record?.name ?? record?.title ?? record?.certification,
+          BOUNDS.certificationChars,
+          id,
+          `resume.certifications[${sourceIndex}]`,
+          omissions
+        );
+    if (text) entries.push({
+      heading: text,
+      highlights: projectedStringArray(
+        record?.details,
+        BOUNDS.projectHighlights,
+        BOUNDS.detailChars,
+        `certification-${sourceIndex + 1}-detail`,
+        `resume.certifications[${sourceIndex}].details`,
+        omissions
+      )
+    });
     if (entries.length >= BOUNDS.certifications) break;
   }
   return entries;
@@ -247,12 +376,34 @@ function condenseCertifications(value: unknown): string[] {
 // Builds the immutable, privacy-minimized planner payload with deterministic,
 // position-based catalog IDs. Never forwards a raw database object or unlisted fields.
 export function buildApplicationPlanPayload(input: ApplicationPlanInput): ApplicationPlanPayload {
+  const projectionOmissions: ProjectionOmission[] = [];
   const jobRequirements: JobRequirementEntry[] = [];
-  boundedStringArray(input.job.requirements, BOUNDS.requirements, BOUNDS.requirementTextChars)
+  projectedStringArray(
+    input.job.requirements,
+    BOUNDS.requirements,
+    BOUNDS.requirementTextChars,
+    "req",
+    "job.requirements",
+    projectionOmissions
+  )
     .forEach((text, index) => jobRequirements.push({ id: `req-${index + 1}`, kind: "REQUIREMENT", text }));
-  boundedStringArray(input.job.preferredQualifications, BOUNDS.preferred, BOUNDS.requirementTextChars)
+  projectedStringArray(
+    input.job.preferredQualifications,
+    BOUNDS.preferred,
+    BOUNDS.requirementTextChars,
+    "pref",
+    "job.preferredQualifications",
+    projectionOmissions
+  )
     .forEach((text, index) => jobRequirements.push({ id: `pref-${index + 1}`, kind: "PREFERRED", text }));
-  boundedStringArray(input.job.detectedTechStack, BOUNDS.tech, BOUNDS.techTextChars)
+  projectedStringArray(
+    input.job.detectedTechStack,
+    BOUNDS.tech,
+    BOUNDS.techTextChars,
+    "tech",
+    "job.detectedTechStack",
+    projectionOmissions
+  )
     .forEach((text, index) => jobRequirements.push({ id: `tech-${index + 1}`, kind: "TECH", text }));
 
   const evidenceCatalog: EvidenceCatalogEntry[] = [];
@@ -262,58 +413,144 @@ export function buildApplicationPlanPayload(input: ApplicationPlanInput): Applic
 
   const resume = input.resume ?? null;
   if (resume) {
-    addEvidence("summary-1", "SUMMARY", boundedText(resume.summary, BOUNDS.summaryChars));
-    boundedStringArray(resume.skills, BOUNDS.skills, BOUNDS.skillTextChars)
+    addEvidence("summary-1", "SUMMARY", boundedProjectedText(
+      resume.summary,
+      BOUNDS.summaryChars,
+      "summary-1",
+      "resume.summary",
+      projectionOmissions
+    ));
+    projectedStringArray(
+      resume.skills,
+      BOUNDS.skills,
+      BOUNDS.skillTextChars,
+      "skill",
+      "resume.skills",
+      projectionOmissions
+    )
       .forEach((text, index) => addEvidence(`skill-${index + 1}`, "SKILL", text));
-    boundedStringArray(resume.achievements, BOUNDS.achievements, BOUNDS.detailChars)
+    projectedStringArray(
+      resume.achievements,
+      BOUNDS.achievements,
+      BOUNDS.detailChars,
+      "achievement",
+      "resume.achievements",
+      projectionOmissions
+    )
       .forEach((text, index) => addEvidence(`achievement-${index + 1}`, "ACHIEVEMENT", text));
-    condenseWorkHistory(resume.workHistory).forEach((role, roleIndex) => {
+    condenseWorkHistory(resume.workHistory, projectionOmissions).forEach((role, roleIndex) => {
       const roleId = `work-${roleIndex + 1}`;
       addEvidence(roleId, "WORK_HISTORY", role.heading);
       role.highlights.forEach((highlight, highlightIndex) =>
         addEvidence(`${roleId}-highlight-${highlightIndex + 1}`, "WORK_HISTORY", highlight));
     });
-    condenseProjects(resume.projects).forEach((project, projectIndex) => {
+    condenseProjects(resume.projects, projectionOmissions).forEach((project, projectIndex) => {
       const projectId = `project-${projectIndex + 1}`;
       addEvidence(projectId, "PROJECT", project.heading);
       project.highlights.forEach((highlight, highlightIndex) =>
         addEvidence(`${projectId}-highlight-${highlightIndex + 1}`, "PROJECT", highlight));
     });
-    condenseEducation(resume.education)
+    condenseEducation(resume.education, projectionOmissions)
       .forEach((text, index) => addEvidence(`education-${index + 1}`, "EDUCATION", text));
-    condenseCertifications(resume.certifications)
-      .forEach((text, index) => addEvidence(`certification-${index + 1}`, "CERTIFICATION", text));
+    condenseCertifications(resume.certifications, projectionOmissions).forEach((certification, index) => {
+      const certificationId = `certification-${index + 1}`;
+      addEvidence(certificationId, "CERTIFICATION", certification.heading);
+      certification.highlights.forEach((detail, detailIndex) =>
+        addEvidence(`${certificationId}-detail-${detailIndex + 1}`, "CERTIFICATION", detail));
+    });
+    const rawText = boundedText(resume.rawText, BOUNDS.rawSourceChars);
+    addEvidence("raw-source-1", "RAW_SOURCE", rawText);
+    if (typeof resume.rawText === "string" && resume.rawText.trim().length > BOUNDS.rawSourceChars) {
+      recordProjectionOmission(projectionOmissions, "resume.rawText", [], ["raw-source-1"]);
+    }
   }
 
   const profile = input.profile ?? null;
   if (profile) {
-    addEvidence("profile-goals-1", "PROFILE", boundedText(profile.careerGoals, BOUNDS.careerGoalsChars));
-    boundedStringArray(profile.skillsToEmphasize, BOUNDS.skillsToEmphasize, BOUNDS.skillTextChars)
+    addEvidence("profile-goals-1", "PROFILE", boundedProjectedText(
+      profile.careerGoals,
+      BOUNDS.careerGoalsChars,
+      "profile-goals-1",
+      "profile.careerGoals",
+      projectionOmissions
+    ));
+    projectedStringArray(
+      profile.skillsToEmphasize,
+      BOUNDS.skillsToEmphasize,
+      BOUNDS.skillTextChars,
+      "profile-skill",
+      "profile.skillsToEmphasize",
+      projectionOmissions
+    )
       .forEach((text, index) => addEvidence(`profile-skill-${index + 1}`, "PROFILE", text));
   }
 
+  const preferredRoles = projectedStringArray(
+    profile?.preferredRoles,
+    BOUNDS.preferredRoles,
+    BOUNDS.listItemChars,
+    "profile-role",
+    "profile.preferredRoles",
+    projectionOmissions
+  );
+  const preferredLocations = projectedStringArray(
+    profile?.preferredLocations,
+    BOUNDS.preferredLocations,
+    BOUNDS.listItemChars,
+    "profile-location",
+    "profile.preferredLocations",
+    projectionOmissions
+  );
+  const doNotExaggerate = projectedStringArray(
+    profile?.skillsNotToExaggerate,
+    BOUNDS.doNotExaggerate,
+    BOUNDS.listTextChars,
+    "do-not-exaggerate",
+    "profile.skillsNotToExaggerate",
+    projectionOmissions
+  );
+
   return {
     job: {
-      title: boundedText(input.job.title, BOUNDS.shortTextChars) ?? "",
-      company: boundedText(input.job.company, BOUNDS.shortTextChars) ?? "",
-      location: boundedText(input.job.location, BOUNDS.shortTextChars),
-      remoteStatus: boundedText(input.job.remoteStatus, 100),
+      title: boundedProjectedText(input.job.title, BOUNDS.shortTextChars, "job-title-1", "job.title", projectionOmissions) ?? "",
+      company: boundedProjectedText(input.job.company, BOUNDS.shortTextChars, "job-company-1", "job.company", projectionOmissions) ?? "",
+      location: boundedProjectedText(input.job.location, BOUNDS.shortTextChars, "job-location-1", "job.location", projectionOmissions),
+      remoteStatus: boundedProjectedText(input.job.remoteStatus, 100, "job-remote-status-1", "job.remoteStatus", projectionOmissions),
       salaryMin: boundedNumber(input.job.salaryMin),
       salaryMax: boundedNumber(input.job.salaryMax),
-      descriptionDigest: boundedText(input.job.description, BOUNDS.descriptionChars) ?? "",
+      descriptionDigest: boundedProjectedText(
+        input.job.description,
+        BOUNDS.descriptionChars,
+        "job-description-1",
+        "job.description",
+        projectionOmissions
+      ) ?? "",
       jobRequirements
     },
     evidenceCatalog,
     preferences: profile
       ? {
-          careerGoals: boundedText(profile.careerGoals, BOUNDS.careerGoalsChars),
-          preferredRoles: boundedStringArray(profile.preferredRoles, BOUNDS.preferredRoles, BOUNDS.listItemChars),
-          preferredLocations: boundedStringArray(profile.preferredLocations, BOUNDS.preferredLocations, BOUNDS.listItemChars),
-          remotePreference: boundedText(profile.remotePreference, 50),
+          careerGoals: boundedProjectedText(
+            profile.careerGoals,
+            BOUNDS.careerGoalsChars,
+            "profile-goals-1",
+            "profile.careerGoals",
+            projectionOmissions
+          ),
+          preferredRoles,
+          preferredLocations,
+          remotePreference: boundedProjectedText(
+            profile.remotePreference,
+            50,
+            "profile-remote-preference-1",
+            "profile.remotePreference",
+            projectionOmissions
+          ),
           salaryTargetMin: boundedNumber(profile.salaryTargetMin)
         }
       : null,
-    doNotExaggerate: boundedStringArray(profile?.skillsNotToExaggerate, BOUNDS.doNotExaggerate, BOUNDS.listTextChars)
+    doNotExaggerate,
+    projectionOmissions
   };
 }
 

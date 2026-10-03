@@ -115,22 +115,28 @@ test("project dates remain visible in downstream application-plan evidence", () 
   );
 });
 
-test("sensitive and unlisted fields never enter the payload or catalog", () => {
+test("raw source fallback is explicit while sensitive and unlisted fields never enter the payload or catalog", () => {
   // JSON round-trip simulates an untyped caller passing a full database row with
   // extra sensitive properties that must be dropped by construction.
   const dirty = JSON.parse(JSON.stringify(fixtureInput())) as ApplicationPlanInput;
   const dirtyResume = dirty.resume as Record<string, unknown>;
-  dirtyResume.rawText = "FULL RAW RESUME TEXT THAT MUST NOT LEAK";
+  dirtyResume.rawText = "FULL RAW RESUME TEXT USED AS AN EXPLICIT FALLBACK";
   dirtyResume.contactInfo = { email: "person@example.com", phone: "555-123-4567", address: "42 Secret Ave" };
   dirtyResume.filePath = "/Users/private/master-resume.pdf";
   (dirty.profile as Record<string, unknown>).workAuthorizationNotes = "sponsorship notes must not leak";
 
   const payload = buildApplicationPlanPayload(dirty);
-  assert.deepEqual(Object.keys(payload), ["job", "evidenceCatalog", "preferences", "doNotExaggerate"]);
+  assert.deepEqual(
+    Object.keys(payload),
+    ["job", "evidenceCatalog", "preferences", "doNotExaggerate", "projectionOmissions"]
+  );
+  assert.equal(
+    payload.evidenceCatalog.find((entry) => entry.id === "raw-source-1")?.text,
+    "FULL RAW RESUME TEXT USED AS AN EXPLICIT FALLBACK"
+  );
 
   const serialized = JSON.stringify(payload);
   const forbidden = [
-    "FULL RAW RESUME TEXT",
     "person@example.com",
     "555-123-4567",
     "42 Secret Ave",
@@ -200,7 +206,7 @@ function maximalInput(): ApplicationPlanInput {
 test("category bounds cap every evidence section", () => {
   const payload = buildApplicationPlanPayload(maximalInput());
 
-  assert.equal(payload.job.descriptionDigest.length, 2_000);
+  assert.equal(payload.job.descriptionDigest.length, 1_000);
   assert.equal(payload.job.jobRequirements.filter((entry) => entry.kind === "REQUIREMENT").length, 12);
   assert.equal(payload.job.jobRequirements.filter((entry) => entry.kind === "PREFERRED").length, 6);
   assert.equal(payload.job.jobRequirements.filter((entry) => entry.kind === "TECH").length, 12);
@@ -219,6 +225,25 @@ test("category bounds cap every evidence section", () => {
   for (const entry of payload.evidenceCatalog) {
     assert.ok(entry.text.length <= 1_000, `evidence entry exceeds text cap: ${entry.id}`);
   }
+
+  const omissions = new Map(payload.projectionOmissions.map((entry) => [entry.sourcePath, entry]));
+  assert.equal(omissions.get("job.requirements")?.omittedCount, 8);
+  assert.equal(omissions.get("job.preferredQualifications")?.omittedCount, 4);
+  assert.equal(omissions.get("job.detectedTechStack")?.omittedCount, 8);
+  assert.deepEqual(omissions.get("resume.summary")?.truncatedIds, ["summary-1"]);
+  assert.equal(omissions.get("resume.skills")?.omittedCount, 15);
+  assert.equal(omissions.get("resume.achievements")?.omittedCount, 3);
+  assert.equal(omissions.get("resume.workHistory")?.omittedCount, 3);
+  assert.equal(omissions.get("resume.projects")?.omittedCount, 2);
+  assert.equal(omissions.get("resume.education")?.omittedCount, 2);
+  assert.equal(omissions.get("resume.certifications")?.omittedCount, 4);
+  assert.equal(omissions.get("profile.preferredRoles")?.omittedCount, 4);
+  assert.equal(omissions.get("profile.preferredLocations")?.omittedCount, 4);
+  assert.equal(omissions.get("profile.skillsToEmphasize")?.omittedCount, 8);
+  assert.equal(omissions.get("profile.skillsNotToExaggerate")?.omittedCount, 8);
+  assert.ok(omissions.has("resume.workHistory[0].highlights"));
+  assert.ok(omissions.has("resume.projects[0].technologies"));
+  assert.ok(omissions.has("resume.projects[0].highlights"));
 });
 
 test("doNotExaggerate entries never enter the evidence catalog", () => {

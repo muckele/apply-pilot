@@ -34,7 +34,8 @@ import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
-export const RESUME_PARSE_PROMPT_VERSION = "4";
+export const RESUME_PARSE_PROMPT_VERSION = "5";
+export const RESUME_PARSE_CACHE_VERSION = "5";
 
 type ResumeSectionStatus = "present" | "absent";
 
@@ -73,10 +74,28 @@ type ResumeCertificationItem = {
   issuer: string | null;
   date: string | null;
   expirationDate: string | null;
+  details: string[];
 };
 
-export type ParsedResume = {
-  contractVersion: "3";
+export type ResumeSourceSectionName =
+  | "contactInfo"
+  | "summary"
+  | "skills"
+  | "workHistory"
+  | "projects"
+  | "education"
+  | "certifications"
+  | "achievements"
+  | "additional";
+
+export type ResumeSourceSection = {
+  section: ResumeSourceSectionName;
+  heading: string | null;
+  sourceText: string;
+  recordBlocks: string[];
+};
+
+type ParsedResumeCore = {
   contactInfo: {
     sourceText: string;
     name: string | null;
@@ -107,6 +126,19 @@ export type ParsedResume = {
   warnings: string[];
 };
 
+export type ParsedResumeV5 = ParsedResumeCore & {
+  contractVersion: "5";
+  sourceSections: ResumeSourceSection[];
+};
+
+export type LegacyParsedResume = Omit<ParsedResumeCore, "certifications" | "projects"> & {
+  contractVersion: "3";
+  projects: Array<Omit<ResumeProjectItem, "date"> & { date?: string | null }>;
+  certifications: Array<Omit<ResumeCertificationItem, "details"> & { details?: string[] }>;
+};
+
+export type ParsedResume = ParsedResumeV5 | LegacyParsedResume;
+
 export type TailoredResumeOutput = {
   professionalSummary: string;
   skillsSection: string[];
@@ -130,8 +162,19 @@ const nullableContactSourceString = z.union([
 const sourceStringList = z.array(boundedSourceString).max(100);
 const sectionStatusSchema = z.enum(["present", "absent"]);
 
-export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> = z.object({
-  contractVersion: z.literal("3"),
+const sourceSectionSchema = z.object({
+  section: z.enum([
+    "contactInfo", "summary", "skills", "workHistory", "projects", "education",
+    "certifications", "achievements", "additional"
+  ]),
+  heading: nullableSourceString,
+  sourceText: boundedSourceBlock,
+  recordBlocks: z.array(boundedSourceBlock).min(1).max(100)
+}).strict();
+
+export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown> = z.object({
+  contractVersion: z.literal("5"),
+  sourceSections: z.array(sourceSectionSchema).min(1).max(100),
   contactInfo: z.object({
     sourceText: z.string().trim().max(20_000),
     name: nullableContactSourceString,
@@ -176,7 +219,8 @@ export const parsedResumeSchema: z.ZodType<ParsedResume, z.ZodTypeDef, unknown> 
     name: boundedSourceString,
     issuer: nullableSourceString,
     date: nullableSourceString,
-    expirationDate: nullableSourceString
+    expirationDate: nullableSourceString,
+    details: sourceStringList
   }).strict()).max(50),
   achievements: sourceStringList,
   sectionStatus: z.object({
@@ -199,7 +243,27 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    contractVersion: { type: "string", enum: ["3"] },
+    contractVersion: { type: "string", enum: ["5"] },
+    sourceSections: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          section: {
+            type: "string",
+            enum: [
+              "contactInfo", "summary", "skills", "workHistory", "projects", "education",
+              "certifications", "achievements", "additional"
+            ]
+          },
+          heading: nullableJsonString,
+          sourceText: jsonString,
+          recordBlocks: jsonStringArray
+        },
+        required: ["section", "heading", "sourceText", "recordBlocks"]
+      }
+    },
     contactInfo: {
       type: "object",
       additionalProperties: false,
@@ -278,9 +342,10 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           name: jsonString,
           issuer: nullableJsonString,
           date: nullableJsonString,
-          expirationDate: nullableJsonString
+          expirationDate: nullableJsonString,
+          details: jsonStringArray
         },
-        required: ["sourceText", "name", "issuer", "date", "expirationDate"]
+        required: ["sourceText", "name", "issuer", "date", "expirationDate", "details"]
       }
     },
     achievements: jsonStringArray,
@@ -303,7 +368,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
     warnings: jsonStringArray
   },
   required: [
-    "contractVersion", "contactInfo", "summary", "skills", "workHistory", "projects",
+    "contractVersion", "sourceSections", "contactInfo", "summary", "skills", "workHistory", "projects",
     "education", "certifications", "achievements", "sectionStatus", "warnings"
   ]
 } as const;
@@ -337,51 +402,6 @@ function assertSourceSupported(source: string, value: string | null, path: strin
   }
 }
 
-function assertCompleteFactCoverage(
-  sourceText: string,
-  values: Array<string | null>,
-  section: string,
-  allowedLabels: RegExp
-) {
-  const occupied = Array.from({ length: sourceText.length }, () => false);
-  const facts = values
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .sort((left, right) => right.length - left.length);
-  for (const fact of facts) {
-    let offset = 0;
-    let match = -1;
-    while (offset <= sourceText.length - fact.length) {
-      const candidate = sourceText.indexOf(fact, offset);
-      if (candidate < 0) break;
-      if (occupied.slice(candidate, candidate + fact.length).every((used) => !used)) {
-        match = candidate;
-        break;
-      }
-      offset = candidate + 1;
-    }
-    if (match < 0) {
-      throw new PublicApiError(
-        `Resume parsing returned overlapping or unsupported ${section} facts. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_UNSUPPORTED_FACT", section, retryable: false }
-      );
-    }
-    occupied.fill(true, match, match + fact.length);
-  }
-  const remaining = sourceText
-    .split("")
-    .map((character, index) => occupied[index] ? " " : character)
-    .join("")
-    .replace(allowedLabels, "");
-  if (/[\p{L}\p{N}]/u.test(remaining)) {
-    throw new PublicApiError(
-      `Resume parsing did not represent every factual line in ${section}. No master resume was changed.`,
-      422,
-      { code: "RESUME_PARSE_INCOMPLETE", section, retryable: false }
-    );
-  }
-}
-
 function isUnambiguousNarrativeEntry(entry: string) {
   const explicitBullet = /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry);
   const completeStatement = !/[\r\n]/.test(entry) && /[.!?…]$/u.test(entry);
@@ -393,18 +413,6 @@ function assertUnambiguousNarrativeEntries(entries: string[], section: string, f
     if (!isUnambiguousNarrativeEntry(entry)) {
       throw new PublicApiError(
         `Resume parsing returned an ambiguous ${section} detail that could be a merged record boundary. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath: `${fieldPath}[${index}]`, retryable: false }
-      );
-    }
-  });
-}
-
-function assertUnambiguousTechnologyEntries(entries: string[], section: string, fieldPath: string) {
-  entries.forEach((entry, index) => {
-    if (!/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry) && !/[,/|]/.test(entry)) {
-      throw new PublicApiError(
-        `Resume parsing returned an ambiguous ${section} technology line that could be a merged record boundary. No master resume was changed.`,
         422,
         { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath: `${fieldPath}[${index}]`, retryable: false }
       );
@@ -640,41 +648,6 @@ function hasSectionHeading(source: string, section: keyof ParsedResume["sectionS
   return source.split(/\r?\n/).some((line) => sectionHeadings[section].test(line.trim().replace(/:$/, "")));
 }
 
-function contactSourceBlock(source: string) {
-  const lines = source.split(/\r?\n/);
-  const boundaries = lines.flatMap((line, index) => {
-    const heading = line.trim().replace(/:$/, "");
-    return sectionForHeading(line) || otherSectionHeading.test(heading)
-      ? [{ index, contact: /^CONTACT$/i.test(heading) }]
-      : [];
-  });
-  if (boundaries.length === 0) {
-    throw new PublicApiError(
-      "Resume structure could not be validated because no supported section headings were found. No master resume was changed.",
-      422,
-      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", retryable: false }
-    );
-  }
-  const blocks: string[] = [];
-  const preambleEnd = boundaries[0]?.index ?? lines.length;
-  const preamble = lines.slice(0, preambleEnd).join("\n").trim();
-  if (preamble) blocks.push(preamble);
-  boundaries.forEach((boundary, boundaryIndex) => {
-    if (!boundary.contact) return;
-    const end = boundaries[boundaryIndex + 1]?.index ?? lines.length;
-    const body = lines.slice(boundary.index + 1, end).join("\n").trim();
-    if (body) blocks.push(body);
-  });
-  if (blocks.length > 1) {
-    throw new PublicApiError(
-      "Resume contact structure is split across multiple source blocks and cannot be validated safely. No master resume was changed.",
-      422,
-      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section: "contactInfo", retryable: false }
-    );
-  }
-  return blocks[0] ?? "";
-}
-
 function assertTypedContactCompleteness(contactBlock: string, contactInfo: ParsedResume["contactInfo"]) {
   const lines = contactBlock.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
@@ -779,118 +752,380 @@ function assertTypedContactCompleteness(contactBlock: string, contactInfo: Parse
   }
 }
 
-function sectionBlocks(output: ParsedResume, section: keyof ParsedResume["sectionStatus"]): string[] {
-  if (section === "summary") return output.summary ? [output.summary] : [];
-  if (section === "skills") return output.skills;
-  if (section === "achievements") return output.achievements;
-  if (section === "workHistory") return output.workHistory.map((item) => item.sourceText);
-  if (section === "projects") return output.projects.map((item) => item.sourceText);
-  if (section === "education") return output.education.map((item) => item.sourceText);
-  return output.certifications.map((item) => item.sourceText);
+function zodFieldPath(path: Array<string | number>) {
+  return path.reduce<string>((result, part) =>
+    typeof part === "number" ? `${result}[${part}]` : result ? `${result}.${String(part)}` : String(part), "");
 }
 
-function assertRecognizedSectionCoverage(source: string, output: ParsedResume) {
+const legacyParsedResumeSchema: z.ZodType<LegacyParsedResume, z.ZodTypeDef, unknown> = z.object({
+  contractVersion: z.literal("3"),
+  contactInfo: z.object({
+    sourceText: z.string().trim().max(20_000),
+    name: nullableContactSourceString,
+    headline: nullableContactSourceString,
+    email: nullableContactSourceString,
+    phone: nullableContactSourceString,
+    location: nullableContactSourceString,
+    linkedin: nullableContactSourceString,
+    github: nullableContactSourceString,
+    portfolio: nullableContactSourceString
+  }).strict(),
+  summary: z.string().trim().max(2_000),
+  skills: sourceStringList,
+  workHistory: z.array(z.object({
+    sourceText: boundedSourceBlock,
+    company: boundedSourceString,
+    title: boundedSourceString,
+    location: nullableSourceString,
+    startDate: nullableSourceString,
+    endDate: nullableSourceString,
+    bullets: sourceStringList
+  }).strict()).max(50),
+  projects: z.array(z.object({
+    sourceText: boundedSourceBlock,
+    name: boundedSourceString,
+    description: nullableSourceString,
+    date: nullableSourceString.optional(),
+    technologies: sourceStringList,
+    bullets: sourceStringList
+  }).strict()).max(50),
+  education: z.array(z.object({
+    sourceText: boundedSourceBlock,
+    institution: boundedSourceString,
+    credential: nullableSourceString,
+    fieldOfStudy: nullableSourceString,
+    startDate: nullableSourceString,
+    endDate: nullableSourceString,
+    details: sourceStringList
+  }).strict()).max(30),
+  certifications: z.array(z.object({
+    sourceText: boundedSourceBlock,
+    name: boundedSourceString,
+    issuer: nullableSourceString,
+    date: nullableSourceString,
+    expirationDate: nullableSourceString,
+    details: sourceStringList.optional()
+  }).strict()).max(50),
+  achievements: sourceStringList,
+  sectionStatus: z.object({
+    summary: sectionStatusSchema,
+    skills: sectionStatusSchema,
+    workHistory: sectionStatusSchema,
+    projects: sectionStatusSchema,
+    education: sectionStatusSchema,
+    certifications: sectionStatusSchema,
+    achievements: sectionStatusSchema
+  }).strict(),
+  warnings: z.array(z.string().trim().min(1).max(500)).max(20)
+}).strict();
+
+function sourceSectionNameForHeading(line: string): ResumeSourceSectionName | null {
+  const recognized = sectionForHeading(line);
+  if (recognized) return recognized;
+  const heading = line.trim().replace(/:$/, "");
+  if (/^CONTACT$/i.test(heading)) return "contactInfo";
+  return otherSectionHeading.test(heading) ? "additional" : null;
+}
+
+function expectedSourceSections(source: string): Array<Omit<ResumeSourceSection, "recordBlocks">> {
   const lines = source.split(/\r?\n/);
   const headings = lines.flatMap((line, index) => {
-    const section = sectionForHeading(line);
-    const heading = line.trim().replace(/:$/, "");
-    return section || otherSectionHeading.test(heading) ? [{ index, section }] : [];
+    const section = sourceSectionNameForHeading(line);
+    return section ? [{ index, section, heading: line.trim() }] : [];
   });
-  if (!headings.some((heading) => heading.section !== null)) {
+  if (!headings.some((item) => item.section !== "additional")) {
     throw new PublicApiError(
       "Resume structure could not be validated because no supported section headings were found. No master resume was changed.",
       422,
       { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", retryable: false }
     );
   }
-  const bodyLines = new Map<keyof ParsedResume["sectionStatus"], string[]>();
-  headings.forEach((heading, headingIndex) => {
-    if (!heading.section) return;
-    const end = headings[headingIndex + 1]?.index ?? lines.length;
-    const existing = bodyLines.get(heading.section) ?? [];
-    existing.push(...lines.slice(heading.index + 1, end));
-    bodyLines.set(heading.section, existing);
-  });
 
-  for (const [section, sourceLines] of bodyLines) {
-    const body = sourceLines.join("\n").trim();
-    const blocks = sectionBlocks(output, section);
+  const result: Array<Omit<ResumeSourceSection, "recordBlocks">> = [];
+  const preambleEnd = headings[0]?.index ?? lines.length;
+  const preamble = lines.slice(0, preambleEnd).join("\n").trim();
+  if (preamble) result.push({ section: "contactInfo", heading: null, sourceText: preamble });
+  headings.forEach((item, index) => {
+    const end = headings[index + 1]?.index ?? lines.length;
+    const sourceText = lines.slice(item.index + 1, end).join("\n").trim();
+    if (!sourceText) {
+      throw new PublicApiError(
+        `Resume parsing is incomplete for ${item.section}. No master resume was changed.`,
+        422,
+        { code: "RESUME_PARSE_INCOMPLETE", section: item.section, fieldPath: `sourceSections[${result.length}].sourceText`, retryable: false }
+      );
+    }
+    result.push({ section: item.section, heading: item.heading, sourceText });
+  });
+  return result;
+}
+
+function legacyRecordBlocks(
+  section: ResumeSourceSectionName,
+  sourceText: string,
+  output: LegacyParsedResume
+) {
+  if (section === "contactInfo") return [sourceText];
+  if (section === "summary") return [sourceText];
+  if (section === "skills") {
+    return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+  if (section === "workHistory") return output.workHistory.map((item) => item.sourceText);
+  if (section === "projects") return output.projects.map((item) => item.sourceText);
+  if (section === "education") return output.education.map((item) => item.sourceText);
+  if (section === "certifications") return output.certifications.map((item) => item.sourceText);
+  if (section === "achievements") {
+    return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+  return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function decodeParsedResume(source: string, value: unknown, allowLegacy: boolean): ParsedResumeV5 {
+  if (value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).contractVersion === "3") {
+    if (!allowLegacy) {
+      throw new PublicApiError("Resume parsing returned an obsolete structured result. No master resume was changed.", 422, {
+        code: "RESUME_PARSE_INVALID_OUTPUT",
+        fieldPath: "contractVersion",
+        retryable: false
+      });
+    }
+    const legacy = legacyParsedResumeSchema.safeParse(value);
+    if (!legacy.success) {
+      const fieldPath = zodFieldPath(legacy.error.issues[0]?.path ?? []);
+      throw new PublicApiError("Resume parsing returned an invalid structured result. No master resume was changed.", 422, {
+        code: "RESUME_PARSE_INVALID_OUTPUT",
+        ...(fieldPath ? { fieldPath } : {}),
+        retryable: false
+      });
+    }
+    const output = legacy.data;
+    const sourceSections = expectedSourceSections(source).map((section) => ({
+      ...section,
+      recordBlocks: legacyRecordBlocks(section.section, section.sourceText, output)
+    }));
+    return {
+      ...output,
+      contractVersion: "5",
+      sourceSections,
+      projects: output.projects.map((project) => ({ ...project, date: project.date ?? null })),
+      certifications: output.certifications.map((item) => ({ ...item, details: item.details ?? [] }))
+    };
+  }
+  const current = parsedResumeSchema.safeParse(value);
+  if (current.success) return current.data;
+  const fieldPath = zodFieldPath(current.error.issues[0]?.path ?? []);
+  throw new PublicApiError("Resume parsing returned an invalid structured result. No master resume was changed.", 422, {
+    code: "RESUME_PARSE_INVALID_OUTPUT",
+    ...(fieldPath ? { fieldPath } : {}),
+    retryable: false
+  });
+}
+
+function factsForSection(output: ParsedResumeV5, section: ResumeSourceSectionName) {
+  if (section === "summary") return output.summary ? [output.summary] : [];
+  if (section === "skills") return output.skills;
+  if (section === "achievements") return output.achievements;
+  if (section === "workHistory") return output.workHistory.map((item) => item.sourceText);
+  if (section === "projects") return output.projects.map((item) => item.sourceText);
+  if (section === "education") return output.education.map((item) => item.sourceText);
+  if (section === "certifications") return output.certifications.map((item) => item.sourceText);
+  return [];
+}
+
+function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
+  const expected = expectedSourceSections(source);
+  if (output.sourceSections.length !== expected.length) {
+    throw new PublicApiError(
+      "Resume parsing omitted or invented a source section. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", fieldPath: "sourceSections", retryable: false }
+    );
+  }
+  output.sourceSections.forEach((section, sectionIndex) => {
+    const expectedSection = expected[sectionIndex]!;
+    const basePath = `sourceSections[${sectionIndex}]`;
+    if (
+      section.section !== expectedSection.section ||
+      section.heading !== expectedSection.heading ||
+      section.sourceText !== expectedSection.sourceText
+    ) {
+      throw new PublicApiError(
+        "Resume parsing changed source section order or boundaries. No master resume was changed.",
+        422,
+        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", fieldPath: basePath, retryable: false }
+      );
+    }
+
+    const canonicalRecords = ["workHistory", "projects", "education", "certifications"].includes(section.section)
+      ? factsForSection(output, section.section)
+      : null;
+    if (canonicalRecords && (
+      canonicalRecords.length !== section.recordBlocks.length ||
+      canonicalRecords.some((record, index) => record !== section.recordBlocks[index])
+    )) {
+      const mismatch = section.recordBlocks.findIndex((record, index) => record !== canonicalRecords[index]);
+      throw new PublicApiError(
+        "Resume parsing changed record order or merged adjacent records. No master resume was changed.",
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          section: section.section,
+          fieldPath: `${basePath}.recordBlocks[${Math.max(0, mismatch)}]`,
+          retryable: false
+        }
+      );
+    }
+
     let cursor = 0;
-    const coveredRanges: Array<{ start: number; end: number }> = [];
-    for (const block of blocks) {
-      const start = body.indexOf(block, cursor);
+    const characters = section.sourceText.split("");
+    section.recordBlocks.forEach((record, recordIndex) => {
+      const start = section.sourceText.indexOf(record, cursor);
       if (start < 0) {
-        const label = section === "workHistory" ? "work history" : section;
         throw new PublicApiError(
-          `Resume parsing returned ${label} content outside its source section. No master resume was changed.`,
+          "Resume parsing changed source record order or boundaries. No master resume was changed.",
           422,
-          { code: "RESUME_PARSE_INVALID_OUTPUT", section, retryable: false }
+          {
+            code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+            section: section.section,
+            fieldPath: `${basePath}.recordBlocks[${recordIndex}]`,
+            retryable: false
+          }
         );
       }
-      coveredRanges.push({ start, end: start + block.length });
-      cursor = start + block.length;
-    }
-    const characters = body.split("");
-    for (const range of coveredRanges) {
-      characters.fill(" ", range.start, range.end);
-    }
-    let remaining = characters.join("");
-    if (section === "skills") {
-      remaining = remaining.replace(/\b(?:and|with|tools?|technologies|proficient|in)\b/gi, "");
-    }
-    if (/[\p{L}\p{N}]/u.test(remaining)) {
-      const label = section === "workHistory" ? "work history" : section;
-      throw new PublicApiError(
-        `Resume parsing is incomplete for ${label}; source content was not represented. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_INCOMPLETE", section, retryable: false }
-      );
-    }
-  }
-
-  for (const section of Object.keys(sectionHeadings) as Array<keyof ParsedResume["sectionStatus"]>) {
-    if (sectionBlocks(output, section).length > 0 && !bodyLines.has(section)) {
-      const label = section === "workHistory" ? "work history" : section;
-      throw new PublicApiError(
-        `Resume parsing returned ${label} content without a supported source heading. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, retryable: false }
-      );
-    }
-  }
-}
-
-function zodFieldPath(path: Array<string | number>) {
-  return path.reduce<string>((result, part) =>
-    typeof part === "number" ? `${result}[${part}]` : result ? `${result}.${String(part)}` : String(part), "");
-}
-
-function normalizeLegacyProjectDates(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const record = value as Record<string, unknown>;
-  if (record.contractVersion !== "3" || !Array.isArray(record.projects)) return value;
-  let changed = false;
-  const projects = record.projects.map((project) => {
-    if (!project || typeof project !== "object" || Array.isArray(project) || Object.hasOwn(project, "date")) {
-      return project;
-    }
-    changed = true;
-    return { ...(project as Record<string, unknown>), date: null };
-  });
-  return changed ? { ...record, projects } : value;
-}
-
-export function validateParsedResumeOutput(source: string, value: unknown): ParsedResume {
-  const parsed = parsedResumeSchema.safeParse(normalizeLegacyProjectDates(value));
-  if (!parsed.success) {
-    const fieldPath = zodFieldPath(parsed.error.issues[0]?.path ?? []);
-    throw new PublicApiError("Resume parsing returned an invalid structured result. No master resume was changed.", 422, {
-      code: "RESUME_PARSE_INVALID_OUTPUT",
-      ...(fieldPath ? { fieldPath } : {}),
-      retryable: false
+      characters.fill(" ", start, start + record.length);
+      cursor = start + record.length;
+      if (["workHistory", "education", "certifications"].includes(section.section)) {
+        const dateLines = record.split(/\r?\n/).filter((line) => resumeDatePattern.test(line.trim()));
+        if (dateLines.length > 1) {
+          throw new PublicApiError(
+            `Resume parsing returned an ambiguous ${section.section} detail that could be a merged record boundary. No master resume was changed.`,
+            422,
+            {
+              code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+              section: section.section,
+              fieldPath: `${basePath}.recordBlocks[${recordIndex}]`,
+              retryable: false
+            }
+          );
+        }
+      }
     });
+    if (/\S/u.test(characters.join(""))) {
+      throw new PublicApiError(
+        `Resume parsing is incomplete for ${section.section === "workHistory" ? "work history" : section.section}; source content was not represented. No master resume was changed.`,
+        422,
+        {
+          code: "RESUME_PARSE_INCOMPLETE",
+          section: section.section,
+          fieldPath: `${basePath}.recordBlocks`,
+          retryable: false
+        }
+      );
+    }
+  });
+}
+
+function sourceForTypedSection(output: ParsedResumeV5, section: ResumeSourceSectionName) {
+  return output.sourceSections
+    .filter((item) => item.section === section)
+    .map((item) => item.sourceText)
+    .join("\n");
+}
+
+function assertTypedContactProjections(output: ParsedResumeV5) {
+  const contactSections = output.sourceSections.filter((item) => item.section === "contactInfo");
+  if (contactSections.length !== 1 || output.contactInfo.sourceText !== contactSections[0]!.sourceText) {
+    throw new PublicApiError(
+      "Resume parsing did not preserve the complete contact/header source block. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", fieldPath: "contactInfo.sourceText", retryable: false }
+    );
   }
-  const output = parsed.data;
+  const sourceText = contactSections[0]!.sourceText;
+  for (const [key, item] of Object.entries(output.contactInfo)) {
+    if (key !== "sourceText") assertSourceSupported(sourceText, item, `contactInfo.${key}`);
+  }
+  const requireDetected = (value: string | null, matches: string[], fieldPath: string) => {
+    if (matches.length > 0 && (!value || !matches.includes(value))) {
+      throw new PublicApiError(
+        `Resume parsing omitted or changed ${fieldPath} from the contact/header block. No master resume was changed.`,
+        422,
+        { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", fieldPath, retryable: false }
+      );
+    }
+  };
+  requireDetected(
+    output.contactInfo.email,
+    [...sourceText.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0]),
+    "contactInfo.email"
+  );
+  requireDetected(
+    output.contactInfo.phone,
+    [...sourceText.matchAll(/\+?\d(?:[ \t().-]*\d){6,}/g)].map((match) => match[0].trim()),
+    "contactInfo.phone"
+  );
+  const locations = [...sourceText.matchAll(/(?:^|[|•])\s*(?:location|address)\s*:\s*([^|\n]+)/gim)]
+    .map((match) => match[1]!.trim());
+  requireDetected(output.contactInfo.location, locations, "contactInfo.location");
+  assertTypedContactCompleteness(sourceText, output.contactInfo);
+  const plainLines = sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).filter((line) =>
+    !/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(line) &&
+    !/\+?\d(?:[ \t().-]*\d){6,}/.test(line) &&
+    !/(?:https?:\/\/|www\.|linkedin|github)/i.test(line) &&
+    !/^\s*(?:location|address)\s*:/i.test(line)
+  );
+  if (plainLines[0] && output.contactInfo.name !== plainLines[0]) {
+    throw new PublicApiError(
+      "Resume parsing omitted or changed the candidate name in the contact/header block. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", fieldPath: "contactInfo.name", retryable: false }
+    );
+  }
+  if (plainLines[1] && output.contactInfo.headline !== plainLines[1]) {
+    throw new PublicApiError(
+      "Resume parsing omitted or changed the professional headline in the contact/header block. No master resume was changed.",
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", fieldPath: "contactInfo.headline", retryable: false }
+    );
+  }
+}
+
+function assertOverlappingFactCoverage(
+  sourceText: string,
+  values: Array<string | null>,
+  section: string,
+  fieldPath: string,
+  allowedLabels: RegExp
+) {
+  const represented = Array.from({ length: sourceText.length }, () => false);
+  values.filter((value): value is string => Boolean(value)).forEach((value) => {
+    let offset = 0;
+    while (offset <= sourceText.length - value.length) {
+      const index = sourceText.indexOf(value, offset);
+      if (index < 0) break;
+      represented.fill(true, index, index + value.length);
+      offset = index + Math.max(1, value.length);
+    }
+  });
+  const remaining = sourceText.split("").map((character, index) => represented[index] ? " " : character)
+    .join("")
+    .replace(allowedLabels, "");
+  if (/[\p{L}\p{N}]/u.test(remaining)) {
+    throw new PublicApiError(
+      `Resume parsing did not represent every factual line in ${section}. No master resume was changed.`,
+      422,
+      { code: "RESUME_PARSE_INCOMPLETE", section, fieldPath, retryable: false }
+    );
+  }
+}
+
+export function validateParsedResumeOutput(
+  source: string,
+  value: unknown,
+  options: { allowLegacy?: boolean } = {}
+): ParsedResumeV5 {
+  const output = decodeParsedResume(source, value, options.allowLegacy !== false);
+  assertLosslessSourceAuthority(source, output);
   const sections: Array<[keyof ParsedResume["sectionStatus"], unknown[]]> = [
     ["summary", output.summary ? [output.summary] : []],
     ["skills", output.skills],
@@ -925,45 +1160,10 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     }
   }
 
-  const contactBlock = contactSourceBlock(source);
-  if (output.contactInfo.sourceText !== contactBlock) {
-    throw new PublicApiError(
-      "Resume parsing did not preserve the complete contact/header source block. No master resume was changed.",
-      422,
-      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", retryable: false }
-    );
-  }
-  for (const [key, item] of Object.entries(output.contactInfo)) {
-    if (key === "sourceText") continue;
-    assertSourceSupported(contactBlock, item, `contactInfo.${key}`);
-  }
-  assertTypedContactCompleteness(contactBlock, output.contactInfo);
-  const sourceEmails = [...source.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0]);
-  if (sourceEmails.length > 0 && (!output.contactInfo.email || !sourceEmails.includes(output.contactInfo.email))) {
-    throw new PublicApiError(
-      "Resume parsing omitted or changed an email address present in the source. No master resume was changed.",
-      422,
-      { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", retryable: false }
-    );
-  }
-  assertCompleteFactCoverage(
-    contactBlock,
-    [
-      output.contactInfo.name,
-      output.contactInfo.headline,
-      output.contactInfo.email,
-      output.contactInfo.phone,
-      output.contactInfo.location,
-      output.contactInfo.linkedin,
-      output.contactInfo.github,
-      output.contactInfo.portfolio
-    ],
-    "contactInfo",
-    /\b(?:name|headline|title|email|e-mail|phone|mobile|tel|location|address|linkedin|github|portfolio|website|web|profile)\b/gi
-  );
-  assertSourceSupported(source, output.summary, "summary");
-  output.skills.forEach((item, index) => assertSourceSupported(source, item, `skills[${index}]`));
-  output.achievements.forEach((item, index) => assertSourceSupported(source, item, `achievements[${index}]`));
+  assertTypedContactProjections(output);
+  assertSourceSupported(sourceForTypedSection(output, "summary"), output.summary, "summary");
+  output.skills.forEach((item, index) => assertSourceSupported(sourceForTypedSection(output, "skills"), item, `skills[${index}]`));
+  output.achievements.forEach((item, index) => assertSourceSupported(sourceForTypedSection(output, "achievements"), item, `achievements[${index}]`));
   output.workHistory.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `workHistory[${index}].sourceText`);
     assertSourceSupported(item.sourceText, item.company, `workHistory[${index}].company`);
@@ -976,12 +1176,6 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
     assertWorkLocationSemantics(item);
     assertUnambiguousNarrativeEntries(item.bullets, "workHistory", `workHistory[${index}].bullets`);
-    assertCompleteFactCoverage(
-      item.sourceText,
-      [item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets],
-      "workHistory",
-      /\b(?:(?:based\s+in)|company|employer|title|role|location|dates?|from|to|at|for|responsibilities|achievements)\b/gi
-    );
   });
   output.projects.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `projects[${index}].sourceText`);
@@ -992,14 +1186,7 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].bullets[${entryIndex}]`));
     assertResumeDate(item.date, "projects", "projects date", `projects[${index}].date`);
     assertProjectStructure(item, `projects[${index}]`);
-    assertUnambiguousTechnologyEntries(item.technologies, "projects", `projects[${index}].technologies`);
     assertUnambiguousNarrativeEntries(item.bullets, "projects", `projects[${index}].bullets`);
-    assertCompleteFactCoverage(
-      item.sourceText,
-      [item.name, item.description, item.date, ...item.technologies, ...item.bullets],
-      "projects",
-      /\b(?:project|name|description|date|year|technologies|technology|tech|tools?|details)\b/gi
-    );
   });
   output.education.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `education[${index}].sourceText`);
@@ -1012,12 +1199,6 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertResumeDate(item.startDate, "education", "education date", `education[${index}].startDate`);
     assertResumeDate(item.endDate, "education", "education date", `education[${index}].endDate`);
     assertUnambiguousNarrativeEntries(item.details, "education", `education[${index}].details`);
-    assertCompleteFactCoverage(
-      item.sourceText,
-      [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate, ...item.details],
-      "education",
-      /\b(?:institution|school|university|college|credential|degree|field|major|dates?|from|to|details)\b/gi
-    );
   });
   output.certifications.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `certifications[${index}].sourceText`);
@@ -1025,16 +1206,18 @@ export function validateParsedResumeOutput(source: string, value: unknown): Pars
     assertSourceSupported(item.sourceText, item.issuer, `certifications[${index}].issuer`);
     assertSourceSupported(item.sourceText, item.date, `certifications[${index}].date`);
     assertSourceSupported(item.sourceText, item.expirationDate, `certifications[${index}].expirationDate`);
+    item.details.forEach((entry, entryIndex) =>
+      assertSourceSupported(item.sourceText, entry, `certifications[${index}].details[${entryIndex}]`));
     assertResumeDate(item.date, "certifications", "certification date", `certifications[${index}].date`);
     assertResumeDate(item.expirationDate, "certifications", "certification date", `certifications[${index}].expirationDate`);
-    assertCompleteFactCoverage(
+    assertOverlappingFactCoverage(
       item.sourceText,
-      [item.name, item.issuer, item.date, item.expirationDate],
+      [item.name, item.issuer, item.date, item.expirationDate, ...item.details],
       "certifications",
-      /\b(?:certification|certificate|license|name|issuer|issued|date|expires?|expiration)\b/gi
+      `certifications[${index}].details`,
+      /\b(?:certification|certificate|license|name|issuer|issued|date|credential\s+id|expires?|expiration)\b/gi
     );
   });
-  assertRecognizedSectionCoverage(source, output);
   return output;
 }
 
@@ -1068,7 +1251,7 @@ async function callOpenAiResumeProvider(input: {
       model: input.model,
       temperature: 0,
       max_tokens: input.maxOutputTokens,
-      response_format: zodResponseFormat(parsedResumeSchema, "resume_parse_v4"),
+      response_format: zodResponseFormat(parsedResumeSchema, "resume_parse_v5"),
       messages: [
         { role: "system", content: resumeParsePrompt },
         { role: "user", content: JSON.stringify({ resumeText: input.text }) }
@@ -1128,23 +1311,35 @@ function providerBillingDisposition(error: unknown, fallbackUsage: ProviderUsage
   return fallbackUsage ? "known" as const : "uncertain" as const;
 }
 
-function publicProviderError(error: unknown) {
+function publicProviderError(error: unknown, visibility: {
+  provider: string;
+  billingStatus: "known" | "not_charged" | "uncertain";
+  actualCostMicros: number | null;
+}) {
   if (!(error instanceof GeminiProviderError || error instanceof ResumeProviderError)) return error;
+  const safeDetails = {
+    provider: visibility.provider,
+    billingStatus: visibility.billingStatus,
+    actualCostMicros: visibility.actualCostMicros
+  };
   if (error.billingDisposition === "not_charged") {
     return new PublicApiError("The configured AI provider rejected resume parsing before completion. No master resume was changed.", 502, {
       code: "RESUME_PARSE_PROVIDER_REJECTED",
-      retryable: true
+      retryable: true,
+      ...safeDetails
     });
   }
   if (error.billingDisposition === "uncertain") {
     return new PublicApiError("Resume parsing reached the configured AI provider, but the outcome is uncertain. No master resume was changed; review AI usage before retrying.", 503, {
       code: "RESUME_PARSE_PROVIDER_UNCERTAIN",
-      retryable: false
+      retryable: false,
+      ...safeDetails
     });
   }
   return new PublicApiError("The configured AI provider returned a resume result that could not be accepted. No master resume was changed.", 502, {
     code: "RESUME_PARSE_PROVIDER_INVALID",
-    retryable: false
+    retryable: false,
+    ...safeDetails
   });
 }
 
@@ -1175,18 +1370,18 @@ export async function parseResumeTextWithMeta(
     payload,
     responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA
   });
-  const requestHash = hashAiInput("resumeParsePrompt", RESUME_PARSE_PROMPT_VERSION, payload);
+  const requestHash = hashAiInput("resumeParsePrompt", RESUME_PARSE_CACHE_VERSION, payload);
   const cached = await findCachedAiResponse({
     userId,
     provider,
     model,
     promptName: "resumeParsePrompt",
-    promptVersion: RESUME_PARSE_PROMPT_VERSION,
+    promptVersion: RESUME_PARSE_CACHE_VERSION,
     requestHash
   });
   if (cached) {
     return {
-      data: validateParsedResumeOutput(text, cached.output),
+      data: validateParsedResumeOutput(text, cached.output, { allowLegacy: false }),
       meta: {
         provider,
         model,
@@ -1230,7 +1425,7 @@ export async function parseResumeTextWithMeta(
       model,
       feature: "RESUME_PARSE",
       promptName: "resumeParsePrompt",
-      promptVersion: RESUME_PARSE_PROMPT_VERSION,
+      promptVersion: RESUME_PARSE_CACHE_VERSION,
       requestHash,
       status: { in: ["RESERVED", "UNCERTAIN"] }
     },
@@ -1257,7 +1452,7 @@ export async function parseResumeTextWithMeta(
     model,
     feature: "RESUME_PARSE",
     promptName: "resumeParsePrompt",
-    promptVersion: RESUME_PARSE_PROMPT_VERSION,
+    promptVersion: RESUME_PARSE_CACHE_VERSION,
     requestHash,
     maximumCostMicros,
     automation: false
@@ -1297,7 +1492,7 @@ export async function parseResumeTextWithMeta(
         usage
       });
     }
-    const data = validateParsedResumeOutput(text, response.value);
+    const data = validateParsedResumeOutput(text, response.value, { allowLegacy: false });
     try {
       await reconcileAiReservation({
         reservationId: reservation.id,
@@ -1330,19 +1525,19 @@ export async function parseResumeTextWithMeta(
       }
     };
   } catch (error) {
+    const providerUsage = providerUsageFromError(error) ?? usage;
+    const knownCost = providerUsage ? estimateAiCostMicros({
+      model,
+      inputTokens: providerUsage.inputTokens,
+      outputTokens: providerUsage.outputTokens,
+      cachedInputTokens: providerUsage.cachedInputTokens
+    }) : undefined;
+    const billingDisposition = providerBillingDisposition(error, providerUsage);
+    const uncertain = requestDispatched && (
+      billingDisposition === "uncertain" ||
+      (knownCost !== undefined && knownCost > reservation.maximumCostMicros)
+    );
     if (!reconciled) {
-      const providerUsage = providerUsageFromError(error) ?? usage;
-      const knownCost = providerUsage ? estimateAiCostMicros({
-        model,
-        inputTokens: providerUsage.inputTokens,
-        outputTokens: providerUsage.outputTokens,
-        cachedInputTokens: providerUsage.cachedInputTokens
-      }) : undefined;
-      const billingDisposition = providerBillingDisposition(error, providerUsage);
-      const uncertain = requestDispatched && (
-        billingDisposition === "uncertain" ||
-        (knownCost !== undefined && knownCost > reservation.maximumCostMicros)
-      );
       await reconcileAiReservation({
         reservationId: reservation.id,
         status: uncertain ? "UNCERTAIN" : "FAILED",
@@ -1353,7 +1548,11 @@ export async function parseResumeTextWithMeta(
         errorCode: error instanceof Error ? error.name : "UnknownError"
       }).catch(() => undefined);
     }
-    throw publicProviderError(error);
+    throw publicProviderError(error, {
+      provider,
+      billingStatus: uncertain ? "uncertain" : billingDisposition,
+      actualCostMicros: billingDisposition === "not_charged" ? 0 : uncertain ? null : knownCost ?? null
+    });
   }
 }
 
