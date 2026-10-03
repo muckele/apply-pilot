@@ -54,6 +54,38 @@ test("browser cost confirmation cancellation never retries", async (t) => {
   assert.equal(requests, 1);
 });
 
+test("resume parsing confirmation names the data recipient and retries once with both grants", async (t) => {
+  const requests: RequestInit[] = [];
+  let confirmation = "";
+  stub(t, globalThis, "window", { confirm: (message: string) => { confirmation = message; return true; } });
+  stub(t, globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(init ?? {});
+    return requests.length === 1
+      ? new Response(JSON.stringify({
+          error: "Confirm resume data and cost.",
+          code: "AI_COST_CONFIRMATION_REQUIRED",
+          maximumCostMicros: 38_250,
+          provider: "gemini",
+          dataType: "resume_text"
+        }), { status: 428, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ ok: true }), { status: 200 });
+  });
+
+  const response = await fetchWithAiCostConfirmation("/api/resumes/parse", {
+    method: "POST",
+    body: new FormData()
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(confirmation, /complete resume text/i);
+  assert.match(confirmation, /Google Gemini/);
+  assert.match(confirmation, /\$0\.03825(?:\D|$)/);
+  assert.equal(requests.length, 2);
+  assert.equal(new Headers(requests[0].headers).has("x-ai-data-confirmed"), false);
+  assert.equal(new Headers(requests[1].headers).get("x-ai-data-confirmed"), "true");
+  assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");
+});
+
 test("an unrelated 428 response remains readable by its caller", async (t) => {
   stub(t, globalThis, "window", { confirm: () => { throw new Error("must not confirm"); } });
   stub(t, globalThis, "fetch", async () => new Response(

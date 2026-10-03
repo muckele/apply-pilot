@@ -59,6 +59,7 @@ export const manualJobImportSchema = z.object({
 });
 
 export const resumeParseSchema = z.object({
+  submissionId: z.string().uuid(),
   title: z.string().min(1).default("Master Resume"),
   pastedText: z.string().optional(),
   isMaster: z.boolean().optional().default(true)

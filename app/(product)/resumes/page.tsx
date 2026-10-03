@@ -1,6 +1,6 @@
-import { Upload } from "lucide-react";
 import Link from "next/link";
 
+import { ResumeUploadForm } from "@/components/resume-upload-form";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -27,24 +27,7 @@ export default async function ResumesPage() {
       <div className="grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
         <Panel className="h-fit">
           <PanelHeader title="Upload or paste resume" />
-          <form className="space-y-4 p-5" action="/api/resumes/parse" method="post" encType="multipart/form-data">
-            <label className="block text-sm font-medium text-slate-700">
-              Resume title
-              <input name="title" defaultValue="Master Resume" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
-            </label>
-            <label className="block text-sm font-medium text-slate-700">
-              Resume file
-              <input name="file" type="file" accept=".pdf,.docx,.txt" className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
-            </label>
-            <label className="block text-sm font-medium text-slate-700">
-              Or paste text
-              <textarea name="pastedText" rows={8} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2" />
-            </label>
-            <button className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white">
-              <Upload size={16} aria-hidden="true" />
-              Parse resume
-            </button>
-          </form>
+          <ResumeUploadForm />
         </Panel>
 
         <section className="space-y-6">
