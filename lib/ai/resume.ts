@@ -29,13 +29,33 @@ import {
   GeminiProviderError,
   type GeminiUsage
 } from "@/lib/ai/gemini";
-import { assertAiInputWithinLimits } from "@/lib/ai/policy";
-import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { AI_FEATURE_POLICIES, assertAiInputWithinLimits } from "@/lib/ai/policy";
+import { estimateAiCostMicros, getModelPricing, type AiProviderName } from "@/lib/ai/pricing";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 export const RESUME_PARSE_PROMPT_VERSION = "5";
 export const RESUME_PARSE_CACHE_VERSION = "5";
+export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
+const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
+const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
+export const RESUME_PARSE_PLANNED_JSON_BYTES =
+  RESUME_PARSE_PLANNED_JSON_TOKENS * RESUME_PARSE_JSON_BYTES_PER_TOKEN;
+const RESUME_PARSE_JSON_FIXED_BYTES = 8_500;
+const RESUME_PARSE_JSON_BYTES_PER_LINE = 150;
+const RESUME_PARSE_JSON_BYTES_PER_SECTION = 250;
+const RESUME_PARSE_JSON_BYTES_PER_RECORD = 240;
+const RESUME_PARSE_SECTION_CONTENT_COPIES: Record<ResumeSourceSectionName, number> = {
+  contactInfo: 11,
+  summary: 3,
+  skills: 3,
+  workHistory: 9,
+  projects: 8,
+  education: 9,
+  certifications: 8,
+  achievements: 3,
+  additional: 2
+};
 
 type ResumeSectionStatus = "present" | "absent";
 
@@ -161,6 +181,9 @@ const nullableContactSourceString = z.union([
 ]);
 const sourceStringList = z.array(boundedSourceString).max(100);
 const sectionStatusSchema = z.enum(["present", "absent"]);
+const forbiddenResumeControlCharacters = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
+const warningSchema = z.string().trim().min(1).max(200)
+  .refine((value) => !/[\u0000-\u001F\u007F]/u.test(value));
 
 const sourceSectionSchema = z.object({
   section: z.enum([
@@ -232,12 +255,13 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
     certifications: sectionStatusSchema,
     achievements: sectionStatusSchema
   }).strict(),
-  warnings: z.array(z.string().trim().min(1).max(500)).max(20)
+  warnings: z.array(warningSchema).max(10)
 }).strict();
 
-const nullableJsonString = { type: ["string", "null"] } as const;
-const jsonString = { type: "string" } as const;
-const jsonStringArray = { type: "array", items: jsonString } as const;
+const nullableJsonString = { type: ["string", "null"], maxLength: 2_000 } as const;
+const jsonString = { type: "string", maxLength: 2_000 } as const;
+const jsonSourceBlock = { type: "string", maxLength: 20_000 } as const;
+const jsonStringArray = { type: "array", items: jsonString, maxItems: 100 } as const;
 
 export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
   type: "object",
@@ -258,17 +282,19 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
             ]
           },
           heading: nullableJsonString,
-          sourceText: jsonString,
-          recordBlocks: jsonStringArray
+          sourceText: jsonSourceBlock,
+          recordBlocks: { type: "array", items: jsonSourceBlock, maxItems: 100 }
         },
         required: ["section", "heading", "sourceText", "recordBlocks"]
-      }
+      },
+      minItems: 1,
+      maxItems: 100
     },
     contactInfo: {
       type: "object",
       additionalProperties: false,
       properties: {
-        sourceText: jsonString,
+        sourceText: jsonSourceBlock,
         name: nullableJsonString,
         headline: nullableJsonString,
         email: nullableJsonString,
@@ -280,7 +306,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
       },
       required: ["sourceText", "name", "headline", "email", "phone", "location", "linkedin", "github", "portfolio"]
     },
-    summary: jsonString,
+    summary: { type: "string", maxLength: 2_000 },
     skills: jsonStringArray,
     workHistory: {
       type: "array",
@@ -288,7 +314,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
-          sourceText: jsonString,
+          sourceText: jsonSourceBlock,
           company: jsonString,
           title: jsonString,
           location: nullableJsonString,
@@ -297,7 +323,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           bullets: jsonStringArray
         },
         required: ["sourceText", "company", "title", "location", "startDate", "endDate", "bullets"]
-      }
+      },
+      maxItems: 50
     },
     projects: {
       type: "array",
@@ -305,7 +332,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
-          sourceText: jsonString,
+          sourceText: jsonSourceBlock,
           name: jsonString,
           description: nullableJsonString,
           date: nullableJsonString,
@@ -313,7 +340,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           bullets: jsonStringArray
         },
         required: ["sourceText", "name", "description", "date", "technologies", "bullets"]
-      }
+      },
+      maxItems: 50
     },
     education: {
       type: "array",
@@ -321,7 +349,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
-          sourceText: jsonString,
+          sourceText: jsonSourceBlock,
           institution: jsonString,
           credential: nullableJsonString,
           fieldOfStudy: nullableJsonString,
@@ -330,7 +358,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           details: jsonStringArray
         },
         required: ["sourceText", "institution", "credential", "fieldOfStudy", "startDate", "endDate", "details"]
-      }
+      },
+      maxItems: 30
     },
     certifications: {
       type: "array",
@@ -338,7 +367,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         properties: {
-          sourceText: jsonString,
+          sourceText: jsonSourceBlock,
           name: jsonString,
           issuer: nullableJsonString,
           date: nullableJsonString,
@@ -346,7 +375,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           details: jsonStringArray
         },
         required: ["sourceText", "name", "issuer", "date", "expirationDate", "details"]
-      }
+      },
+      maxItems: 50
     },
     achievements: jsonStringArray,
     sectionStatus: {
@@ -365,7 +395,11 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
         "summary", "skills", "workHistory", "projects", "education", "certifications", "achievements"
       ]
     },
-    warnings: jsonStringArray
+    warnings: {
+      type: "array",
+      items: { type: "string", maxLength: 200, pattern: "^[^\\u0000-\\u001F\\u007F]*$" },
+      maxItems: 10
+    }
   },
   required: [
     "contractVersion", "sourceSections", "contactInfo", "summary", "skills", "workHistory", "projects",
@@ -399,6 +433,25 @@ function assertSourceSupported(source: string, value: string | null, path: strin
       422,
       { code: "RESUME_PARSE_UNSUPPORTED_FACT", fieldPath: path, retryable: false }
     );
+  }
+}
+
+function assertOrderedSourceProjectionList(source: string, values: string[], fieldPath: string) {
+  let cursor = 0;
+  for (const [index, value] of values.entries()) {
+    const start = source.indexOf(value, cursor);
+    if (start < 0) {
+      throw new PublicApiError(
+        `Resume parsing returned duplicate or reordered entries in ${fieldPath}. No master resume was changed.`,
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          fieldPath: `${fieldPath}[${index}]`,
+          retryable: false
+        }
+      );
+    }
+    cursor = start + value.length;
   }
 }
 
@@ -827,6 +880,20 @@ function sourceSectionNameForHeading(line: string): ResumeSourceSectionName | nu
   return otherSectionHeading.test(heading) ? "additional" : null;
 }
 
+function lineBreakUnitsBefore(lines: string[], index: number) {
+  if (index <= 0) return 0;
+  let units = 1;
+  for (let cursor = index - 1; cursor >= 0 && !lines[cursor]!.trim(); cursor -= 1) units += 1;
+  return units;
+}
+
+function paragraphBreakUnit(lines: string[]) {
+  const units = lines.flatMap((line, index) =>
+    line.trim() && index > 0 ? [lineBreakUnitsBefore(lines, index)] : []
+  );
+  return Math.min(...units.filter((value) => value > 0));
+}
+
 function expectedSourceSections(source: string): Array<Omit<ResumeSourceSection, "recordBlocks">> {
   const lines = source.split(/\r?\n/);
   const headings = lines.flatMap((line, index) => {
@@ -860,6 +927,104 @@ function expectedSourceSections(source: string): Array<Omit<ResumeSourceSection,
   return result;
 }
 
+function splitProjectPipeRecordBlocks(block: string) {
+  const lines = block.split(/\r?\n/);
+  const starts = lines.flatMap((line, index) => {
+    const parts = line.split("|").map((part) => part.trim()).filter(Boolean);
+    return parts.length >= 3 && resumeDatePattern.test(parts.at(-1)!) ? [index] : [];
+  });
+  if (starts.length < 2) return [block];
+  const blocks: string[] = [];
+  for (const [position, start] of starts.entries()) {
+    const end = starts[position + 1] ?? lines.length;
+    const record = lines.slice(start, end).join("\n").trim();
+    if (record) blocks.push(record);
+  }
+  return blocks;
+}
+
+function splitStructuralRecordBlocks(
+  section: ResumeSourceSectionName,
+  sourceText: string,
+  paragraphUnit: number
+) {
+  if (!Number.isFinite(paragraphUnit)) return [sourceText];
+  const blocks: string[] = [];
+  let cursor = 0;
+  for (const match of sourceText.matchAll(/(?:\r?\n)+/g)) {
+    const newlineCount = (match[0].match(/\n/g) ?? []).length;
+    if (newlineCount < paragraphUnit * 2 || match.index === undefined) continue;
+    const block = sourceText.slice(cursor, match.index).trim();
+    if (block) blocks.push(block);
+    cursor = match.index + match[0].length;
+  }
+  const finalBlock = sourceText.slice(cursor).trim();
+  if (finalBlock) blocks.push(finalBlock);
+  return section === "projects"
+    ? blocks.flatMap(splitProjectPipeRecordBlocks)
+    : blocks;
+}
+
+function jsonEscapedByteLength(value: string) {
+  return Math.max(0, Buffer.byteLength(JSON.stringify(value), "utf8") - 2);
+}
+
+export function estimateResumeParseMaximumOutputBytes(source: string) {
+  const normalizedSource = normalizeResumeLineEndings(source);
+  const sections = expectedSourceSections(normalizedSource);
+  const paragraphUnit = paragraphBreakUnit(normalizedSource.split("\n"));
+  const nonemptyLineCount = normalizedSource.split("\n").filter((line) => line.trim()).length;
+  const structuralRecordCount = sections.reduce((total, section) =>
+    ["workHistory", "projects", "education", "certifications"].includes(section.section)
+      ? total + splitStructuralRecordBlocks(
+        section.section,
+        section.sourceText,
+        paragraphUnit
+      ).length
+      : total, 0);
+  return RESUME_PARSE_JSON_FIXED_BYTES +
+    sections.reduce((total, section) =>
+      total + jsonEscapedByteLength(section.sourceText) *
+        RESUME_PARSE_SECTION_CONTENT_COPIES[section.section], 0) +
+    nonemptyLineCount * RESUME_PARSE_JSON_BYTES_PER_LINE +
+    sections.length * RESUME_PARSE_JSON_BYTES_PER_SECTION +
+    structuralRecordCount * RESUME_PARSE_JSON_BYTES_PER_RECORD;
+}
+
+function resumeParseOutputTokenLimit(provider: AiProviderName) {
+  return provider === "gemini"
+    ? AI_FEATURE_POLICIES.RESUME_PARSE.maxOutputTokens
+    : OPENAI_RESUME_PARSE_OUTPUT_TOKENS;
+}
+
+function assertResumeParseOutputCapacity(source: string, provider: AiProviderName) {
+  if (forbiddenResumeControlCharacters.test(source)) {
+    throw new PublicApiError(
+      "Resume text contains unsupported control characters and cannot be parsed safely.",
+      422,
+      {
+        code: "RESUME_PARSE_UNSUPPORTED_CONTROL_CHARACTERS",
+        fieldPath: "rawText",
+        retryable: false
+      }
+    );
+  }
+  const maximumOutputBytes = estimateResumeParseMaximumOutputBytes(source);
+  if (maximumOutputBytes <= RESUME_PARSE_PLANNED_JSON_BYTES) return;
+  throw new PublicApiError(
+    "Resume text is too large or escape-heavy to preserve losslessly within the configured structured-response limit.",
+    413,
+    {
+      code: "RESUME_PARSE_SOURCE_TOO_LARGE_FOR_LOSSLESS_OUTPUT",
+      estimatedMaximumOutputBytes: maximumOutputBytes,
+      structuredOutputPlanningTokens: RESUME_PARSE_PLANNED_JSON_TOKENS,
+      providerTotalOutputTokenLimit: resumeParseOutputTokenLimit(provider),
+      provider,
+      retryable: false
+    }
+  );
+}
+
 function legacyRecordBlocks(
   section: ResumeSourceSectionName,
   sourceText: string,
@@ -870,14 +1035,77 @@ function legacyRecordBlocks(
   if (section === "skills") {
     return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
-  if (section === "workHistory") return output.workHistory.map((item) => item.sourceText);
-  if (section === "projects") return output.projects.map((item) => item.sourceText);
-  if (section === "education") return output.education.map((item) => item.sourceText);
-  if (section === "certifications") return output.certifications.map((item) => item.sourceText);
+  if (section === "workHistory") return output.workHistory.map((item) => item.sourceText).filter((record) => sourceText.includes(record));
+  if (section === "projects") return output.projects.map((item) => item.sourceText).filter((record) => sourceText.includes(record));
+  if (section === "education") return output.education.map((item) => item.sourceText).filter((record) => sourceText.includes(record));
+  if (section === "certifications") return output.certifications.map((item) => item.sourceText).filter((record) => sourceText.includes(record));
   if (section === "achievements") {
     return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
   return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function normalizeResumeLineEndings(value: string) {
+  return value.replace(/\r\n?/g, "\n");
+}
+
+function normalizeParsedResumeLineEndings(output: ParsedResumeV5): ParsedResumeV5 {
+  return {
+    ...output,
+    sourceSections: output.sourceSections.map((section) => ({
+      ...section,
+      sourceText: normalizeResumeLineEndings(section.sourceText),
+      recordBlocks: section.recordBlocks.map(normalizeResumeLineEndings)
+    })),
+    contactInfo: {
+      ...output.contactInfo,
+      sourceText: normalizeResumeLineEndings(output.contactInfo.sourceText)
+    },
+    summary: normalizeResumeLineEndings(output.summary),
+    workHistory: output.workHistory.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    })),
+    projects: output.projects.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    })),
+    education: output.education.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    })),
+    certifications: output.certifications.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    }))
+  };
+}
+
+function normalizeLegacyResumeLineEndings(output: LegacyParsedResume): LegacyParsedResume {
+  return {
+    ...output,
+    contactInfo: {
+      ...output.contactInfo,
+      sourceText: normalizeResumeLineEndings(output.contactInfo.sourceText)
+    },
+    summary: normalizeResumeLineEndings(output.summary),
+    workHistory: output.workHistory.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    })),
+    projects: output.projects.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    })),
+    education: output.education.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    })),
+    certifications: output.certifications.map((item) => ({
+      ...item,
+      sourceText: normalizeResumeLineEndings(item.sourceText)
+    }))
+  };
 }
 
 function decodeParsedResume(source: string, value: unknown, allowLegacy: boolean): ParsedResumeV5 {
@@ -898,21 +1126,21 @@ function decodeParsedResume(source: string, value: unknown, allowLegacy: boolean
         retryable: false
       });
     }
-    const output = legacy.data;
+    const output = normalizeLegacyResumeLineEndings(legacy.data);
     const sourceSections = expectedSourceSections(source).map((section) => ({
       ...section,
       recordBlocks: legacyRecordBlocks(section.section, section.sourceText, output)
     }));
-    return {
+    return normalizeParsedResumeLineEndings({
       ...output,
       contractVersion: "5",
       sourceSections,
       projects: output.projects.map((project) => ({ ...project, date: project.date ?? null })),
       certifications: output.certifications.map((item) => ({ ...item, details: item.details ?? [] }))
-    };
+    });
   }
   const current = parsedResumeSchema.safeParse(value);
-  if (current.success) return current.data;
+  if (current.success) return normalizeParsedResumeLineEndings(current.data);
   const fieldPath = zodFieldPath(current.error.issues[0]?.path ?? []);
   throw new PublicApiError("Resume parsing returned an invalid structured result. No master resume was changed.", 422, {
     code: "RESUME_PARSE_INVALID_OUTPUT",
@@ -932,8 +1160,32 @@ function factsForSection(output: ParsedResumeV5, section: ResumeSourceSectionNam
   return [];
 }
 
+function recordHasDateLine(record: string) {
+  return record.split(/\r?\n/).some((line) => resumeDatePattern.test(line.trim()));
+}
+
+function hasDeclaredRecordBoundary(
+  section: ResumeSourceSectionName,
+  separator: string,
+  previousRecord: string,
+  nextRecord: string,
+  paragraphUnit: number
+) {
+  const newlineCount = (separator.match(/\n/g) ?? []).length;
+  if (Number.isFinite(paragraphUnit) && newlineCount >= paragraphUnit * 2) return true;
+  if (recordHasDateLine(previousRecord) && recordHasDateLine(nextRecord)) return true;
+  const firstLine = nextRecord.split(/\r?\n/, 1)[0]!.trim();
+  const pipeParts = firstLine.split("|").map((part) => part.trim()).filter(Boolean);
+  if (section === "projects") {
+    return pipeParts.length >= 3 && resumeDatePattern.test(pipeParts.at(-1)!);
+  }
+  return section === "workHistory" && pipeParts.length >= 2;
+}
+
 function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
   const expected = expectedSourceSections(source);
+  const paragraphUnit = paragraphBreakUnit(source.split(/\r?\n/));
+  const recordCursors = new Map<ResumeSourceSectionName, number>();
   if (output.sourceSections.length !== expected.length) {
     throw new PublicApiError(
       "Resume parsing omitted or invented a source section. No master resume was changed.",
@@ -959,11 +1211,16 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
     const canonicalRecords = ["workHistory", "projects", "education", "certifications"].includes(section.section)
       ? factsForSection(output, section.section)
       : null;
+    const canonicalCursor = recordCursors.get(section.section) ?? 0;
+    const sectionCanonicalRecords = canonicalRecords?.slice(
+      canonicalCursor,
+      canonicalCursor + section.recordBlocks.length
+    ) ?? null;
     if (canonicalRecords && (
-      canonicalRecords.length !== section.recordBlocks.length ||
-      canonicalRecords.some((record, index) => record !== section.recordBlocks[index])
+      sectionCanonicalRecords!.length !== section.recordBlocks.length ||
+      sectionCanonicalRecords!.some((record, index) => record !== section.recordBlocks[index])
     )) {
-      const mismatch = section.recordBlocks.findIndex((record, index) => record !== canonicalRecords[index]);
+      const mismatch = section.recordBlocks.findIndex((record, index) => record !== sectionCanonicalRecords![index]);
       throw new PublicApiError(
         "Resume parsing changed record order or merged adjacent records. No master resume was changed.",
         422,
@@ -975,6 +1232,9 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
         }
       );
     }
+    if (canonicalRecords) {
+      recordCursors.set(section.section, canonicalCursor + section.recordBlocks.length);
+    }
 
     let cursor = 0;
     const characters = section.sourceText.split("");
@@ -983,6 +1243,28 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
       if (start < 0) {
         throw new PublicApiError(
           "Resume parsing changed source record order or boundaries. No master resume was changed.",
+          422,
+          {
+            code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+            section: section.section,
+            fieldPath: `${basePath}.recordBlocks[${recordIndex}]`,
+            retryable: false
+          }
+        );
+      }
+      if (
+        canonicalRecords &&
+        recordIndex > 0 &&
+        !hasDeclaredRecordBoundary(
+          section.section,
+          section.sourceText.slice(cursor, start),
+          section.recordBlocks[recordIndex - 1]!,
+          record,
+          paragraphUnit
+        )
+      ) {
+        throw new PublicApiError(
+          "Resume parsing invented a record boundary that is not declared by the source. No master resume was changed.",
           422,
           {
             code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
@@ -1023,6 +1305,15 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
       );
     }
   });
+  for (const section of ["workHistory", "projects", "education", "certifications"] as const) {
+    if ((recordCursors.get(section) ?? 0) !== factsForSection(output, section).length) {
+      throw new PublicApiError(
+        "Resume parsing omitted or invented a canonical source record. No master resume was changed.",
+        422,
+        { code: "RESUME_PARSE_INCOMPLETE", section, fieldPath: "sourceSections", retryable: false }
+      );
+    }
+  }
 }
 
 function sourceForTypedSection(output: ParsedResumeV5, section: ResumeSourceSectionName) {
@@ -1090,40 +1381,190 @@ function assertTypedContactProjections(output: ParsedResumeV5) {
   }
 }
 
-function assertOverlappingFactCoverage(
+function assertNoUndeclaredRecordHeaderAfterNarrative(
   sourceText: string,
-  values: Array<string | null>,
+  values: string[],
   section: string,
-  fieldPath: string,
-  allowedLabels: RegExp
+  fieldPath: string
 ) {
-  const represented = Array.from({ length: sourceText.length }, () => false);
-  values.filter((value): value is string => Boolean(value)).forEach((value) => {
-    let offset = 0;
-    while (offset <= sourceText.length - value.length) {
-      const index = sourceText.indexOf(value, offset);
-      if (index < 0) break;
-      represented.fill(true, index, index + value.length);
-      offset = index + Math.max(1, value.length);
+  if (values.length === 0) return;
+  const ranges: Array<{ start: number; end: number }> = [];
+  let cursor = 0;
+  for (const value of values) {
+    const start = sourceText.indexOf(value, cursor);
+    if (start < 0) return;
+    ranges.push({ start, end: start + value.length });
+    cursor = start + value.length;
+  }
+  const gaps = [
+    ...ranges.slice(1).map((range, index) =>
+      sourceText.slice(ranges[index]!.end, range.start)
+    ),
+    sourceText.slice(ranges.at(-1)!.end)
+  ];
+  const boundaryText = (value: string) =>
+    value.replace(/[^\S\r\n]+(?=\r?\n)/gu, "");
+  const newlineRuns = [...boundaryText(sourceText).matchAll(/(?:\r?\n)+/g)].map((match) =>
+    (match[0].match(/\n/g) ?? []).length
+  );
+  const paragraphUnit = Math.min(...newlineRuns.filter((length) => length > 0));
+  const hasHeaderPair = gaps.some((gap) => {
+    const hasMajorBoundary = Number.isFinite(paragraphUnit) &&
+      [...boundaryText(gap).matchAll(/(?:\r?\n)+/g)].some((match) =>
+        (match[0].match(/\n/g) ?? []).length >= paragraphUnit * 2
+    );
+    const lines = gap.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.some((line) => line.includes(" | ") && !/[.!?…]$/u.test(line))) return true;
+    const looksLikeHeader = (candidate: string) =>
+      /[\p{L}\p{N}]/u.test(candidate) &&
+      !/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(candidate) &&
+      !candidate.includes(":") &&
+      !/[.!?…]$/u.test(candidate);
+    const metadataLabel = /^(?:technologies?(?: used)?|tools|methods|platforms?)$/i.test(lines[0] ?? "");
+    if (metadataLabel) {
+      const labelStart = gap.indexOf(lines[0]!);
+      const metadataTail = gap.slice(labelStart + lines[0]!.length);
+      const crossesInternalMajorBoundary = Number.isFinite(paragraphUnit) &&
+        [...boundaryText(metadataTail).matchAll(/(?:\r?\n)+/g)].some((match) =>
+          (match[0].match(/\n/g) ?? []).length >= paragraphUnit * 2
+        );
+      if (crossesInternalMajorBoundary) return true;
+      const values = lines.slice(1);
+      const isListItem = (line: string) =>
+        /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(line);
+      if (values.length <= 1 || values.every(isListItem)) return false;
+      const firstBulletIndex = values.findIndex(isListItem);
+      if (firstBulletIndex === 1 && values.slice(1).every(isListItem)) return false;
+      return true;
     }
+    const recognizedTrailingEmploymentMetadata = lines.length === 2 &&
+        /^(?:full[- ]time|part[- ]time|contract|contractor|temporary|internship|freelance|self-employed)$/i.test(lines[0]!) &&
+        /^(?:revenue |business |customer |people |product |sales |marketing |finance |data |research |software |platform |service )?(?:operations|engineering|support|success|analytics|design|legal|hr|human resources|department|division|team)$/i.test(lines[1]!);
+    if (recognizedTrailingEmploymentMetadata) return false;
+    const hasAdjacentHeaderPair = lines.some((line, index) => {
+      const next = lines[index + 1];
+      if (!next) return false;
+      return looksLikeHeader(line) && looksLikeHeader(next);
+    });
+    const hasMinimalRecord = hasMajorBoundary &&
+      looksLikeHeader(lines[0] ?? "") &&
+      lines.slice(1).some((line) => /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(line));
+    return hasAdjacentHeaderPair || hasMinimalRecord ||
+      (hasMajorBoundary && lines.length === 1 && looksLikeHeader(lines[0]!));
   });
-  const remaining = sourceText.split("").map((character, index) => represented[index] ? " " : character)
-    .join("")
-    .replace(allowedLabels, "");
-  if (/[\p{L}\p{N}]/u.test(remaining)) {
+  if (hasHeaderPair) {
     throw new PublicApiError(
-      `Resume parsing did not represent every factual line in ${section}. No master resume was changed.`,
+      `Resume parsing returned a ${section} source block containing an undeclared adjacent record header. No master resume was changed.`,
       422,
-      { code: "RESUME_PARSE_INCOMPLETE", section, fieldPath, retryable: false }
+      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath, retryable: false }
     );
   }
 }
 
+function assertNoUnprojectedHeaderPairBeforeNarrative(
+  sourceText: string,
+  narrativeValues: string[],
+  projectedHeaderValues: Array<string | null>,
+  section: string,
+  fieldPath: string
+) {
+  const narrativeIndex = firstFactIndex(sourceText, narrativeValues);
+  const header = sourceText.slice(0, narrativeIndex);
+  const projectedValues = projectedHeaderValues
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.trim());
+  const headerLines = header.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const labeledCoreLine = headerLines.find((line) =>
+    /^(?:company|employer|organization|role|title|institution|school|university|college|project|certification|certificate|license|issuer)\s*:/i.test(line) &&
+    !projectedValues.some((value) => line.includes(value))
+  );
+  if (labeledCoreLine) {
+    throw new PublicApiError(
+      `Resume parsing returned a ${section} source block containing an unprojected labeled record header. No master resume was changed.`,
+      422,
+      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath, retryable: false }
+    );
+  }
+  const unexplained = headerLines.filter((line) =>
+    Boolean(line) &&
+    !projectedValues.some((value) => line.includes(value)) &&
+    !resumeDatePattern.test(line) &&
+    !line.includes(":") &&
+    !/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(line) &&
+    !/[.!?…]$/u.test(line)
+  );
+  const recognizedEmploymentMetadata = unexplained.length === 2 &&
+    /^(?:full[- ]time|part[- ]time|contract|contractor|temporary|internship|freelance|self-employed)$/i.test(
+      unexplained[0]!
+    ) &&
+    /^(?:revenue |business |customer |people |product |sales |marketing |finance |data |research |software |platform |service )?(?:operations|engineering|support|success|analytics|design|legal|hr|human resources|department|division|team)$/i.test(
+      unexplained[1]!
+    );
+  const recognizedSingleMetadata = unexplained.length === 1 && (
+    /^(?:full[- ]time|part[- ]time|contract|contractor|temporary|internship|freelance|self-employed)$/i.test(
+      unexplained[0]!
+    ) ||
+    /^(?:revenue |business |customer |people |product |sales |marketing |finance |data |research |software |platform |service )?(?:operations|engineering|support|success|analytics|design|legal|hr|human resources|department|division|team)$/i.test(
+      unexplained[0]!
+    )
+  );
+  const unexplainedLimit = section === "workHistory" ? 1 : 2;
+  if (
+    unexplained.length >= unexplainedLimit &&
+    !recognizedSingleMetadata &&
+    !recognizedEmploymentMetadata
+  ) {
+    throw new PublicApiError(
+      `Resume parsing returned a ${section} source block containing unexplained header text. No master resume was changed.`,
+      422,
+      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section, fieldPath, retryable: false }
+    );
+  }
+}
+
+function assertWorkHeaderSemantics(item: ResumeWorkHistoryItem, fieldPath: string) {
+  const firstNarrative = firstFactIndex(item.sourceText, item.bullets);
+  for (const [field, value] of [["title", item.title], ["company", item.company]] as const) {
+    const position = item.sourceText.indexOf(value);
+    if (
+      position < 0 ||
+      position >= firstNarrative ||
+      /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(value)
+    ) {
+      throw new PublicApiError(
+        "Resume parsing returned a work-history record whose title or company is not in its header. No master resume was changed.",
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          section: "workHistory",
+          fieldPath: `${fieldPath}.${field}`,
+          retryable: false
+        }
+      );
+    }
+  }
+}
+
+function recordBoundaryAnchors(
+  sourceText: string,
+  narrativeValues: string[],
+  headerValues: Array<string | null>
+) {
+  if (narrativeValues.length > 0) return narrativeValues;
+  const lastHeader = headerValues
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ value, index: sourceText.lastIndexOf(value) }))
+    .filter(({ index }) => index >= 0)
+    .sort((left, right) => right.index - left.index)[0];
+  return lastHeader ? [lastHeader.value] : [];
+}
+
 export function validateParsedResumeOutput(
-  source: string,
+  rawSource: string,
   value: unknown,
   options: { allowLegacy?: boolean } = {}
 ): ParsedResumeV5 {
+  const source = normalizeResumeLineEndings(rawSource);
   const output = decodeParsedResume(source, value, options.allowLegacy !== false);
   assertLosslessSourceAuthority(source, output);
   const sections: Array<[keyof ParsedResume["sectionStatus"], unknown[]]> = [
@@ -1164,6 +1605,10 @@ export function validateParsedResumeOutput(
   assertSourceSupported(sourceForTypedSection(output, "summary"), output.summary, "summary");
   output.skills.forEach((item, index) => assertSourceSupported(sourceForTypedSection(output, "skills"), item, `skills[${index}]`));
   output.achievements.forEach((item, index) => assertSourceSupported(sourceForTypedSection(output, "achievements"), item, `achievements[${index}]`));
+  assertOrderedSourceProjectionList(sourceForTypedSection(output, "skills"), output.skills, "skills");
+  assertOrderedSourceProjectionList(
+    sourceForTypedSection(output, "achievements"), output.achievements, "achievements"
+  );
   output.workHistory.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `workHistory[${index}].sourceText`);
     assertSourceSupported(item.sourceText, item.company, `workHistory[${index}].company`);
@@ -1172,16 +1617,28 @@ export function validateParsedResumeOutput(
     assertSourceSupported(item.sourceText, item.startDate, `workHistory[${index}].startDate`);
     assertSourceSupported(item.sourceText, item.endDate, `workHistory[${index}].endDate`);
     item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `workHistory[${index}].bullets[${entryIndex}]`));
+    assertOrderedSourceProjectionList(item.sourceText, item.bullets, `workHistory[${index}].bullets`);
     assertResumeDate(item.startDate, "workHistory", "workHistory date or location", `workHistory[${index}].startDate`);
     assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
+    assertWorkHeaderSemantics(item, `workHistory[${index}]`);
     assertWorkLocationSemantics(item);
     assertUnambiguousNarrativeEntries(item.bullets, "workHistory", `workHistory[${index}].bullets`);
-    assertOverlappingFactCoverage(
+    assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
-      [item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets],
+      item.bullets,
+      [item.company, item.title, item.location, item.startDate, item.endDate],
       "workHistory",
-      `workHistory[${index}]`,
-      /\b(?:company|employer|organization|role|title|location|based\s+in|at|from|to|through|until|dates?|responsibilities|highlights?|achievements?)\b/gi
+      `workHistory[${index}].sourceText`
+    );
+    assertNoUndeclaredRecordHeaderAfterNarrative(
+      item.sourceText,
+      recordBoundaryAnchors(
+        item.sourceText,
+        item.bullets,
+        [item.company, item.title, item.location, item.startDate, item.endDate]
+      ),
+      "workHistory",
+      `workHistory[${index}].sourceText`
     );
   });
   output.projects.forEach((item, index) => {
@@ -1191,15 +1648,27 @@ export function validateParsedResumeOutput(
     assertSourceSupported(item.sourceText, item.date, `projects[${index}].date`);
     item.technologies.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].technologies[${entryIndex}]`));
     item.bullets.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `projects[${index}].bullets[${entryIndex}]`));
+    assertOrderedSourceProjectionList(item.sourceText, item.technologies, `projects[${index}].technologies`);
+    assertOrderedSourceProjectionList(item.sourceText, item.bullets, `projects[${index}].bullets`);
     assertResumeDate(item.date, "projects", "projects date", `projects[${index}].date`);
     assertProjectStructure(item, `projects[${index}]`);
     assertUnambiguousNarrativeEntries(item.bullets, "projects", `projects[${index}].bullets`);
-    assertOverlappingFactCoverage(
+    assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
-      [item.name, item.description, item.date, ...item.technologies, ...item.bullets],
+      item.bullets,
+      [item.name, item.description, item.date, ...item.technologies],
       "projects",
-      `projects[${index}]`,
-      /\b(?:project|name|subtitle|description|date|year|technologies|technology|tech|stack|built\s+with|using|and|with)\b/gi
+      `projects[${index}].sourceText`
+    );
+    assertNoUndeclaredRecordHeaderAfterNarrative(
+      item.sourceText,
+      recordBoundaryAnchors(
+        item.sourceText,
+        item.bullets,
+        [item.name, item.description, item.date, ...item.technologies]
+      ),
+      "projects",
+      `projects[${index}].sourceText`
     );
   });
   output.education.forEach((item, index) => {
@@ -1210,15 +1679,26 @@ export function validateParsedResumeOutput(
     assertSourceSupported(item.sourceText, item.startDate, `education[${index}].startDate`);
     assertSourceSupported(item.sourceText, item.endDate, `education[${index}].endDate`);
     item.details.forEach((entry, entryIndex) => assertSourceSupported(item.sourceText, entry, `education[${index}].details[${entryIndex}]`));
+    assertOrderedSourceProjectionList(item.sourceText, item.details, `education[${index}].details`);
     assertResumeDate(item.startDate, "education", "education date", `education[${index}].startDate`);
     assertResumeDate(item.endDate, "education", "education date", `education[${index}].endDate`);
     assertUnambiguousNarrativeEntries(item.details, "education", `education[${index}].details`);
-    assertOverlappingFactCoverage(
+    assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
-      [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate, ...item.details],
+      item.details,
+      [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate],
       "education",
-      `education[${index}]`,
-      /\b(?:institution|school|university|college|credential|degree|certificate|major|minor|field\s+of\s+study|field|in|at|from|to|through|until|dates?|details?)\b/gi
+      `education[${index}].sourceText`
+    );
+    assertNoUndeclaredRecordHeaderAfterNarrative(
+      item.sourceText,
+      recordBoundaryAnchors(
+        item.sourceText,
+        item.details,
+        [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate]
+      ),
+      "education",
+      `education[${index}].sourceText`
     );
   });
   output.certifications.forEach((item, index) => {
@@ -1229,14 +1709,25 @@ export function validateParsedResumeOutput(
     assertSourceSupported(item.sourceText, item.expirationDate, `certifications[${index}].expirationDate`);
     item.details.forEach((entry, entryIndex) =>
       assertSourceSupported(item.sourceText, entry, `certifications[${index}].details[${entryIndex}]`));
+    assertOrderedSourceProjectionList(item.sourceText, item.details, `certifications[${index}].details`);
     assertResumeDate(item.date, "certifications", "certification date", `certifications[${index}].date`);
     assertResumeDate(item.expirationDate, "certifications", "certification date", `certifications[${index}].expirationDate`);
-    assertOverlappingFactCoverage(
+    assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
-      [item.name, item.issuer, item.date, item.expirationDate, ...item.details],
+      item.details,
+      [item.name, item.issuer, item.date, item.expirationDate],
       "certifications",
-      `certifications[${index}].details`,
-      /\b(?:certification|certificate|license|name|issuer|issued|date|credential\s+id|expires?|expiration)\b/gi
+      `certifications[${index}].sourceText`
+    );
+    assertNoUndeclaredRecordHeaderAfterNarrative(
+      item.sourceText,
+      recordBoundaryAnchors(
+        item.sourceText,
+        item.details,
+        [item.name, item.issuer, item.date, item.expirationDate]
+      ),
+      "certifications",
+      `certifications[${index}].sourceText`
     );
   });
   return output;
@@ -1378,7 +1869,10 @@ export async function parseResumeTextWithMeta(
   if (!text.trim()) {
     throw new PublicApiError("Resume text is empty.", 422, { code: "RESUME_TEXT_EMPTY" });
   }
+  const normalizedText = normalizeResumeLineEndings(text);
   const provider = getAiProviderForFeature("RESUME_PARSE");
+  assertResumeParseOutputCapacity(normalizedText, provider);
+  const outputTokenLimit = resumeParseOutputTokenLimit(provider);
   if (getAiRuntimeMode(provider) !== provider) throw new LocalAiUnavailableError();
   if (!userId) {
     throw new PublicApiError("Resume parsing requires an authenticated budget owner.", 503, {
@@ -1392,7 +1886,7 @@ export async function parseResumeTextWithMeta(
       code: "AI_MODEL_PRICING_UNKNOWN"
     });
   }
-  const payload = { resumeText: text };
+  const payload = { resumeText: normalizedText };
   const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePrompt, {
     payload,
     responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA
@@ -1408,7 +1902,7 @@ export async function parseResumeTextWithMeta(
   });
   if (cached) {
     return {
-      data: validateParsedResumeOutput(text, cached.output, { allowLegacy: false }),
+      data: validateParsedResumeOutput(normalizedText, cached.output, { allowLegacy: false }),
       meta: {
         provider,
         model,
@@ -1426,7 +1920,7 @@ export async function parseResumeTextWithMeta(
   const maximumCostMicros = estimateAiCostMicros({
     model,
     inputTokens: policy.maxInputTokens,
-    outputTokens: policy.maxOutputTokens
+    outputTokens: outputTokenLimit
   });
   const financial = getAiFinancialPolicy();
   if (maximumCostMicros > financial.maximumRequestCents * 10_000) {
@@ -1497,11 +1991,11 @@ export async function parseResumeTextWithMeta(
           systemPrompt: resumeParsePrompt,
           payload,
           responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA,
-          maxOutputTokens: policy.maxOutputTokens,
+          maxOutputTokens: outputTokenLimit,
           thinkingLevel: "LOW"
         })
       : provider === "openai"
-        ? await callOpenAiResumeProvider({ model, text, maxOutputTokens: policy.maxOutputTokens })
+        ? await callOpenAiResumeProvider({ model, text: normalizedText, maxOutputTokens: outputTokenLimit })
         : (() => { throw new PublicApiError(`Unsupported resume parsing provider: ${provider}.`, 503); })();
     usage = response.usage;
     actualCostMicros = estimateAiCostMicros({
@@ -1512,14 +2006,14 @@ export async function parseResumeTextWithMeta(
     });
     if (
       usage.inputTokens > policy.maxInputTokens ||
-      usage.outputTokens > policy.maxOutputTokens ||
+      usage.outputTokens > outputTokenLimit ||
       actualCostMicros > reservation.maximumCostMicros
     ) {
       throw new ResumeProviderError("Resume parsing usage exceeded its reserved bounds.", {
         usage
       });
     }
-    const data = validateParsedResumeOutput(text, response.value, { allowLegacy: false });
+    const data = validateParsedResumeOutput(normalizedText, response.value, { allowLegacy: false });
     try {
       await reconcileAiReservation({
         reservationId: reservation.id,

@@ -241,7 +241,7 @@ test("Gemini resume parsing requires combined data and maximum-cost confirmation
     (error: unknown) => error instanceof PublicApiError &&
       error.status === 428 &&
       error.details?.code === "AI_COST_CONFIRMATION_REQUIRED" &&
-      error.details.maximumCostMicros === 83_250 &&
+      error.details.maximumCostMicros === 99_000 &&
       error.details.provider === "gemini" &&
       error.details.dataType === "resume_text"
   );
@@ -271,9 +271,11 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   const generationConfig = requests[0]?.generationConfig as Record<string, unknown>;
   const responseSchema = generationConfig.responseJsonSchema as Record<string, unknown>;
   assert.equal(responseSchema.additionalProperties, false);
+  assert.equal(generationConfig.maxOutputTokens, 24_000);
+  assert.deepEqual(generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(ledger.reservations[0]?.provider, "gemini");
   assert.equal(ledger.reservations[0]?.feature, "RESUME_PARSE");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 83_250);
+  assert.equal(ledger.reservations[0]?.maximumCostMicros, 99_000);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });
@@ -352,7 +354,9 @@ test("every factual line in a recognized section must be represented", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(twoRoleSource, parsedOutput),
-    /incomplete.*work history.*not represented/i
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_INCOMPLETE" &&
+      error.details?.fieldPath === "sourceSections[2].recordBlocks"
   );
 });
 
@@ -645,7 +649,9 @@ test("one evidence block cannot merge two dated work-history records", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(mergedSource, merged),
-    /ambiguous workHistory detail.*merged record boundary/i
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "sourceSections[2].recordBlocks[0]"
   );
 });
 
@@ -1100,7 +1106,9 @@ test("adjacent certifications must each have typed record fields", () => {
 
   assert.throws(
     () => validateParsedResumeOutput(source, output),
-    /did not represent every factual line in certifications/i
+    (error) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "certifications[0].sourceText"
   );
 });
 
@@ -1251,14 +1259,18 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
   const ledger = installLedger(t);
   const client = getOpenAIClient();
   assert.ok(client);
-  stub(t, client.chat.completions, "create", async () => ({
-    choices: [{ finish_reason: "stop", message: { content: JSON.stringify(currentParsedOutput()) } }],
-    usage: {
-      prompt_tokens: 160,
-      completion_tokens: 80,
-      prompt_tokens_details: { cached_tokens: 0 }
-    }
-  }));
+  let openAiRequest: { max_tokens?: number } | undefined;
+  stub(t, client.chat.completions, "create", async (request: unknown) => {
+    openAiRequest = request as { max_tokens?: number };
+    return {
+      choices: [{ finish_reason: "stop", message: { content: JSON.stringify(currentParsedOutput()) } }],
+      usage: {
+        prompt_tokens: 160,
+        completion_tokens: 80,
+        prompt_tokens_details: { cached_tokens: 0 }
+      }
+    };
+  });
   stub(t, globalThis, "fetch", async () => { throw new Error("Gemini transport must not be used"); });
 
   const result = await parseResumeTextWithMeta(resumeText, "user-1", {
@@ -1268,8 +1280,9 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
 
   assert.equal(result.meta.provider, "openai");
   assert.equal(result.meta.model, "gpt-4o-mini");
+  assert.equal(openAiRequest?.max_tokens, 16_000);
   assert.equal(ledger.reservations[0]?.provider, "openai");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 14_250);
+  assert.equal(ledger.reservations[0]?.maximumCostMicros, 11_400);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
 });
 

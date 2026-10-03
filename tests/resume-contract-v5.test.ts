@@ -4,6 +4,9 @@ import { test } from "node:test";
 import {
   RESUME_PARSE_CACHE_VERSION,
   RESUME_PARSE_PROMPT_VERSION,
+  RESUME_PARSE_PLANNED_JSON_BYTES,
+  estimateResumeParseMaximumOutputBytes,
+  parseResumeTextWithMeta,
   validateParsedResumeOutput,
   type ParsedResumeV5
 } from "@/lib/ai/resume";
@@ -17,6 +20,7 @@ import {
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
 import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { PublicApiError } from "@/lib/api-errors";
+import { syntheticDocxExtractedText } from "./fixtures/resume-contract-v5-data";
 
 export const completeSyntheticResumeText = `Jordan Example
 Systems Operations Analyst
@@ -250,6 +254,271 @@ test("lossless source authority accepts connector words, grouped skills, mixed c
   assert.equal(parsed.certifications[0]?.details[0], "Credential ID: SYN-12345");
 });
 
+test("lossless source authority treats CRLF and LF as equivalent line boundaries", () => {
+  const crlfSource = completeSyntheticResumeText.replaceAll("\n", "\r\n");
+  const crSource = completeSyntheticResumeText.replaceAll("\n", "\r");
+  const lfOutput = completeSyntheticParsedResume();
+  const crlfOutput = JSON.parse(
+    JSON.stringify(completeSyntheticParsedResume()).replaceAll("\\n", "\\r\\n")
+  ) as ParsedResumeV5;
+
+  assert.equal(validateParsedResumeOutput(crlfSource, lfOutput, { allowLegacy: false }).workHistory.length, 2);
+  assert.equal(validateParsedResumeOutput(crlfSource, crlfOutput, { allowLegacy: false }).projects.length, 2);
+  assert.equal(validateParsedResumeOutput(crSource, lfOutput, { allowLegacy: false }).education.length, 2);
+  assert.equal(
+    estimateResumeParseMaximumOutputBytes(crSource),
+    estimateResumeParseMaximumOutputBytes(completeSyntheticResumeText)
+  );
+});
+
+test("typed fields remain projections when a source record contains untyped metadata", () => {
+  const metadata = "Full-time\nRevenue Operations";
+  const enrichedWork = firstWork.replace("Northwind Services\n", `Northwind Services\n${metadata}\n`);
+  const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+  output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+  output.workHistory[0]!.sourceText = enrichedWork;
+
+  assert.equal(
+    validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory[0]?.title,
+    "Operations Analyst"
+  );
+});
+
+test("an employment type cannot excuse an arbitrary hidden role header", () => {
+  const metadata = "Full-time\nRole Two";
+  const enrichedWork = firstWork.replace("Northwind Services\n", `Northwind Services\n${metadata}\n`);
+  const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+  output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+  output.workHistory[0]!.sourceText = enrichedWork;
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("one unexplained pre-narrative line cannot hide a role or organization", () => {
+  for (const hiddenHeader of ["Role Two", "Org Two"]) {
+    const enrichedWork = firstWork.replace("Northwind Services\n", `Northwind Services\n${hiddenHeader}\n`);
+    const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+    const output = completeSyntheticParsedResume();
+    output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+    output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+    output.workHistory[0]!.sourceText = enrichedWork;
+
+    assert.throws(
+      () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+      (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+    );
+  }
+});
+
+test("an adjacent work record cannot hide after the final projected bullet", () => {
+  for (const suffix of [
+    "Role Two",
+    "Role Two\nOrg Two",
+    "Role Two\nOrg Two\n• Second result.",
+    "Role Two | Org Two\n• Second result.",
+    "Technologies Used\nRole Two | Org Two",
+    "Technologies Used\nRole Two\nOrg Two",
+    "Technologies Used\nReact\nRole Two\nOrg Two",
+    "Technologies Used\nReact\nRole Two\nOrg Two\n• Second result."
+  ]) {
+    const enrichedWork = `${firstWork}\n\n${suffix}`;
+    const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+    const output = completeSyntheticParsedResume();
+    output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+    output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+    output.workHistory[0]!.sourceText = enrichedWork;
+
+    assert.throws(
+      () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+      (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+    );
+  }
+});
+
+test("blank space between a work header and its bullets remains inside one record", () => {
+  const spacedWork = firstWork.replace(
+    "Jan 2022 - Present\n• Built",
+    "Jan 2022 - Present\n\n• Built"
+  );
+  const source = completeSyntheticResumeText.replace(firstWork, spacedWork);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, spacedWork);
+  output.sourceSections[3]!.recordBlocks[0] = spacedWork;
+  output.workHistory[0]!.sourceText = spacedWork;
+
+  assert.equal(
+    validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory[0]?.company,
+    "Northwind Services"
+  );
+});
+
+test("a blank before bullets cannot invent a second canonical work record", () => {
+  const first = "Role One\nOrg One";
+  const second = "• Did work.";
+  const work = `${first}\n\n${second}`;
+  const source = `Jordan Example\n\nEXPERIENCE\n${work}`;
+  const output: ParsedResumeV5 = {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+      { section: "workHistory", heading: "EXPERIENCE", sourceText: work, recordBlocks: [first, second] }
+    ],
+    contactInfo: {
+      sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+      email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: first, company: "Org One", title: "Role One", location: null,
+      startDate: null, endDate: null, bullets: []
+    }, {
+      sourceText: second, company: second, title: second, location: null,
+      startDate: null, endDate: null, bullets: []
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[1].title")
+  );
+});
+
+test("a pipe-delimited project bullet is not treated as a record header", () => {
+  const pipeBullet = "• Pipeline stages: A | B | C";
+  const enrichedProject = firstProject.replace(
+    "• Built a review-first application workflow with TypeScript and PostgreSQL.",
+    pipeBullet
+  );
+  const source = completeSyntheticResumeText.replace(firstProject, enrichedProject);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[4]!.sourceText = output.sourceSections[4]!.sourceText.replace(firstProject, enrichedProject);
+  output.sourceSections[4]!.recordBlocks[0] = enrichedProject;
+  output.projects[0]!.sourceText = enrichedProject;
+  output.projects[0]!.bullets = [pipeBullet];
+
+  assert.equal(
+    validateParsedResumeOutput(source, output, { allowLegacy: false }).projects[0]?.name,
+    "Apply Pilot"
+  );
+});
+
+test("a minimal project record cannot hide after the final projected bullet", () => {
+  const suffix = "Project Two\n• Second result.";
+  const enrichedProject = `${firstProject}\n\n${suffix}`;
+  const source = completeSyntheticResumeText.replace(firstProject, enrichedProject);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[4]!.sourceText = output.sourceSections[4]!.sourceText.replace(firstProject, enrichedProject);
+  output.sourceSections[4]!.recordBlocks[0] = enrichedProject;
+  output.projects[0]!.sourceText = enrichedProject;
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "projects[0].sourceText")
+  );
+});
+
+test("named metadata cannot span a paragraph boundary and absorb a minimal project", () => {
+  for (const suffix of [
+    "Technologies Used\n\nProject Two\n• Second result.",
+    "Technologies Used\n   \nProject Two\n• Second result."
+  ]) {
+    const enrichedProject = `${firstProject}\n\n${suffix}`;
+    const source = completeSyntheticResumeText.replace(firstProject, enrichedProject);
+    const output = completeSyntheticParsedResume();
+    output.sourceSections[4]!.sourceText = output.sourceSections[4]!.sourceText.replace(firstProject, enrichedProject);
+    output.sourceSections[4]!.recordBlocks[0] = enrichedProject;
+    output.projects[0]!.sourceText = enrichedProject;
+
+    assert.throws(
+      () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+      (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "projects[0].sourceText")
+    );
+  }
+});
+
+test("typed fields remain projections when untyped metadata follows the narrative", () => {
+  const metadata = "Technologies Used\nReact";
+  const enrichedWork = `${firstWork}\n${metadata}`;
+  const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+  output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+  output.workHistory[0]!.sourceText = enrichedWork;
+
+  assert.equal(
+    validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory[0]?.company,
+    "Northwind Services"
+  );
+});
+
+test("bounded named metadata requires list markers when it has multiple values", () => {
+  for (const metadata of [
+    "Technologies Used\nReact",
+    "Technologies Used\n• React",
+    "Technologies Used\n• React\n• PostgreSQL"
+  ]) {
+    const enrichedWork = `${firstWork}\n\n${metadata}`;
+    const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+    const output = completeSyntheticParsedResume();
+    output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+    output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+    output.workHistory[0]!.sourceText = enrichedWork;
+
+    assert.equal(
+      validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory[0]?.company,
+      "Northwind Services"
+    );
+  }
+});
+
+test("multiple unmarked metadata values are rejected because they can hide a zero-bullet record", () => {
+  const metadata = "Technologies Used\nReact\nPostgreSQL";
+  const enrichedWork = `${firstWork}\n\n${metadata}`;
+  const source = completeSyntheticResumeText.replace(firstWork, enrichedWork);
+  const output = completeSyntheticParsedResume();
+  output.sourceSections[3]!.sourceText = output.sourceSections[3]!.sourceText.replace(firstWork, enrichedWork);
+  output.sourceSections[3]!.recordBlocks[0] = enrichedWork;
+  output.workHistory[0]!.sourceText = enrichedWork;
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("repeated canonical headings partition typed records in source order", () => {
+  const source = completeSyntheticResumeText.replace(
+    `${firstWork}\n\n${secondWork}`,
+    `${firstWork}\n\nWORK EXPERIENCE\n${secondWork}`
+  );
+  const output = completeSyntheticParsedResume();
+  output.sourceSections.splice(
+    3,
+    1,
+    { section: "workHistory", heading: "EXPERIENCE", sourceText: firstWork, recordBlocks: [firstWork] },
+    { section: "workHistory", heading: "WORK EXPERIENCE", sourceText: secondWork, recordBlocks: [secondWork] }
+  );
+
+  assert.equal(validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory.length, 2);
+});
+
 test("lossless authority rejects an omitted source fact with a privacy-safe field path", () => {
   const omitted = completeSyntheticParsedResume();
   omitted.sourceSections[2]!.recordBlocks.pop();
@@ -265,6 +534,16 @@ test("typed projections reject invented facts without retaining raw provider out
   assert.throws(
     () => validateParsedResumeOutput(completeSyntheticResumeText, invented),
     (error) => publicError(error, "RESUME_PARSE_UNSUPPORTED_FACT", "education[1].fieldOfStudy")
+  );
+});
+
+test("typed projection arrays cannot amplify one source occurrence through duplicates", () => {
+  const duplicated = completeSyntheticParsedResume();
+  duplicated.skills = ["Excel", "Excel"];
+
+  assert.throws(
+    () => validateParsedResumeOutput(completeSyntheticResumeText, duplicated),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "skills[1]")
   );
 });
 
@@ -289,7 +568,7 @@ test("lossless authority rejects wrong record order and adjacent record merges",
   );
 });
 
-test("typed coverage rejects a provider-controlled merge of adjacent dateless work records", () => {
+test("structural guards reject a provider-controlled merge of adjacent dateless work records", () => {
   const source = `Jordan Example
 
 EXPERIENCE
@@ -341,18 +620,294 @@ Contoso Labs
 
   assert.throws(
     () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
-    (error) => publicError(error, "RESUME_PARSE_INCOMPLETE", "workHistory[0]")
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
   );
 });
 
-test("common noncanonical headings are preserved as additional source sections", () => {
-  const source = completeSyntheticResumeText.replace("ADDITIONAL INFORMATION", "LEADERSHIP");
+test("structural guards reject adjacent dateless headers before the first narrative", () => {
+  const mergedBlock = `Role One
+Org One
+Role Two
+Org Two
+• Did work.`;
+  const source = `Jordan Example
+
+EXPERIENCE
+${mergedBlock}`;
+  const output: ParsedResumeV5 = {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+      { section: "workHistory", heading: "EXPERIENCE", sourceText: mergedBlock, recordBlocks: [mergedBlock] }
+    ],
+    contactInfo: {
+      sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+      email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: mergedBlock,
+      company: "Org One",
+      title: "Role One",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: ["• Did work."]
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("a labeled adjacent organization cannot hide before the first narrative", () => {
+  const mergedBlock = `Role One
+Org One
+Role Two
+Company: Org Two
+• Did work.`;
+  const source = `Jordan Example
+
+EXPERIENCE
+${mergedBlock}`;
   const output = completeSyntheticParsedResume();
-  output.sourceSections.at(-1)!.heading = "LEADERSHIP";
+  output.sourceSections = [
+    { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+    { section: "workHistory", heading: "EXPERIENCE", sourceText: mergedBlock, recordBlocks: [mergedBlock] }
+  ];
+  output.contactInfo = {
+    sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+    email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+  };
+  output.summary = "";
+  output.skills = [];
+  output.workHistory = [{
+    sourceText: mergedBlock,
+    company: "Org One",
+    title: "Role One",
+    location: null,
+    startDate: null,
+    endDate: null,
+    bullets: ["• Did work."]
+  }];
+  output.projects = [];
+  output.education = [];
+  output.certifications = [];
+  output.achievements = [];
+  output.sectionStatus = {
+    summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+    education: "absent", certifications: "absent", achievements: "absent"
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("an explicit paragraph boundary prevents a one-line adjacent header from merging", () => {
+  const mergedBlock = `Role One
+Org One
+• First result.
+
+Role Two | Org Two
+• Second result.`;
+  const source = `Jordan Example
+
+EXPERIENCE
+${mergedBlock}`;
+  const output = completeSyntheticParsedResume();
+  output.sourceSections = [
+    { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+    { section: "workHistory", heading: "EXPERIENCE", sourceText: mergedBlock, recordBlocks: [mergedBlock] }
+  ];
+  output.contactInfo = {
+    sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+    email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+  };
+  output.summary = "";
+  output.skills = [];
+  output.workHistory = [{
+    sourceText: mergedBlock,
+    company: "Org One",
+    title: "Role One",
+    location: null,
+    startDate: null,
+    endDate: null,
+    bullets: ["• First result.", "• Second result."]
+  }];
+  output.projects = [];
+  output.education = [];
+  output.certifications = [];
+  output.achievements = [];
+  output.sectionStatus = {
+    summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+    education: "absent", certifications: "absent", achievements: "absent"
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("an uppercase canonical project name is not inferred to be an arbitrary section", () => {
+  const project = `OPEN SOURCE
+• Built a tool.`;
+  const source = `Jordan Example
+
+PROJECTS
+
+${project}`;
+  const output = completeSyntheticParsedResume();
+  output.sourceSections = [
+    { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+    { section: "projects", heading: "PROJECTS", sourceText: project, recordBlocks: [project] }
+  ];
+  output.contactInfo = {
+    sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+    email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+  };
+  output.summary = "";
+  output.skills = [];
+  output.workHistory = [];
+  output.projects = [{
+    sourceText: project,
+    name: "OPEN SOURCE",
+    description: null,
+    date: null,
+    technologies: [],
+    bullets: ["• Built a tool."]
+  }];
+  output.education = [];
+  output.certifications = [];
+  output.achievements = [];
+  output.sectionStatus = {
+    summary: "absent", skills: "absent", workHistory: "absent", projects: "present",
+    education: "absent", certifications: "absent", achievements: "absent"
+  };
 
   assert.equal(
-    validateParsedResumeOutput(source, output, { allowLegacy: false }).sourceSections.at(-1)?.section,
-    "additional"
+    validateParsedResumeOutput(source, output, { allowLegacy: false }).projects[0]?.name,
+    "OPEN SOURCE"
+  );
+});
+
+test("a canonical role whose title looks like a section is not carved into an additional section", () => {
+  const first = `Operations Analyst
+Northwind Services
+• Improved reporting accuracy.`;
+  const second = `HEAD OF RESEARCH
+Company: Contoso
+• Led a research program.`;
+  const source = `Jordan Example
+
+EXPERIENCE
+${first}
+
+${second}`;
+  const output: ParsedResumeV5 = {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+      {
+        section: "workHistory",
+        heading: "EXPERIENCE",
+        sourceText: `${first}\n\n${second}`,
+        recordBlocks: [first, second]
+      }
+    ],
+    contactInfo: {
+      sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+      email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: first,
+      company: "Northwind Services",
+      title: "Operations Analyst",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: ["• Improved reporting accuracy."]
+    }, {
+      sourceText: second,
+      company: "Contoso",
+      title: "HEAD OF RESEARCH",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: ["• Led a research program."]
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+
+  assert.equal(validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory.length, 2);
+});
+
+test("resume source admission is bounded by the lossless response capacity before provider setup", async () => {
+  const escapeHeavyPayload = `• ${"\\".repeat(1_800)}.`;
+  const escapeHeavyRecords = [1, 2, 3].map(
+    (index) => `P${index} | D${index} | 202${index}\n${escapeHeavyPayload}`
+  );
+  const escapeHeavySource = `Jordan Example\n\nPROJECTS\n${escapeHeavyRecords.join("\n\n")}`;
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(completeSyntheticResumeText) <=
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(syntheticDocxExtractedText) <=
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(escapeHeavySource) >
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+
+  await assert.rejects(
+    parseResumeTextWithMeta(escapeHeavySource, "user-1"),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.status === 413 &&
+      error.details?.code === "RESUME_PARSE_SOURCE_TOO_LARGE_FOR_LOSSLESS_OUTPUT"
+  );
+
+  await assert.rejects(
+    parseResumeTextWithMeta(`Jordan Example\n\nSUMMARY\n${"\0".repeat(1_100)}`, "user-1"),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.status === 422 &&
+      error.details?.code === "RESUME_PARSE_UNSUPPORTED_CONTROL_CHARACTERS" &&
+      error.details?.fieldPath === "rawText"
+  );
+});
+
+test("provider warnings cannot amplify control characters outside source evidence", () => {
+  const output = completeSyntheticParsedResume();
+  output.warnings = ["\0".repeat(200)];
+
+  assert.throws(
+    () => validateParsedResumeOutput(completeSyntheticResumeText, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_INVALID_OUTPUT", "warnings[0]")
   );
 });
 
@@ -405,6 +960,15 @@ Built a controlled application workflow.`;
   assert.equal(parsed.contractVersion, "5");
   assert.equal(parsed.projects[0]?.date, null);
   assert.ok(parsed.sourceSections.length > 0);
+
+  const crlfLegacy = JSON.parse(
+    JSON.stringify(legacy).replaceAll("\\n", "\\r\\n")
+  );
+  const crlfParsed = validateParsedResumeOutput(
+    legacySource.replaceAll("\n", "\r\n"),
+    crlfLegacy
+  );
+  assert.equal(crlfParsed.projects[0]?.sourceText, legacy.projects[0]!.sourceText);
 });
 
 test("application planning keeps canonical education and project facts and reports every bounded omission", () => {

@@ -21,9 +21,9 @@ export type AiFeaturePolicy = {
 };
 
 export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
-  // V5 preserves complete source sections and repeats canonical record evidence, so
-  // reserve enough output for a realistic multi-page resume without truncating JSON.
-  RESUME_PARSE: { maxOutputTokens: 16_000, maxInputTokens: 31_000, modelTier: "fast" },
+  // Gemini receives additional total-output headroom because its LOW thinking
+  // tokens share this ceiling with visible JSON. OpenAI has no thinking share.
+  RESUME_PARSE: { maxOutputTokens: 24_000, maxInputTokens: 12_000, modelTier: "fast" },
   JOB_PARSE: { maxOutputTokens: 2_500, maxInputTokens: 21_000, modelTier: "fast" },
   // The output ceiling includes visible response and Gemini thinking tokens.
   JOB_MATCH: { maxOutputTokens: 8_192, maxInputTokens: 56_000, modelTier: "fast" },
