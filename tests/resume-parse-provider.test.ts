@@ -241,7 +241,7 @@ test("Gemini resume parsing requires combined data and maximum-cost confirmation
     (error: unknown) => error instanceof PublicApiError &&
       error.status === 428 &&
       error.details?.code === "AI_COST_CONFIRMATION_REQUIRED" &&
-      error.details.maximumCostMicros === 38_250 &&
+      error.details.maximumCostMicros === 83_250 &&
       error.details.provider === "gemini" &&
       error.details.dataType === "resume_text"
   );
@@ -273,7 +273,7 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   assert.equal(responseSchema.additionalProperties, false);
   assert.equal(ledger.reservations[0]?.provider, "gemini");
   assert.equal(ledger.reservations[0]?.feature, "RESUME_PARSE");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 38_250);
+  assert.equal(ledger.reservations[0]?.maximumCostMicros, 83_250);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });
@@ -290,7 +290,13 @@ test("unsupported parsed facts fail validation, consume only known usage, and ar
       highCostConfirmed: true,
       dataSharingConfirmed: true
     }),
-    /not supported by the submitted resume source/i
+    (error: unknown) => error instanceof PublicApiError &&
+      /not supported by the submitted resume source/i.test(error.message) &&
+      error.details?.fieldPath === "workHistory[0].bullets[0]" &&
+      error.details.provider === "gemini" &&
+      error.details.billingStatus === "known" &&
+      typeof error.details.actualCostMicros === "number" &&
+      error.details.actualCostMicros > 0
   );
   assert.equal(ledger.reconciliations[0]?.status, "FAILED");
   assert.equal(ledger.cacheWrites.length, 0);
@@ -1263,7 +1269,7 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
   assert.equal(result.meta.provider, "openai");
   assert.equal(result.meta.model, "gpt-4o-mini");
   assert.equal(ledger.reservations[0]?.provider, "openai");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 7_050);
+  assert.equal(ledger.reservations[0]?.maximumCostMicros, 14_250);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
 });
 

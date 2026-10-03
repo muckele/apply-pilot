@@ -430,7 +430,7 @@ const sectionHeadings: Record<keyof ParsedResume["sectionStatus"], RegExp> = {
   achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
 };
 
-const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING)?|PUBLICATIONS?|REFERENCES?|ADDITIONAL\s+INFORMATION)$/i;
+const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING|\s+EXPERIENCE)?|COMMUNITY\s+(?:INVOLVEMENT|SERVICE)|LEADERSHIP|PROFESSIONAL\s+(?:DEVELOPMENT|AFFILIATIONS?|MEMBERSHIPS?)|TRAINING|COURSES?|COURSEWORK|ACTIVITIES|PUBLICATIONS?|PATENTS?|PRESENTATIONS?|CONFERENCES?|REFERENCES?|ADDITIONAL\s+(?:EXPERIENCE|INFORMATION)|OTHER)$/i;
 
 const englishRegionNames = (() => {
   const names = new Set<string>();
@@ -1176,6 +1176,13 @@ export function validateParsedResumeOutput(
     assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
     assertWorkLocationSemantics(item);
     assertUnambiguousNarrativeEntries(item.bullets, "workHistory", `workHistory[${index}].bullets`);
+    assertOverlappingFactCoverage(
+      item.sourceText,
+      [item.company, item.title, item.location, item.startDate, item.endDate, ...item.bullets],
+      "workHistory",
+      `workHistory[${index}]`,
+      /\b(?:company|employer|organization|role|title|location|based\s+in|at|from|to|through|until|dates?|responsibilities|highlights?|achievements?)\b/gi
+    );
   });
   output.projects.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `projects[${index}].sourceText`);
@@ -1187,6 +1194,13 @@ export function validateParsedResumeOutput(
     assertResumeDate(item.date, "projects", "projects date", `projects[${index}].date`);
     assertProjectStructure(item, `projects[${index}]`);
     assertUnambiguousNarrativeEntries(item.bullets, "projects", `projects[${index}].bullets`);
+    assertOverlappingFactCoverage(
+      item.sourceText,
+      [item.name, item.description, item.date, ...item.technologies, ...item.bullets],
+      "projects",
+      `projects[${index}]`,
+      /\b(?:project|name|subtitle|description|date|year|technologies|technology|tech|stack|built\s+with|using|and|with)\b/gi
+    );
   });
   output.education.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `education[${index}].sourceText`);
@@ -1199,6 +1213,13 @@ export function validateParsedResumeOutput(
     assertResumeDate(item.startDate, "education", "education date", `education[${index}].startDate`);
     assertResumeDate(item.endDate, "education", "education date", `education[${index}].endDate`);
     assertUnambiguousNarrativeEntries(item.details, "education", `education[${index}].details`);
+    assertOverlappingFactCoverage(
+      item.sourceText,
+      [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate, ...item.details],
+      "education",
+      `education[${index}]`,
+      /\b(?:institution|school|university|college|credential|degree|certificate|major|minor|field\s+of\s+study|field|in|at|from|to|through|until|dates?|details?)\b/gi
+    );
   });
   output.certifications.forEach((item, index) => {
     assertSourceSupported(source, item.sourceText, `certifications[${index}].sourceText`);
@@ -1316,12 +1337,18 @@ function publicProviderError(error: unknown, visibility: {
   billingStatus: "known" | "not_charged" | "uncertain";
   actualCostMicros: number | null;
 }) {
-  if (!(error instanceof GeminiProviderError || error instanceof ResumeProviderError)) return error;
   const safeDetails = {
     provider: visibility.provider,
     billingStatus: visibility.billingStatus,
     actualCostMicros: visibility.actualCostMicros
   };
+  if (error instanceof PublicApiError) {
+    return new PublicApiError(error.message, error.status, {
+      ...error.details,
+      ...safeDetails
+    });
+  }
+  if (!(error instanceof GeminiProviderError || error instanceof ResumeProviderError)) return error;
   if (error.billingDisposition === "not_charged") {
     return new PublicApiError("The configured AI provider rejected resume parsing before completion. No master resume was changed.", 502, {
       code: "RESUME_PARSE_PROVIDER_REJECTED",

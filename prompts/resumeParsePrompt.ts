@@ -6,7 +6,7 @@ Return only JSON matching contractVersion 5 and the supplied response schema.
 Source fidelity rules:
 - Every non-null factual string must be copied verbatim from the submitted resume text. You may normalize surrounding whitespace only.
 - sourceSections is the lossless authority. Preserve every contact/header preamble and every headed section in exact source order. Copy each exact heading, the complete section body into sourceText, and exact ordered contiguous recordBlocks that cover every non-whitespace source character once.
-- Use section additional for CONTACT, LANGUAGES, INTERESTS, VOLUNTEERING, PUBLICATIONS, REFERENCES, and ADDITIONAL INFORMATION headings that are not represented by a canonical typed section. Never silently discard them.
+- Use section additional for noncanonical headings such as CONTACT, LANGUAGES, INTERESTS, VOLUNTEERING, COMMUNITY INVOLVEMENT, LEADERSHIP, PROFESSIONAL DEVELOPMENT, TRAINING, COURSES, PUBLICATIONS, REFERENCES, and ADDITIONAL INFORMATION. Never silently discard them.
 - Copy the complete contiguous contact/header block into contactInfo.sourceText, including the candidate name and any headline or contact lines. Copy the name and professional headline into contactInfo.name and contactInfo.headline when present, and represent every remaining contact fact in its typed field.
 - Parse email, phone, and an explicitly labelled location independently when they share one contact line. Do not force the complete mixed line into any single typed field.
 - Use contactInfo.location only for an explicit Location:/Address: value or a standalone remote/country value. Do not guess whether an unlabeled city/region- or country-shaped line is a location or professional headline.

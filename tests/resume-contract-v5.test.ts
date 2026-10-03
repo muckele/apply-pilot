@@ -15,6 +15,7 @@ import {
   type MatchInput
 } from "@/lib/ai/job-match";
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
+import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { PublicApiError } from "@/lib/api-errors";
 
 export const completeSyntheticResumeText = `Jordan Example
@@ -228,6 +229,14 @@ test("resume parsing uses coherent v5 contract, prompt, and cache revisions", ()
   assert.equal(RESUME_PARSE_PROMPT_VERSION, "5");
   assert.equal(RESUME_PARSE_CACHE_VERSION, "5");
   assert.equal(completeSyntheticParsedResume().contractVersion, "5");
+  const fixtureOutputTokens = Math.ceil(Buffer.byteLength(
+    JSON.stringify(completeSyntheticParsedResume()),
+    "utf8"
+  ) / 3);
+  assert.ok(
+    AI_FEATURE_POLICIES.RESUME_PARSE.maxOutputTokens >= fixtureOutputTokens * 4,
+    "lossless v5 output needs capacity for a realistically longer resume"
+  );
 });
 
 test("lossless source authority accepts connector words, grouped skills, mixed contact facts, and overlapping projections", () => {
@@ -277,6 +286,73 @@ test("lossless authority rejects wrong record order and adjacent record merges",
   assert.throws(
     () => validateParsedResumeOutput(completeSyntheticResumeText, merged),
     (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "sourceSections[3].recordBlocks[0]")
+  );
+});
+
+test("typed coverage rejects a provider-controlled merge of adjacent dateless work records", () => {
+  const source = `Jordan Example
+
+EXPERIENCE
+Operations Analyst
+Northwind Services
+• Improved reporting accuracy.
+
+Customer Support Specialist
+Contoso Labs
+• Resolved onboarding issues.`;
+  const mergedBlock = `Operations Analyst
+Northwind Services
+• Improved reporting accuracy.
+
+Customer Support Specialist
+Contoso Labs
+• Resolved onboarding issues.`;
+  const output: ParsedResumeV5 = {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+      { section: "workHistory", heading: "EXPERIENCE", sourceText: mergedBlock, recordBlocks: [mergedBlock] }
+    ],
+    contactInfo: {
+      sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+      email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: mergedBlock,
+      company: "Northwind Services",
+      title: "Operations Analyst",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: ["• Improved reporting accuracy.", "• Resolved onboarding issues."]
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_INCOMPLETE", "workHistory[0]")
+  );
+});
+
+test("common noncanonical headings are preserved as additional source sections", () => {
+  const source = completeSyntheticResumeText.replace("ADDITIONAL INFORMATION", "LEADERSHIP");
+  const output = completeSyntheticParsedResume();
+  output.sourceSections.at(-1)!.heading = "LEADERSHIP";
+
+  assert.equal(
+    validateParsedResumeOutput(source, output, { allowLegacy: false }).sourceSections.at(-1)?.section,
+    "additional"
   );
 });
 
@@ -427,8 +503,11 @@ test("tailoring receives only canonical career fields plus the raw source fallba
     summary: parsed.summary,
     skills: parsed.skills,
     achievements: parsed.achievements,
-    workHistory: parsed.workHistory,
-    projects: parsed.projects,
+    workHistory: parsed.workHistory.map((item) => ({ ...item, privateNote: "nested secret" })),
+    projects: parsed.projects.map((item) => ({
+      ...item,
+      contactInfo: { email: "nested@example.test" }
+    })),
     education: parsed.education,
     certifications: parsed.certifications
   }, { careerGoals: "Reliable operations", email: "private@example.test" });
@@ -442,4 +521,6 @@ test("tailoring receives only canonical career fields plus the raw source fallba
   assert.ok(!("filePath" in payload.resume));
   assert.ok(!("contactInfo" in payload.resume));
   assert.ok(!("email" in payload.profile));
+  assert.ok(!JSON.stringify(payload).includes("nested secret"));
+  assert.ok(!JSON.stringify(payload).includes("nested@example.test"));
 });

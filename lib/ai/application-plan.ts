@@ -29,8 +29,8 @@ export type JobRequirementEntry = {
   text: string;
 };
 
-// Caller-facing input. Extra properties (rawText, contactInfo, file paths, answer-vault
-// or EEO data, browser/session state) are never forwarded: buildApplicationPlanPayload
+// Caller-facing input. Extra properties (contactInfo, file paths, answer-vault or EEO
+// data, browser/session state) are never forwarded: buildApplicationPlanPayload
 // constructs a new allowlisted object and reads only the fields declared here.
 export type ApplicationPlanInput = {
   job: {
@@ -762,6 +762,7 @@ export async function planApplication(
 
   return {
     ...enforced.plan,
+    projectionOmissions: payload.projectionOmissions,
     unknownRequirementIds: enforced.unknownRequirementIds,
     unknownEvidenceIds: enforced.unknownEvidenceIds,
     exaggeratedEvidenceIds: enforced.exaggeratedEvidenceIds,

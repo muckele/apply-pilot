@@ -456,6 +456,7 @@ test("offline planApplication uses the evidence-valid local fallback with proven
     assert.deepEqual(plan.unknownEvidenceIds, []);
     assert.deepEqual(plan.exaggeratedEvidenceIds, []);
     assert.deepEqual(plan.inventedNumericClaims, []);
+    assert.deepEqual(plan.projectionOmissions, []);
     assert.ok(plan.evidenceMap.length > 0);
     for (const entry of plan.evidenceMap) {
       assert.equal(entry.gap, entry.evidenceIds.length === 0);
@@ -464,6 +465,12 @@ test("offline planApplication uses the evidence-valid local fallback with proven
 
     // The plan remains advisory data: no executable action fields exist.
     assert.ok(!("submit" in plan) && !("actions" in plan));
+
+    const oversized = fixtureInput();
+    oversized.resume!.skills = Array.from({ length: 31 }, (_, index) => `Skill ${index + 1}`);
+    const boundedPlan = await planApplication(oversized);
+    assert.equal(boundedPlan.projectionOmissions[0]?.sourcePath, "resume.skills");
+    assert.deepEqual(boundedPlan.projectionOmissions[0]?.omittedIds, ["skill-31"]);
   } finally {
     globalThis.fetch = originalFetch;
   }
