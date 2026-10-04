@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import OpenAI from "openai";
 
+import * as resumeModule from "@/lib/ai/resume";
 import {
   estimateResumeParseMaximumOutputBytes,
   parseResumeTextWithMeta,
+  parsedResumeSchema,
+  RESUME_PARSE_CACHE_VERSION,
   RESUME_PARSE_PLANNED_JSON_BYTES,
   RESUME_PARSE_PROMPT_VERSION,
   RESUME_PARSE_RESPONSE_JSON_SCHEMA,
@@ -19,6 +22,37 @@ import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
+
+const EXPECTED_GEMINI_MAX_ITEMS_OMISSIONS = [
+  "$.properties.achievements.maxItems",
+  "$.properties.certifications.items.properties.details.maxItems",
+  "$.properties.certifications.maxItems",
+  "$.properties.education.items.properties.details.maxItems",
+  "$.properties.education.maxItems",
+  "$.properties.projects.items.properties.bullets.maxItems",
+  "$.properties.projects.items.properties.technologies.maxItems",
+  "$.properties.projects.maxItems",
+  "$.properties.skills.maxItems",
+  "$.properties.sourceSections.items.properties.recordBlocks.maxItems",
+  "$.properties.sourceSections.maxItems",
+  "$.properties.warnings.maxItems",
+  "$.properties.workHistory.items.properties.bullets.maxItems",
+  "$.properties.workHistory.maxItems"
+] as const;
+
+function jsonDifferences(before: unknown, after: unknown, path = "$"): string[] {
+  if (JSON.stringify(before) === JSON.stringify(after)) return [];
+  if (
+    before && after && typeof before === "object" && typeof after === "object" &&
+    !Array.isArray(before) && !Array.isArray(after)
+  ) {
+    const beforeRecord = before as Record<string, unknown>;
+    const afterRecord = after as Record<string, unknown>;
+    return [...new Set([...Object.keys(beforeRecord), ...Object.keys(afterRecord)])]
+      .flatMap((key) => jsonDifferences(beforeRecord[key], afterRecord[key], `${path}.${key}`));
+  }
+  return [path];
+}
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -186,7 +220,7 @@ function installLedger(t: TestContext, cachedOutput?: unknown, options: {
   const cacheWrites: Array<Record<string, unknown>> = [];
 
   stub(t, prisma.aIResponseCache, "findFirst", async ({ where }: { where: { promptVersion: string } }) =>
-    cachedOutput && where.promptVersion === (options.cachedPromptVersion ?? RESUME_PARSE_PROMPT_VERSION)
+    cachedOutput && where.promptVersion === (options.cachedPromptVersion ?? RESUME_PARSE_CACHE_VERSION)
       ? { output: cachedOutput }
       : null);
   stub(t, prisma.aIBudgetReservation, "findMany", async () =>
@@ -325,8 +359,9 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   const responseSchema = generationConfig.responseJsonSchema as Record<string, unknown>;
   assert.equal(responseSchema.additionalProperties, false);
   const serializedWireSchema = JSON.stringify(responseSchema);
-  assert.doesNotMatch(serializedWireSchema, /"maxLength"|"pattern"/);
+  assert.doesNotMatch(serializedWireSchema, /"maxLength"|"maxItems"|"pattern"/);
   assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"maxLength"/);
+  assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"maxItems"/);
   assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"pattern"/);
   assert.equal(generationConfig.maxOutputTokens, 24_000);
   assert.deepEqual(generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
@@ -335,6 +370,54 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   assert.equal(ledger.reservations[0]?.maximumCostMicros, 99_000);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
+});
+
+test("Gemini resume parsing omits exactly fourteen maxItems constraints from its wire projection", () => {
+  const wireSchema = (resumeModule as typeof resumeModule & {
+    RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA?: unknown;
+  }).RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA;
+
+  assert.ok(wireSchema, "the dedicated Gemini resume wire schema must exist");
+  assert.deepEqual(
+    jsonDifferences(RESUME_PARSE_RESPONSE_JSON_SCHEMA, wireSchema).sort(),
+    [...EXPECTED_GEMINI_MAX_ITEMS_OMISSIONS].sort()
+  );
+  assert.equal(
+    (wireSchema as { properties: { sourceSections: { minItems?: number } } })
+      .properties.sourceSections.minItems,
+    1
+  );
+  assert.doesNotMatch(JSON.stringify(wireSchema), /"maxItems"/);
+  assert.equal(parsedResumeSchema.safeParse(fullSizeSyntheticProviderOutput()).success, true);
+
+  const overBound = fullSizeSyntheticProviderOutput();
+  overBound.projects[0]!.technologies = Array.from({ length: 26 }, () => "TypeScript");
+  assert.equal(parsedResumeSchema.safeParse(overBound).success, false);
+});
+
+test("a Gemini response beyond a removed wire maxItems remains locally rejected and uncached", async (t) => {
+  environment(t);
+  const ledger = installLedger(t);
+  const overBound = fullSizeSyntheticProviderOutput();
+  overBound.projects[0]!.technologies = Array.from({ length: 26 }, () => "TypeScript");
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    return providerResponse(overBound);
+  });
+
+  await assert.rejects(
+    parseResumeTextWithMeta(fullSizeSyntheticDocxExtractedText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_INVALID_OUTPUT" &&
+      error.details?.fieldPath === "projects[0].technologies"
+  );
+  assert.equal(providerCalls, 1);
+  assert.equal(ledger.reconciliations[0]?.status, "FAILED");
+  assert.equal(ledger.cacheWrites.length, 0);
 });
 
 test("unsupported parsed facts fail validation, consume only known usage, and are never cached", async (t) => {

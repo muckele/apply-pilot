@@ -35,7 +35,8 @@ import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 export const RESUME_PARSE_PROMPT_VERSION = "6";
-export const RESUME_PARSE_CACHE_VERSION = "6";
+export const RESUME_PARSE_CACHE_VERSION = "7";
+export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "2";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
 const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
@@ -426,6 +427,23 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
     "education", "certifications", "achievements", "sectionStatus", "warnings"
   ]
 } as const;
+
+function omitMaxItemsFromJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(omitMaxItemsFromJsonSchema);
+  if (!value || typeof value !== "object") return value;
+
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, child]) =>
+      key === "maxItems" ? [] : [[key, omitMaxItemsFromJsonSchema(child)]])
+  );
+}
+
+// Gemini can reject this otherwise-valid, deeply nested schema when all fourteen
+// array maxima are present. Keep the complete canonical contract above for local
+// validation, admission estimates, OpenAI, and every consumer. Only the Gemini
+// wire representation omits maxItems; minItems and all structural constraints stay.
+export const RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA =
+  omitMaxItemsFromJsonSchema(RESUME_PARSE_RESPONSE_JSON_SCHEMA) as Record<string, unknown>;
 
 const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
   professionalSummary: z.string(),
@@ -2258,7 +2276,7 @@ export async function parseResumeTextWithMeta(
           model,
           systemPrompt: resumeParsePrompt,
           payload,
-          responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA,
+          responseJsonSchema: RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA,
           maxOutputTokens: outputTokenLimit,
           thinkingLevel: "LOW"
         })
