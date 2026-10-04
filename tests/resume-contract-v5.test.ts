@@ -1214,7 +1214,7 @@ test("warning limits retain a byte-safe maximum for the structured-response plan
   );
 
   const maximumEscaped = fullSizeSyntheticProviderOutput();
-  maximumEscaped.warnings = Array.from({ length: 5 }, () => "\ud800".repeat(100));
+  maximumEscaped.warnings = Array.from({ length: 5 }, () => "\\".repeat(100));
   const validated = validateParsedResumeOutput(
     fullSizeSyntheticDocxExtractedText,
     maximumEscaped,

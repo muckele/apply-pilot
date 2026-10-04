@@ -118,3 +118,72 @@ test("rejects adjacent-record merges and invented typed facts after slicing", ()
     output.education[1]!.fieldOfStudy = "Invented Private Subject";
   }, "RESUME_PARSE_UNSUPPORTED_FACT");
 });
+
+test("rejects merged dateless work records with punctuated organization names", () => {
+  const adjacentHeaders = [
+    ["Role Two", "Acme, Inc."],
+    ["Role Two", "Yahoo!"],
+    ["Role Two", "Acme Partners."],
+    ["Role Two", "AT&T?"],
+    ["VP.", "Yahoo!"],
+    ["Engineer, R&D.", "Acme Partners."],
+    ["S.W.E.", "AT&T?"],
+    ["Title: VP", "Company: Yahoo!"],
+    ["Role: Engineer", "Employer: Acme Partners."]
+  ] as const;
+  for (const [title, organization] of adjacentHeaders) {
+    const parsed = fullSizeSyntheticProviderOutput();
+    const workSection = parsed.sourceSections.find((section) => section.section === "workHistory");
+    assert.ok(workSection);
+    const originalPair = workSection.recordBlocks.slice(0, 2).join("\n\n");
+    const firstRecord = "Role One\nOrg One\n• Did thing.";
+    const secondRecord = `${title}\n${organization}`;
+    const replacementPair = `${firstRecord}\n\n${secondRecord}`;
+    const rawSource = fullSizeSyntheticDocxExtractedText.replace(originalPair, replacementPair);
+    assert.notEqual(rawSource, fullSizeSyntheticDocxExtractedText);
+
+    workSection.sourceText = workSection.sourceText.replace(originalPair, replacementPair);
+    workSection.recordBlocks.splice(0, 2, firstRecord, secondRecord);
+    parsed.workHistory.splice(0, 2,
+      {
+        sourceText: firstRecord,
+        company: "Org One",
+        title: "Role One",
+        location: null,
+        startDate: null,
+        endDate: null,
+        bullets: ["• Did thing."]
+      },
+      {
+        sourceText: secondRecord,
+        company: organization,
+        title,
+        location: null,
+        startDate: null,
+        endDate: null,
+        bullets: []
+      }
+    );
+
+    const output = providerV6FromCanonical(rawSource, parsed);
+    output.recordSpans[0]!.endLineId = output.recordSpans[1]!.endLineId;
+    output.recordSpans.splice(1, 1);
+    output.workHistory.splice(1, 1);
+    for (const record of [
+      ...output.workHistory.slice(1),
+      ...output.projects,
+      ...output.education,
+      ...output.certifications
+    ]) record.spanIndex -= 1;
+
+    assert.throws(
+      () => assembler()(rawSource, output),
+      (error) => error !== null &&
+        typeof error === "object" &&
+        "details" in error &&
+        String((error as { details?: Record<string, unknown> }).details?.code) ===
+          "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+      `${title} / ${organization}`
+    );
+  }
+});

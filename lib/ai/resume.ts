@@ -225,8 +225,25 @@ export type TailoredResumeOutput = {
 };
 
 const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
-const boundedSourceString = z.string().trim().min(1).max(2_000).refine((value) => !/[\r\n]/.test(value));
-const boundedSourceBlock = z.string().trim().min(1).max(20_000);
+function hasWellFormedUtf16(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xD800 && codeUnit <= 0xDBFF) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xDC00 && next <= 0xDFFF)) return false;
+      index += 1;
+    } else if (codeUnit >= 0xDC00 && codeUnit <= 0xDFFF) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const boundedSourceString = z.string().trim().min(1).max(2_000)
+  .refine(hasWellFormedUtf16)
+  .refine((value) => !/[\r\n]/.test(value));
+const boundedSourceBlock = z.string().trim().min(1).max(20_000)
+  .refine(hasWellFormedUtf16);
 const nullableSourceString = z.union([boundedSourceString, z.null()]);
 const nullableContactSourceString = z.union([
   boundedSourceString.refine((value) => !/[\r\n]/.test(value)),
@@ -241,6 +258,7 @@ const recordSourceStringList = z.array(boundedSourceString)
 const sectionStatusSchema = z.enum(["present", "absent"]);
 const forbiddenResumeControlCharacters = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
 const warningSchema = z.string().trim().min(1).max(100)
+  .refine(hasWellFormedUtf16)
   .refine((value) => !/[\u0000-\u001F\u007F]/u.test(value));
 
 const sourceSectionSchema = z.object({
@@ -257,7 +275,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
   contractVersion: z.literal("5"),
   sourceSections: z.array(sourceSectionSchema).min(1).max(RESUME_PARSE_SOURCE_SECTION_LIMIT),
   contactInfo: z.object({
-    sourceText: z.string().trim().max(20_000),
+    sourceText: z.string().trim().max(20_000).refine(hasWellFormedUtf16),
     name: nullableContactSourceString,
     headline: nullableContactSourceString,
     email: nullableContactSourceString,
@@ -267,7 +285,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
     github: nullableContactSourceString,
     portfolio: nullableContactSourceString
   }).strict(),
-  summary: z.string().trim().max(2_000),
+  summary: z.string().trim().max(2_000).refine(hasWellFormedUtf16),
   skills: sourceStringList,
   workHistory: z.array(z.object({
     sourceText: boundedSourceBlock,
@@ -343,7 +361,7 @@ export const resumeParseProviderV6Schema: z.ZodType<
     github: nullableContactSourceString,
     portfolio: nullableContactSourceString
   }).strict(),
-  summary: z.string().trim().max(2_000),
+  summary: z.string().trim().max(2_000).refine(hasWellFormedUtf16),
   skills: sourceStringList,
   workHistory: z.array(z.object({
     spanIndex: spanIndexSchema,
@@ -2017,6 +2035,11 @@ function assertNoUndeclaredRecordHeaderAfterNarrative(
       !/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(candidate) &&
       !candidate.includes(":") &&
       !/[.!?…]$/u.test(candidate);
+    const looksLikePossibleHeaderValue = (candidate: string) =>
+      /[\p{L}\p{N}]/u.test(candidate) &&
+      !/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(candidate) &&
+      (!candidate.includes(":") ||
+        /^(?:title|role|position|company|employer|organization)\s*:\s*\S/iu.test(candidate));
     const metadataLabel = /^(?:technologies?(?: used)?|tools|methods|platforms?)$/i.test(lines[0] ?? "");
     if (metadataLabel) {
       const labelStart = gap.indexOf(lines[0]!);
@@ -2041,7 +2064,10 @@ function assertNoUndeclaredRecordHeaderAfterNarrative(
     const hasAdjacentHeaderPair = lines.some((line, index) => {
       const next = lines[index + 1];
       if (!next) return false;
-      return looksLikeHeader(line) && looksLikeHeader(next);
+      return (looksLikeHeader(line) && looksLikeHeader(next)) ||
+        (hasMajorBoundary &&
+          looksLikePossibleHeaderValue(line) &&
+          looksLikePossibleHeaderValue(next));
     });
     const hasMinimalRecord = hasMajorBoundary &&
       looksLikeHeader(lines[0] ?? "") &&
