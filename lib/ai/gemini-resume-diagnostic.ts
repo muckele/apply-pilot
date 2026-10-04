@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { buildApplicationPlanPayload } from "@/lib/ai/application-plan";
 import { buildGeminiJsonRequest, readGeminiUsage } from "@/lib/ai/gemini";
@@ -13,7 +14,7 @@ import {
 } from "@/lib/ai/resume";
 import { buildResumeProviderSourceInputV6 } from "@/lib/ai/resume-source-catalog";
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
-import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
+import { resumeParsePromptV6, resumeParsePromptV7 } from "@/prompts/resumeParsePrompt";
 
 const DIAGNOSTIC_MODEL = "gemini-3.5-flash-lite";
 const DIAGNOSTIC_ENDPOINT =
@@ -46,6 +47,7 @@ export type GeminiResumeDiagnosticCategory =
   | "INVALID_RESPONSE_ENVELOPE"
   | "INCOMPLETE_RESPONSE"
   | "INVALID_USAGE"
+  | "USAGE_LIMIT_EXCEEDED"
   | "INVALID_STRUCTURED_OUTPUT";
 
 type DiagnosticFetch = typeof fetch;
@@ -165,10 +167,12 @@ function normalizeWhitespace(value: string) {
 
 function containsPromptExcerpt(value: string) {
   const normalizedValue = normalizeWhitespace(value);
-  const normalizedPrompt = normalizeWhitespace(resumeParsePromptV6);
+  const normalizedPrompts = [resumeParsePromptV6, resumeParsePromptV7]
+    .map(normalizeWhitespace);
   const excerptLength = 16;
   for (let index = 0; index + excerptLength <= normalizedValue.length; index += 1) {
-    if (normalizedPrompt.includes(normalizedValue.slice(index, index + excerptLength))) {
+    if (normalizedPrompts.some((prompt) =>
+      prompt.includes(normalizedValue.slice(index, index + excerptLength)))) {
       return true;
     }
   }
@@ -289,7 +293,7 @@ function categorizeProviderRejection(providerCode: string | null, evidence: stri
     : "PROVIDER_REJECTION" as const;
 }
 
-async function readBoundedBody(response: Response) {
+async function readBoundedBody(response: Response, maximumBytes = MAX_RESPONSE_BYTES) {
   const reader = response.body?.getReader();
   if (!reader) return { text: "", bytes: 0, truncated: false };
   const decoder = new TextDecoder();
@@ -303,7 +307,7 @@ async function readBoundedBody(response: Response) {
         return { text, bytes, truncated: false };
       }
       bytes += value.byteLength;
-      if (bytes > MAX_RESPONSE_BYTES) {
+      if (bytes > maximumBytes) {
         await reader.cancel().catch(() => undefined);
         return { text: "", bytes, truncated: true };
       }
@@ -460,6 +464,8 @@ export function buildPinnedGeminiResumeDiagnosticRequest(resumeText = "") {
     bodyJson,
     endpoint: DIAGNOSTIC_ENDPOINT,
     maximumCostMicros,
+    maximumInputTokens: policy.maxInputTokens,
+    maximumOutputTokens: DIAGNOSTIC_OUTPUT_TOKENS,
     model: DIAGNOSTIC_MODEL,
     requestHash,
     responseBodyLimitBytes: MAX_RESPONSE_BYTES,
@@ -487,17 +493,171 @@ function assertLocalDiagnosticRuntime() {
   }
 }
 
-export async function runPinnedGeminiResumeDiagnostic(
+export type DiagnosticParsedResume = {
+  contractVersion: string;
+  summary: string;
+  skills: string[];
+  sourceSections: unknown[];
+  workHistory: unknown[];
+  projects: unknown[];
+  education: unknown[];
+  certifications: unknown[];
+  achievements: string[];
+};
+
+type DiagnosticRequest = {
+  bodyJson: string;
+  endpoint: string;
+  maximumCostMicros: number;
+  maximumInputTokens: number;
+  maximumOutputTokens: number;
+  model: string;
+  responseBodyLimitBytes: number;
+  timeoutMs: number;
+};
+
+type DiagnosticConsumerOutputs = {
+  plan: ReturnType<typeof buildApplicationPlanPayload>;
+  refs: ReturnType<typeof getJobMatchEvidenceReferences>;
+  tailoring: ReturnType<typeof buildResumeTailoringPayload>;
+};
+
+function asDiagnosticRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function diagnosticStringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
+}
+
+function tailoringRecordProjection(
+  value: unknown,
+  keys: string[],
+  arrayKeys: string[]
+) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asDiagnosticRecord(item);
+    if (!record) return [];
+    const projected: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      if (arrayKeys.includes(key)) projected[key] = diagnosticStringArray(record[key]);
+      else if (record[key] === null || typeof record[key] === "string") projected[key] = record[key];
+    }
+    return [projected];
+  });
+}
+
+export function assertResumeDiagnosticConsumerCoverage(
+  resumeText: string,
+  validated: DiagnosticParsedResume,
+  outputs: DiagnosticConsumerOutputs
+) {
+  const evidenceIds = new Set(outputs.plan.evidenceCatalog.map((entry) => entry.id));
+  const omittedIds = new Set<string>();
+  for (const omission of outputs.plan.projectionOmissions) {
+    if (omission.omittedCount !== omission.omittedIds.length) {
+      throw new Error("Application-plan omission count is inconsistent.");
+    }
+    for (const id of omission.omittedIds) {
+      if (omittedIds.has(id) || evidenceIds.has(id)) {
+        throw new Error("Application-plan omission IDs are not unique exclusions.");
+      }
+      omittedIds.add(id);
+    }
+  }
+
+  const requireEvidenceOrOmission = (id: string) => {
+    if (!evidenceIds.has(id) && !omittedIds.has(id)) {
+      throw new Error(`Application-plan consumer did not account for ${id}.`);
+    }
+  };
+  requireEvidenceOrOmission("raw-source-1");
+  if (validated.summary.trim()) requireEvidenceOrOmission("summary-1");
+  validated.skills.forEach((_, index) => requireEvidenceOrOmission(`skill-${index + 1}`));
+  validated.achievements.forEach((_, index) =>
+    requireEvidenceOrOmission(`achievement-${index + 1}`));
+
+  const requireRecords = (
+    records: unknown[],
+    prefix: "work" | "project" | "education" | "certification",
+    childKey?: string,
+    childSuffix?: "highlight" | "detail"
+  ) => records.forEach((item, index) => {
+    const recordId = `${prefix}-${index + 1}`;
+    requireEvidenceOrOmission(recordId);
+    if (omittedIds.has(recordId) || !childKey || !childSuffix) return;
+    diagnosticStringArray(asDiagnosticRecord(item)?.[childKey]).forEach((_, childIndex) =>
+      requireEvidenceOrOmission(`${recordId}-${childSuffix}-${childIndex + 1}`));
+  });
+  requireRecords(validated.workHistory, "work", "bullets", "highlight");
+  requireRecords(validated.projects, "project", "bullets", "highlight");
+  requireRecords(validated.education, "education");
+  requireRecords(validated.certifications, "certification", "details", "detail");
+
+  const expectedReferences = [
+    ...(validated.summary.trim() ? ["resume.summary"] : []),
+    "resume.rawText",
+    ...validated.skills.map((_, index) => `resume.skills[${index}]`),
+    ...validated.achievements.map((_, index) => `resume.achievements[${index}]`),
+    ...validated.workHistory.map((_, index) => `resume.workHistory[${index}]`),
+    ...validated.projects.map((_, index) => `resume.projects[${index}]`),
+    ...validated.education.map((_, index) => `resume.education[${index}]`),
+    ...validated.certifications.map((_, index) => `resume.certifications[${index}]`)
+  ];
+  if (expectedReferences.some((reference) => !outputs.refs.applicant.includes(reference))) {
+    throw new Error("Job-match consumer omitted canonical resume evidence.");
+  }
+
+  const expectedTailoringResume = {
+    rawText: resumeText,
+    summary: validated.summary,
+    skills: validated.skills,
+    achievements: validated.achievements,
+    workHistory: tailoringRecordProjection(validated.workHistory, [
+      "sourceText", "company", "title", "location", "startDate", "endDate", "bullets"
+    ], ["bullets"]),
+    projects: tailoringRecordProjection(validated.projects, [
+      "sourceText", "name", "description", "date", "technologies", "bullets"
+    ], ["technologies", "bullets"]),
+    education: tailoringRecordProjection(validated.education, [
+      "sourceText", "institution", "credential", "fieldOfStudy", "startDate", "endDate", "details"
+    ], ["details"]),
+    certifications: tailoringRecordProjection(validated.certifications, [
+      "sourceText", "name", "issuer", "date", "expirationDate", "details"
+    ], ["details"])
+  };
+  if (!isDeepStrictEqual(outputs.tailoring.resume, expectedTailoringResume)) {
+    throw new Error("Tailoring consumer omitted or changed canonical resume evidence.");
+  }
+  return outputs.plan.projectionOmissions.length;
+}
+
+export async function runGeminiResumeDiagnosticCore<
+  Parsed extends DiagnosticParsedResume,
+  ValidationExtra extends Record<string, unknown>
+>(
   apiKey: string,
-  options: { fetchImpl?: DiagnosticFetch; resumeText: string }
+  options: { fetchImpl?: DiagnosticFetch; resumeText: string },
+  diagnostic: {
+    assembleAndValidate: (resumeText: string, value: unknown) => Parsed;
+    buildRequest: (resumeText: string) => DiagnosticRequest;
+    validationExtra: (validated: Parsed) => ValidationExtra;
+  }
 ) {
   assertLocalDiagnosticRuntime();
   if (!apiKey.trim()) throw new Error("A Gemini API key must be supplied through the masked prompt.");
   const resumeText = options.resumeText;
-  const request = buildPinnedGeminiResumeDiagnosticRequest(resumeText);
+  const request = diagnostic.buildRequest(resumeText);
   const approvedFieldPaths = approvedFieldPathsFromRequest(JSON.parse(request.bodyJson));
   const response = await (options.fetchImpl ?? fetch)(request.endpoint, {
     method: "POST",
+    redirect: "error",
     headers: {
       "content-type": "application/json",
       "x-goog-api-key": apiKey
@@ -505,7 +665,7 @@ export async function runPinnedGeminiResumeDiagnostic(
     body: request.bodyJson,
     signal: AbortSignal.timeout(request.timeoutMs)
   });
-  const body = await readBoundedBody(response);
+  const body = await readBoundedBody(response, request.responseBodyLimitBytes);
   if (!response.ok) {
     return safeRejectedResult(response, body, approvedFieldPaths, apiKey, resumeText);
   }
@@ -575,6 +735,29 @@ export async function runPinnedGeminiResumeDiagnostic(
     };
   }
 
+  const actualCostMicros = estimateAiCostMicros({
+    model: request.model,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedInputTokens: usage.cachedInputTokens
+  });
+  if (
+    usage.inputTokens > request.maximumInputTokens
+    || usage.outputTokens > request.maximumOutputTokens
+    || actualCostMicros > request.maximumCostMicros
+  ) {
+    return {
+      outcome: "invalid_response" as const,
+      httpStatus: response.status,
+      category: "USAGE_LIMIT_EXCEEDED" as const,
+      finishReason: "STOP" as const,
+      usage,
+      actualCostMicros,
+      responseBodyBytes: body.bytes,
+      responseBodyTruncated: false
+    };
+  }
+
   const structuredText = parsed.candidates?.[0]?.content?.parts
     ?.filter((part) => part.thought !== true)
     .map((part) => typeof part.text === "string" ? part.text : "")
@@ -604,7 +787,7 @@ export async function runPinnedGeminiResumeDiagnostic(
 
   let consumerStage: "application_plan" | "job_match" | "tailoring" | null = null;
   try {
-    const validated = assembleAndValidateResumeV6(resumeText, value);
+    const validated = diagnostic.assembleAndValidate(resumeText, value);
     const consumerResume = { ...validated, rawText: resumeText };
     const diagnosticJob = {
       title: "Synthetic Systems Engineer",
@@ -617,42 +800,15 @@ export async function runPinnedGeminiResumeDiagnostic(
 
     consumerStage = "application_plan";
     const plan = buildApplicationPlanPayload({ job: diagnosticJob, resume: consumerResume });
-    const evidenceIds = new Set(plan.evidenceCatalog.map((entry) => entry.id));
-    if (
-      !evidenceIds.has("raw-source-1")
-      || validated.projects.some((_, index) => !evidenceIds.has(`project-${index + 1}`))
-      || validated.education.some((_, index) => !evidenceIds.has(`education-${index + 1}`))
-      || validated.certifications.some((_, index) => !evidenceIds.has(`certification-${index + 1}`))
-    ) {
-      throw new Error("Application-plan consumer omitted canonical resume evidence.");
-    }
-
     consumerStage = "job_match";
     const refs = getJobMatchEvidenceReferences({ job: diagnosticJob, resume: consumerResume });
-    if (
-      !refs.applicant.includes("resume.rawText")
-      || validated.projects.some((_, index) => !refs.applicant.includes(`resume.projects[${index}]`))
-      || validated.education.some((_, index) => !refs.applicant.includes(`resume.education[${index}]`))
-      || validated.certifications.some((_, index) =>
-        !refs.applicant.includes(`resume.certifications[${index}]`))
-    ) {
-      throw new Error("Job-match consumer omitted canonical resume evidence.");
-    }
-
     consumerStage = "tailoring";
     const tailoring = buildResumeTailoringPayload(diagnosticJob, consumerResume, null);
-    const tailoringResume = tailoring.resume as Record<string, unknown> | null;
-    if (
-      tailoringResume?.rawText !== resumeText
-      || !Array.isArray(tailoringResume.projects)
-      || tailoringResume.projects.length !== validated.projects.length
-      || !Array.isArray(tailoringResume.education)
-      || tailoringResume.education.length !== validated.education.length
-      || !Array.isArray(tailoringResume.certifications)
-      || tailoringResume.certifications.length !== validated.certifications.length
-    ) {
-      throw new Error("Tailoring consumer omitted canonical resume evidence.");
-    }
+    assertResumeDiagnosticConsumerCoverage(
+      resumeText,
+      validated,
+      { plan, refs, tailoring }
+    );
 
     return {
       outcome: "validated" as const,
@@ -670,6 +826,7 @@ export async function runPinnedGeminiResumeDiagnostic(
         educationCount: validated.education.length,
         certificationCount: validated.certifications.length,
         achievementCount: validated.achievements.length,
+        ...diagnostic.validationExtra(validated),
         applicationPlan: "passed" as const,
         jobMatch: "passed" as const,
         tailoring: "passed" as const
@@ -709,4 +866,15 @@ export async function runPinnedGeminiResumeDiagnostic(
       responseBodyTruncated: false
     };
   }
+}
+
+export function runPinnedGeminiResumeDiagnostic(
+  apiKey: string,
+  options: { fetchImpl?: DiagnosticFetch; resumeText: string }
+) {
+  return runGeminiResumeDiagnosticCore(apiKey, options, {
+    assembleAndValidate: assembleAndValidateResumeV6,
+    buildRequest: buildPinnedGeminiResumeDiagnosticRequest,
+    validationExtra: () => ({})
+  });
 }

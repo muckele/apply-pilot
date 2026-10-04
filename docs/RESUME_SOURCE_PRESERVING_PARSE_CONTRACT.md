@@ -1,5 +1,7 @@
 # Source-Preserving Resume Parse Contract
 
+> Historical design record: the line-span v6 proposal documented below has been superseded by the implemented v7 server-owned record contract. The separately prepared v7 single-request proof is specified in `docs/RESUME_V7_DIAGNOSTIC_PACKET.md`. The original v6/wire3 diagnostic remains pinned for historical reproduction only.
+
 Status: approved for the scoped local implementation and reviewed draft PR on 2026-10-04. A paid provider call, merge, deployment, production write, or application submission remains separately gated.
 
 ## Approved decision

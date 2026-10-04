@@ -1881,6 +1881,30 @@ function assertResumeParseOutputCapacity(source: string, provider: AiProviderNam
   );
 }
 
+export function prepareResumeParseV7Request(
+  text: string,
+  provider: AiProviderName
+) {
+  const normalizedText = normalizeResumeLineEndings(text);
+  assertResumeParseOutputCapacity(normalizedText, provider);
+  const outputTokenLimit = resumeParseOutputTokenLimit(provider);
+  const payload = buildResumeProviderSourceInput(normalizedText);
+  const providerResponseSchema = buildResumeParseProviderV7JsonSchema(payload);
+  const geminiResponseSchema = buildResumeParseGeminiProviderV7JsonSchema(payload);
+  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV7, {
+    payload,
+    responseJsonSchema: providerResponseSchema
+  });
+  return {
+    normalizedText,
+    outputTokenLimit,
+    payload,
+    providerResponseSchema,
+    geminiResponseSchema,
+    policy
+  };
+}
+
 function legacyRecordBlocks(
   section: ResumeSourceSectionName,
   sourceText: string,
@@ -3161,10 +3185,15 @@ export async function parseResumeTextWithMeta(
   if (!text.trim()) {
     throw new PublicApiError("Resume text is empty.", 422, { code: "RESUME_TEXT_EMPTY" });
   }
-  const normalizedText = normalizeResumeLineEndings(text);
   const provider = getAiProviderForFeature("RESUME_PARSE");
-  assertResumeParseOutputCapacity(normalizedText, provider);
-  const outputTokenLimit = resumeParseOutputTokenLimit(provider);
+  const {
+    normalizedText,
+    outputTokenLimit,
+    payload,
+    providerResponseSchema,
+    geminiResponseSchema,
+    policy
+  } = prepareResumeParseV7Request(text, provider);
   if (getAiRuntimeMode(provider) !== provider) throw new LocalAiUnavailableError();
   if (!userId) {
     throw new PublicApiError("Resume parsing requires an authenticated budget owner.", 503, {
@@ -3178,13 +3207,6 @@ export async function parseResumeTextWithMeta(
       code: "AI_MODEL_PRICING_UNKNOWN"
     });
   }
-  const payload = buildResumeProviderSourceInput(normalizedText);
-  const providerResponseSchema = buildResumeParseProviderV7JsonSchema(payload);
-  const geminiResponseSchema = buildResumeParseGeminiProviderV7JsonSchema(payload);
-  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV7, {
-    payload,
-    responseJsonSchema: providerResponseSchema
-  });
   const requestHash = hashAiInput("resumeParsePrompt", RESUME_PARSE_CACHE_VERSION, payload);
   const cached = await findCachedAiResponse({
     userId,
