@@ -57,19 +57,19 @@ and all nine recognized sections so optional-section behavior remains covered.
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Full unit/integration suite | Passed | `npm test`: 1,708/1,708 passed after exact-topology preparation; the initial sandbox run's sole loopback `EPERM` disappeared under the guarded local-network rerun |
+| Full unit/integration suite | Passed | `npm test`: 1,710/1,710 passed after the final diagnostic correction; the initial sandbox run's sole loopback `EPERM` disappeared under the guarded local-network rerun |
 | TypeScript | Passed | `npm run typecheck` passed from clean generated state |
 | Lint | Passed | `npm run lint` passed with no warnings |
 | Browser suite | Passed | `npm run test:browser`: 369/369 passed |
 | Focused V9 source/provider/route flow | Passed | 63/63 source-catalog, diagnostic, V9 provider, and route tests passed |
-| Pinned V9 diagnostic preparation | Passed offline / not executed live | 5/5 request, injected one-call flow, empty and count-preserving canonical-projection omission rejection, and bounded CLI tests passed; no provider transport occurred |
+| Pinned V9 diagnostic preparation | Passed offline / not executed live | 7/7 request, injected one-call flow, permitted degree-overlap/list-marker variants, omission and count-preserving truncation rejection, and bounded CLI tests passed; no provider transport occurred |
 | Exact 65-line owner topology twin | Passed | 46 nonblank facts, 19 blanks, six sections; V8 education `[3]`, V9 education `[2, 1]`, five work records/21 bullets, two projects, absent certification/achievement/additional sections, and every nonblank line reachable |
 | Broader 83-line complete topology | Passed | Nine sections retain certification, achievement, and additional-section extraction and consumer coverage independently of the exact-topology diagnostic |
-| Independent adversarial review | Passed | No Critical/Required/Optional/Nit findings in the exact-topology follow-up; the reviewer independently reproduced 63/63 focused tests, all four immutable hashes, absent-section consumers, privacy/transport stops, and unchanged 83-line extracted content. The earlier 65-case supported-header matrix also passed with V8 matching base `67094ff` |
+| Independent adversarial review | Passed | The final command-readiness correction review returned READY with 35/35 focused cases, both permitted variants, and omission/truncation/order/invention failures independently reproduced. Earlier reviews also verified all immutable request hashes, absent-section consumers, privacy/transport stops, the supported-header matrix, and unchanged broader-fixture content. |
 | Synthetic DOCX extraction through consumers | Passed | Extraction -> stubbed provider -> V9 validation -> route persistence stubs -> stored decoding/application plan/job match/tailoring |
 | Negative authority cases | Passed | Omitted/invented/reordered IDs and source, cross-record facts, adjacent merges, and unsafe diagnostics fail closed |
 | Local production build | Failed / environment and pre-existing repository blockers | `npm run build` could not start Turbopack because the environment denied its internal bind (`EPERM`), including after an approved unsandboxed retry. `npx next build --webpack` compiled successfully, then Next's generated route-export checker rejected existing exported route factory helpers in unchanged routes. Clean standalone typecheck passes. |
-| Hosted committed-candidate build | Passed for `e712ad7` only | Push and pull-request GitHub Actions runs for `e712ad7829f2706b147f4b76ef49337c0d246e1b` passed the repository's normal `npm run build`; the current fixture/diagnostic/report preparation remains uncommitted and therefore has no hosted CI result |
+| Hosted committed-candidate build | Passed | Push and pull-request GitHub Actions passed the repository's normal `npm run build` for implementation commit `e712ad7829f2706b147f4b76ef49337c0d246e1b` and the first committed diagnostic packet at `26105ef4f36efe9cfdaa8e5f145d9651e5d229a3`; every later diagnostic-only correction still requires exact-head CI before owner execution |
 | PostgreSQL suite | Not applicable | No Prisma schema, migration, or persistent database behavior changed; no database reset or mutation was run |
 | Real provider / paid parse | Intentionally untested | Prohibited by scope; provider JSON was stubbed |
 | Owner DOCX | Fresh offline audit passed | Exact 40,241-byte/SHA-256 identity; 6,489-byte extraction, 65 lines/46 nonblank, six sections, full reachability, five work records/21 bullets, two projects, and V9 education `[2, 1]`; no provider transport or retained private extract |
@@ -90,14 +90,15 @@ regression, and an overbroad consumer-losslessness claim. The final design:
 - distinguishes lossless parse authority/full tailoring raw source from the
   intentionally bounded application-plan raw projection.
 
-The final independent verdict is ready for the next authorized step, with no
-remaining Critical or Important findings. The diagnostic-specific follow-up
-independently reproduced rejection of empty/null omissions, count-preserving
-truncation, a shortened work bullet, and a shortened project technology using
-injected responses only. The exact-topology follow-up additionally found no
-Critical, Required, Optional, or Nit issues; it independently verified the
-65-line/46-nonblank fixture, absent-section consumers, immutable pins,
-privacy/transport stops, and unchanged broader-fixture extracted content.
+The exact-topology review initially found no application-candidate defect. A
+later command-readiness review identified an over-strict diagnostic-only exact
+typed-projection comparison: production-valid degree/subject overlap and a
+complete bullet without its list marker were rejected. The diagnostic now uses
+a narrow canonical fingerprint that normalizes those two permitted forms while
+retaining omission, shortened-bullet, shortened-technology, and
+count-preserving truncation rejection. The independent final correction verdict
+is READY. Owner execution still requires passing exact-head CI after this
+correction.
 
 ## Production identity and remaining boundaries
 

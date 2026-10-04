@@ -20,8 +20,8 @@ merge, or deployment.
   `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent`
 - Method: `POST`; redirect policy: `error`; thinking level: `LOW`
 - Request count: exactly one; no automatic retry
-- Source: private-free V9 owner-topology-twin DOCX extraction only; the current
-  fixture and packet remain uncommitted in this checkout
+- Source: private-free V9 owner-topology-twin DOCX extraction only; the fixture
+  and packet are committed on the draft-PR branch
 - Source size: 5,447 bytes / 65 lines / 46 nonblank lines
 - Source SHA-256:
   `579be60d3d8e66dfd013e7cfa92a689746a4f74f811ea3c31934521f24e62799`
@@ -31,9 +31,10 @@ merge, or deployment.
 - Response schema: 2,766 bytes
 - Schema SHA-256:
   `d59e1ba2ba364ddf3706fdc68922e8e1b31e492c6ee6dcbb4f40fa967d4e9db1`
-- Canonical typed-projection SHA-256 (contact, work, projects, education,
-  certifications; skills intentionally remain a semantic subset):
-  `9b11b23902fd4680778c2e8eb68b141dd29d41e952fd4e89825d2b18267570b9`
+- Canonical projection SHA-256 (contact, work, projects, education,
+  certifications; optional list markers and education degree/subject overlap
+  are normalized; skills intentionally remain a semantic subset):
+  `2d9771a9c6ba364376fbbc7ed98eecd86bde6601ddece5708c8923bb195d15a6`
 - Maximum input: 12,000 tokens
 - Maximum output: 24,000 tokens
 - Maximum cost: 63,600 micros (`$0.063600`)
@@ -56,8 +57,10 @@ retry.
 - Fixture-specific completeness checks reject omitted work bullets, project
   bullets/technologies, the 480-hour education detail, the degree credential or
   field of study, and incomplete required record cores.
-- The pinned typed-projection hash also rejects count-preserving truncation to
-  shorter source substrings; source-backed presence alone is not acceptance.
+- The canonical-projection fingerprint accepts complete source-backed bullets
+  with or without a list marker and a complete degree/subject projection with
+  legitimate overlap. It still rejects count-preserving truncation to shorter
+  source substrings; source-backed presence alone is not acceptance.
 - Every one of the 46 nonblank source lines is reachable through server-owned
   authority.
 - Application-plan, job-match, and tailoring consumer coverage.

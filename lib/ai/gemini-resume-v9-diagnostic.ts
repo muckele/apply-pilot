@@ -26,7 +26,7 @@ const PINNED_WIRE_SCHEMA_VERSION = "6";
 const EXPECTED_SOURCE_HASH = "579be60d3d8e66dfd013e7cfa92a689746a4f74f811ea3c31934521f24e62799";
 const EXPECTED_REQUEST_HASH = "ea70c338a29242014f89eaa2b2d9b354898f262055a7746bee4862413b6237d7";
 const EXPECTED_SCHEMA_HASH = "d59e1ba2ba364ddf3706fdc68922e8e1b31e492c6ee6dcbb4f40fa967d4e9db1";
-const EXPECTED_TYPED_PROJECTION_HASH = "9b11b23902fd4680778c2e8eb68b141dd29d41e952fd4e89825d2b18267570b9";
+const EXPECTED_CANONICAL_PROJECTION_HASH = "2d9771a9c6ba364376fbbc7ed98eecd86bde6601ddece5708c8923bb195d15a6";
 const EXPECTED_SOURCE_BYTES = 5_447;
 const EXPECTED_SOURCE_LINES = 65;
 const EXPECTED_REACHABLE_NONBLANK_LINES = 46;
@@ -66,6 +66,93 @@ const SAFE_FINISH_REASONS = new Set([
 
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeNarrativeProjection(value: string) {
+  return value
+    .trim()
+    .replace(/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u, "")
+    .replace(/\s+/gu, " ");
+}
+
+function canonicalEducationProjection(record: {
+  credential: string | null;
+  fieldOfStudy: string | null;
+}) {
+  const seen = new Set<string>();
+  return [record.credential, record.fieldOfStudy]
+    .filter((value): value is string => value !== null)
+    .flatMap((value) => normalizeNarrativeProjection(value).split(" "))
+    .filter((token) => token.toLocaleLowerCase("en-US") !== "in")
+    .filter((token) => {
+      const key = token.toLocaleLowerCase("en-US");
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join(" ");
+}
+
+export function fingerprintCanonicalResumeV9Projection(validated: {
+  contactInfo: Record<string, string | null>;
+  workHistory: Array<{
+    sourceText: string;
+    company: string;
+    title: string;
+    location: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    bullets: string[];
+  }>;
+  projects: Array<{
+    sourceText: string;
+    name: string;
+    description: string | null;
+    date: string | null;
+    technologies: string[];
+    bullets: string[];
+  }>;
+  education: Array<{
+    sourceText: string;
+    institution: string;
+    credential: string | null;
+    fieldOfStudy: string | null;
+    startDate: string | null;
+    endDate: string | null;
+    details: string[];
+  }>;
+  certifications: Array<{
+    sourceText: string;
+    name: string;
+    issuer: string | null;
+    date: string | null;
+    expirationDate: string | null;
+    details: string[];
+  }>;
+}) {
+  return sha256(JSON.stringify({
+    contactInfo: validated.contactInfo,
+    workHistory: validated.workHistory.map((record) => ({
+      ...record,
+      bullets: record.bullets.map(normalizeNarrativeProjection)
+    })),
+    projects: validated.projects.map((record) => ({
+      ...record,
+      bullets: record.bullets.map(normalizeNarrativeProjection)
+    })),
+    education: validated.education.map((record) => ({
+      sourceText: record.sourceText,
+      institution: record.institution,
+      credentialAndFieldOfStudy: canonicalEducationProjection(record),
+      startDate: record.startDate,
+      endDate: record.endDate,
+      details: record.details.map(normalizeNarrativeProjection)
+    })),
+    certifications: validated.certifications.map((record) => ({
+      ...record,
+      details: record.details.map(normalizeNarrativeProjection)
+    }))
+  }));
 }
 
 export function buildPinnedGeminiResumeV9DiagnosticRequest(resumeText = "") {
@@ -199,13 +286,7 @@ export async function runPinnedGeminiResumeV9Diagnostic(
       const certificationDetailCounts = validated.certifications.map(
         (record) => record.details.length
       );
-      const typedProjectionHash = sha256(JSON.stringify({
-        contactInfo: validated.contactInfo,
-        workHistory: validated.workHistory,
-        projects: validated.projects,
-        education: validated.education,
-        certifications: validated.certifications
-      }));
+      const canonicalProjectionHash = fingerprintCanonicalResumeV9Projection(validated);
       const completeWorkCore = validated.workHistory.every((record) =>
         record.title !== null
         && record.company !== null
@@ -245,7 +326,7 @@ export async function runPinnedGeminiResumeV9Diagnostic(
         || validated.certifications.length !== 0
         || certificationDetailCounts.length !== 0
         || validated.achievements.length !== 0
-        || typedProjectionHash !== EXPECTED_TYPED_PROJECTION_HASH
+        || canonicalProjectionHash !== EXPECTED_CANONICAL_PROJECTION_HASH
       ) {
         throw new Error("Pinned Gemini V9 diagnostic projections did not match the approved fixture.");
       }
@@ -265,7 +346,7 @@ export async function runPinnedGeminiResumeV9Diagnostic(
         educationRecordLineCounts: educationRecordLineCounts as [number, number],
         certificationDetailCounts,
         canonicalProjectionCompleteness: "passed" as const,
-        typedProjectionHash,
+        canonicalProjectionHash,
         structuralRecordCount: validated.workHistory.length
           + validated.projects.length
           + validated.education.length

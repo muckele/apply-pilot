@@ -19,7 +19,7 @@ const CANDIDATE_COMMIT = "e712ad7829f2706b147f4b76ef49337c0d246e1b";
 const EXPECTED_SOURCE_HASH = "579be60d3d8e66dfd013e7cfa92a689746a4f74f811ea3c31934521f24e62799";
 const EXPECTED_REQUEST_HASH = "ea70c338a29242014f89eaa2b2d9b354898f262055a7746bee4862413b6237d7";
 const EXPECTED_SCHEMA_HASH = "d59e1ba2ba364ddf3706fdc68922e8e1b31e492c6ee6dcbb4f40fa967d4e9db1";
-const EXPECTED_TYPED_PROJECTION_HASH = "9b11b23902fd4680778c2e8eb68b141dd29d41e952fd4e89825d2b18267570b9";
+const EXPECTED_CANONICAL_PROJECTION_HASH = "2d9771a9c6ba364376fbbc7ed98eecd86bde6601ddece5708c8923bb195d15a6";
 const HOSTED_RUNTIME_KEYS = [
   "CI",
   "GITHUB_ACTIONS",
@@ -148,13 +148,54 @@ test("one injected V9 request proves the exact twin topology and canonical consu
   assert.equal(result.validation.certificationCount, 0);
   assert.deepEqual(result.validation.certificationDetailCounts, []);
   assert.equal(result.validation.canonicalProjectionCompleteness, "passed");
-  assert.equal(result.validation.typedProjectionHash, EXPECTED_TYPED_PROJECTION_HASH);
+  assert.equal(result.validation.canonicalProjectionHash, EXPECTED_CANONICAL_PROJECTION_HASH);
   assert.equal(result.validation.achievementCount, 0);
   assert.equal(result.validation.applicationPlan, "passed");
   assert.equal(result.validation.jobMatch, "passed");
   assert.equal(result.validation.tailoring, "passed");
   assert.doesNotMatch(JSON.stringify(result), /Casey Structure|synthetic-secret/u);
   assert.ok(!JSON.stringify(result).includes(JSON.stringify(provider)));
+});
+
+test("V9 diagnostic accepts complete source-backed degree overlap", async () => {
+  const diagnostic = await loadDiagnosticModule();
+  const provider = providerV9FromCanonical(
+    resumeV9OwnerTopologyTwinDocxText,
+    resumeV9OwnerTopologyTwinCanonical()
+  );
+  provider.education[1]!.credential = "Bachelor of Arts in Business Administration";
+
+  const result = await withLocalRuntime(() => diagnostic.runPinnedGeminiResumeV9Diagnostic(
+    "synthetic-secret",
+    {
+      resumeText: resumeV9OwnerTopologyTwinDocxText,
+      fetchImpl: async () => new Response(providerEnvelope(provider), { status: 200 })
+    }
+  ));
+
+  assert.equal(result.outcome, "validated");
+  assert.equal(result.validation.canonicalProjectionCompleteness, "passed");
+});
+
+test("V9 diagnostic accepts complete source-backed bullets without list markers", async () => {
+  const diagnostic = await loadDiagnosticModule();
+  const provider = providerV9FromCanonical(
+    resumeV9OwnerTopologyTwinDocxText,
+    resumeV9OwnerTopologyTwinCanonical()
+  );
+  provider.workHistory[0]!.bullets[0] = provider.workHistory[0]!.bullets[0]!
+    .replace(/^\u2022\s+/u, "");
+
+  const result = await withLocalRuntime(() => diagnostic.runPinnedGeminiResumeV9Diagnostic(
+    "synthetic-secret",
+    {
+      resumeText: resumeV9OwnerTopologyTwinDocxText,
+      fetchImpl: async () => new Response(providerEnvelope(provider), { status: 200 })
+    }
+  ));
+
+  assert.equal(result.outcome, "validated");
+  assert.equal(result.validation.canonicalProjectionCompleteness, "passed");
 });
 
 test("V9 diagnostic rejects omitted canonical education, project, and work facts", async () => {
@@ -268,7 +309,7 @@ test("the V9 owner command is distinct, local-only, and emits a bounded approval
           educationRecordLineCounts: [2, 1] as const,
           certificationDetailCounts: [],
           canonicalProjectionCompleteness: "passed" as const,
-          typedProjectionHash: EXPECTED_TYPED_PROJECTION_HASH,
+          canonicalProjectionHash: EXPECTED_CANONICAL_PROJECTION_HASH,
           structuralRecordCount: 9,
           sourceSectionCount: 6,
           workHistoryCount: 5,
