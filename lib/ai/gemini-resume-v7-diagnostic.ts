@@ -22,10 +22,42 @@ const DIAGNOSTIC_TIMEOUT_MS = 180_000;
 const DIAGNOSTIC_INPUT_TOKENS = 12_000;
 const DIAGNOSTIC_OUTPUT_TOKENS = 24_000;
 const APPROVED_MAXIMUM_COST_MICROS = 63_600;
-const EXPECTED_SOURCE_HASH = "93c706c5e3cec091218647f027fa1c63cccf48ec6240f74615747fcdd303cf06";
-const EXPECTED_REQUEST_HASH = "bd4092d4a5144ba809da86e871dbab4c612f49d991d74952fda04336eaf0710c";
-const EXPECTED_SCHEMA_HASH = "2e8764c96ef1e4c1b13f828bc5fc72a7a1bdae4bb480a224a222c7f6a59656f4";
+const EXPECTED_SOURCE_HASH = "ef2af3269f33639e869fa202440fe29d654aaa580e67a07a0c54a5b416b33823";
+const EXPECTED_REQUEST_HASH = "14e084686614fab6aeeedacc37fa7d42f0d390c076ddd4798acd953bdf890eb3";
+const EXPECTED_SCHEMA_HASH = "a25c70d983f109e05a15529e06637e4c52d21b0ffe1760df1b6b120660c69c57";
 const MAX_RESPONSE_BYTES = 65_536;
+const SAFE_PROVIDER_CODES = new Set([
+  "ABORTED",
+  "ALREADY_EXISTS",
+  "CANCELLED",
+  "DATA_LOSS",
+  "DEADLINE_EXCEEDED",
+  "FAILED_PRECONDITION",
+  "INTERNAL",
+  "INVALID_ARGUMENT",
+  "NOT_FOUND",
+  "OUT_OF_RANGE",
+  "PERMISSION_DENIED",
+  "RESOURCE_EXHAUSTED",
+  "UNAUTHENTICATED",
+  "UNAVAILABLE",
+  "UNIMPLEMENTED",
+  "UNKNOWN"
+]);
+const SAFE_FINISH_REASONS = new Set([
+  "BLOCKLIST",
+  "IMAGE_SAFETY",
+  "LANGUAGE",
+  "MALFORMED_FUNCTION_CALL",
+  "MAX_TOKENS",
+  "OTHER",
+  "PROHIBITED_CONTENT",
+  "RECITATION",
+  "SAFETY",
+  "SPII",
+  "STOP",
+  "UNEXPECTED_TOOL_CALL"
+]);
 
 export { assertResumeDiagnosticConsumerCoverage };
 
@@ -98,11 +130,11 @@ export function buildPinnedGeminiResumeV7DiagnosticRequest(resumeText = "") {
   };
 }
 
-export function runPinnedGeminiResumeV7Diagnostic(
+export async function runPinnedGeminiResumeV7Diagnostic(
   apiKey: string,
   options: { fetchImpl?: typeof fetch; resumeText: string }
 ) {
-  return runGeminiResumeDiagnosticCore(apiKey, options, {
+  const result = await runGeminiResumeDiagnosticCore(apiKey, options, {
     assembleAndValidate: assembleAndValidateResumeV7,
     buildRequest: buildPinnedGeminiResumeV7DiagnosticRequest,
     validationExtra: (validated) => ({
@@ -113,4 +145,25 @@ export function runPinnedGeminiResumeV7Diagnostic(
         + validated.certifications.length
     })
   });
+  if (result.outcome === "rejected") {
+    return {
+      ...result,
+      providerCode: result.providerCode && SAFE_PROVIDER_CODES.has(result.providerCode)
+        ? result.providerCode
+        : null,
+      requestId: null,
+      errorReason: null,
+      errorDomain: null,
+      metadataKeys: [],
+      providerMessagePreview: null
+    };
+  }
+  if (
+    "finishReason" in result
+    && typeof result.finishReason === "string"
+    && !SAFE_FINISH_REASONS.has(result.finishReason)
+  ) {
+    return { ...result, finishReason: null };
+  }
+  return result;
 }

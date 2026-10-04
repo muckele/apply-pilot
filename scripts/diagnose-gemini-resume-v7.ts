@@ -73,9 +73,9 @@ type CliDependencies = {
   write?: (value: string) => void;
 };
 
-async function loadPinnedSyntheticResumeText() {
+export async function loadPinnedSyntheticResumeText() {
   const fixture = await readFile(
-    new URL("../tests/fixtures/synthetic-resume-estimator-boundary.docx", import.meta.url)
+    new URL("../tests/fixtures/synthetic-resume-contract-v5.docx", import.meta.url)
   );
   return extractResumeDocxText(fixture);
 }
