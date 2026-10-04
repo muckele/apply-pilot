@@ -5,11 +5,14 @@ import OpenAI from "openai";
 import * as resumeModule from "@/lib/ai/resume";
 import {
   estimateResumeParseMaximumOutputBytes,
+  decodeStoredParsedResume,
   parseResumeTextWithMeta,
   parsedResumeSchema,
+  resumeParseProviderV6Schema,
   RESUME_PARSE_CACHE_VERSION,
   RESUME_PARSE_PLANNED_JSON_BYTES,
   RESUME_PARSE_PROMPT_VERSION,
+  RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA,
   RESUME_PARSE_RESPONSE_JSON_SCHEMA,
   validateParsedResumeOutput,
   type ParsedResume
@@ -17,11 +20,12 @@ import {
 import { getOpenAIClient } from "@/lib/ai/client";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
-import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
+import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
 import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
+import { providerV6FromCanonical } from "@/tests/fixtures/resume-v6-provider-data";
 
 const EXPECTED_GEMINI_MAX_ITEMS_OMISSIONS = [
   "$.properties.achievements.maxItems",
@@ -310,7 +314,8 @@ test("full-size lossless parsing still requires cost confirmation before provide
 test("confirmed full-size stub output remains inside its admission bound", async (t) => {
   environment(t);
   installLedger(t);
-  const output = fullSizeSyntheticProviderOutput();
+  const canonicalOutput = fullSizeSyntheticProviderOutput();
+  const output = providerV6FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalOutput);
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
@@ -335,13 +340,13 @@ test("confirmed full-size stub output remains inside its admission bound", async
     RESUME_PARSE_PLANNED_JSON_BYTES);
 });
 
-test("confirmed Gemini parsing uses the configured model, typed response schema, reservation, and source-backed v5 output", async (t) => {
+test("confirmed Gemini parsing uses the configured model, typed response schema, reservation, and source-backed v6 output", async (t) => {
   environment(t);
   const ledger = installLedger(t);
   const requests: Array<Record<string, unknown>> = [];
   stub(t, globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
     requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-    return providerResponse(currentParsedOutput());
+    return providerResponse(providerV6FromCanonical(resumeText, currentParsedOutput()));
   });
 
   const result = await parseResumeTextWithMeta(resumeText, "user-1", {
@@ -351,7 +356,7 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
 
   assert.equal(result.meta.provider, "gemini");
   assert.equal(result.meta.model, "gemini-3.8-flash");
-  assert.equal(result.meta.promptVersion, "6");
+  assert.equal(result.meta.promptVersion, "7");
   assert.equal(result.meta.outputTokens, 100);
   assert.deepEqual(result.data.workHistory, parsedOutput.workHistory);
   assert.deepEqual(result.data.education, parsedOutput.education);
@@ -360,9 +365,9 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   assert.equal(responseSchema.additionalProperties, false);
   const serializedWireSchema = JSON.stringify(responseSchema);
   assert.doesNotMatch(serializedWireSchema, /"maxLength"|"maxItems"|"pattern"/);
-  assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"maxLength"/);
-  assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"maxItems"/);
-  assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"pattern"/);
+  assert.match(JSON.stringify(RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA), /"maxLength"/);
+  assert.match(JSON.stringify(RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA), /"maxItems"/);
+  assert.match(JSON.stringify(RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA), /"pattern"/);
   assert.equal(generationConfig.maxOutputTokens, 24_000);
   assert.deepEqual(generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(ledger.reservations[0]?.provider, "gemini");
@@ -370,6 +375,46 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   assert.equal(ledger.reservations[0]?.maximumCostMicros, 99_000);
   assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
+});
+
+test("live parsing sends one annotated source catalog and assembles canonical v6 output", async (t) => {
+  environment(t);
+  const ledger = installLedger(t);
+  const requests: Array<Record<string, unknown>> = [];
+  const canonicalV5 = currentParsedOutput();
+  stub(t, globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return providerResponse(providerV6FromCanonical(resumeText, canonicalV5));
+  });
+
+  const result = await parseResumeTextWithMeta(resumeText, "user-1", {
+    highCostConfirmed: true,
+    dataSharingConfirmed: true
+  });
+
+  assert.equal(result.data.contractVersion, "6");
+  assert.equal(result.meta.promptVersion, "7");
+  assert.deepEqual(result.data.sourceSections, canonicalV5.sourceSections);
+  assert.deepEqual(result.data.education, canonicalV5.education);
+  const request = requests[0]!;
+  assert.equal(
+    (request.systemInstruction as { parts: Array<{ text: string }> }).parts[0]?.text,
+    resumeParsePromptV6
+  );
+  const providerInput = JSON.parse(
+    (request.contents as Array<{ parts: Array<{ text: string }> }>)[0]!.parts[0]!.text
+  ) as Record<string, unknown>;
+  assert.ok(Array.isArray(providerInput.sections));
+  assert.equal("resumeText" in providerInput, false);
+  assert.equal(JSON.stringify(providerInput).match(/Jordan Example/g)?.length, 1);
+  const wireSchema = (request.generationConfig as { responseJsonSchema: unknown }).responseJsonSchema;
+  assert.match(JSON.stringify(wireSchema), /recordSpans/);
+  assert.doesNotMatch(JSON.stringify(wireSchema), /sourceSections|sourceText|"maxItems"|"maxLength"|"pattern"/);
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "7");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "8");
+  assert.match(JSON.stringify(RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA), /recordSpans/);
+  assert.doesNotMatch(JSON.stringify(RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA), /sourceSections|sourceText/);
+  assert.equal(ledger.cacheWrites[0]?.promptVersion, "8");
 });
 
 test("Gemini resume parsing omits exactly fourteen maxItems constraints from its wire projection", () => {
@@ -390,15 +435,21 @@ test("Gemini resume parsing omits exactly fourteen maxItems constraints from its
   assert.doesNotMatch(JSON.stringify(wireSchema), /"maxItems"/);
   assert.equal(parsedResumeSchema.safeParse(fullSizeSyntheticProviderOutput()).success, true);
 
-  const overBound = fullSizeSyntheticProviderOutput();
+  const overBound = providerV6FromCanonical(
+    fullSizeSyntheticDocxExtractedText,
+    fullSizeSyntheticProviderOutput()
+  );
   overBound.projects[0]!.technologies = Array.from({ length: 26 }, () => "TypeScript");
-  assert.equal(parsedResumeSchema.safeParse(overBound).success, false);
+  assert.equal(resumeParseProviderV6Schema.safeParse(overBound).success, false);
 });
 
 test("a Gemini response beyond a removed wire maxItems remains locally rejected and uncached", async (t) => {
   environment(t);
   const ledger = installLedger(t);
-  const overBound = fullSizeSyntheticProviderOutput();
+  const overBound = providerV6FromCanonical(
+    fullSizeSyntheticDocxExtractedText,
+    fullSizeSyntheticProviderOutput()
+  );
   overBound.projects[0]!.technologies = Array.from({ length: 26 }, () => "TypeScript");
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
@@ -423,7 +474,7 @@ test("a Gemini response beyond a removed wire maxItems remains locally rejected 
 test("unsupported parsed facts fail validation, consume only known usage, and are never cached", async (t) => {
   environment(t);
   const ledger = installLedger(t);
-  const unsupported = currentParsedOutput();
+  const unsupported = providerV6FromCanonical(resumeText, currentParsedOutput());
   unsupported.workHistory[0].bullets[0] = "Invented unsupported accomplishment.";
   stub(t, globalThis, "fetch", async () => providerResponse(unsupported));
 
@@ -447,7 +498,7 @@ test("unsupported parsed facts fail validation, consume only known usage, and ar
 test("a source section heading cannot be silently replaced with an empty structured section", async (t) => {
   environment(t);
   const ledger = installLedger(t);
-  const incomplete = currentParsedOutput();
+  const incomplete = providerV6FromCanonical(resumeText, currentParsedOutput());
   incomplete.workHistory = [];
   incomplete.sectionStatus.workHistory = "absent";
   stub(t, globalThis, "fetch", async () => providerResponse(incomplete));
@@ -457,7 +508,7 @@ test("a source section heading cannot be silently replaced with an empty structu
       highCostConfirmed: true,
       dataSharingConfirmed: true
     }),
-    /incomplete.*work history|record order|adjacent records/i
+    /incomplete.*work history|record order|adjacent records|omitted or invented a structural typed record/i
   );
   assert.equal(ledger.reconciliations[0]?.status, "FAILED");
   assert.equal(ledger.cacheWrites.length, 0);
@@ -1011,7 +1062,7 @@ test("adjacent projects cannot be disguised as project bullets", () => {
 test("pipe-delimited project headers preserve unpunctuated subtitles and years as separate records", () => {
   const { source, output } = syntheticProjectResume();
 
-  const parsed = validateParsedResumeOutput(source, output);
+  const parsed = decodeStoredParsedResume(source, output);
 
   assert.equal(parsed.projects.length, 2);
   assert.deepEqual(parsed.projects.map((project) => project.description), [
@@ -1168,23 +1219,23 @@ test("one project record cannot absorb a second pipe-delimited project header", 
 });
 
 test("resume parse schema and prompt revision preserve nullable project dates and exact heading aliases", () => {
-  const projectItems = RESUME_PARSE_RESPONSE_JSON_SCHEMA.properties.projects.items;
+  const projectItems = RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA.properties.projects.items;
 
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "6");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "7");
   assert.deepEqual(projectItems.properties.date.type, ["string", "null"]);
   assert.ok(projectItems.required.includes("date"));
   assert.equal(projectItems.properties.technologies.maxItems, 25);
   assert.equal(projectItems.properties.bullets.maxItems, 25);
-  assert.match(resumeParsePrompt, /project date/i);
-  assert.match(resumeParsePrompt, /name \| description \| date/i);
-  assert.match(resumeParsePrompt, /at most 25 source-backed entries per record/i);
-  assert.match(resumeParsePrompt, /CORE SKILLS/);
-  assert.match(resumeParsePrompt, /SELECTED TECHNICAL PROJECTS/);
+  assert.match(resumeParsePromptV6, /project date/i);
+  assert.match(resumeParsePromptV6, /name \| description \| date/i);
+  assert.match(resumeParsePromptV6, /at most 25 source-backed entries per record/i);
+  assert.match(resumeParsePromptV6, /grouped skill labels remain server-owned source evidence/i);
+  assert.match(resumeParsePromptV6, /annotated resume source catalog/i);
 });
 
-test("a version-five cache entry cannot be replayed under prompt revision six", async (t) => {
+test("a cache-v7 entry cannot be replayed under cache-v8 isolation", async (t) => {
   environment(t);
-  installLedger(t, parsedOutput, { cachedPromptVersion: "5" });
+  installLedger(t, parsedOutput, { cachedPromptVersion: "7" });
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
 
@@ -1379,7 +1430,7 @@ test("a durable-cache failure becomes uncertain and cannot trigger a second paid
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(currentParsedOutput());
+    return providerResponse(providerV6FromCanonical(resumeText, currentParsedOutput()));
   });
 
   await assert.rejects(
@@ -1439,7 +1490,10 @@ test("OpenAI configuration retains the same confirmation, validation, and reserv
   stub(t, client.chat.completions, "create", async (request: unknown) => {
     openAiRequest = request as { max_tokens?: number };
     return {
-      choices: [{ finish_reason: "stop", message: { content: JSON.stringify(currentParsedOutput()) } }],
+      choices: [{
+        finish_reason: "stop",
+        message: { content: JSON.stringify(providerV6FromCanonical(resumeText, currentParsedOutput())) }
+      }],
       usage: {
         prompt_tokens: 160,
         completion_tokens: 80,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -10,18 +10,20 @@ import {
 } from "@/lib/ai/gemini-resume-diagnostic";
 import { MODEL_PRICING_REGISTRY } from "@/lib/ai/pricing";
 import * as resumeModule from "@/lib/ai/resume";
-import { RESUME_PARSE_RESPONSE_JSON_SCHEMA } from "@/lib/ai/resume";
-import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
+import { RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA } from "@/lib/ai/resume";
+import { buildResumeProviderSourceInput } from "@/lib/ai/resume-source-catalog";
+import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
 import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
+import { providerV6FromCanonical } from "@/tests/fixtures/resume-v6-provider-data";
 
 const EXPECTED_ENDPOINT =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent";
 const EXPECTED_SOURCE_HASH = "93c706c5e3cec091218647f027fa1c63cccf48ec6240f74615747fcdd303cf06";
-const EXPECTED_REQUEST_HASH = "0b2ad8f4387cadf8a85d82a6547fd2d9b32c7bcac12d751bcf68e9514b98e8d0";
-const EXPECTED_SCHEMA_HASH = "d3add80f52de8af6944abb6e44f9de048490d1484b463de9c4dad0713e572db7";
+const EXPECTED_REQUEST_HASH = "de2e64078a993b8b31daf7908e6ba24b8ad72fc424c064f55566f50df77399b0";
+const EXPECTED_SCHEMA_HASH = "08a6b93669e1c0ff2b5487193a5d9a69bf40cc817cbe3daa7064e2b6304c054d";
 const EXPECTED_RESPONSE_LIMIT_BYTES = 65_536;
 const HOSTED_RUNTIME_KEYS = [
   "CI",
@@ -55,6 +57,13 @@ function runLocalPinnedDiagnostic(
   } as Parameters<typeof runPinnedGeminiResumeDiagnostic>[1]));
 }
 
+function fullSizeV6ProviderOutput() {
+  return providerV6FromCanonical(
+    fullSizeSyntheticDocxExtractedText,
+    fullSizeSyntheticProviderOutput()
+  );
+}
+
 test("builds only the approved pinned full-synthetic Gemini request", async () => {
   const request = buildPinnedGeminiResumeDiagnosticRequest(fullSizeSyntheticDocxExtractedText);
   assert.equal(request.endpoint, EXPECTED_ENDPOINT);
@@ -66,18 +75,19 @@ test("builds only the approved pinned full-synthetic Gemini request", async () =
   assert.equal(request.schemaHash, EXPECTED_SCHEMA_HASH);
 
   const body = JSON.parse(request.bodyJson);
-  assert.equal(body.contents[0].parts[0].text, JSON.stringify({
-    resumeText: fullSizeSyntheticDocxExtractedText
-  }));
+  assert.equal(
+    body.contents[0].parts[0].text,
+    JSON.stringify(buildResumeProviderSourceInput(fullSizeSyntheticDocxExtractedText))
+  );
   assert.deepEqual(body.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(body.generationConfig.maxOutputTokens, 24_000);
   assert.equal(body.generationConfig.responseMimeType, "application/json");
   const projectedRequest = buildGeminiJsonRequest({
-    systemPrompt: resumeParsePrompt,
-    payload: { resumeText: fullSizeSyntheticDocxExtractedText },
+    systemPrompt: resumeParsePromptV6,
+    payload: buildResumeProviderSourceInput(fullSizeSyntheticDocxExtractedText),
     responseJsonSchema: (resumeModule as typeof resumeModule & {
-      RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA?: unknown;
-    }).RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA as Record<string, unknown>,
+      RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA?: unknown;
+    }).RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA as Record<string, unknown>,
     maxOutputTokens: 24_000,
     thinkingLevel: "LOW"
   });
@@ -85,14 +95,14 @@ test("builds only the approved pinned full-synthetic Gemini request", async () =
     body.generationConfig.responseJsonSchema,
     projectedRequest.generationConfig.responseJsonSchema
   );
-  assert.equal(Buffer.byteLength(request.bodyJson), 16_505);
-  assert.equal(Buffer.byteLength(JSON.stringify(body.generationConfig.responseJsonSchema)), 3_762);
+  assert.equal(Buffer.byteLength(request.bodyJson), 18_571);
+  assert.equal(Buffer.byteLength(JSON.stringify(body.generationConfig.responseJsonSchema)), 3_603);
   assert.doesNotMatch(JSON.stringify(body.generationConfig.responseJsonSchema), /"maxItems"/);
 
   const fullSchemaBaseline = buildGeminiJsonRequest({
-    systemPrompt: resumeParsePrompt,
-    payload: { resumeText: fullSizeSyntheticDocxExtractedText },
-    responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA,
+    systemPrompt: resumeParsePromptV6,
+    payload: buildResumeProviderSourceInput(fullSizeSyntheticDocxExtractedText),
+    responseJsonSchema: RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA,
     maxOutputTokens: 24_000,
     thinkingLevel: "LOW"
   });
@@ -101,7 +111,7 @@ test("builds only the approved pinned full-synthetic Gemini request", async () =
   assert.deepEqual(body, fullSchemaBaseline, "only responseJsonSchema may differ from the rejected request shape");
   assert.equal(
     (JSON.stringify(fullSchemaBaseline.generationConfig.responseJsonSchema).match(/"maxItems"/g) ?? []).length,
-    14
+    13
   );
   assert.equal((JSON.stringify(candidateSchema).match(/"maxItems"/g) ?? []).length, 0);
 });
@@ -112,7 +122,7 @@ test("fails closed if registered pricing would exceed the approved maximum", () 
   pricing.outputUsdPerMillion = 2.5001;
   try {
     assert.throws(
-      () => buildPinnedGeminiResumeDiagnosticRequest(),
+      () => buildPinnedGeminiResumeDiagnosticRequest(fullSizeSyntheticDocxExtractedText),
       /approved maximum cost/
     );
   } finally {
@@ -292,7 +302,7 @@ test("returns only a bounded redacted synthetic provider-message diagnostic", as
 });
 
 test("suppresses a provider message that quotes any prompt excerpt", async () => {
-  const promptExcerpt = resumeParsePrompt.slice(200, 231);
+  const promptExcerpt = resumeParsePromptV6.slice(200, 231);
   const result = await runLocalPinnedDiagnostic("synthetic-secret", {
     fetchImpl: async () => new Response(JSON.stringify({
       error: {
@@ -490,7 +500,7 @@ test("extracts only known request field paths from an unstructured provider mess
 });
 
 test("validates a full synthetic provider response in memory without returning raw output", async () => {
-  const providerOutput = JSON.stringify(fullSizeSyntheticProviderOutput());
+  const providerOutput = JSON.stringify(fullSizeV6ProviderOutput());
   const result = await runLocalPinnedDiagnostic("synthetic-secret", {
     fetchImpl: async () => new Response(JSON.stringify({
       candidates: [{
@@ -517,10 +527,10 @@ test("validates a full synthetic provider response in memory without returning r
       visibleOutputTokens: 7_500,
       thinkingTokens: 100
     },
-    responseBodyBytes: 26_701,
+    responseBodyBytes: 8_750,
     responseBodyTruncated: false,
     validation: {
-      contractVersion: "5",
+      contractVersion: "6",
       sourceFacts: "complete",
       sourceSectionCount: 9,
       workHistoryCount: 5,
@@ -538,7 +548,7 @@ test("validates a full synthetic provider response in memory without returning r
 });
 
 test("a successful response without usage metadata is not reported as cost-validated", async () => {
-  const providerOutput = JSON.stringify(fullSizeSyntheticProviderOutput());
+  const providerOutput = JSON.stringify(fullSizeV6ProviderOutput());
   const envelope = JSON.stringify({
     candidates: [{
       finishReason: "STOP",
@@ -561,12 +571,9 @@ test("a successful response without usage metadata is not reported as cost-valid
   assert.ok(!JSON.stringify(result).includes(providerOutput));
 });
 
-test("classifies an exact source-envelope mismatch without returning either value", async () => {
-  const apiKey = "synthetic-secret";
-  const output = fullSizeSyntheticProviderOutput();
-  const expectedSourceText = output.sourceSections[1]!.sourceText;
-  const actualSourceText = expectedSourceText.slice(0, -1);
-  output.sourceSections[1]!.sourceText = actualSourceText;
+test("classifies an invalid source span without returning provider output", async () => {
+  const output = fullSizeV6ProviderOutput();
+  output.recordSpans[0]!.startLineId = "section-4-line-999";
   const providerOutput = JSON.stringify(output);
   const envelope = JSON.stringify({
     candidates: [{
@@ -581,7 +588,7 @@ test("classifies an exact source-envelope mismatch without returning either valu
     }
   });
 
-  const result = await runLocalPinnedDiagnostic(apiKey, {
+  const result = await runLocalPinnedDiagnostic("synthetic-secret", {
     fetchImpl: async () => new Response(envelope, { status: 200 })
   });
 
@@ -589,22 +596,14 @@ test("classifies an exact source-envelope mismatch without returning either valu
     outcome: "invalid_response",
     httpStatus: 200,
     category: "INVALID_STRUCTURED_OUTPUT",
-    fieldPath: "sourceSections[1]",
+    fieldPath: "recordSpans[0]",
     validationStage: "lossless_source_authority",
     internalErrorCode: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
-    section: "summary",
-    mismatchComponent: "sourceText",
-    expected: {
-      unit: "utf8_bytes",
-      count: Buffer.byteLength(expectedSourceText),
-      fingerprint: createHmac("sha256", apiKey).update(expectedSourceText).digest("hex")
-    },
-    actual: {
-      unit: "utf8_bytes",
-      count: Buffer.byteLength(actualSourceText),
-      fingerprint: createHmac("sha256", apiKey).update(actualSourceText).digest("hex")
-    },
-    fingerprintAlgorithm: "HMAC-SHA256",
+    section: "workHistory",
+    mismatchComponent: "recordSpans",
+    expected: null,
+    actual: null,
+    fingerprintAlgorithm: null,
     finishReason: "STOP",
     usage: {
       inputTokens: 2_435,
@@ -620,11 +619,11 @@ test("classifies an exact source-envelope mismatch without returning either valu
   assert.ok(!JSON.stringify(result).includes(providerOutput));
 });
 
-test("distinguishes an object-shape failure at the same field path", async () => {
-  const output = fullSizeSyntheticProviderOutput() as ReturnType<
-    typeof fullSizeSyntheticProviderOutput
-  > & { sourceSections: Array<Record<string, unknown>> };
-  output.sourceSections[1]!.unexpected = "must-not-escape";
+test("distinguishes a span object-shape failure without exposing extra keys", async () => {
+  const output = fullSizeV6ProviderOutput() as ReturnType<
+    typeof fullSizeV6ProviderOutput
+  > & { recordSpans: Array<Record<string, unknown>> };
+  output.recordSpans[0]!.unexpected = "must-not-escape";
   const providerOutput = JSON.stringify(output);
   const envelope = JSON.stringify({
     candidates: [{
@@ -645,20 +644,20 @@ test("distinguishes an object-shape failure at the same field path", async () =>
 
   assert.equal(result.outcome, "invalid_response");
   if (result.outcome !== "invalid_response") assert.fail("expected an invalid response");
-  assert.equal(result.fieldPath, "sourceSections[1]");
+  assert.equal(result.fieldPath, "recordSpans[0]");
   assert.equal(result.validationStage, "resume_schema");
   assert.equal(result.internalErrorCode, "RESUME_PARSE_INVALID_OUTPUT");
-  assert.equal(result.section, "summary");
+  assert.equal(result.section, "workHistory");
   assert.equal(result.mismatchComponent, "objectShape");
-  assert.deepEqual(result.expected, { unit: "properties", count: 4, fingerprint: null });
-  assert.deepEqual(result.actual, { unit: "properties", count: 5, fingerprint: null });
+  assert.deepEqual(result.expected, { unit: "properties", count: 3, fingerprint: null });
+  assert.deepEqual(result.actual, { unit: "properties", count: 4, fingerprint: null });
   assert.equal(result.fingerprintAlgorithm, null);
   assert.doesNotMatch(JSON.stringify(result), /must-not-escape|unexpected/);
   assert.ok(!JSON.stringify(result).includes(providerOutput));
 });
 
 test("maps a typed projection failure to its canonical section", async () => {
-  const output = fullSizeSyntheticProviderOutput();
+  const output = fullSizeV6ProviderOutput();
   output.workHistory[0]!.title = "Invented Private Role";
   const providerOutput = JSON.stringify(output);
   const envelope = JSON.stringify({
@@ -690,7 +689,7 @@ test("maps a typed projection failure to its canonical section", async () => {
 });
 
 test("maps a nested schema failure to its canonical section", async () => {
-  const output = fullSizeSyntheticProviderOutput();
+  const output = fullSizeV6ProviderOutput();
   output.projects[0]!.technologies = Array.from({ length: 26 }, (_, index) => `Private ${index}`);
   const providerOutput = JSON.stringify(output);
   const envelope = JSON.stringify({
@@ -722,7 +721,7 @@ test("maps a nested schema failure to its canonical section", async () => {
 });
 
 test("maps a section-status schema failure to its named canonical section", async () => {
-  const output = fullSizeSyntheticProviderOutput();
+  const output = fullSizeV6ProviderOutput();
   (output.sectionStatus as Record<string, unknown>).workHistory = "private-invalid-status";
   const providerOutput = JSON.stringify(output);
   const envelope = JSON.stringify({
@@ -859,7 +858,7 @@ test("CLI consumes one ephemeral secret and writes only the sanitized result", a
         responseBodyBytes: 26_701,
         responseBodyTruncated: false,
         validation: {
-          contractVersion: "5" as const,
+          contractVersion: "6" as const,
           sourceFacts: "complete" as const,
           sourceSectionCount: 9,
           workHistoryCount: 5,

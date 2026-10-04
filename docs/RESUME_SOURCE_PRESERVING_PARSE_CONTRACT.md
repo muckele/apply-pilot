@@ -1,10 +1,10 @@
 # Source-Preserving Resume Parse Contract
 
-Status: proposed; implementation requires separate owner approval.
+Status: approved for the scoped local implementation and reviewed draft PR on 2026-10-04. A paid provider call, merge, deployment, production write, or application submission remains separately gated.
 
-## Decision requested
+## Approved decision
 
-Approve or reject a new resume parsing contract in which Apply Pilot, rather than the model, owns all exact source text. The approved work in this phase is limited to privacy-safe diagnostic classification and this design. It does not authorize the new contract, another paid provider request, a merge, or a deployment.
+Apply Pilot, rather than the model, owns all exact source text. The owner approved the coordinated parsing-contract and consumer correction after the audit summarized below. The approval covers local implementation, synthetic verification, independent review, commits, branch push, and a draft PR; it does not authorize another paid provider request, merge, deployment, production write, or application submission.
 
 ## Evidence and problem statement
 

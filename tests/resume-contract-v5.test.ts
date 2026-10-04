@@ -238,13 +238,13 @@ function publicError(error: unknown, code: string, fieldPath?: string) {
     (fieldPath === undefined || error.details?.fieldPath === fieldPath);
 }
 
-test("resume parsing uses the v5 contract with coherent prompt and cache revisions", () => {
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "6");
-  assert.equal(RESUME_PARSE_CACHE_VERSION, "7");
+test("resume parsing keeps the v5 canonical decoder behind coherent v6 live revisions", () => {
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "7");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "8");
   assert.equal(
     (resumeModule as typeof resumeModule & { RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION?: string })
       .RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
-    "2"
+    "3"
   );
   assert.equal(completeSyntheticParsedResume().contractVersion, "5");
   const fixtureOutputTokens = Math.ceil(Buffer.byteLength(

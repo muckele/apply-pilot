@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
-import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
+import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 import {
   generateJson,
@@ -35,6 +35,7 @@ import { AI_FEATURE_POLICIES, assertAiInputWithinLimits } from "@/lib/ai/policy"
 import { estimateAiCostMicros, getModelPricing, type AiProviderName } from "@/lib/ai/pricing";
 import {
   buildResumeSourceCatalog,
+  buildResumeProviderSourceInput,
   hasResumeSectionHeading,
   normalizeResumeLineEndings,
   type ResumeSourceSectionName,
@@ -46,12 +47,9 @@ import { prisma } from "@/lib/prisma";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
-export const RESUME_PARSE_PROMPT_VERSION = "6";
-export const RESUME_PARSE_CACHE_VERSION = "7";
-export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "2";
-export const RESUME_PARSE_VNEXT_PROMPT_VERSION = "7";
-export const RESUME_PARSE_VNEXT_CACHE_VERSION = "8";
-export const RESUME_PARSE_VNEXT_GEMINI_WIRE_SCHEMA_VERSION = "3";
+export const RESUME_PARSE_PROMPT_VERSION = "7";
+export const RESUME_PARSE_CACHE_VERSION = "8";
+export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "3";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
 const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
@@ -1422,6 +1420,99 @@ function estimateResumeParseEnvelopeBytes(
     RESUME_PARSE_WARNING_CONTENT_BYTES;
 }
 
+function estimateResumeParseProviderEnvelopeBytes(
+  sections: Array<Omit<ResumeSourceSection, "recordBlocks">>,
+  paragraphUnit: number
+) {
+  const countsFor = (sectionName: ResumeSourceSectionName) => Math.min(
+    structuralRecordLimits[sectionName] ?? 0,
+    sections
+      .filter((section) => section.section === sectionName)
+      .reduce((total, section) => total + (
+        structuralRecordLimits[sectionName]
+          ? structuralRecordCounts(sectionName, section.sourceText, paragraphUnit).estimated
+          : 0
+      ), 0)
+  );
+  const workCount = countsFor("workHistory");
+  const projectCount = countsFor("projects");
+  const educationCount = countsFor("education");
+  const certificationCount = countsFor("certifications");
+  const spanCount = workCount + projectCount + educationCount + certificationCount;
+  const status = (section: keyof ParsedResumeCore["sectionStatus"]) =>
+    sections.some((item) => item.section === section) ? "present" : "absent";
+  const spanIndex = RESUME_PARSE_RECORD_SPAN_LIMIT - 1;
+  const envelope = {
+    contractVersion: "6",
+    recordSpans: Array.from({ length: spanCount }, () => ({
+      sectionId: "section-100",
+      startLineId: "section-100-line-10000",
+      endLineId: "section-100-line-10000"
+    })),
+    contactInfo: {
+      name: null,
+      headline: null,
+      email: null,
+      phone: null,
+      location: null,
+      linkedin: null,
+      github: null,
+      portfolio: null
+    },
+    summary: "",
+    skills: sections.some((item) => item.section === "skills") ? emptyStrings(100) : [],
+    workHistory: Array.from({ length: workCount }, () => ({
+      spanIndex,
+      company: "",
+      title: "",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    projects: Array.from({ length: projectCount }, () => ({
+      spanIndex,
+      name: "",
+      description: null,
+      date: null,
+      technologies: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS),
+      bullets: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    education: Array.from({ length: educationCount }, () => ({
+      spanIndex,
+      institution: "",
+      credential: null,
+      fieldOfStudy: null,
+      startDate: null,
+      endDate: null,
+      details: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    certifications: Array.from({ length: certificationCount }, () => ({
+      spanIndex,
+      name: "",
+      issuer: null,
+      date: null,
+      expirationDate: null,
+      details: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    achievements: sections.some((item) => item.section === "achievements")
+      ? emptyStrings(100)
+      : [],
+    sectionStatus: {
+      summary: status("summary"),
+      skills: status("skills"),
+      workHistory: status("workHistory"),
+      projects: status("projects"),
+      education: status("education"),
+      certifications: status("certifications"),
+      achievements: status("achievements")
+    },
+    warnings: emptyStrings(5)
+  };
+  return Buffer.byteLength(JSON.stringify(envelope), "utf8") +
+    RESUME_PARSE_WARNING_CONTENT_BYTES;
+}
+
 export function estimateResumeParseMaximumOutputBytes(source: string) {
   const normalizedSource = normalizeResumeLineEndings(source);
   const sections = expectedSourceSections(normalizedSource);
@@ -1433,6 +1524,36 @@ export function estimateResumeParseMaximumOutputBytes(source: string) {
     total + jsonEscapedByteLength(section.sourceText) *
       RESUME_PARSE_REQUIRED_CONTENT_COPIES[section.section], 0);
   return requiredContentBytes + estimateResumeParseEnvelopeBytes(sections, paragraphUnit);
+}
+
+export function estimateResumeParseAnnotatedInputBytes(source: string) {
+  return Buffer.byteLength(JSON.stringify(buildResumeProviderSourceInput(source)), "utf8");
+}
+
+function estimateProviderProjectionContentBytes(section: Omit<ResumeSourceSection, "recordBlocks">) {
+  const sourceBytes = jsonEscapedByteLength(section.sourceText);
+  const maximumLineBytes = Math.max(0, ...section.sourceText
+    .split(/\r?\n/u)
+    .map((line) => jsonEscapedByteLength(line.trim())));
+  if (section.section === "contactInfo") return maximumLineBytes * 8;
+  if (["summary", "skills", "achievements"].includes(section.section)) return sourceBytes;
+  if (section.section === "workHistory") return sourceBytes + maximumLineBytes * 5;
+  if (section.section === "projects") return sourceBytes * 2 + maximumLineBytes * 3;
+  if (section.section === "education") return sourceBytes + maximumLineBytes * 5;
+  if (section.section === "certifications") return sourceBytes + maximumLineBytes * 4;
+  return 0;
+}
+
+export function estimateResumeParseMaximumProviderOutputBytes(source: string) {
+  const normalizedSource = normalizeResumeLineEndings(source);
+  const sections = expectedSourceSections(normalizedSource);
+  const paragraphUnit = paragraphBreakUnit(normalizedSource.split("\n"));
+  if (!resumeSourceStructureFitsContract(sections, paragraphUnit)) {
+    return RESUME_PARSE_PLANNED_JSON_BYTES + 1;
+  }
+  const projectedContentBytes = sections.reduce((total, section) =>
+    total + estimateProviderProjectionContentBytes(section), 0);
+  return projectedContentBytes + estimateResumeParseProviderEnvelopeBytes(sections, paragraphUnit);
 }
 
 function resumeParseOutputTokenLimit(provider: AiProviderName) {
@@ -1453,7 +1574,7 @@ function assertResumeParseOutputCapacity(source: string, provider: AiProviderNam
       }
     );
   }
-  const maximumOutputBytes = estimateResumeParseMaximumOutputBytes(source);
+  const maximumOutputBytes = estimateResumeParseMaximumProviderOutputBytes(source);
   if (maximumOutputBytes <= RESUME_PARSE_PLANNED_JSON_BYTES) return;
   throw new PublicApiError(
     "Resume text is too large or escape-heavy to preserve losslessly within the configured structured-response limit.",
@@ -2248,6 +2369,23 @@ export function assembleAndValidateResumeV6(
   return { ...validated, contractVersion: "6" };
 }
 
+export function decodeStoredParsedResume(rawSource: string, value: unknown): ParsedResumeV6 | ParsedResumeV5 {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).contractVersion === "6"
+  ) {
+    const validated = validateParsedResumeOutput(
+      rawSource,
+      { ...(value as Record<string, unknown>), contractVersion: "5" },
+      { allowLegacy: false }
+    );
+    return { ...validated, contractVersion: "6" };
+  }
+  return validateParsedResumeOutput(rawSource, value, { allowLegacy: true });
+}
+
 const resumeValidationErrorCodes = new Set([
   "RESUME_PARSE_INCOMPLETE",
   "RESUME_PARSE_INVALID_OUTPUT",
@@ -2336,6 +2474,69 @@ export function classifyResumeValidationFailure(
     expectedSections = expectedSourceSections(normalizedSource);
   } catch {
     // Diagnostics must never replace the original validation failure.
+  }
+
+  const providerV6 = value && typeof value === "object" && !Array.isArray(value) &&
+    (value as Record<string, unknown>).contractVersion === "6";
+  if (providerV6) {
+    const providerResult = resumeParseProviderV6Schema.safeParse(value);
+    if (!providerResult.success) {
+      const firstIssue = providerResult.error.issues[0];
+      const spanIndex = firstIssue?.path[0] === "recordSpans" &&
+        typeof firstIssue.path[1] === "number"
+        ? firstIssue.path[1]
+        : null;
+      const rawSpans = (value as { recordSpans?: unknown }).recordSpans;
+      const rawSpan = Array.isArray(rawSpans) && spanIndex !== null ? rawSpans[spanIndex] : null;
+      const rawSectionId = rawSpan && typeof rawSpan === "object" && !Array.isArray(rawSpan)
+        ? (rawSpan as { sectionId?: unknown }).sectionId
+        : null;
+      const spanSectionIndex = typeof rawSectionId === "string"
+        ? /^section-([1-9][0-9]*)$/u.exec(rawSectionId)
+        : null;
+      const spanSection = spanSectionIndex
+        ? expectedSections[Number(spanSectionIndex[1]) - 1]?.section ?? null
+        : null;
+      const issueAtSpanObject = spanIndex !== null && firstIssue?.path.length === 2;
+      if (issueAtSpanObject && rawSpan && typeof rawSpan === "object" && !Array.isArray(rawSpan)) {
+        return {
+          validationStage: "resume_schema",
+          internalErrorCode,
+          section: spanSection,
+          mismatchComponent: "objectShape",
+          expected: { unit: "properties", count: 3, fingerprint: null },
+          actual: {
+            unit: "properties",
+            count: Object.keys(rawSpan as Record<string, unknown>).length,
+            fingerprint: null
+          },
+          fingerprintAlgorithm: null
+        };
+      }
+      const issueComponent = firstIssue?.path.at(-1);
+      return {
+        validationStage: "resume_schema",
+        internalErrorCode,
+        section: spanSection
+          ?? safeResumeValidationSection(details?.section)
+          ?? fieldPathSection,
+        mismatchComponent: typeof issueComponent === "string" ? issueComponent : null,
+        expected: null,
+        actual: null,
+        fingerprintAlgorithm: null
+      };
+    }
+    return {
+      validationStage: typeof fieldPath === "string" && (
+        fieldPath.startsWith("recordSpans") || /^section-[0-9]+\.lines/u.test(fieldPath)
+      ) ? "lossless_source_authority" : "typed_projection",
+      internalErrorCode,
+      section: safeResumeValidationSection(details?.section) ?? fieldPathSection,
+      mismatchComponent: diagnosticFieldComponent(fieldPath),
+      expected: null,
+      actual: null,
+      fingerprintAlgorithm: null
+    };
   }
 
   const schemaResult = parsedResumeSchema.safeParse(value);
@@ -2440,7 +2641,7 @@ class ResumeProviderError extends Error {
 
 async function callOpenAiResumeProvider(input: {
   model: string;
-  text: string;
+  payload: ReturnType<typeof buildResumeProviderSourceInput>;
   maxOutputTokens: number;
 }) {
   const client = getOpenAIClient();
@@ -2451,10 +2652,10 @@ async function callOpenAiResumeProvider(input: {
       model: input.model,
       temperature: 0,
       max_tokens: input.maxOutputTokens,
-      response_format: zodResponseFormat(parsedResumeSchema, "resume_parse_v5"),
+      response_format: zodResponseFormat(resumeParseProviderV6Schema, "resume_parse_v6"),
       messages: [
-        { role: "system", content: resumeParsePrompt },
-        { role: "user", content: JSON.stringify({ resumeText: input.text }) }
+        { role: "system", content: resumeParsePromptV6 },
+        { role: "user", content: JSON.stringify(input.payload) }
       ]
     });
   } catch (error) {
@@ -2588,10 +2789,10 @@ export async function parseResumeTextWithMeta(
       code: "AI_MODEL_PRICING_UNKNOWN"
     });
   }
-  const payload = { resumeText: normalizedText };
-  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePrompt, {
+  const payload = buildResumeProviderSourceInput(normalizedText);
+  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV6, {
     payload,
-    responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA
+    responseJsonSchema: RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA
   });
   const requestHash = hashAiInput("resumeParsePrompt", RESUME_PARSE_CACHE_VERSION, payload);
   const cached = await findCachedAiResponse({
@@ -2604,7 +2805,7 @@ export async function parseResumeTextWithMeta(
   });
   if (cached) {
     return {
-      data: validateParsedResumeOutput(normalizedText, cached.output, { allowLegacy: false }),
+      data: decodeStoredParsedResume(normalizedText, cached.output),
       meta: {
         provider,
         model,
@@ -2690,14 +2891,14 @@ export async function parseResumeTextWithMeta(
       ? await callGeminiJsonProvider({
           apiKey: process.env.GEMINI_API_KEY!.trim(),
           model,
-          systemPrompt: resumeParsePrompt,
+          systemPrompt: resumeParsePromptV6,
           payload,
-          responseJsonSchema: RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA,
+          responseJsonSchema: RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA,
           maxOutputTokens: outputTokenLimit,
           thinkingLevel: "LOW"
         })
       : provider === "openai"
-        ? await callOpenAiResumeProvider({ model, text: normalizedText, maxOutputTokens: outputTokenLimit })
+        ? await callOpenAiResumeProvider({ model, payload, maxOutputTokens: outputTokenLimit })
         : (() => { throw new PublicApiError(`Unsupported resume parsing provider: ${provider}.`, 503); })();
     usage = response.usage;
     actualCostMicros = estimateAiCostMicros({
@@ -2715,7 +2916,7 @@ export async function parseResumeTextWithMeta(
         usage
       });
     }
-    const data = validateParsedResumeOutput(normalizedText, response.value, { allowLegacy: false });
+    const data = assembleAndValidateResumeV6(normalizedText, response.value);
     try {
       await reconcileAiReservation({
         reservationId: reservation.id,

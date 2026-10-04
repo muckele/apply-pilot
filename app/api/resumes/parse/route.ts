@@ -6,8 +6,8 @@ import { hashAiInput } from "@/lib/ai/application-plan-budget";
 import { aiInvocationFromRequest } from "@/lib/ai/http";
 import {
   parseResumeTextWithMeta,
-  RESUME_PARSE_PROMPT_VERSION,
-  validateParsedResumeOutput
+  decodeStoredParsedResume,
+  RESUME_PARSE_PROMPT_VERSION
 } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
@@ -82,7 +82,7 @@ async function findResumeParseReplay(
   }
   return {
     resume,
-    parsed: validateParsedResumeOutput(rawText, analysis.output, { allowLegacy: false }),
+    parsed: decodeStoredParsedResume(rawText, analysis.output),
     replayed: true as const
   };
 }

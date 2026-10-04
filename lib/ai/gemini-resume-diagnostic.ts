@@ -6,14 +6,15 @@ import { getJobMatchEvidenceReferences } from "@/lib/ai/job-match";
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
+  assembleAndValidateResumeV6,
   classifyResumeValidationFailure,
-  RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA,
+  RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA,
   RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
-  RESUME_PARSE_RESPONSE_JSON_SCHEMA,
-  validateParsedResumeOutput
+  RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA
 } from "@/lib/ai/resume";
+import { buildResumeProviderSourceInput } from "@/lib/ai/resume-source-catalog";
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
-import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
+import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
 
 const DIAGNOSTIC_MODEL = "gemini-3.5-flash-lite";
 const DIAGNOSTIC_ENDPOINT =
@@ -23,8 +24,8 @@ const DIAGNOSTIC_INPUT_TOKENS = 12_000;
 const DIAGNOSTIC_OUTPUT_TOKENS = 24_000;
 const APPROVED_MAXIMUM_COST_MICROS = 63_600;
 const EXPECTED_SOURCE_HASH = "93c706c5e3cec091218647f027fa1c63cccf48ec6240f74615747fcdd303cf06";
-const EXPECTED_REQUEST_HASH = "0b2ad8f4387cadf8a85d82a6547fd2d9b32c7bcac12d751bcf68e9514b98e8d0";
-const EXPECTED_SCHEMA_HASH = "d3add80f52de8af6944abb6e44f9de048490d1484b463de9c4dad0713e572db7";
+const EXPECTED_REQUEST_HASH = "de2e64078a993b8b31daf7908e6ba24b8ad72fc424c064f55566f50df77399b0";
+const EXPECTED_SCHEMA_HASH = "08a6b93669e1c0ff2b5487193a5d9a69bf40cc817cbe3daa7064e2b6304c054d";
 const MAX_RESPONSE_BYTES = 65_536;
 const MAX_PROVIDER_MESSAGE_PREVIEW_BYTES = 256;
 const SAFE_TOKEN = /^[A-Za-z0-9._~:/+=-]{1,200}$/u;
@@ -164,7 +165,7 @@ function normalizeWhitespace(value: string) {
 
 function containsPromptExcerpt(value: string) {
   const normalizedValue = normalizeWhitespace(value);
-  const normalizedPrompt = normalizeWhitespace(resumeParsePrompt);
+  const normalizedPrompt = normalizeWhitespace(resumeParsePromptV6);
   const excerptLength = 16;
   for (let index = 0; index + excerptLength <= normalizedValue.length; index += 1) {
     if (normalizedPrompt.includes(normalizedValue.slice(index, index + excerptLength))) {
@@ -418,12 +419,12 @@ function safeRejectedResult(
 }
 
 export function buildPinnedGeminiResumeDiagnosticRequest(resumeText = "") {
-  const payload = { resumeText };
-  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePrompt, {
+  const payload = buildResumeProviderSourceInput(resumeText);
+  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV6, {
     payload,
     // Preserve the production admission posture: cost and size are checked against
     // the stricter canonical schema, not the relaxed Gemini wire projection.
-    responseJsonSchema: RESUME_PARSE_RESPONSE_JSON_SCHEMA
+    responseJsonSchema: RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA
   });
   if (policy.maxInputTokens !== DIAGNOSTIC_INPUT_TOKENS) {
     throw new Error("Pinned Gemini diagnostic input policy does not match the approved bound.");
@@ -442,9 +443,9 @@ export function buildPinnedGeminiResumeDiagnosticRequest(resumeText = "") {
     throw new Error("Pinned Gemini diagnostic source does not match the approved synthetic fixture.");
   }
   const body = buildGeminiJsonRequest({
-    systemPrompt: resumeParsePrompt,
+    systemPrompt: resumeParsePromptV6,
     payload,
-    responseJsonSchema: RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA,
+    responseJsonSchema: RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA,
     maxOutputTokens: DIAGNOSTIC_OUTPUT_TOKENS,
     thinkingLevel: "LOW"
   });
@@ -603,7 +604,7 @@ export async function runPinnedGeminiResumeDiagnostic(
 
   let consumerStage: "application_plan" | "job_match" | "tailoring" | null = null;
   try {
-    const validated = validateParsedResumeOutput(resumeText, value, { allowLegacy: false });
+    const validated = assembleAndValidateResumeV6(resumeText, value);
     const consumerResume = { ...validated, rawText: resumeText };
     const diagnosticJob = {
       title: "Synthetic Systems Engineer",

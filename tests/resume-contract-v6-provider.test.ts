@@ -63,19 +63,19 @@ const providerOutput = {
   warnings: []
 };
 
-test("defines the v6 span-only provider contract and coherent next revisions", () => {
+test("defines the v6 span-only provider contract and coherent live revisions", () => {
   const candidate = resumeModule as typeof resumeModule & {
     resumeParseProviderV6Schema?: { safeParse(value: unknown): { success: boolean } };
     RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA?: Record<string, unknown>;
     RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA?: Record<string, unknown>;
-    RESUME_PARSE_VNEXT_PROMPT_VERSION?: string;
-    RESUME_PARSE_VNEXT_CACHE_VERSION?: string;
-    RESUME_PARSE_VNEXT_GEMINI_WIRE_SCHEMA_VERSION?: string;
+    RESUME_PARSE_PROMPT_VERSION?: string;
+    RESUME_PARSE_CACHE_VERSION?: string;
+    RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION?: string;
   };
 
-  assert.equal(candidate.RESUME_PARSE_VNEXT_PROMPT_VERSION, "7");
-  assert.equal(candidate.RESUME_PARSE_VNEXT_CACHE_VERSION, "8");
-  assert.equal(candidate.RESUME_PARSE_VNEXT_GEMINI_WIRE_SCHEMA_VERSION, "3");
+  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "7");
+  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "8");
+  assert.equal(candidate.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "3");
   assert.equal(candidate.resumeParseProviderV6Schema?.safeParse(providerOutput).success, true);
   assert.ok(candidate.RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA);
   assert.ok(candidate.RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA);
