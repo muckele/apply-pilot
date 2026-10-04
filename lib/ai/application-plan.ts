@@ -226,6 +226,7 @@ function boundedNumber(value: unknown): number | null {
 }
 
 type CondensedEntry = { heading: string; highlights: string[] };
+type CondensedTextEntry = { id: string; text: string };
 
 // Defensively reads the Json work-history field, keeping only title/company/dates and
 // bounded highlights. Contact-like and unlisted fields are dropped by omission.
@@ -316,15 +317,18 @@ function condenseProjects(value: unknown, omissions: ProjectionOmission[]): Cond
 
 // Education keeps credential + field only; institution names, addresses, and any
 // personal details are deliberately omitted.
-function condenseEducation(value: unknown, omissions: ProjectionOmission[]): string[] {
+function condenseEducation(value: unknown, omissions: ProjectionOmission[]): CondensedTextEntry[] {
   if (!Array.isArray(value)) return [];
   recordArrayBound(value, BOUNDS.education, "education", "resume.education", omissions);
-  const entries: string[] = [];
-  for (const [sourceIndex, item] of value.entries()) {
+  const entries: CondensedTextEntry[] = [];
+  for (const [sourceIndex, item] of value.slice(0, BOUNDS.education).entries()) {
     const record = asRecord(item);
-    if (!record) continue;
     const id = `education-${sourceIndex + 1}`;
     const basePath = `resume.education[${sourceIndex}]`;
+    if (!record) {
+      recordProjectionOmission(omissions, basePath, [id]);
+      continue;
+    }
     const credential = boundedProjectedText(record.credential ?? record.degree, BOUNDS.educationTextChars, id, basePath, omissions);
     const field = boundedProjectedText(
       record.fieldOfStudy ?? record.field ?? record.areaOfStudy ?? record.major,
@@ -334,8 +338,8 @@ function condenseEducation(value: unknown, omissions: ProjectionOmission[]): str
       omissions
     );
     const text = [credential, field].filter(Boolean).join(" — ");
-    if (text) entries.push(text);
-    if (entries.length >= BOUNDS.education) break;
+    if (text) entries.push({ id, text });
+    else recordProjectionOmission(omissions, basePath, [id]);
   }
   return entries;
 }
@@ -451,7 +455,7 @@ export function buildApplicationPlanPayload(input: ApplicationPlanInput): Applic
         addEvidence(`${projectId}-highlight-${highlightIndex + 1}`, "PROJECT", highlight));
     });
     condenseEducation(resume.education, projectionOmissions)
-      .forEach((text, index) => addEvidence(`education-${index + 1}`, "EDUCATION", text));
+      .forEach((entry) => addEvidence(entry.id, "EDUCATION", entry.text));
     condenseCertifications(resume.certifications, projectionOmissions).forEach((certification, index) => {
       const certificationId = `certification-${index + 1}`;
       addEvidence(certificationId, "CERTIFICATION", certification.heading);

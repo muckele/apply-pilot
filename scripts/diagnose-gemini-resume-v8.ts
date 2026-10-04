@@ -4,9 +4,9 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import {
-  buildPinnedGeminiResumeV7DiagnosticRequest,
-  runPinnedGeminiResumeV7Diagnostic
-} from "@/lib/ai/gemini-resume-v7-diagnostic";
+  buildPinnedGeminiResumeV8DiagnosticRequest,
+  runPinnedGeminiResumeV8Diagnostic
+} from "@/lib/ai/gemini-resume-v8-diagnostic";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 
 function assertLocalInteractiveRuntime() {
@@ -69,7 +69,7 @@ type CliDependencies = {
   assertRuntime?: () => void;
   loadResumeText?: () => Promise<string>;
   readSecret?: () => Promise<string>;
-  runDiagnostic?: typeof runPinnedGeminiResumeV7Diagnostic;
+  runDiagnostic?: typeof runPinnedGeminiResumeV8Diagnostic;
   write?: (value: string) => void;
 };
 
@@ -80,60 +80,55 @@ export async function loadPinnedSyntheticResumeText() {
   return extractResumeDocxText(fixture);
 }
 
-export async function runGeminiResumeV7DiagnosticCli(dependencies: CliDependencies = {}) {
+function approvedRequestPacket(
+  request: ReturnType<typeof buildPinnedGeminiResumeV8DiagnosticRequest>
+) {
+  return {
+    cacheVersion: request.cacheVersion,
+    candidateCommit: request.candidateCommit,
+    contractVersion: request.contractVersion,
+    endpoint: request.endpoint,
+    maximumCostMicros: request.maximumCostMicros,
+    maximumCostUsd: request.maximumCostUsd,
+    maximumInputTokens: request.maximumInputTokens,
+    maximumOutputTokens: request.maximumOutputTokens,
+    method: request.method,
+    model: request.model,
+    promptVersion: request.promptVersion,
+    redirect: request.redirect,
+    requestBodyBytes: request.requestBodyBytes,
+    requestHash: request.requestHash,
+    responseBodyLimitBytes: request.responseBodyLimitBytes,
+    schemaBytes: request.schemaBytes,
+    schemaHash: request.schemaHash,
+    sourceBytes: request.sourceBytes,
+    sourceHash: request.sourceHash,
+    thinkingLevel: request.thinkingLevel,
+    timeoutMs: request.timeoutMs,
+    wireSchemaVersion: request.wireSchemaVersion
+  };
+}
+
+export async function runGeminiResumeV8DiagnosticCli(dependencies: CliDependencies = {}) {
   const write = dependencies.write ?? ((value: string) => process.stdout.write(`${value}\n`));
-  let request: ReturnType<typeof buildPinnedGeminiResumeV7DiagnosticRequest> | null = null;
+  let request: ReturnType<typeof buildPinnedGeminiResumeV8DiagnosticRequest> | null = null;
   let apiKey = "";
   try {
     (dependencies.assertRuntime ?? assertLocalInteractiveRuntime)();
     const resumeText = await (dependencies.loadResumeText ?? loadPinnedSyntheticResumeText)();
-    request = buildPinnedGeminiResumeV7DiagnosticRequest(resumeText);
+    request = buildPinnedGeminiResumeV8DiagnosticRequest(resumeText);
     apiKey = await (dependencies.readSecret ?? readSecretFromTty)();
-    const result = await (dependencies.runDiagnostic ?? runPinnedGeminiResumeV7Diagnostic)(apiKey, {
+    const result = await (dependencies.runDiagnostic ?? runPinnedGeminiResumeV8Diagnostic)(apiKey, {
       resumeText
     });
     write(JSON.stringify({
-      approvedRequest: {
-        cacheVersion: request.cacheVersion,
-        contractVersion: request.contractVersion,
-        endpoint: request.endpoint,
-        maximumCostMicros: request.maximumCostMicros,
-        maximumInputTokens: request.maximumInputTokens,
-        maximumOutputTokens: request.maximumOutputTokens,
-        model: request.model,
-        promptVersion: request.promptVersion,
-        requestBodyBytes: request.requestBodyBytes,
-        requestHash: request.requestHash,
-        responseBodyLimitBytes: request.responseBodyLimitBytes,
-        schemaBytes: request.schemaBytes,
-        schemaHash: request.schemaHash,
-        sourceHash: request.sourceHash,
-        timeoutMs: request.timeoutMs,
-        wireSchemaVersion: request.wireSchemaVersion
-      },
+      approvedRequest: approvedRequestPacket(request),
       result
     }, null, 2));
     return result.outcome === "validated" ? 0 : 1;
   } catch {
     write(JSON.stringify({
-      approvedRequest: request ? {
-        cacheVersion: request.cacheVersion,
-        contractVersion: request.contractVersion,
-        endpoint: request.endpoint,
-        maximumCostMicros: request.maximumCostMicros,
-        maximumInputTokens: request.maximumInputTokens,
-        maximumOutputTokens: request.maximumOutputTokens,
-        model: request.model,
-        promptVersion: request.promptVersion,
-        requestBodyBytes: request.requestBodyBytes,
-        requestHash: request.requestHash,
-        responseBodyLimitBytes: request.responseBodyLimitBytes,
-        schemaBytes: request.schemaBytes,
-        schemaHash: request.schemaHash,
-        sourceHash: request.sourceHash,
-        timeoutMs: request.timeoutMs,
-        wireSchemaVersion: request.wireSchemaVersion
-      } : null,
+      approvedRequest: request ? approvedRequestPacket(request) : null,
       result: {
         outcome: "transport_error",
         category: "TRANSPORT_OR_LOCAL_FAILURE"
@@ -147,7 +142,7 @@ export async function runGeminiResumeV7DiagnosticCli(dependencies: CliDependenci
 
 const entryPoint = process.argv[1];
 if (entryPoint && import.meta.url === pathToFileURL(entryPoint).href) {
-  void runGeminiResumeV7DiagnosticCli().then((exitCode) => {
+  void runGeminiResumeV8DiagnosticCli().then((exitCode) => {
     process.exitCode = exitCode;
   });
 }

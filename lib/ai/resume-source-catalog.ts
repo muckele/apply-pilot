@@ -442,7 +442,7 @@ function deterministicRecordBlocks(
 ) {
   if (section === "contactInfo" || section === "summary") return [sourceText];
   if (section === "skills" || section === "achievements" || section === "additional") {
-    return sourceText.split("\n").map((line) => line.trim()).filter(Boolean);
+    return sourceText.split("\n").filter((line) => line.trim().length > 0);
   }
   if (structuralSections.has(section)) {
     return deterministicStructuralRecordBlocks(

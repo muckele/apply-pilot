@@ -115,6 +115,42 @@ test("project dates remain visible in downstream application-plan evidence", () 
   );
 });
 
+test("education omissions are explicit and later evidence keeps source-stable IDs", () => {
+  const input = fixtureInput();
+  input.resume!.education = [
+    {
+      institution: "Source-only University",
+      credential: null,
+      fieldOfStudy: null,
+      startDate: "2020",
+      endDate: "2024",
+      details: ["480 hours of supervised practice."]
+    },
+    { credential: "Bachelor of Arts", fieldOfStudy: "Business Administration" }
+  ];
+  input.resume!.rawText = "Complete education source remains available here.";
+
+  const payload = buildApplicationPlanPayload(input);
+  assert.equal(
+    payload.evidenceCatalog.find((entry) => entry.id === "education-2")?.text,
+    "Bachelor of Arts — Business Administration"
+  );
+  assert.ok(!payload.evidenceCatalog.some((entry) => entry.id === "education-1"));
+  assert.deepEqual(
+    payload.projectionOmissions.find((entry) => entry.sourcePath === "resume.education[0]"),
+    {
+      sourcePath: "resume.education[0]",
+      omittedIds: ["education-1"],
+      omittedCount: 1,
+      truncatedIds: []
+    }
+  );
+  assert.equal(
+    payload.evidenceCatalog.find((entry) => entry.id === "raw-source-1")?.text,
+    input.resume!.rawText
+  );
+});
+
 test("raw source fallback is explicit while sensitive and unlisted fields never enter the payload or catalog", () => {
   // JSON round-trip simulates an untyped caller passing a full database row with
   // extra sensitive properties that must be dropped by construction.
