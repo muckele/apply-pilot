@@ -13,6 +13,10 @@ import {
   syntheticDocxExtractedText,
   syntheticDocxProviderOutput
 } from "@/tests/fixtures/resume-contract-v5-data";
+import {
+  fullSizeSyntheticDocxExtractedText,
+  fullSizeSyntheticProviderOutput
+} from "@/tests/fixtures/resume-estimator-boundary-data";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -289,7 +293,7 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "5");
+  assert.equal(state.analyses[0]?.promptVersion, "6");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });
@@ -506,6 +510,83 @@ test("synthetic DOCX runs extraction through v5 validation, persistence stubs, a
   );
   assert.ok(tailoring.resume);
   assert.equal(tailoring.resume.rawText, syntheticDocxExtractedText);
+  assert.deepEqual(tailoring.resume.projects, body.resume.projects);
+  assert.ok(!("filePath" in tailoring.resume));
+  assert.ok(!("contactInfo" in tailoring.resume));
+});
+
+test("full-size synthetic DOCX passes admission, persistence, and all canonical consumers", async (t) => {
+  const state = setup(t, fullSizeSyntheticProviderOutput(), true);
+  stub(t, globalThis, "fetch", async () => {
+    throw new Error("full-size synthetic DOCX cache replay must not call a provider");
+  });
+  const fixture = await readFile(new URL(
+    "./fixtures/synthetic-resume-estimator-boundary.docx",
+    import.meta.url
+  ));
+  const form = new FormData();
+  form.set("submissionId", SUBMISSION_ID_2);
+  form.set("title", "Full-Size Synthetic Resume");
+  form.set("file", new File([fixture], "synthetic-resume-estimator-boundary.docx", {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  }));
+
+  const response = await invoke(form);
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.resume.rawText, fullSizeSyntheticDocxExtractedText);
+  assert.equal(body.parsed.sourceSections[2].heading, "CORE SKILLS");
+  assert.equal(body.parsed.sourceSections[4].heading, "SELECTED TECHNICAL PROJECTS");
+  assert.equal(body.parsed.workHistory.length, 5);
+  assert.equal(body.parsed.projects.length, 2);
+  assert.equal(body.parsed.education.length, 2);
+  assert.equal(body.parsed.certifications.length, 1);
+  assert.equal(body.parsed.certifications[0].details[0], "Credential ID: SYN-OPS-6403");
+  assert.equal(body.parsed.achievements.length, 2);
+  assert.equal(body.parsed.sourceSections.at(-1).section, "additional");
+  assert.equal(state.resumes.length, 1);
+  assert.equal(state.analyses.length, 1);
+  assert.equal(state.audits.length, 1);
+
+  const resumeInput = {
+    rawText: body.resume.rawText,
+    summary: body.resume.summary,
+    skills: body.resume.skills,
+    achievements: body.resume.achievements,
+    workHistory: body.resume.workHistory,
+    projects: body.resume.projects,
+    education: body.resume.education,
+    certifications: body.resume.certifications
+  };
+  const job = {
+    title: "Service Operations Director",
+    company: "Synthetic Employer",
+    description: "Lead TypeScript, PostgreSQL, service delivery, and reporting programs.",
+    requirements: ["TypeScript", "PostgreSQL", "service delivery"]
+  };
+  const planner = buildApplicationPlanPayload({ job, resume: resumeInput });
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "project-1-highlight-1"));
+  assert.ok(planner.evidenceCatalog.some((item) =>
+    item.id === "education-2" && item.text.includes("Business Administration")
+  ));
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "certification-1-detail-1"));
+  assert.ok(planner.evidenceCatalog.some((item) => item.id === "raw-source-1"));
+
+  const matchInput: MatchInput = { job, resume: resumeInput };
+  const refs = getJobMatchEvidenceReferences(matchInput).applicant;
+  assert.ok(refs.includes("resume.projects[0]"));
+  assert.ok(refs.includes("resume.education[1]"));
+  assert.ok(refs.includes("resume.certifications[0]"));
+  assert.ok(refs.includes("resume.rawText"));
+
+  const tailoring = buildResumeTailoringPayload(
+    job,
+    { ...resumeInput, filePath: "/private/full-size-synthetic.docx", contactInfo: body.resume.contactInfo },
+    { careerGoals: "Reliable service operations", email: "private@example.test" }
+  );
+  assert.ok(tailoring.resume);
+  assert.equal(tailoring.resume.rawText, fullSizeSyntheticDocxExtractedText);
   assert.deepEqual(tailoring.resume.projects, body.resume.projects);
   assert.ok(!("filePath" in tailoring.resume));
   assert.ok(!("contactInfo" in tailoring.resume));
