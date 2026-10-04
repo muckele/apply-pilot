@@ -2077,6 +2077,13 @@ function providerBillingDisposition(error: unknown, fallbackUsage: ProviderUsage
   return fallbackUsage ? "known" as const : "uncertain" as const;
 }
 
+function providerFailureCode(error: unknown) {
+  if (error instanceof GeminiProviderError) {
+    return error.providerCode ?? (error.httpStatus ? `HTTP_${error.httpStatus}` : error.name);
+  }
+  return error instanceof Error ? error.name : "UnknownError";
+}
+
 function publicProviderError(error: unknown, visibility: {
   provider: string;
   billingStatus: "known" | "not_charged" | "uncertain";
@@ -2085,7 +2092,14 @@ function publicProviderError(error: unknown, visibility: {
   const safeDetails = {
     provider: visibility.provider,
     billingStatus: visibility.billingStatus,
-    actualCostMicros: visibility.actualCostMicros
+    actualCostMicros: visibility.actualCostMicros,
+    ...(error instanceof GeminiProviderError
+      ? {
+          providerHttpStatus: error.httpStatus,
+          providerCode: error.providerCode,
+          providerRequestId: error.requestId
+        }
+      : {})
   };
   if (error instanceof PublicApiError) {
     return new PublicApiError(error.message, error.status, {
@@ -2320,7 +2334,7 @@ export async function parseResumeTextWithMeta(
         inputTokens: providerUsage?.inputTokens,
         outputTokens: providerUsage?.outputTokens,
         cachedInputTokens: providerUsage?.cachedInputTokens,
-        errorCode: error instanceof Error ? error.name : "UnknownError"
+        errorCode: providerFailureCode(error)
       }).catch(() => undefined);
     }
     throw publicProviderError(error, {

@@ -15,6 +15,48 @@ const responseSchema = {
   required: ["value"]
 };
 
+const documentedGeminiSchemaKeywords = new Set([
+  "type",
+  "title",
+  "description",
+  "enum",
+  "format",
+  "properties",
+  "required",
+  "additionalProperties",
+  "items",
+  "prefixItems",
+  "minItems",
+  "maxItems",
+  "minimum",
+  "maximum",
+  "$ref",
+  "anyOf"
+]);
+
+function assertOnlyDocumentedSchemaKeywords(value: unknown, path = "responseJsonSchema") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    assert.ok(documentedGeminiSchemaKeywords.has(key), `undocumented schema keyword at ${path}.${key}`);
+    if (key === "properties" && entry && typeof entry === "object" && !Array.isArray(entry)) {
+      for (const [propertyName, propertySchema] of Object.entries(entry)) {
+        assertOnlyDocumentedSchemaKeywords(propertySchema, `${path}.properties.${propertyName}`);
+      }
+      continue;
+    }
+    if (key === "items" || key === "additionalProperties") {
+      assertOnlyDocumentedSchemaKeywords(entry, `${path}.${key}`);
+      continue;
+    }
+    if (key === "prefixItems" && Array.isArray(entry)) {
+      entry.forEach((item, index) => assertOnlyDocumentedSchemaKeywords(item, `${path}.prefixItems[${index}]`));
+    }
+    if (key === "anyOf" && Array.isArray(entry)) {
+      entry.forEach((item, index) => assertOnlyDocumentedSchemaKeywords(item, `${path}.anyOf[${index}]`));
+    }
+  }
+}
+
 test("Gemini JOB_MATCH request pins medium thinking, structured JSON and the priced output ceiling", () => {
   const request = buildGeminiJsonRequest({
     systemPrompt: "Use only submitted evidence.",
@@ -34,6 +76,138 @@ test("Gemini JOB_MATCH request pins medium thinking, structured JSON and the pri
       responseJsonSchema: responseSchema
     }
   });
+});
+
+test("Gemini wire schema removes local-only string constraints at every nested level", () => {
+  const localSchema = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      label: { type: "string", maxLength: 100, pattern: "^[A-Z]+$" },
+      groups: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            score: { type: "number", minimum: 0, maximum: 1 },
+            value: { type: ["string", "null"], maxLength: 2_000 }
+          },
+          required: ["score", "value"]
+        }
+      }
+    },
+    required: ["label", "groups"]
+  };
+
+  const request = buildGeminiJsonRequest({
+    systemPrompt: "Use only submitted evidence.",
+    payload: { job: "synthetic" },
+    responseJsonSchema: localSchema,
+    maxOutputTokens: 8_192,
+    thinkingLevel: "MEDIUM"
+  });
+  const wireSchema = request.generationConfig.responseJsonSchema;
+
+  assertOnlyDocumentedSchemaKeywords(wireSchema);
+  assert.equal("maxLength" in localSchema.properties.label, true);
+  assert.equal("pattern" in localSchema.properties.label, true);
+  assert.deepEqual(wireSchema, {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      label: { type: "string" },
+      groups: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            score: { type: "number", minimum: 0, maximum: 1 },
+            value: { type: ["string", "null"] }
+          },
+          required: ["score", "value"]
+        }
+      }
+    },
+    required: ["label", "groups"]
+  });
+});
+
+test("Gemini wire schema rejects undocumented keywords instead of silently broadening them", () => {
+  assert.throws(() => buildGeminiJsonRequest({
+    systemPrompt: "Use only submitted evidence.",
+    payload: { job: "synthetic" },
+    responseJsonSchema: {
+      type: "object",
+      properties: { value: { type: "string", minLength: 1 } },
+      required: ["value"]
+    },
+    maxOutputTokens: 8_192,
+    thinkingLevel: "MEDIUM"
+  }), /unsupported Gemini response schema keyword.*minLength/i);
+});
+
+test("Gemini wire schema preserves documented anyOf branches and adapts them recursively", () => {
+  const request = buildGeminiJsonRequest({
+    systemPrompt: "Use only submitted evidence.",
+    payload: { job: "synthetic" },
+    responseJsonSchema: {
+      anyOf: [
+        { type: "string", maxLength: 100 },
+        {
+          type: "object",
+          properties: { label: { type: "string", pattern: "^[A-Z]+$" } },
+          required: ["label"]
+        }
+      ]
+    },
+    maxOutputTokens: 8_192,
+    thinkingLevel: "MEDIUM"
+  });
+
+  assert.deepEqual(request.generationConfig.responseJsonSchema, {
+    anyOf: [
+      { type: "string" },
+      {
+        type: "object",
+        properties: { label: { type: "string" } },
+        required: ["label"]
+      }
+    ]
+  });
+});
+
+test("Gemini schema preflight failures remain definitely uncharged without transport", async () => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    calls += 1;
+    return new Response("{}", { status: 200 });
+  };
+
+  await assert.rejects(callGeminiJsonProvider({
+    apiKey: "synthetic-secret",
+    model: "gemini-3.5-flash-lite",
+    systemPrompt: "test",
+    payload: { resumeText: "synthetic" },
+    responseJsonSchema: {
+      type: "object",
+      properties: { value: { type: "string", minLength: 1 } },
+      required: ["value"]
+    },
+    maxOutputTokens: 16_000,
+    thinkingLevel: "LOW",
+    fetchImpl
+  }), (error: unknown) => {
+    assert.ok(error instanceof GeminiProviderError);
+    assert.equal(error.providerResponded, false);
+    assert.equal(error.billingDisposition, "not_charged");
+    assert.equal(error.providerCode, "UNSUPPORTED_RESPONSE_SCHEMA");
+    return true;
+  });
+  assert.equal(calls, 0);
 });
 
 test("Gemini usage bills visible and thinking tokens without double-counting cached input", () => {
@@ -157,4 +331,72 @@ test("a non-JSON Gemini HTTP rejection is definitely not charged and never retri
     return true;
   });
   assert.equal(calls, 1);
+});
+
+test("Gemini HTTP rejection retains only bounded status, code, and request ID diagnostics", async () => {
+  const privateDetail = "private resume content and synthetic-secret";
+  const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+    error: {
+      code: 400,
+      status: "INVALID_ARGUMENT",
+      message: privateDetail
+    }
+  }), {
+    status: 400,
+    headers: { "x-goog-request-id": "request_ABC-123" }
+  });
+
+  await assert.rejects(callGeminiJsonProvider({
+    apiKey: "synthetic-secret",
+    model: "gemini-3.5-flash-lite",
+    systemPrompt: "test",
+    payload: { resumeText: privateDetail },
+    responseJsonSchema: responseSchema,
+    maxOutputTokens: 16_000,
+    thinkingLevel: "LOW",
+    fetchImpl
+  }), (error: unknown) => {
+    assert.ok(error instanceof GeminiProviderError);
+    assert.equal(error.httpStatus, 400);
+    assert.equal(error.providerCode, "INVALID_ARGUMENT");
+    assert.equal(error.requestId, "request_ABC-123");
+    assert.doesNotMatch(error.message, /private resume content|synthetic-secret/);
+    return true;
+  });
+});
+
+test("Gemini rejection diagnostics cancel an oversized body instead of buffering it", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("x".repeat(10_001)));
+      setTimeout(() => {
+        if (!cancelled) controller.close();
+      }, 25);
+    },
+    cancel() {
+      cancelled = true;
+    }
+  });
+  const fetchImpl: typeof fetch = async () => new Response(body, {
+    status: 400,
+    headers: { "x-goog-request-id": "request_ABC-123" }
+  });
+
+  await assert.rejects(callGeminiJsonProvider({
+    apiKey: "synthetic-secret",
+    model: "gemini-3.5-flash-lite",
+    systemPrompt: "test",
+    payload: { resumeText: "synthetic" },
+    responseJsonSchema: responseSchema,
+    maxOutputTokens: 16_000,
+    thinkingLevel: "LOW",
+    fetchImpl
+  }), (error: unknown) => {
+    assert.ok(error instanceof GeminiProviderError);
+    assert.equal(error.providerCode, null);
+    assert.equal(error.requestId, "request_ABC-123");
+    return true;
+  });
+  assert.equal(cancelled, true);
 });
