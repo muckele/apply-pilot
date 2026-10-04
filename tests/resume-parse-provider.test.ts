@@ -324,6 +324,10 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
   const generationConfig = requests[0]?.generationConfig as Record<string, unknown>;
   const responseSchema = generationConfig.responseJsonSchema as Record<string, unknown>;
   assert.equal(responseSchema.additionalProperties, false);
+  const serializedWireSchema = JSON.stringify(responseSchema);
+  assert.doesNotMatch(serializedWireSchema, /"maxLength"|"pattern"/);
+  assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"maxLength"/);
+  assert.match(JSON.stringify(RESUME_PARSE_RESPONSE_JSON_SCHEMA), /"pattern"/);
   assert.equal(generationConfig.maxOutputTokens, 24_000);
   assert.deepEqual(generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(ledger.reservations[0]?.provider, "gemini");
@@ -1215,6 +1219,37 @@ test("a validated cache replay avoids confirmation, reservation, and a duplicate
   assert.equal(result.data.workHistory.length, 1);
   assert.equal(providerCalls, 0);
   assert.equal(ledger.reservations.length, 0);
+});
+
+test("a definite Gemini rejection exposes and records only privacy-safe provider diagnostics", async (t) => {
+  environment(t);
+  const ledger = installLedger(t);
+  stub(t, globalThis, "fetch", async () => new Response(JSON.stringify({
+    error: {
+      code: 400,
+      status: "INVALID_ARGUMENT",
+      message: "private resume content must never be retained"
+    }
+  }), {
+    status: 400,
+    headers: { "x-goog-request-id": "request_ABC-123" }
+  }));
+
+  await assert.rejects(
+    parseResumeTextWithMeta(resumeText, "user-1", {
+      highCostConfirmed: true,
+      dataSharingConfirmed: true
+    }),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_PROVIDER_REJECTED" &&
+      error.details.providerHttpStatus === 400 &&
+      error.details.providerCode === "INVALID_ARGUMENT" &&
+      error.details.providerRequestId === "request_ABC-123" &&
+      !JSON.stringify(error.details).includes("private resume content")
+  );
+  assert.equal(ledger.reconciliations[0]?.status, "FAILED");
+  assert.equal(ledger.reconciliations[0]?.actualCostMicros, 0);
+  assert.equal(ledger.reconciliations[0]?.errorCode, "INVALID_ARGUMENT");
 });
 
 test("an uncertain provider outcome durably blocks an identical second paid call", async (t) => {
