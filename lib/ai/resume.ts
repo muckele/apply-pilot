@@ -40,6 +40,7 @@ import {
   type ResumeSourceSectionName,
   type ResumeTypedSectionName
 } from "@/lib/ai/resume-source-catalog";
+import { assembleParsedResumeFromSpans } from "@/lib/ai/resume-source-spans";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
@@ -161,13 +162,18 @@ export type ParsedResumeV5 = ParsedResumeCore & {
   sourceSections: ResumeSourceSection[];
 };
 
+export type ParsedResumeV6 = ParsedResumeCore & {
+  contractVersion: "6";
+  sourceSections: ResumeSourceSection[];
+};
+
 export type LegacyParsedResume = Omit<ParsedResumeCore, "certifications" | "projects"> & {
   contractVersion: "3";
   projects: Array<Omit<ResumeProjectItem, "date"> & { date?: string | null }>;
   certifications: Array<Omit<ResumeCertificationItem, "details"> & { details?: string[] }>;
 };
 
-export type ParsedResume = ParsedResumeV5 | LegacyParsedResume;
+export type ParsedResume = ParsedResumeV6 | ParsedResumeV5 | LegacyParsedResume;
 
 export type ResumeParseRecordSpanV6 = {
   sectionId: string;
@@ -2214,6 +2220,32 @@ export function validateParsedResumeOutput(
     );
   });
   return output;
+}
+
+export function assembleAndValidateResumeV6(
+  rawSource: string,
+  value: unknown
+): ParsedResumeV6 {
+  const parsed = resumeParseProviderV6Schema.safeParse(value);
+  if (!parsed.success) {
+    const fieldPath = zodFieldPath(parsed.error.issues[0]?.path ?? []);
+    throw new PublicApiError(
+      "Resume parsing returned an invalid structured result. No master resume was changed.",
+      422,
+      {
+        code: "RESUME_PARSE_INVALID_OUTPUT",
+        ...(fieldPath ? { fieldPath } : {}),
+        retryable: false
+      }
+    );
+  }
+  const assembled = assembleParsedResumeFromSpans(rawSource, parsed.data);
+  const validated = validateParsedResumeOutput(
+    rawSource,
+    { ...assembled, contractVersion: "5" },
+    { allowLegacy: false }
+  );
+  return { ...validated, contractVersion: "6" };
 }
 
 const resumeValidationErrorCodes = new Set([
