@@ -185,3 +185,26 @@ test("invalid or incomplete parsing keeps the server reason visible and gives no
     assert.equal(mounted.refreshes, 0);
   } finally { await mounted.cleanup(); }
 });
+
+test("resume validation failure renders only bounded field, billing, and cost diagnostics", async () => {
+  const privateProviderOutput = "PRIVATE_PROVIDER_OUTPUT_MUST_NOT_RENDER";
+  const mounted = await mountForm(async () => new Response(JSON.stringify({
+    error: "Resume parsing rejected one unsupported typed fact. No master resume was changed.",
+    code: "RESUME_PARSE_UNSUPPORTED_FACT",
+    section: "education",
+    fieldPath: "education[1].fieldOfStudy",
+    billingStatus: "known",
+    actualCostMicros: 12_345,
+    providerOutput: privateProviderOutput,
+    retryable: false
+  }), { status: 422, headers: { "content-type": "application/json" } }));
+  try {
+    await act(async () => { mounted.submit(); });
+    const text = mounted.container.textContent ?? "";
+    assert.match(text, /RESUME_PARSE_UNSUPPORTED_FACT/u);
+    assert.match(text, /education\[1\]\.fieldOfStudy/u);
+    assert.match(text, /Billing status: known/u);
+    assert.match(text, /Recorded provider cost: \$0\.012345/u);
+    assert.equal(text.includes(privateProviderOutput), false);
+  } finally { await mounted.cleanup(); }
+});

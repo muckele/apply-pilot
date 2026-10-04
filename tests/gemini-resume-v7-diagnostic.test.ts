@@ -96,9 +96,9 @@ test("builds a separately pinned v7 request with exact production request parity
   assert.equal(request.promptVersion, "9");
   assert.equal(request.cacheVersion, "10");
   assert.equal(request.wireSchemaVersion, "4");
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "10");
-  assert.equal(RESUME_PARSE_CACHE_VERSION, "11");
-  assert.equal(RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "5");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "11");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "12");
+  assert.equal(RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "6");
   assert.equal(request.maximumInputTokens, 12_000);
   assert.equal(request.maximumOutputTokens, 24_000);
   assert.equal(request.maximumCostMicros, 63_600);

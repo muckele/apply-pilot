@@ -6,10 +6,68 @@ import { useRouter } from "next/navigation";
 
 import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
+type ResumeErrorDiagnostic = {
+  code?: string;
+  section?: string;
+  fieldPath?: string;
+  billingStatus?: "known" | "not_charged" | "uncertain";
+  actualCostMicros?: number;
+};
+
 type FormResult =
   | { kind: "success"; replayed: boolean; warnings: string[] }
-  | { kind: "error"; message: string; retryable: boolean }
+  | {
+      kind: "error";
+      message: string;
+      retryable: boolean;
+      diagnostic?: ResumeErrorDiagnostic;
+    }
   | { kind: "uncertain" };
+
+const resumeSections = new Set([
+  "contactInfo",
+  "summary",
+  "skills",
+  "workHistory",
+  "projects",
+  "education",
+  "certifications",
+  "achievements",
+  "additional"
+]);
+
+function boundedResumeDiagnostic(
+  body: Record<string, unknown> | null
+): ResumeErrorDiagnostic | undefined {
+  if (!body) return undefined;
+  const code = typeof body.code === "string" && /^[A-Z0-9_]{1,100}$/u.test(body.code)
+    ? body.code
+    : undefined;
+  const section = typeof body.section === "string" && resumeSections.has(body.section)
+    ? body.section
+    : undefined;
+  const fieldPath = typeof body.fieldPath === "string" &&
+    /^[A-Za-z][A-Za-z0-9_.\[\]-]{0,199}$/u.test(body.fieldPath)
+    ? body.fieldPath
+    : undefined;
+  const billingStatus: ResumeErrorDiagnostic["billingStatus"] = body.billingStatus === "known" ||
+    body.billingStatus === "not_charged" ||
+    body.billingStatus === "uncertain"
+    ? body.billingStatus
+    : undefined;
+  const actualCostMicros = typeof body.actualCostMicros === "number" &&
+    Number.isSafeInteger(body.actualCostMicros) &&
+    body.actualCostMicros >= 0
+    ? body.actualCostMicros
+    : undefined;
+  return code || section || fieldPath || billingStatus || actualCostMicros !== undefined
+    ? { code, section, fieldPath, billingStatus, actualCostMicros }
+    : undefined;
+}
+
+function formatCostMicros(value: number) {
+  return `$${(value / 1_000_000).toFixed(6)}`;
+}
 
 export function ResumeUploadForm() {
   const router = useRouter();
@@ -34,6 +92,11 @@ export function ResumeUploadForm() {
       const body = await response.json().catch(() => null) as {
         error?: unknown;
         retryable?: unknown;
+        code?: unknown;
+        section?: unknown;
+        fieldPath?: unknown;
+        billingStatus?: unknown;
+        actualCostMicros?: unknown;
         replayed?: unknown;
         resume?: { id?: unknown; isMaster?: unknown };
         parsed?: { warnings?: unknown };
@@ -42,7 +105,8 @@ export function ResumeUploadForm() {
         setResult({
           kind: "error",
           message: typeof body?.error === "string" ? body.error : "Resume parsing could not be completed.",
-          retryable: body?.retryable === true
+          retryable: body?.retryable === true,
+          diagnostic: boundedResumeDiagnostic(body as Record<string, unknown> | null)
         });
         return;
       }
@@ -117,6 +181,19 @@ export function ResumeUploadForm() {
       ) : result?.kind === "error" ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950" role="alert">
           <p>{result.message}</p>
+          {result.diagnostic ? (
+            <div className="mt-2 space-y-1 text-xs" aria-label="Resume parse diagnostics">
+              {result.diagnostic.code ? <p>Error code: {result.diagnostic.code}</p> : null}
+              {result.diagnostic.section ? <p>Section: {result.diagnostic.section}</p> : null}
+              {result.diagnostic.fieldPath ? <p>Field: {result.diagnostic.fieldPath}</p> : null}
+              {result.diagnostic.billingStatus ? (
+                <p>Billing status: {result.diagnostic.billingStatus}</p>
+              ) : null}
+              {result.diagnostic.actualCostMicros !== undefined ? (
+                <p>Recorded provider cost: {formatCostMicros(result.diagnostic.actualCostMicros)}</p>
+              ) : null}
+            </div>
+          ) : null}
           <p className="mt-1">{result.retryable ? "You may retry after reviewing the request." : "Review the source or parser issue before retrying."}</p>
         </div>
       ) : result?.kind === "uncertain" ? (

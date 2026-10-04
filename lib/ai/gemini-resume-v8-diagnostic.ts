@@ -9,9 +9,9 @@ import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
   assembleAndValidateResumeV8,
   prepareResumeParseV8Request,
-  RESUME_PARSE_CACHE_VERSION,
-  RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
-  RESUME_PARSE_PROMPT_VERSION
+  RESUME_PARSE_V8_CACHE_VERSION,
+  RESUME_PARSE_V8_GEMINI_WIRE_SCHEMA_VERSION,
+  RESUME_PARSE_V8_PROMPT_VERSION
 } from "@/lib/ai/resume";
 import { resumeParsePromptV8 } from "@/prompts/resumeParsePrompt";
 
@@ -71,9 +71,9 @@ function sha256(value: string) {
 
 export function buildPinnedGeminiResumeV8DiagnosticRequest(resumeText = "") {
   if (
-    RESUME_PARSE_PROMPT_VERSION !== PINNED_PROMPT_VERSION
-    || RESUME_PARSE_CACHE_VERSION !== PINNED_CACHE_VERSION
-    || RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION !== PINNED_WIRE_SCHEMA_VERSION
+    RESUME_PARSE_V8_PROMPT_VERSION !== PINNED_PROMPT_VERSION
+    || RESUME_PARSE_V8_CACHE_VERSION !== PINNED_CACHE_VERSION
+    || RESUME_PARSE_V8_GEMINI_WIRE_SCHEMA_VERSION !== PINNED_WIRE_SCHEMA_VERSION
   ) {
     throw new Error("Pinned Gemini V8 diagnostic versions no longer match the candidate.");
   }
