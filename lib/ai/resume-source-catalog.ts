@@ -39,6 +39,15 @@ export type ResumeSourceCatalog = {
   sections: ResumeSourceCatalogSection[];
 };
 
+export type ResumeProviderSourceInput = {
+  sections: Array<{
+    sectionId: string;
+    section: ResumeSourceSectionName;
+    heading: string | null;
+    lines: Array<{ lineId: string; text: string }>;
+  }>;
+};
+
 export const resumeSectionHeadings: Record<ResumeTypedSectionName, RegExp> = {
   summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
   skills: /^(?:(?:(?:TECHNICAL|KEY|CORE)\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
@@ -213,5 +222,17 @@ export function buildResumeSourceCatalog(rawSource: string): ResumeSourceCatalog
         recordBlocks: deterministicRecordBlocks(section.section, sourceText)
       };
     })
+  };
+}
+
+export function buildResumeProviderSourceInput(rawSource: string): ResumeProviderSourceInput {
+  const catalog = buildResumeSourceCatalog(rawSource);
+  return {
+    sections: catalog.sections.map((section) => ({
+      sectionId: section.id,
+      section: section.section,
+      heading: section.heading,
+      lines: section.lines.map((line) => ({ lineId: line.id, text: line.sourceText }))
+    }))
   };
 }

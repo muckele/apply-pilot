@@ -48,6 +48,9 @@ export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 export const RESUME_PARSE_PROMPT_VERSION = "6";
 export const RESUME_PARSE_CACHE_VERSION = "7";
 export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "2";
+export const RESUME_PARSE_VNEXT_PROMPT_VERSION = "7";
+export const RESUME_PARSE_VNEXT_CACHE_VERSION = "8";
+export const RESUME_PARSE_VNEXT_GEMINI_WIRE_SCHEMA_VERSION = "3";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
 const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
@@ -166,6 +169,27 @@ export type LegacyParsedResume = Omit<ParsedResumeCore, "certifications" | "proj
 
 export type ParsedResume = ParsedResumeV5 | LegacyParsedResume;
 
+export type ResumeParseRecordSpanV6 = {
+  sectionId: string;
+  startLineId: string;
+  endLineId: string;
+};
+
+export type ResumeParseProviderV6 = {
+  contractVersion: "6";
+  recordSpans: ResumeParseRecordSpanV6[];
+  contactInfo: Omit<ParsedResumeCore["contactInfo"], "sourceText">;
+  summary: string;
+  skills: string[];
+  workHistory: Array<Omit<ResumeWorkHistoryItem, "sourceText"> & { spanIndex: number }>;
+  projects: Array<Omit<ResumeProjectItem, "sourceText"> & { spanIndex: number }>;
+  education: Array<Omit<ResumeEducationItem, "sourceText"> & { spanIndex: number }>;
+  certifications: Array<Omit<ResumeCertificationItem, "sourceText"> & { spanIndex: number }>;
+  achievements: string[];
+  sectionStatus: ParsedResumeCore["sectionStatus"];
+  warnings: string[];
+};
+
 export type ResumeValidationDiagnostic = {
   validationStage: "resume_schema" | "lossless_source_authority" | "typed_projection";
   internalErrorCode: string | null;
@@ -269,6 +293,82 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
   }).strict()).max(30),
   certifications: z.array(z.object({
     sourceText: boundedSourceBlock,
+    name: boundedSourceString,
+    issuer: nullableSourceString,
+    date: nullableSourceString,
+    expirationDate: nullableSourceString,
+    details: recordSourceStringList
+  }).strict()).max(50),
+  achievements: sourceStringList,
+  sectionStatus: z.object({
+    summary: sectionStatusSchema,
+    skills: sectionStatusSchema,
+    workHistory: sectionStatusSchema,
+    projects: sectionStatusSchema,
+    education: sectionStatusSchema,
+    certifications: sectionStatusSchema,
+    achievements: sectionStatusSchema
+  }).strict(),
+  warnings: z.array(warningSchema).max(5)
+}).strict();
+
+export const RESUME_PARSE_RECORD_SPAN_LIMIT = 180;
+const sourceSectionIdSchema = z.string().regex(/^section-[1-9][0-9]*$/u);
+const sourceLineIdSchema = z.string().regex(/^section-[1-9][0-9]*-line-[1-9][0-9]*$/u);
+const spanIndexSchema = z.number().int().min(0).max(RESUME_PARSE_RECORD_SPAN_LIMIT - 1);
+const recordSpanSchema = z.object({
+  sectionId: sourceSectionIdSchema,
+  startLineId: sourceLineIdSchema,
+  endLineId: sourceLineIdSchema
+}).strict();
+
+export const resumeParseProviderV6Schema: z.ZodType<
+  ResumeParseProviderV6,
+  z.ZodTypeDef,
+  unknown
+> = z.object({
+  contractVersion: z.literal("6"),
+  recordSpans: z.array(recordSpanSchema).max(RESUME_PARSE_RECORD_SPAN_LIMIT),
+  contactInfo: z.object({
+    name: nullableContactSourceString,
+    headline: nullableContactSourceString,
+    email: nullableContactSourceString,
+    phone: nullableContactSourceString,
+    location: nullableContactSourceString,
+    linkedin: nullableContactSourceString,
+    github: nullableContactSourceString,
+    portfolio: nullableContactSourceString
+  }).strict(),
+  summary: z.string().trim().max(2_000),
+  skills: sourceStringList,
+  workHistory: z.array(z.object({
+    spanIndex: spanIndexSchema,
+    company: boundedSourceString,
+    title: boundedSourceString,
+    location: nullableSourceString,
+    startDate: nullableSourceString,
+    endDate: nullableSourceString,
+    bullets: recordSourceStringList
+  }).strict()).max(50),
+  projects: z.array(z.object({
+    spanIndex: spanIndexSchema,
+    name: boundedSourceString,
+    description: nullableSourceString,
+    date: nullableSourceString,
+    technologies: recordSourceStringList,
+    bullets: recordSourceStringList
+  }).strict()).max(50),
+  education: z.array(z.object({
+    spanIndex: spanIndexSchema,
+    institution: boundedSourceString,
+    credential: nullableSourceString,
+    fieldOfStudy: nullableSourceString,
+    startDate: nullableSourceString,
+    endDate: nullableSourceString,
+    details: recordSourceStringList
+  }).strict()).max(30),
+  certifications: z.array(z.object({
+    spanIndex: spanIndexSchema,
     name: boundedSourceString,
     issuer: nullableSourceString,
     date: nullableSourceString,
@@ -446,6 +546,153 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
   ]
 } as const;
 
+const jsonSpanIndex = {
+  type: "integer",
+  minimum: 0,
+  maximum: RESUME_PARSE_RECORD_SPAN_LIMIT - 1
+} as const;
+
+export const RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    contractVersion: { type: "string", enum: ["6"] },
+    recordSpans: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          sectionId: { type: "string", pattern: "^section-[1-9][0-9]*$" },
+          startLineId: {
+            type: "string",
+            pattern: "^section-[1-9][0-9]*-line-[1-9][0-9]*$"
+          },
+          endLineId: {
+            type: "string",
+            pattern: "^section-[1-9][0-9]*-line-[1-9][0-9]*$"
+          }
+        },
+        required: ["sectionId", "startLineId", "endLineId"]
+      },
+      maxItems: RESUME_PARSE_RECORD_SPAN_LIMIT
+    },
+    contactInfo: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        name: nullableJsonString,
+        headline: nullableJsonString,
+        email: nullableJsonString,
+        phone: nullableJsonString,
+        location: nullableJsonString,
+        linkedin: nullableJsonString,
+        github: nullableJsonString,
+        portfolio: nullableJsonString
+      },
+      required: ["name", "headline", "email", "phone", "location", "linkedin", "github", "portfolio"]
+    },
+    summary: { type: "string", maxLength: 2_000 },
+    skills: jsonStringArray,
+    workHistory: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          spanIndex: jsonSpanIndex,
+          company: jsonString,
+          title: jsonString,
+          location: nullableJsonString,
+          startDate: nullableJsonString,
+          endDate: nullableJsonString,
+          bullets: jsonRecordStringArray
+        },
+        required: ["spanIndex", "company", "title", "location", "startDate", "endDate", "bullets"]
+      },
+      maxItems: 50
+    },
+    projects: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          spanIndex: jsonSpanIndex,
+          name: jsonString,
+          description: nullableJsonString,
+          date: nullableJsonString,
+          technologies: jsonRecordStringArray,
+          bullets: jsonRecordStringArray
+        },
+        required: ["spanIndex", "name", "description", "date", "technologies", "bullets"]
+      },
+      maxItems: 50
+    },
+    education: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          spanIndex: jsonSpanIndex,
+          institution: jsonString,
+          credential: nullableJsonString,
+          fieldOfStudy: nullableJsonString,
+          startDate: nullableJsonString,
+          endDate: nullableJsonString,
+          details: jsonRecordStringArray
+        },
+        required: ["spanIndex", "institution", "credential", "fieldOfStudy", "startDate", "endDate", "details"]
+      },
+      maxItems: 30
+    },
+    certifications: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          spanIndex: jsonSpanIndex,
+          name: jsonString,
+          issuer: nullableJsonString,
+          date: nullableJsonString,
+          expirationDate: nullableJsonString,
+          details: jsonRecordStringArray
+        },
+        required: ["spanIndex", "name", "issuer", "date", "expirationDate", "details"]
+      },
+      maxItems: 50
+    },
+    achievements: jsonStringArray,
+    sectionStatus: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        summary: { type: "string", enum: ["present", "absent"] },
+        skills: { type: "string", enum: ["present", "absent"] },
+        workHistory: { type: "string", enum: ["present", "absent"] },
+        projects: { type: "string", enum: ["present", "absent"] },
+        education: { type: "string", enum: ["present", "absent"] },
+        certifications: { type: "string", enum: ["present", "absent"] },
+        achievements: { type: "string", enum: ["present", "absent"] }
+      },
+      required: [
+        "summary", "skills", "workHistory", "projects", "education", "certifications", "achievements"
+      ]
+    },
+    warnings: {
+      type: "array",
+      items: { type: "string", maxLength: 100, pattern: "^[^\\u0000-\\u001F\\u007F]*$" },
+      maxItems: 5
+    }
+  },
+  required: [
+    "contractVersion", "recordSpans", "contactInfo", "summary", "skills", "workHistory",
+    "projects", "education", "certifications", "achievements", "sectionStatus", "warnings"
+  ]
+} as const;
+
 function omitMaxItemsFromJsonSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(omitMaxItemsFromJsonSchema);
   if (!value || typeof value !== "object") return value;
@@ -462,6 +709,9 @@ function omitMaxItemsFromJsonSchema(value: unknown): unknown {
 // wire representation omits maxItems; minItems and all structural constraints stay.
 export const RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA =
   omitMaxItemsFromJsonSchema(RESUME_PARSE_RESPONSE_JSON_SCHEMA) as Record<string, unknown>;
+
+export const RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA =
+  omitMaxItemsFromJsonSchema(RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA) as Record<string, unknown>;
 
 const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
   professionalSummary: z.string(),
