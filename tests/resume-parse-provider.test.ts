@@ -425,7 +425,7 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
 
   assert.equal(result.meta.provider, "gemini");
   assert.equal(result.meta.model, "gemini-3.8-flash");
-  assert.equal(result.meta.promptVersion, "8");
+  assert.equal(result.meta.promptVersion, "9");
   assert.equal(result.meta.outputTokens, 100);
   assert.deepEqual(result.data.workHistory, parsedOutput.workHistory);
   assert.deepEqual(result.data.education, parsedOutput.education);
@@ -462,7 +462,7 @@ test("live parsing sends one server-record catalog and assembles canonical v7 ou
   });
 
   assert.equal(result.data.contractVersion, "7");
-  assert.equal(result.meta.promptVersion, "8");
+  assert.equal(result.meta.promptVersion, "9");
   assert.deepEqual(result.data.sourceSections, canonicalV5.sourceSections);
   assert.deepEqual(result.data.education, canonicalV5.education);
   const request = requests[0]!;
@@ -479,11 +479,11 @@ test("live parsing sends one server-record catalog and assembles canonical v7 ou
   const wireSchema = (request.generationConfig as { responseJsonSchema: unknown }).responseJsonSchema;
   assert.match(JSON.stringify(wireSchema), /recordId/);
   assert.doesNotMatch(JSON.stringify(wireSchema), /recordSpans|spanIndex|startLineId|endLineId|sourceSections|sourceText|"maxItems"|"maxLength"|"pattern"/);
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "8");
-  assert.equal(RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "9");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "10");
   assert.match(JSON.stringify(RESUME_PARSE_PROVIDER_V7_JSON_SCHEMA), /recordId/);
   assert.doesNotMatch(JSON.stringify(RESUME_PARSE_PROVIDER_V7_JSON_SCHEMA), /recordSpans|spanIndex|startLineId|endLineId|sourceSections|sourceText/);
-  assert.equal(ledger.cacheWrites[0]?.promptVersion, "9");
+  assert.equal(ledger.cacheWrites[0]?.promptVersion, "10");
 });
 
 test("Gemini resume parsing omits exactly fourteen maxItems constraints from its wire projection", () => {
@@ -663,6 +663,180 @@ test("phone, location, headline, and LinkedIn facts cannot remain only in raw co
   incomplete.contactInfo.location = "New York, NY";
   incomplete.contactInfo.linkedin = "linkedin.com/in/jordan-example";
   assert.doesNotThrow(() => validateParsedResumeOutput(source, incomplete));
+});
+
+function mixedContactResume(
+  phone = "(555) 010-1000",
+  sourcePhone = "(555) 010-1000"
+) {
+  const contactHeader = [
+    "Jordan Example",
+    "Customer Success Leader",
+    `Riverton, CA | ${sourcePhone} | jordan@example.test`,
+    "https://portfolio.example.test/jordan | https://www.linkedin.com/in/jordan-example | https://github.com/jordan-example"
+  ].join("\n");
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const output = structuredClone(parsedOutput);
+  output.contactInfo = {
+    sourceText: contactHeader,
+    name: "Jordan Example",
+    headline: "Customer Success Leader",
+    email: "jordan@example.test",
+    phone,
+    location: "Riverton, CA",
+    linkedin: "https://www.linkedin.com/in/jordan-example",
+    github: "https://github.com/jordan-example",
+    portfolio: "https://portfolio.example.test/jordan"
+  };
+  return { source, output };
+}
+
+test("a parenthesis-first phone and every independently delimited mixed contact fact are preserved", () => {
+  const { source, output } = mixedContactResume();
+
+  const parsed = validateParsedResumeOutput(source, output);
+
+  assert.equal(parsed.contactInfo.phone, "(555) 010-1000");
+  assert.equal(parsed.contactInfo.location, "Riverton, CA");
+  assert.equal(parsed.contactInfo.email, "jordan@example.test");
+  assert.equal(parsed.contactInfo.portfolio, "https://portfolio.example.test/jordan");
+  assert.equal(parsed.contactInfo.linkedin, "https://www.linkedin.com/in/jordan-example");
+  assert.equal(parsed.contactInfo.github, "https://github.com/jordan-example");
+
+  for (const field of ["location", "email", "phone", "portfolio", "linkedin", "github"] as const) {
+    const incomplete = structuredClone(output);
+    incomplete.contactInfo[field] = null;
+    assert.throws(
+      () => validateParsedResumeOutput(source, incomplete),
+      (error: unknown) => error instanceof PublicApiError &&
+        error.details?.code === "RESUME_PARSE_INCOMPLETE" &&
+        error.details?.fieldPath === `contactInfo.${field}`,
+      `missing ${field} must fail closed`
+    );
+  }
+});
+
+test("phone punctuation may normalize only when all country-code and extension digits match one source span", () => {
+  const normalized = mixedContactResume("555-010-1000");
+  assert.equal(
+    validateParsedResumeOutput(normalized.source, normalized.output).contactInfo.phone,
+    "(555) 010-1000"
+  );
+
+  for (const phone of [
+    "010-1000",
+    "+1 (555) 010-1000",
+    "(555) 010-1000 x42",
+    "(555) 010-1001"
+  ]) {
+    const invalid = mixedContactResume(phone);
+    assert.throws(
+      () => validateParsedResumeOutput(invalid.source, invalid.output),
+      (error: unknown) => error instanceof PublicApiError &&
+        error.details?.code === "RESUME_PARSE_UNSUPPORTED_FACT" &&
+        error.details?.fieldPath === "contactInfo.phone",
+      `${phone} must not equal the source phone`
+    );
+  }
+});
+
+test("phone normalization preserves country-code and extension structure", () => {
+  const slashSeparated = mixedContactResume("555-010-1000", "555/010/1000");
+  assert.equal(
+    validateParsedResumeOutput(slashSeparated.source, slashSeparated.output).contactInfo.phone,
+    "555/010/1000"
+  );
+
+  const extensionPunctuation = mixedContactResume(
+    "555-010-1000x42",
+    "(555) 010-1000 x42"
+  );
+  assert.equal(
+    validateParsedResumeOutput(extensionPunctuation.source, extensionPunctuation.output).contactInfo.phone,
+    "(555) 010-1000 x42"
+  );
+
+  for (const [phone, sourcePhone] of [
+    ["555010100042", "(555) 010-1000 x42"],
+    ["555-010-1000 ext 42", "(555) 010-1000 x42"],
+    ["1 (555) 010-1000", "+1 (555) 010-1000"]
+  ] as const) {
+    const invalid = mixedContactResume(phone, sourcePhone);
+    assert.throws(
+      () => validateParsedResumeOutput(invalid.source, invalid.output),
+      (error: unknown) => error instanceof PublicApiError &&
+        error.details?.code === "RESUME_PARSE_UNSUPPORTED_FACT" &&
+        error.details?.fieldPath === "contactInfo.phone",
+      `${phone} must not equal ${sourcePhone}`
+    );
+  }
+});
+
+test("a typed phone is rejected when the contact block has no complete phone span", () => {
+  const contactHeader = "Jordan Example\nFounder 2026\njordan@example.test";
+  const source = resumeText.replace("Jordan Example\njordan@example.test", contactHeader);
+  const output = structuredClone(parsedOutput);
+  output.contactInfo.sourceText = contactHeader;
+  output.contactInfo.headline = "Founder 2026";
+  output.contactInfo.phone = "2026";
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_UNSUPPORTED_FACT" &&
+      error.details?.fieldPath === "contactInfo.phone"
+  );
+});
+
+test("numeric email and URL identifiers are excluded from phone evidence", () => {
+  const withPhone = mixedContactResume();
+  for (const [before, after] of [
+    ["jordan@example.test", "12345678@example.test"],
+    ["https://portfolio.example.test/jordan", "https://portfolio.example.test/12345678"],
+    ["https://www.linkedin.com/in/jordan-example", "https://www.linkedin.com/in/jordan-example-12345678"],
+    ["https://github.com/jordan-example", "https://github.com/12345678"]
+  ] as const) {
+    withPhone.source = withPhone.source.replace(before, after);
+    withPhone.output.contactInfo.sourceText = withPhone.output.contactInfo.sourceText.replace(before, after);
+  }
+  withPhone.output.contactInfo.email = "12345678@example.test";
+  withPhone.output.contactInfo.portfolio = "https://portfolio.example.test/12345678";
+  withPhone.output.contactInfo.linkedin = "https://www.linkedin.com/in/jordan-example-12345678";
+  withPhone.output.contactInfo.github = "https://github.com/12345678";
+
+  assert.equal(
+    validateParsedResumeOutput(withPhone.source, withPhone.output).contactInfo.phone,
+    "(555) 010-1000"
+  );
+
+  const withoutPhone = structuredClone(withPhone);
+  withoutPhone.source = withoutPhone.source.replace(" | (555) 010-1000", "");
+  withoutPhone.output.contactInfo.sourceText = withoutPhone.output.contactInfo.sourceText.replace(
+    " | (555) 010-1000",
+    ""
+  );
+  withoutPhone.output.contactInfo.phone = null;
+  assert.doesNotThrow(() => validateParsedResumeOutput(withoutPhone.source, withoutPhone.output));
+});
+
+test("multiple source phone spans fail closed instead of selecting one typed phone", () => {
+  const single = mixedContactResume();
+  const ambiguousSource = single.source.replace(
+    "Riverton, CA | (555) 010-1000 | jordan@example.test",
+    "Riverton, CA | (555) 010-1000 | (555) 010-2000 | jordan@example.test"
+  );
+  const ambiguous = structuredClone(single.output);
+  ambiguous.contactInfo.sourceText = ambiguous.contactInfo.sourceText.replace(
+    "Riverton, CA | (555) 010-1000 | jordan@example.test",
+    "Riverton, CA | (555) 010-1000 | (555) 010-2000 | jordan@example.test"
+  );
+
+  assert.throws(
+    () => validateParsedResumeOutput(ambiguousSource, ambiguous),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS" &&
+      error.details?.fieldPath === "contactInfo.phone"
+  );
 });
 
 test("an explicitly labelled international city-country line is a location", () => {
@@ -1290,7 +1464,7 @@ test("one project record cannot absorb a second pipe-delimited project header", 
 test("resume parse schema and prompt revision preserve nullable project dates and exact heading aliases", () => {
   const projectItems = RESUME_PARSE_PROVIDER_V7_JSON_SCHEMA.properties.projects.items;
 
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "8");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "9");
   assert.deepEqual(projectItems.properties.date.type, ["string", "null"]);
   assert.ok(projectItems.required.includes("date"));
   assert.equal(projectItems.properties.technologies.maxItems, 25);
@@ -1302,9 +1476,9 @@ test("resume parse schema and prompt revision preserve nullable project dates an
   assert.match(resumeParsePromptV7, /annotated resume source catalog/i);
 });
 
-test("a cache-v8 entry cannot be replayed under cache-v9 isolation", async (t) => {
+test("a cache-v9 entry cannot be replayed under cache-v10 isolation", async (t) => {
   environment(t);
-  installLedger(t, parsedOutput, { cachedPromptVersion: "8" });
+  installLedger(t, parsedOutput, { cachedPromptVersion: "9" });
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
 

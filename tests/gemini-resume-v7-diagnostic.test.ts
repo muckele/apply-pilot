@@ -25,7 +25,7 @@ import { providerV7FromCanonical } from "@/tests/fixtures/resume-v7-provider-dat
 
 const HISTORICAL_V6_REQUEST_HASH = "de2e64078a993b8b31daf7908e6ba24b8ad72fc424c064f55566f50df77399b0";
 const HISTORICAL_V6_SCHEMA_HASH = "08a6b93669e1c0ff2b5487193a5d9a69bf40cc817cbe3daa7064e2b6304c054d";
-const EXPECTED_V7_REQUEST_HASH = "5b65bbb4a36ab0499992d4aa3eaecd96b40a592d9b0a33ba36d0e56c25a2a440";
+const EXPECTED_V7_REQUEST_HASH = "bd4092d4a5144ba809da86e871dbab4c612f49d991d74952fda04336eaf0710c";
 const EXPECTED_V7_SCHEMA_HASH = "2e8764c96ef1e4c1b13f828bc5fc72a7a1bdae4bb480a224a222c7f6a59656f4";
 const HOSTED_RUNTIME_KEYS = [
   "CI",
@@ -93,8 +93,8 @@ test("builds a separately pinned v7 request with exact production request parity
   assert.equal(request.promptVersion, RESUME_PARSE_PROMPT_VERSION);
   assert.equal(request.cacheVersion, RESUME_PARSE_CACHE_VERSION);
   assert.equal(request.wireSchemaVersion, RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION);
-  assert.equal(request.promptVersion, "8");
-  assert.equal(request.cacheVersion, "9");
+  assert.equal(request.promptVersion, "9");
+  assert.equal(request.cacheVersion, "10");
   assert.equal(request.wireSchemaVersion, "4");
   assert.equal(request.maximumInputTokens, 12_000);
   assert.equal(request.maximumOutputTokens, 24_000);
@@ -107,7 +107,7 @@ test("builds a separately pinned v7 request with exact production request parity
   assert.notEqual(request.requestHash, HISTORICAL_V6_REQUEST_HASH);
   assert.notEqual(request.schemaHash, HISTORICAL_V6_SCHEMA_HASH);
   assert.equal(request.requestBodyBytes, Buffer.byteLength(request.bodyJson));
-  assert.equal(request.requestBodyBytes, 18_550);
+  assert.equal(request.requestBodyBytes, 18_739);
   assert.equal(request.schemaBytes,
     Buffer.byteLength(JSON.stringify(expectedBody.generationConfig.responseJsonSchema)));
   assert.deepEqual(JSON.parse(request.bodyJson), expectedBody);
@@ -410,8 +410,8 @@ test("v7 CLI uses one masked credential handoff and emits only the approved pack
   assert.equal(calls, 1);
   assert.equal(writes.length, 1);
   assert.match(writes[0]!, /"contractVersion": "7"/u);
-  assert.match(writes[0]!, /"promptVersion": "8"/u);
-  assert.match(writes[0]!, /"cacheVersion": "9"/u);
+  assert.match(writes[0]!, /"promptVersion": "9"/u);
+  assert.match(writes[0]!, /"cacheVersion": "10"/u);
   assert.match(writes[0]!, /"wireSchemaVersion": "4"/u);
   assert.doesNotMatch(writes[0]!, /owner-entered-secret|Taylor Boundary|taylor\.boundary@example\.test/u);
 });

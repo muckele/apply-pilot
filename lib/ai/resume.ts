@@ -50,8 +50,8 @@ import { prisma } from "@/lib/prisma";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
-export const RESUME_PARSE_PROMPT_VERSION = "8";
-export const RESUME_PARSE_CACHE_VERSION = "9";
+export const RESUME_PARSE_PROMPT_VERSION = "9";
+export const RESUME_PARSE_CACHE_VERSION = "10";
 export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "4";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
 const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
@@ -1118,6 +1118,113 @@ function classifyContactLocation(line: string): "location" | "not_location" | "a
   return credentialDescriptorPattern.test(prefix) ? "not_location" : "ambiguous";
 }
 
+const contactEmailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const contactUrlPattern = /(?:https?:\/\/|www\.)?[A-Z0-9.-]+\.[A-Z]{2,}(?:\/[^\s|•]*)?/gi;
+const contactPhonePattern = /(?<![\p{L}\p{N}])(?:\+\d{1,3}[\t ./-]*)?(?:\(\d{2,4}\)|\d{2,4})(?:[\t ./-]*\d){5,12}(?:[\t ]*(?:x|ext\.?|extension)[\t ]*\d{1,8})?(?![\p{L}\p{N}])/giu;
+
+type ContactEvidence = {
+  lines: string[];
+  usedLineIndexes: Set<number>;
+  email: string[];
+  phone: string[];
+  location: string[];
+  linkedin: string[];
+  github: string[];
+  portfolio: string[];
+};
+
+function detectedContactPhones(value: string) {
+  if (resumeDatePattern.test(value.trim())) return [];
+  return [...value.matchAll(contactPhonePattern)].map((match) => match[0]);
+}
+
+function collectContactEvidence(contactBlock: string): ContactEvidence {
+  const lines = contactBlock.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const evidence: ContactEvidence = {
+    lines,
+    usedLineIndexes: new Set<number>(),
+    email: [],
+    phone: [],
+    location: [],
+    linkedin: [],
+    github: [],
+    portfolio: []
+  };
+
+  lines.forEach((line, lineIndex) => {
+    const tokens = line.split(/\s*[|•]\s*/u).map((token) => token.trim()).filter(Boolean);
+    const tokenFacts = tokens.map((token) => {
+      const emailMatches = [...token.matchAll(contactEmailPattern)];
+      const emailRanges = emailMatches.map((match) => ({
+        start: match.index,
+        end: match.index + match[0].length
+      }));
+      const urlMatches = [...token.matchAll(contactUrlPattern)].filter((match) => {
+        const start = match.index;
+        const end = start + match[0].length;
+        return !emailRanges.some((range) => start < range.end && end > range.start);
+      });
+      const excludedPhoneRanges = [
+        ...emailRanges,
+        ...urlMatches.map((match) => ({ start: match.index, end: match.index + match[0].length }))
+      ].sort((left, right) => right.start - left.start);
+      let phoneSource = token;
+      for (const range of excludedPhoneRanges) {
+        phoneSource = `${phoneSource.slice(0, range.start)}${" ".repeat(range.end - range.start)}${phoneSource.slice(range.end)}`;
+      }
+      const emails = emailMatches.map((match) => match[0]);
+      const phones = detectedContactPhones(phoneSource);
+      const urls = urlMatches.map((match) => match[0]);
+      return { token, emails, phones, urls };
+    });
+    const mixedWithContactFact = tokens.length > 1 && tokenFacts.some((facts) =>
+      facts.emails.length > 0 || facts.phones.length > 0 || facts.urls.length > 0
+    );
+
+    tokenFacts.forEach(({ token, emails, phones, urls }) => {
+      evidence.email.push(...emails);
+      evidence.phone.push(...phones);
+      for (const url of urls) {
+        if (/linkedin/i.test(url)) evidence.linkedin.push(url);
+        else if (/github/i.test(url)) evidence.github.push(url);
+        else evidence.portfolio.push(url);
+      }
+
+      const labelledLocation = token.match(/^\s*(?:location|address)\s*:\s*(.+)$/i)?.[1]?.trim();
+      const locationClassification = classifyContactLocation(token);
+      const tokenHasOtherFact = emails.length > 0 || phones.length > 0 || urls.length > 0;
+      if (labelledLocation) {
+        evidence.location.push(labelledLocation);
+      } else if (!tokenHasOtherFact && locationClassification === "location") {
+        evidence.location.push(token);
+      } else if (!tokenHasOtherFact && mixedWithContactFact && locationClassification === "ambiguous") {
+        evidence.location.push(token);
+      } else if (!tokenHasOtherFact && tokens.length === 1 && locationClassification === "ambiguous") {
+        throw new PublicApiError(
+          "Resume parsing returned an ambiguous contact/header line between a professional headline and location. No master resume was changed.",
+          422,
+          { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section: "contactInfo", retryable: false }
+        );
+      }
+    });
+
+    if (
+      evidence.email.length > 0 || evidence.phone.length > 0 || evidence.location.length > 0 ||
+      evidence.linkedin.length > 0 || evidence.github.length > 0 || evidence.portfolio.length > 0
+    ) {
+      const lineHasEvidence = tokenFacts.some(({ token, emails, phones, urls }) =>
+        emails.length > 0 || phones.length > 0 || urls.length > 0 ||
+        /^\s*(?:location|address)\s*:/i.test(token) ||
+        (mixedWithContactFact && classifyContactLocation(token) !== "not_location") ||
+        classifyContactLocation(token) === "location"
+      );
+      if (lineHasEvidence) evidence.usedLineIndexes.add(lineIndex);
+    }
+  });
+
+  return evidence;
+}
+
 const resumeDateAtom = [
   "(?:present|current|ongoing|now)",
   "(?:(?:19|20)\\d{2})",
@@ -1268,28 +1375,15 @@ function hasSectionHeading(source: string, section: keyof ParsedResume["sectionS
   return hasResumeSectionHeading(source, section as ResumeTypedSectionName);
 }
 
-function assertTypedContactCompleteness(contactBlock: string, contactInfo: ParsedResume["contactInfo"]) {
-  const lines = contactBlock.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const emailPattern = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
-  const phonePattern = /\+?\d(?:[ \t().-]*\d){6,}/;
-  const urlPattern = /(?:https?:\/\/|www\.)?\b[A-Z0-9.-]+\.[A-Z]{2,}(?:\/[^\s]*)?/i;
-  const usedLines = new Set<number>();
-  const requireLineValue = (
-    line: string,
-    value: string | null,
-    field: keyof ParsedResume["contactInfo"]
-  ) => {
-    if (!value || !line.includes(value)) {
-      throw new PublicApiError(
-        `Resume parsing omitted or changed contactInfo.${field} from the contact/header block. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", retryable: false }
-      );
-    }
-  };
-
+function assertTypedContactCompleteness(
+  contactBlock: string,
+  contactInfo: ParsedResume["contactInfo"],
+  detected = collectContactEvidence(contactBlock)
+) {
+  const { lines } = detected;
+  const usedLines = new Set(detected.usedLineIndexes);
   const firstLine = lines[0];
-  if (firstLine && !emailPattern.test(firstLine) && !phonePattern.test(firstLine) && !urlPattern.test(firstLine)) {
+  if (firstLine && !usedLines.has(0)) {
     if (contactInfo.name !== firstLine) {
       throw new PublicApiError(
         "Resume parsing omitted or changed the candidate name in the contact/header block. No master resume was changed.",
@@ -1305,41 +1399,6 @@ function assertTypedContactCompleteness(contactBlock: string, contactInfo: Parse
       { code: "RESUME_PARSE_UNSUPPORTED_FACT", section: "contactInfo", retryable: false }
     );
   }
-
-  lines.forEach((line, index) => {
-    if (emailPattern.test(line)) {
-      requireLineValue(line, contactInfo.email, "email");
-      usedLines.add(index);
-    }
-    if (phonePattern.test(line)) {
-      requireLineValue(line, contactInfo.phone, "phone");
-      usedLines.add(index);
-    }
-    if (/linkedin/i.test(line)) {
-      requireLineValue(line, contactInfo.linkedin, "linkedin");
-      usedLines.add(index);
-    } else if (/github/i.test(line)) {
-      requireLineValue(line, contactInfo.github, "github");
-      usedLines.add(index);
-    } else if (!emailPattern.test(line) && urlPattern.test(line)) {
-      requireLineValue(line, contactInfo.portfolio, "portfolio");
-      usedLines.add(index);
-    }
-    if (!emailPattern.test(line) && !phonePattern.test(line) && !urlPattern.test(line)) {
-      const locationClassification = classifyContactLocation(line);
-      if (locationClassification === "ambiguous") {
-        throw new PublicApiError(
-          "Resume parsing returned an ambiguous contact/header line between a professional headline and location. No master resume was changed.",
-          422,
-          { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", section: "contactInfo", retryable: false }
-        );
-      }
-      if (locationClassification === "location") {
-        requireLineValue(line, contactInfo.location, "location");
-        usedLines.add(index);
-      }
-    }
-  });
 
   const headlineLines = lines.filter((line, index) => {
     if (usedLines.has(index)) return false;
@@ -1370,6 +1429,77 @@ function assertTypedContactCompleteness(contactBlock: string, contactInfo: Parse
       { code: "RESUME_PARSE_UNSUPPORTED_FACT", section: "contactInfo", retryable: false }
     );
   }
+}
+
+function contactProjectionFailure(
+  message: string,
+  code: "RESUME_PARSE_INCOMPLETE" | "RESUME_PARSE_STRUCTURE_AMBIGUOUS" | "RESUME_PARSE_UNSUPPORTED_FACT",
+  fieldPath: string
+): never {
+  throw new PublicApiError(message, 422, {
+    code,
+    section: "contactInfo",
+    fieldPath,
+    retryable: false
+  });
+}
+
+function requireSingleContactEvidence(
+  value: string | null,
+  matches: string[],
+  fieldPath: string
+) {
+  if (matches.length > 1) {
+    contactProjectionFailure(
+      `Resume contact/header contains multiple values for ${fieldPath}; one typed value cannot preserve them safely. No master resume was changed.`,
+      "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+      fieldPath
+    );
+  }
+  if (matches.length === 1 && value !== matches[0]) {
+    contactProjectionFailure(
+      `Resume parsing omitted or changed ${fieldPath} from the contact/header block. No master resume was changed.`,
+      "RESUME_PARSE_INCOMPLETE",
+      fieldPath
+    );
+  }
+}
+
+function canonicalContactPhone(value: string | null, matches: string[]) {
+  const fieldPath = "contactInfo.phone";
+  if (matches.length > 1) {
+    contactProjectionFailure(
+      "Resume contact/header contains multiple phone spans; one typed phone cannot preserve them safely. No master resume was changed.",
+      "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+      fieldPath
+    );
+  }
+  if (matches.length === 0) {
+    if (!value) return null;
+    contactProjectionFailure(
+      "Resume parsing returned contactInfo.phone without a complete phone span in the submitted resume source.",
+      "RESUME_PARSE_UNSUPPORTED_FACT",
+      fieldPath
+    );
+  }
+  const sourcePhone = matches[0]!;
+  if (!value) {
+    contactProjectionFailure(
+      "Resume parsing omitted or changed contactInfo.phone from the contact/header block. No master resume was changed.",
+      "RESUME_PARSE_INCOMPLETE",
+      fieldPath
+    );
+  }
+  if (value === sourcePhone) return sourcePhone;
+  const normalizedCandidate = detectedContactPhones(value.trim());
+  const isWholePhone = normalizedCandidate.length === 1 && normalizedCandidate[0] === value.trim();
+  const punctuationOnlyKey = (phone: string) => phone.toLowerCase().replace(/[ \t().\/-]/g, "");
+  if (isWholePhone && punctuationOnlyKey(sourcePhone) === punctuationOnlyKey(value)) return sourcePhone;
+  contactProjectionFailure(
+    "Resume parsing returned contactInfo.phone that is not supported by the submitted resume source.",
+    "RESUME_PARSE_UNSUPPORTED_FACT",
+    fieldPath
+  );
 }
 
 function zodFieldPath(path: Array<string | number>) {
@@ -2241,38 +2371,18 @@ function assertTypedContactProjections(output: ParsedResumeV5) {
     );
   }
   const sourceText = contactSections[0]!.sourceText;
+  const detected = collectContactEvidence(sourceText);
+  output.contactInfo.phone = canonicalContactPhone(output.contactInfo.phone, detected.phone);
   for (const [key, item] of Object.entries(output.contactInfo)) {
     if (key !== "sourceText") assertSourceSupported(sourceText, item, `contactInfo.${key}`);
   }
-  const requireDetected = (value: string | null, matches: string[], fieldPath: string) => {
-    if (matches.length > 0 && (!value || !matches.includes(value))) {
-      throw new PublicApiError(
-        `Resume parsing omitted or changed ${fieldPath} from the contact/header block. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_INCOMPLETE", section: "contactInfo", fieldPath, retryable: false }
-      );
-    }
-  };
-  requireDetected(
-    output.contactInfo.email,
-    [...sourceText.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)].map((match) => match[0]),
-    "contactInfo.email"
-  );
-  requireDetected(
-    output.contactInfo.phone,
-    [...sourceText.matchAll(/\+?\d(?:[ \t().-]*\d){6,}/g)].map((match) => match[0].trim()),
-    "contactInfo.phone"
-  );
-  const locations = [...sourceText.matchAll(/(?:^|[|•])\s*(?:location|address)\s*:\s*([^|\n]+)/gim)]
-    .map((match) => match[1]!.trim());
-  requireDetected(output.contactInfo.location, locations, "contactInfo.location");
-  assertTypedContactCompleteness(sourceText, output.contactInfo);
-  const plainLines = sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).filter((line) =>
-    !/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(line) &&
-    !/\+?\d(?:[ \t().-]*\d){6,}/.test(line) &&
-    !/(?:https?:\/\/|www\.|linkedin|github)/i.test(line) &&
-    !/^\s*(?:location|address)\s*:/i.test(line)
-  );
+  requireSingleContactEvidence(output.contactInfo.email, detected.email, "contactInfo.email");
+  requireSingleContactEvidence(output.contactInfo.location, detected.location, "contactInfo.location");
+  requireSingleContactEvidence(output.contactInfo.linkedin, detected.linkedin, "contactInfo.linkedin");
+  requireSingleContactEvidence(output.contactInfo.github, detected.github, "contactInfo.github");
+  requireSingleContactEvidence(output.contactInfo.portfolio, detected.portfolio, "contactInfo.portfolio");
+  assertTypedContactCompleteness(sourceText, output.contactInfo, detected);
+  const plainLines = detected.lines.filter((_, index) => !detected.usedLineIndexes.has(index));
   if (plainLines[0] && output.contactInfo.name !== plainLines[0]) {
     throw new PublicApiError(
       "Resume parsing omitted or changed the candidate name in the contact/header block. No master resume was changed.",

@@ -239,8 +239,8 @@ function publicError(error: unknown, code: string, fieldPath?: string) {
 }
 
 test("resume parsing keeps the v5 canonical decoder behind coherent v7 live revisions", () => {
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "8");
-  assert.equal(RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "9");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "10");
   assert.equal(
     (resumeModule as typeof resumeModule & { RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION?: string })
       .RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,

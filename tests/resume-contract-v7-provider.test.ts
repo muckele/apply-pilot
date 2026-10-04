@@ -65,8 +65,8 @@ test("defines a v7 provider contract with finite record references and isolated 
     RESUME_PARSE_GEMINI_PROVIDER_V7_JSON_SCHEMA?: Record<string, unknown>;
   };
 
-  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "8");
-  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "9");
+  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "10");
   assert.equal(candidate.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "4");
   assert.equal(candidate.resumeParseProviderV7Schema?.safeParse(providerOutput).success, true);
   assert.ok(candidate.RESUME_PARSE_PROVIDER_V7_JSON_SCHEMA);
@@ -208,7 +208,7 @@ test("keeps legacy v6 cached output readable while isolating v7 cache writes", (
 
   assert.equal(decoded.contractVersion, "6");
   assert.deepEqual(decoded.education, canonical.education);
-  assert.equal(resumeModule.RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(resumeModule.RESUME_PARSE_CACHE_VERSION, "10");
 });
 
 test("provides a v7 prompt that makes record boundaries server-owned", () => {

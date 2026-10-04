@@ -2,7 +2,8 @@ import type { ParsedResumeV5 } from "@/lib/ai/resume";
 
 export const syntheticResumeText = `Jordan Example
 Systems Operations Analyst
-Location: Toronto, Canada | jordan@example.test | +1 (555) 010-1000
+Riverton, CA | (555) 010-1000 | jordan@example.test
+https://portfolio.example.test/jordan | https://www.linkedin.com/in/jordan-example | https://github.com/jordan-example
 
 SUMMARY
 Systems operations analyst who builds reliable workflows and explains technical changes clearly. Experienced in customer operations, data quality, and cross-functional delivery.
@@ -62,7 +63,8 @@ export const syntheticDocxExtractedText =
   `${syntheticResumeText.split("\n\n").map(block).join("\n\n")}\n\n`;
 const contact = block(`Jordan Example
 Systems Operations Analyst
-Location: Toronto, Canada | jordan@example.test | +1 (555) 010-1000`);
+Riverton, CA | (555) 010-1000 | jordan@example.test
+https://portfolio.example.test/jordan | https://www.linkedin.com/in/jordan-example | https://github.com/jordan-example`);
 const summary = "Systems operations analyst who builds reliable workflows and explains technical changes clearly. Experienced in customer operations, data quality, and cross-functional delivery.";
 const skillsSource = block(`Data: SQL, Excel, reporting
 Delivery: Agile, stakeholder communication
@@ -130,11 +132,11 @@ export function syntheticDocxProviderOutput(): ParsedResumeV5 {
       name: "Jordan Example",
       headline: "Systems Operations Analyst",
       email: "jordan@example.test",
-      phone: "+1 (555) 010-1000",
-      location: "Toronto, Canada",
-      linkedin: null,
-      github: null,
-      portfolio: null
+      phone: "(555) 010-1000",
+      location: "Riverton, CA",
+      linkedin: "https://www.linkedin.com/in/jordan-example",
+      github: "https://github.com/jordan-example",
+      portfolio: "https://portfolio.example.test/jordan"
     },
     summary,
     skills: ["SQL", "Excel", "reporting", "Agile", "stakeholder communication", "TypeScript", "PostgreSQL", "Azure"],

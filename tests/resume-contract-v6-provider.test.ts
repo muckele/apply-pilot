@@ -73,8 +73,8 @@ test("retains the legacy v6 span-only provider decoder after live revision isola
     RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION?: string;
   };
 
-  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "8");
-  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "9");
+  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "10");
   assert.equal(candidate.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "4");
   assert.equal(candidate.resumeParseProviderV6Schema?.safeParse(providerOutput).success, true);
   assert.ok(candidate.RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA);

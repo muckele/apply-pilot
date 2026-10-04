@@ -35,7 +35,8 @@ const paragraphs = [
     children: [new TextRun({ text: "Jordan Example", bold: true, font: "Arial", size: 34, color: "000000" })]
   }),
   line("Systems Operations Analyst", { bold: true, center: true }),
-  line("Location: Toronto, Canada | jordan@example.test | +1 (555) 010-1000", { center: true }),
+  line("Riverton, CA | (555) 010-1000 | jordan@example.test", { center: true }),
+  line("https://portfolio.example.test/jordan | https://www.linkedin.com/in/jordan-example | https://github.com/jordan-example", { center: true }),
   blank(),
   line("SUMMARY", { heading: true }),
   line("Systems operations analyst who builds reliable workflows and explains technical changes clearly. Experienced in customer operations, data quality, and cross-functional delivery."),

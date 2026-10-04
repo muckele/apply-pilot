@@ -23,7 +23,7 @@ const DIAGNOSTIC_INPUT_TOKENS = 12_000;
 const DIAGNOSTIC_OUTPUT_TOKENS = 24_000;
 const APPROVED_MAXIMUM_COST_MICROS = 63_600;
 const EXPECTED_SOURCE_HASH = "93c706c5e3cec091218647f027fa1c63cccf48ec6240f74615747fcdd303cf06";
-const EXPECTED_REQUEST_HASH = "5b65bbb4a36ab0499992d4aa3eaecd96b40a592d9b0a33ba36d0e56c25a2a440";
+const EXPECTED_REQUEST_HASH = "bd4092d4a5144ba809da86e871dbab4c612f49d991d74952fda04336eaf0710c";
 const EXPECTED_SCHEMA_HASH = "2e8764c96ef1e4c1b13f828bc5fc72a7a1bdae4bb480a224a222c7f6a59656f4";
 const MAX_RESPONSE_BYTES = 65_536;
 
@@ -55,8 +55,8 @@ export function buildPinnedGeminiResumeV7DiagnosticRequest(resumeText = "") {
     throw new Error("Pinned Gemini v7 diagnostic source does not match the approved synthetic fixture.");
   }
   if (
-    RESUME_PARSE_PROMPT_VERSION !== "8"
-    || RESUME_PARSE_CACHE_VERSION !== "9"
+    RESUME_PARSE_PROMPT_VERSION !== "9"
+    || RESUME_PARSE_CACHE_VERSION !== "10"
     || RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION !== "4"
   ) {
     throw new Error("Pinned Gemini v7 diagnostic versions no longer match production.");

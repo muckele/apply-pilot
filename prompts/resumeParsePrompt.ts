@@ -82,8 +82,8 @@ Source-reference rules:
 
 Semantic projection rules:
 - Every non-null factual string must occur verbatim in the annotated source lines for its section or referenced record. Normalize surrounding whitespace only.
-- Parse email, phone, and an explicitly labelled location independently when they share one contact line. Do not force the complete mixed line into any single field.
-- Use contactInfo.location only for an explicit Location:/Address: value or a standalone remote/country value. Do not guess whether an unlabeled city/region- or country-shaped line is a location or professional headline.
+- Parse email, phone, location, portfolio/website, LinkedIn, and GitHub independently when they share contact lines. Copy each typed value from its own exact source token; do not force a complete mixed line into one field.
+- Use contactInfo.location for an explicit Location:/Address: value, a standalone remote/country value, or an unlabeled city/region token only when | or • independently delimits it on a mixed line containing another contact fact. Do not guess whether an otherwise standalone city/region- or country-shaped line is a location or professional headline.
 - summary is the complete summary/profile semantic projection. Typed projections may overlap and do not need to consume connector words such as “in,” “and,” or “with.”
 - Do not infer, paraphrase, standardize, combine, embellish, or invent employers, titles, dates, locations, tools, credentials, metrics, responsibilities, or accomplishments.
 - Every field for a structural record must occur within that record's referenced server-owned block.
