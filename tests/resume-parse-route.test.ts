@@ -17,8 +17,8 @@ import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
-import { providerV7FromCanonical } from "@/tests/fixtures/resume-v7-provider-data";
-import type { ResumeParseProviderV7 } from "@/lib/ai/resume";
+import { providerV8FromCanonical } from "@/tests/fixtures/resume-v8-provider-data";
+import type { ResumeParseProviderV8 } from "@/lib/ai/resume";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -334,14 +334,14 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "9");
+  assert.equal(state.analyses[0]?.promptVersion, "10");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });
 
-const invalidV7RouteCases: Array<{
+const invalidV8RouteCases: Array<{
   name: string;
-  mutate: (output: ResumeParseProviderV7) => void;
+  mutate: (output: ResumeParseProviderV8) => void;
 }> = [
   {
     name: "omitted server-owned record projection",
@@ -370,10 +370,10 @@ const invalidV7RouteCases: Array<{
   }
 ];
 
-for (const invalidCase of invalidV7RouteCases) {
-  test(`v7 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
+for (const invalidCase of invalidV8RouteCases) {
+  test(`v8 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
     const state = setup(t, undefined, false);
-    const output = providerV7FromCanonical(
+    const output = providerV8FromCanonical(
       fullSizeSyntheticDocxExtractedText,
       fullSizeSyntheticProviderOutput()
     );
@@ -528,13 +528,13 @@ test("a file with pasted-equivalent text has distinct replay identity and privat
   assert.equal(state.storedFiles.length, 1);
 });
 
-test("synthetic mixed-contact DOCX runs extraction through stubbed v7 parsing, persistence, and all canonical consumers", async (t) => {
+test("synthetic mixed-contact DOCX runs extraction through stubbed v8 parsing, persistence, and all canonical consumers", async (t) => {
   const providerOutput = syntheticDocxProviderOutput();
   const state = setup(t, undefined, false);
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(providerV7FromCanonical(syntheticDocxExtractedText, providerOutput));
+    return providerResponse(providerV8FromCanonical(syntheticDocxExtractedText, providerOutput));
   });
   const fixture = await readFile(new URL("./fixtures/synthetic-resume-contract-v5.docx", import.meta.url));
   const form = new FormData();
@@ -553,7 +553,7 @@ test("synthetic mixed-contact DOCX runs extraction through stubbed v7 parsing, p
   const body = await response.json();
   assert.equal(providerCalls, 1);
   assert.equal(body.resume.rawText, syntheticDocxExtractedText);
-  assert.equal(body.parsed.contractVersion, "7");
+  assert.equal(body.parsed.contractVersion, "8");
   assert.equal(body.parsed.education[1].fieldOfStudy, "Business Administration");
   assert.equal(body.parsed.education[0].details[0].includes("480-hour"), true);
   assert.equal(body.parsed.certifications[0].details[0], "Credential ID: SYN-12345");
@@ -573,7 +573,7 @@ test("synthetic mixed-contact DOCX runs extraction through stubbed v7 parsing, p
   assert.equal(state.resumes.length, 1);
   assert.deepEqual(state.resumes[0]?.contactInfo, body.parsed.contactInfo);
   assert.equal(state.analyses.length, 1);
-  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "7");
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "8");
   assert.equal(state.audits.length, 1);
 
   const reachableSource = body.parsed.sourceSections.flatMap((section: {
@@ -636,13 +636,13 @@ test("synthetic mixed-contact DOCX runs extraction through stubbed v7 parsing, p
 
 });
 
-test("full-size synthetic DOCX passes extraction, stubbed v7 provider, persistence, and all canonical consumers", async (t) => {
+test("full-size synthetic DOCX passes extraction, stubbed v8 provider, persistence, and all canonical consumers", async (t) => {
   const canonicalV5 = fullSizeSyntheticProviderOutput();
   const state = setup(t, undefined, false);
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(providerV7FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
+    return providerResponse(providerV8FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
   });
   const fixture = await readFile(new URL(
     "./fixtures/synthetic-resume-estimator-boundary.docx",
@@ -663,7 +663,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v7 provider, persisten
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(providerCalls, 1);
-  assert.equal(body.parsed.contractVersion, "7");
+  assert.equal(body.parsed.contractVersion, "8");
   assert.equal(body.resume.rawText, fullSizeSyntheticDocxExtractedText);
   assert.equal(body.parsed.sourceSections[2].heading, "CORE SKILLS");
   assert.equal(body.parsed.sourceSections[4].heading, "SELECTED TECHNICAL PROJECTS");
@@ -676,7 +676,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v7 provider, persisten
   assert.equal(body.parsed.sourceSections.at(-1).section, "additional");
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);
-  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "7");
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "8");
   assert.equal(state.audits.length, 1);
 
   const reachableSource = body.parsed.sourceSections.flatMap((section: {
@@ -739,7 +739,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v7 provider, persisten
   assert.equal(replay.status, 200);
   const replayBody = await replay.json();
   assert.equal(replayBody.replayed, true);
-  assert.equal(replayBody.parsed.contractVersion, "7");
+  assert.equal(replayBody.parsed.contractVersion, "8");
   assert.equal(providerCalls, 1);
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);

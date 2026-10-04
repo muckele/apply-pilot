@@ -8,10 +8,7 @@ import {
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
   assembleAndValidateResumeV7,
-  prepareResumeParseV7Request,
-  RESUME_PARSE_CACHE_VERSION,
-  RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
-  RESUME_PARSE_PROMPT_VERSION
+  prepareResumeParseV7Request
 } from "@/lib/ai/resume";
 import { resumeParsePromptV7 } from "@/prompts/resumeParsePrompt";
 
@@ -22,6 +19,9 @@ const DIAGNOSTIC_TIMEOUT_MS = 180_000;
 const DIAGNOSTIC_INPUT_TOKENS = 12_000;
 const DIAGNOSTIC_OUTPUT_TOKENS = 24_000;
 const APPROVED_MAXIMUM_COST_MICROS = 63_600;
+const PINNED_PROMPT_VERSION = "9";
+const PINNED_CACHE_VERSION = "10";
+const PINNED_WIRE_SCHEMA_VERSION = "4";
 const EXPECTED_SOURCE_HASH = "ef2af3269f33639e869fa202440fe29d654aaa580e67a07a0c54a5b416b33823";
 const EXPECTED_REQUEST_HASH = "14e084686614fab6aeeedacc37fa7d42f0d390c076ddd4798acd953bdf890eb3";
 const EXPECTED_SCHEMA_HASH = "a25c70d983f109e05a15529e06637e4c52d21b0ffe1760df1b6b120660c69c57";
@@ -86,14 +86,6 @@ export function buildPinnedGeminiResumeV7DiagnosticRequest(resumeText = "") {
   if (sourceHash !== EXPECTED_SOURCE_HASH) {
     throw new Error("Pinned Gemini v7 diagnostic source does not match the approved synthetic fixture.");
   }
-  if (
-    RESUME_PARSE_PROMPT_VERSION !== "9"
-    || RESUME_PARSE_CACHE_VERSION !== "10"
-    || RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION !== "4"
-  ) {
-    throw new Error("Pinned Gemini v7 diagnostic versions no longer match production.");
-  }
-
   const body = buildGeminiJsonRequest({
     systemPrompt: resumeParsePromptV7,
     payload: prepared.payload,
@@ -111,14 +103,14 @@ export function buildPinnedGeminiResumeV7DiagnosticRequest(resumeText = "") {
 
   return {
     bodyJson,
-    cacheVersion: RESUME_PARSE_CACHE_VERSION,
+    cacheVersion: PINNED_CACHE_VERSION,
     contractVersion: "7" as const,
     endpoint: DIAGNOSTIC_ENDPOINT,
     maximumCostMicros,
     maximumInputTokens: prepared.policy.maxInputTokens,
     maximumOutputTokens: prepared.outputTokenLimit,
     model: DIAGNOSTIC_MODEL,
-    promptVersion: RESUME_PARSE_PROMPT_VERSION,
+    promptVersion: PINNED_PROMPT_VERSION,
     requestBodyBytes: Buffer.byteLength(bodyJson),
     requestHash,
     responseBodyLimitBytes: MAX_RESPONSE_BYTES,
@@ -126,7 +118,7 @@ export function buildPinnedGeminiResumeV7DiagnosticRequest(resumeText = "") {
     schemaHash,
     sourceHash,
     timeoutMs: DIAGNOSTIC_TIMEOUT_MS,
-    wireSchemaVersion: RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION
+    wireSchemaVersion: PINNED_WIRE_SCHEMA_VERSION
   };
 }
 

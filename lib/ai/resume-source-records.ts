@@ -1,6 +1,8 @@
 import type {
   ParsedResumeV7,
+  ParsedResumeV8,
   ResumeParseProviderV7,
+  ResumeParseProviderV8,
   ResumeSourceSection
 } from "@/lib/ai/resume";
 import {
@@ -140,6 +142,74 @@ export function assembleParsedResumeFromRecords(
       sourceRecord(record, expected.certifications[index]!)),
     achievements: output.achievements,
     sectionStatus: output.sectionStatus,
+    warnings: output.warnings
+  };
+}
+
+export function assembleParsedResumeV8FromRecords(
+  rawSource: string,
+  output: ResumeParseProviderV8
+): ParsedResumeV8 {
+  const catalog = buildResumeSourceCatalog(rawSource);
+  const expected = {
+    workHistory: recordsFor(catalog, "workHistory"),
+    projects: recordsFor(catalog, "projects"),
+    education: recordsFor(catalog, "education"),
+    certifications: recordsFor(catalog, "certifications")
+  };
+
+  for (const section of structuralSections) {
+    assertExactRecordReferences(section, expected[section], output[section]);
+  }
+
+  const contactSections = catalog.sections.filter((section) => section.section === "contactInfo");
+  if (contactSections.length !== 1) {
+    fail(
+      "Resume parsing could not bind one complete contact/header block.",
+      "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+      "contactInfo",
+      "contactInfo.sourceText",
+      "contact_block_cardinality"
+    );
+  }
+
+  const hasSection = (section: ResumeSourceSectionName) =>
+    catalog.sections.some((item) => item.section === section);
+  const status = (section: "summary" | "skills" | StructuralSection | "achievements") =>
+    hasSection(section) ? "present" as const : "absent" as const;
+
+  return {
+    contractVersion: "8",
+    sourceSections: sourceSections(catalog),
+    contactInfo: {
+      sourceText: contactSections[0]!.sourceText,
+      ...output.contactInfo
+    },
+    summary: catalog.sections
+      .filter((section) => section.section === "summary")
+      .map((section) => section.sourceText)
+      .join("\n"),
+    skills: output.skills,
+    workHistory: output.workHistory.map((record, index) =>
+      sourceRecord(record, expected.workHistory[index]!)),
+    projects: output.projects.map((record, index) =>
+      sourceRecord(record, expected.projects[index]!)),
+    education: output.education.map((record, index) =>
+      sourceRecord(record, expected.education[index]!)),
+    certifications: output.certifications.map((record, index) =>
+      sourceRecord(record, expected.certifications[index]!)),
+    achievements: catalog.sections
+      .filter((section) => section.section === "achievements")
+      .flatMap((section) => section.recordBlocks),
+    sectionStatus: {
+      summary: status("summary"),
+      skills: status("skills"),
+      workHistory: status("workHistory"),
+      projects: status("projects"),
+      education: status("education"),
+      certifications: status("certifications"),
+      achievements: status("achievements")
+    },
     warnings: output.warnings
   };
 }
