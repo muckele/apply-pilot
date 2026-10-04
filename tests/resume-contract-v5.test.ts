@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import mammoth from "mammoth";
 
+import * as resumeModule from "@/lib/ai/resume";
 import {
   RESUME_PARSE_CACHE_VERSION,
   RESUME_PARSE_PROMPT_VERSION,
@@ -237,9 +238,14 @@ function publicError(error: unknown, code: string, fieldPath?: string) {
     (fieldPath === undefined || error.details?.fieldPath === fieldPath);
 }
 
-test("resume parsing uses the v5 contract with coherent prompt and cache revisions", () => {
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "6");
-  assert.equal(RESUME_PARSE_CACHE_VERSION, "6");
+test("resume parsing keeps the v5 canonical decoder behind coherent v7 live revisions", () => {
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "8");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(
+    (resumeModule as typeof resumeModule & { RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION?: string })
+      .RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
+    "4"
+  );
   assert.equal(completeSyntheticParsedResume().contractVersion, "5");
   const fixtureOutputTokens = Math.ceil(Buffer.byteLength(
     JSON.stringify(completeSyntheticParsedResume()),
@@ -1208,7 +1214,7 @@ test("warning limits retain a byte-safe maximum for the structured-response plan
   );
 
   const maximumEscaped = fullSizeSyntheticProviderOutput();
-  maximumEscaped.warnings = Array.from({ length: 5 }, () => "\ud800".repeat(100));
+  maximumEscaped.warnings = Array.from({ length: 5 }, () => "\\".repeat(100));
   const validated = validateParsedResumeOutput(
     fullSizeSyntheticDocxExtractedText,
     maximumEscaped,

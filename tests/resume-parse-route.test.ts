@@ -17,6 +17,8 @@ import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
+import { providerV7FromCanonical } from "@/tests/fixtures/resume-v7-provider-data";
+import type { ResumeParseProviderV7 } from "@/lib/ai/resume";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -156,10 +158,12 @@ function setup(t: TestContext, output: unknown = parsedOutput, cached = true, op
   const analyses: Array<Record<string, unknown>> = [];
   const audits: Array<Record<string, unknown>> = [];
   const storedFiles: Array<Record<string, unknown>> = [];
+  const aiCacheWrites: Array<Record<string, unknown>> = [];
   let transactions = 0;
   let demotions = 0;
   let throwAfterCommit = options.throwAfterCommitOnce === true;
   let rolledBackFilePath: string | null = null;
+  let reservation: Record<string, unknown> | null = null;
 
   function findAnalysis({ where }: { where: { input?: { path?: string[]; equals?: unknown } } }) {
     const field = where.input?.path?.[0];
@@ -176,12 +180,36 @@ function setup(t: TestContext, output: unknown = parsedOutput, cached = true, op
     maxAnalysesPerSync: 5, modelOverride: null
   }));
   stub(t, prisma.aIResponseCache, "findFirst", async () => cached ? { output } : null);
+  stub(t, prisma.aIBudgetReservation, "findMany", async () => []);
   stub(t, prisma.aIBudgetReservation, "findFirst", async () => null);
   stub(t, prisma.aIAnalysis, "findFirst", async (args: { where: { input?: { path?: string[]; equals?: unknown } } }) => findAnalysis(args));
   stub(t, prisma.resume, "findFirst", async ({ where }: { where: { id?: string; userId: string } }) =>
     resumes.find((resume) => resume.id === where.id && resume.userId === where.userId) ?? null);
 
   const tx = {
+    aIBudgetLedger: {
+      upsert: async () => ({ id: "ledger-1" }),
+      updateMany: async () => ({ count: 1 })
+    },
+    aIBudgetReservation: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        reservation = { id: "reservation-1", ledgerId: "ledger-1", status: "RESERVED", ...data };
+        return reservation;
+      },
+      findUniqueOrThrow: async () => reservation,
+      update: async ({ data }: { data: Record<string, unknown> }) => {
+        reservation = { ...reservation, ...data };
+        return reservation;
+      }
+    },
+    aIUsageEvent: { create: async ({ data }: { data: Record<string, unknown> }) => data },
+    aIResponseCache: {
+      upsert: async ({ create }: { create: Record<string, unknown> }) => {
+        aiCacheWrites.push(create);
+        return create;
+      }
+    },
+    $executeRaw: async () => 1,
     aIAnalysis: {
       findFirst: async (args: { where: { input?: { path?: string[]; equals?: unknown } } }) => findAnalysis(args),
       create: async ({ data }: { data: Record<string, unknown> }) => {
@@ -271,10 +299,23 @@ function setup(t: TestContext, output: unknown = parsedOutput, cached = true, op
     analyses,
     audits,
     storedFiles,
+    aiCacheWrites,
     get rolledBackFilePath() { return rolledBackFilePath; },
     get transactions() { return transactions; },
     get demotions() { return demotions; }
   };
+}
+
+function providerResponse(value: unknown) {
+  return new Response(JSON.stringify({
+    candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
+    usageMetadata: {
+      promptTokenCount: 4_000,
+      candidatesTokenCount: 7_500,
+      thoughtsTokenCount: 100,
+      totalTokenCount: 11_600
+    }
+  }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
 test("validated parsing switches the master and records analysis plus audit in one transaction", async (t) => {
@@ -293,10 +334,68 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "6");
+  assert.equal(state.analyses[0]?.promptVersion, "8");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });
+
+const invalidV7RouteCases: Array<{
+  name: string;
+  mutate: (output: ResumeParseProviderV7) => void;
+}> = [
+  {
+    name: "omitted server-owned record projection",
+    mutate: (output) => {
+      output.workHistory.splice(0, 1);
+    }
+  },
+  {
+    name: "invented record identity",
+    mutate: (output) => { output.workHistory[0]!.recordId = "section-4-record-999"; }
+  },
+  {
+    name: "reordered record identity",
+    mutate: (output) => {
+      [output.workHistory[0]!.recordId, output.workHistory[1]!.recordId] = [
+        output.workHistory[1]!.recordId,
+        output.workHistory[0]!.recordId
+      ];
+    }
+  },
+  {
+    name: "duplicated adjacent record reference",
+    mutate: (output) => {
+      output.workHistory[1]!.recordId = output.workHistory[0]!.recordId;
+    }
+  }
+];
+
+for (const invalidCase of invalidV7RouteCases) {
+  test(`v7 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
+    const state = setup(t, undefined, false);
+    const output = providerV7FromCanonical(
+      fullSizeSyntheticDocxExtractedText,
+      fullSizeSyntheticProviderOutput()
+    );
+    invalidCase.mutate(output);
+    stub(t, globalThis, "fetch", async () => providerResponse(output));
+
+    const response = await invoke({
+      title: "Rejected Synthetic Resume",
+      pastedText: fullSizeSyntheticDocxExtractedText,
+      isMaster: true
+    }, {
+      "x-ai-cost-confirmed": "true",
+      "x-ai-data-confirmed": "true"
+    });
+
+    assert.equal(response.status, 422);
+    assert.equal(state.resumes.length, 0);
+    assert.equal(state.analyses.length, 0);
+    assert.equal(state.audits.length, 0);
+    assert.equal(state.aiCacheWrites.length, 0);
+  });
+}
 
 test("an ambiguous client retry replays the committed resume without another master record", async (t) => {
   const state = setup(t);
@@ -513,12 +612,16 @@ test("synthetic DOCX runs extraction through v5 validation, persistence stubs, a
   assert.deepEqual(tailoring.resume.projects, body.resume.projects);
   assert.ok(!("filePath" in tailoring.resume));
   assert.ok(!("contactInfo" in tailoring.resume));
+
 });
 
-test("full-size synthetic DOCX passes admission, persistence, and all canonical consumers", async (t) => {
-  const state = setup(t, fullSizeSyntheticProviderOutput(), true);
+test("full-size synthetic DOCX passes extraction, stubbed v7 provider, persistence, and all canonical consumers", async (t) => {
+  const canonicalV5 = fullSizeSyntheticProviderOutput();
+  const state = setup(t, undefined, false);
+  let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
-    throw new Error("full-size synthetic DOCX cache replay must not call a provider");
+    providerCalls += 1;
+    return providerResponse(providerV7FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
   });
   const fixture = await readFile(new URL(
     "./fixtures/synthetic-resume-estimator-boundary.docx",
@@ -531,10 +634,15 @@ test("full-size synthetic DOCX passes admission, persistence, and all canonical 
     type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   }));
 
-  const response = await invoke(form);
+  const response = await invoke(form, {
+    "x-ai-cost-confirmed": "true",
+    "x-ai-data-confirmed": "true"
+  });
 
   assert.equal(response.status, 200);
   const body = await response.json();
+  assert.equal(providerCalls, 1);
+  assert.equal(body.parsed.contractVersion, "7");
   assert.equal(body.resume.rawText, fullSizeSyntheticDocxExtractedText);
   assert.equal(body.parsed.sourceSections[2].heading, "CORE SKILLS");
   assert.equal(body.parsed.sourceSections[4].heading, "SELECTED TECHNICAL PROJECTS");
@@ -547,7 +655,16 @@ test("full-size synthetic DOCX passes admission, persistence, and all canonical 
   assert.equal(body.parsed.sourceSections.at(-1).section, "additional");
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "7");
   assert.equal(state.audits.length, 1);
+
+  const reachableSource = body.parsed.sourceSections.flatMap((section: {
+    heading: string | null;
+    sourceText: string;
+  }) => [section.heading, section.sourceText]).filter(Boolean).join("\n");
+  for (const line of fullSizeSyntheticDocxExtractedText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+    assert.ok(reachableSource.includes(line), `unreachable source line: ${line}`);
+  }
 
   const resumeInput = {
     rawText: body.resume.rawText,
@@ -590,6 +707,21 @@ test("full-size synthetic DOCX passes admission, persistence, and all canonical 
   assert.deepEqual(tailoring.resume.projects, body.resume.projects);
   assert.ok(!("filePath" in tailoring.resume));
   assert.ok(!("contactInfo" in tailoring.resume));
+
+  const replayForm = new FormData();
+  replayForm.set("submissionId", SUBMISSION_ID_2);
+  replayForm.set("title", "Full-Size Synthetic Resume");
+  replayForm.set("file", new File([fixture], "synthetic-resume-estimator-boundary.docx", {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  }));
+  const replay = await invoke(replayForm);
+  assert.equal(replay.status, 200);
+  const replayBody = await replay.json();
+  assert.equal(replayBody.replayed, true);
+  assert.equal(replayBody.parsed.contractVersion, "7");
+  assert.equal(providerCalls, 1);
+  assert.equal(state.resumes.length, 1);
+  assert.equal(state.analyses.length, 1);
 });
 
 test("a losing local-storage transaction removes its unreferenced private file", async (t) => {
