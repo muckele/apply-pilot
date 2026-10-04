@@ -9,10 +9,9 @@ import {
   assembleAndValidateResumeV6,
   classifyResumeValidationFailure,
   RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA,
-  RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
   RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA
 } from "@/lib/ai/resume";
-import { buildResumeProviderSourceInput } from "@/lib/ai/resume-source-catalog";
+import { buildResumeProviderSourceInputV6 } from "@/lib/ai/resume-source-catalog";
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
 import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
 
@@ -22,6 +21,7 @@ const DIAGNOSTIC_ENDPOINT =
 const DIAGNOSTIC_TIMEOUT_MS = 180_000;
 const DIAGNOSTIC_INPUT_TOKENS = 12_000;
 const DIAGNOSTIC_OUTPUT_TOKENS = 24_000;
+const PINNED_RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "3";
 const APPROVED_MAXIMUM_COST_MICROS = 63_600;
 const EXPECTED_SOURCE_HASH = "93c706c5e3cec091218647f027fa1c63cccf48ec6240f74615747fcdd303cf06";
 const EXPECTED_REQUEST_HASH = "de2e64078a993b8b31daf7908e6ba24b8ad72fc424c064f55566f50df77399b0";
@@ -419,7 +419,7 @@ function safeRejectedResult(
 }
 
 export function buildPinnedGeminiResumeDiagnosticRequest(resumeText = "") {
-  const payload = buildResumeProviderSourceInput(resumeText);
+  const payload = buildResumeProviderSourceInputV6(resumeText);
   const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV6, {
     payload,
     // Preserve the production admission posture: cost and size are checked against
@@ -465,7 +465,7 @@ export function buildPinnedGeminiResumeDiagnosticRequest(resumeText = "") {
     responseBodyLimitBytes: MAX_RESPONSE_BYTES,
     schemaHash,
     sourceHash,
-    wireSchemaVersion: RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
+    wireSchemaVersion: PINNED_RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
     timeoutMs: DIAGNOSTIC_TIMEOUT_MS
   };
 }

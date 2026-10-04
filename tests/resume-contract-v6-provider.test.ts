@@ -63,7 +63,7 @@ const providerOutput = {
   warnings: []
 };
 
-test("defines the v6 span-only provider contract and coherent live revisions", () => {
+test("retains the legacy v6 span-only provider decoder after live revision isolation", () => {
   const candidate = resumeModule as typeof resumeModule & {
     resumeParseProviderV6Schema?: { safeParse(value: unknown): { success: boolean } };
     RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA?: Record<string, unknown>;
@@ -73,9 +73,9 @@ test("defines the v6 span-only provider contract and coherent live revisions", (
     RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION?: string;
   };
 
-  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "7");
-  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "8");
-  assert.equal(candidate.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "3");
+  assert.equal(candidate.RESUME_PARSE_PROMPT_VERSION, "8");
+  assert.equal(candidate.RESUME_PARSE_CACHE_VERSION, "9");
+  assert.equal(candidate.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "4");
   assert.equal(candidate.resumeParseProviderV6Schema?.safeParse(providerOutput).success, true);
   assert.ok(candidate.RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA);
   assert.ok(candidate.RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA);
@@ -123,7 +123,10 @@ test("builds one annotated provider source representation without a raw-text dup
       sectionId: string;
       section: string;
       heading: string | null;
-      lines: Array<{ lineId: string; text: string }>;
+      records: Array<{
+        recordId: string;
+        lines: Array<{ lineId: string; text: string }>;
+      }>;
     }>;
   };
   assert.equal(Object.hasOwn(input, "resumeText"), false);
@@ -132,12 +135,15 @@ test("builds one annotated provider source representation without a raw-text dup
     sectionId: "section-4",
     section: "workHistory",
     heading: "WORK EXPERIENCE",
-    lines: [
-      { lineId: "section-4-line-1", text: "Systems Analyst" },
-      { lineId: "section-4-line-2", text: "Example Labs" },
-      { lineId: "section-4-line-3", text: "2022 - Present" },
-      { lineId: "section-4-line-4", text: "• Built reliable workflows." }
-    ]
+    records: [{
+      recordId: "section-4-record-1",
+      lines: [
+        { lineId: "section-4-line-1", text: "Systems Analyst" },
+        { lineId: "section-4-line-2", text: "Example Labs" },
+        { lineId: "section-4-line-3", text: "2022 - Present" },
+        { lineId: "section-4-line-4", text: "• Built reliable workflows." }
+      ]
+    }]
   });
 });
 

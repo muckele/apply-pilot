@@ -17,8 +17,8 @@ import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
-import { providerV6FromCanonical } from "@/tests/fixtures/resume-v6-provider-data";
-import type { ResumeParseProviderV6 } from "@/lib/ai/resume";
+import { providerV7FromCanonical } from "@/tests/fixtures/resume-v7-provider-data";
+import type { ResumeParseProviderV7 } from "@/lib/ai/resume";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -334,50 +334,46 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "7");
+  assert.equal(state.analyses[0]?.promptVersion, "8");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });
 
-const invalidV6RouteCases: Array<{
+const invalidV7RouteCases: Array<{
   name: string;
-  mutate: (output: ResumeParseProviderV6) => void;
+  mutate: (output: ResumeParseProviderV7) => void;
 }> = [
   {
-    name: "omitted structural span",
+    name: "omitted server-owned record projection",
     mutate: (output) => {
-      output.recordSpans.splice(0, 1);
       output.workHistory.splice(0, 1);
     }
   },
   {
-    name: "invented line identity",
-    mutate: (output) => { output.recordSpans[0]!.startLineId = "section-4-line-999"; }
+    name: "invented record identity",
+    mutate: (output) => { output.workHistory[0]!.recordId = "section-4-record-999"; }
   },
   {
-    name: "reversed record range",
+    name: "reordered record identity",
     mutate: (output) => {
-      const span = output.recordSpans[0]!;
-      [span.startLineId, span.endLineId] = [span.endLineId, span.startLineId];
+      [output.workHistory[0]!.recordId, output.workHistory[1]!.recordId] = [
+        output.workHistory[1]!.recordId,
+        output.workHistory[0]!.recordId
+      ];
     }
   },
   {
-    name: "merged adjacent records",
+    name: "duplicated adjacent record reference",
     mutate: (output) => {
-      output.recordSpans[0]!.endLineId = output.recordSpans[1]!.endLineId;
-      output.recordSpans.splice(1, 1);
-      output.workHistory.splice(1, 1);
-      for (const record of [...output.projects, ...output.education, ...output.certifications]) {
-        record.spanIndex -= 1;
-      }
+      output.workHistory[1]!.recordId = output.workHistory[0]!.recordId;
     }
   }
 ];
 
-for (const invalidCase of invalidV6RouteCases) {
-  test(`v6 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
+for (const invalidCase of invalidV7RouteCases) {
+  test(`v7 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
     const state = setup(t, undefined, false);
-    const output = providerV6FromCanonical(
+    const output = providerV7FromCanonical(
       fullSizeSyntheticDocxExtractedText,
       fullSizeSyntheticProviderOutput()
     );
@@ -619,13 +615,13 @@ test("synthetic DOCX runs extraction through v5 validation, persistence stubs, a
 
 });
 
-test("full-size synthetic DOCX passes extraction, stubbed v6 provider, persistence, and all canonical consumers", async (t) => {
+test("full-size synthetic DOCX passes extraction, stubbed v7 provider, persistence, and all canonical consumers", async (t) => {
   const canonicalV5 = fullSizeSyntheticProviderOutput();
   const state = setup(t, undefined, false);
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(providerV6FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
+    return providerResponse(providerV7FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
   });
   const fixture = await readFile(new URL(
     "./fixtures/synthetic-resume-estimator-boundary.docx",
@@ -646,7 +642,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v6 provider, persisten
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(providerCalls, 1);
-  assert.equal(body.parsed.contractVersion, "6");
+  assert.equal(body.parsed.contractVersion, "7");
   assert.equal(body.resume.rawText, fullSizeSyntheticDocxExtractedText);
   assert.equal(body.parsed.sourceSections[2].heading, "CORE SKILLS");
   assert.equal(body.parsed.sourceSections[4].heading, "SELECTED TECHNICAL PROJECTS");
@@ -659,7 +655,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v6 provider, persisten
   assert.equal(body.parsed.sourceSections.at(-1).section, "additional");
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);
-  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "6");
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "7");
   assert.equal(state.audits.length, 1);
 
   const reachableSource = body.parsed.sourceSections.flatMap((section: {
@@ -722,7 +718,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v6 provider, persisten
   assert.equal(replay.status, 200);
   const replayBody = await replay.json();
   assert.equal(replayBody.replayed, true);
-  assert.equal(replayBody.parsed.contractVersion, "6");
+  assert.equal(replayBody.parsed.contractVersion, "7");
   assert.equal(providerCalls, 1);
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);

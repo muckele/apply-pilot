@@ -11,7 +11,7 @@ import {
 import { MODEL_PRICING_REGISTRY } from "@/lib/ai/pricing";
 import * as resumeModule from "@/lib/ai/resume";
 import { RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA } from "@/lib/ai/resume";
-import { buildResumeProviderSourceInput } from "@/lib/ai/resume-source-catalog";
+import { buildResumeProviderSourceInputV6 } from "@/lib/ai/resume-source-catalog";
 import { resumeParsePromptV6 } from "@/prompts/resumeParsePrompt";
 import {
   fullSizeSyntheticDocxExtractedText,
@@ -73,18 +73,19 @@ test("builds only the approved pinned full-synthetic Gemini request", async () =
   assert.equal(request.sourceHash, EXPECTED_SOURCE_HASH);
   assert.equal(request.requestHash, EXPECTED_REQUEST_HASH);
   assert.equal(request.schemaHash, EXPECTED_SCHEMA_HASH);
+  assert.equal(request.wireSchemaVersion, "3");
 
   const body = JSON.parse(request.bodyJson);
   assert.equal(
     body.contents[0].parts[0].text,
-    JSON.stringify(buildResumeProviderSourceInput(fullSizeSyntheticDocxExtractedText))
+    JSON.stringify(buildResumeProviderSourceInputV6(fullSizeSyntheticDocxExtractedText))
   );
   assert.deepEqual(body.generationConfig.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(body.generationConfig.maxOutputTokens, 24_000);
   assert.equal(body.generationConfig.responseMimeType, "application/json");
   const projectedRequest = buildGeminiJsonRequest({
     systemPrompt: resumeParsePromptV6,
-    payload: buildResumeProviderSourceInput(fullSizeSyntheticDocxExtractedText),
+    payload: buildResumeProviderSourceInputV6(fullSizeSyntheticDocxExtractedText),
     responseJsonSchema: (resumeModule as typeof resumeModule & {
       RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA?: unknown;
     }).RESUME_PARSE_GEMINI_PROVIDER_V6_JSON_SCHEMA as Record<string, unknown>,
@@ -101,7 +102,7 @@ test("builds only the approved pinned full-synthetic Gemini request", async () =
 
   const fullSchemaBaseline = buildGeminiJsonRequest({
     systemPrompt: resumeParsePromptV6,
-    payload: buildResumeProviderSourceInput(fullSizeSyntheticDocxExtractedText),
+    payload: buildResumeProviderSourceInputV6(fullSizeSyntheticDocxExtractedText),
     responseJsonSchema: RESUME_PARSE_PROVIDER_V6_JSON_SCHEMA,
     maxOutputTokens: 24_000,
     thinkingLevel: "LOW"

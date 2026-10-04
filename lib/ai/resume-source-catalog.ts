@@ -32,6 +32,15 @@ export type ResumeSourceCatalogSection = {
   endOffset: number;
   lines: ResumeSourceCatalogLine[];
   recordBlocks: string[];
+  records: ResumeSourceCatalogRecord[];
+};
+
+export type ResumeSourceCatalogRecord = {
+  id: string;
+  sourceText: string;
+  startOffset: number;
+  endOffset: number;
+  lines: ResumeSourceCatalogLine[];
 };
 
 export type ResumeSourceCatalog = {
@@ -44,7 +53,10 @@ export type ResumeProviderSourceInput = {
     sectionId: string;
     section: ResumeSourceSectionName;
     heading: string | null;
-    lines: Array<{ lineId: string; text: string }>;
+    records: Array<{
+      recordId: string;
+      lines: Array<{ lineId: string; text: string }>;
+    }>;
   }>;
 };
 
@@ -131,15 +143,357 @@ function catalogLines(
   }));
 }
 
-function deterministicRecordBlocks(section: ResumeSourceSectionName, sourceText: string) {
+const structuralSections = new Set<ResumeSourceSectionName>([
+  "workHistory",
+  "projects",
+  "education",
+  "certifications"
+]);
+
+const listEntryPattern = /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u;
+const structuralMetadataPattern = /^(?:location|technologies?(?: used)?|tools|methods|platforms?|credential id|details?)\s*:/i;
+const labelledWorkTitlePattern = /^(?:title|role|position)\s*:/i;
+const labelledWorkOrganizationPattern = /^(?:company|employer|organization)\s*:/i;
+const structuralDatePattern = /(?:(?:19|20)\d{2}|present|current|ongoing|now)/i;
+const structuralDateLinePattern = /^(?:(?:issued|expires?|expiration|completed|graduated|expected|anticipated)[:\s]+)?[^|\n]*(?:(?:19|20)\d{2}|present|current|ongoing|now)[^|\n]*$/i;
+
+const resumeEnglishRegionNames = (() => {
+  const names = new Set<string>();
+  const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
+  for (let first = 65; first <= 90; first += 1) {
+    for (let second = 65; second <= 90; second += 1) {
+      const code = String.fromCharCode(first, second);
+      const name = displayNames.of(code);
+      if (name && name !== code) names.add(name.toLowerCase());
+    }
+  }
+  return names;
+})();
+
+export function isStandaloneResumeLocation(line: string) {
+  const normalized = line.trim().toLowerCase();
+  return /^(?:remote|hybrid|on[- ]?site|in[- ]person|usa|uk)$/i.test(normalized) ||
+    resumeEnglishRegionNames.has(normalized);
+}
+
+function looksLikeCompactHeader(line: string) {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.length > 140 || listEntryPattern.test(trimmed)) return false;
+  if (structuralMetadataPattern.test(trimmed) || structuralDateLinePattern.test(trimmed)) return false;
+  if (/[,;:]\s+[a-z]/u.test(trimmed)) return false;
+  const words = trimmed
+    .replace(/[|,:.!?()&/+\-]/gu, " ")
+    .split(/\s+/u)
+    .filter(Boolean);
+  if (words.length === 0 || words.length > 12) return false;
+  const connectors = new Set(["and", "of", "the", "for", "in", "at", "to"]);
+  return words.every((word, index) =>
+    connectors.has(word.toLowerCase()) ||
+    /^[A-Z0-9][\p{L}\p{N}'’.-]*$/u.test(word) ||
+    (index > 0 && /^[A-Z]{2,}$/u.test(word))
+  );
+}
+
+function isCompleteNarrative(line: string) {
+  return /[.!?…]$/u.test(line.trim());
+}
+
+function isStructuralContinuation(line: string) {
+  const trimmed = line.trim();
+  return listEntryPattern.test(trimmed) ||
+    structuralMetadataPattern.test(trimmed) ||
+    isCompleteNarrative(trimmed);
+}
+
+function isRecordStartAt(
+  section: ResumeSourceSectionName,
+  lines: ResumeSourceCatalogLine[],
+  start: number,
+  end: number
+) {
+  const first = lines[start]?.sourceText.trim() ?? "";
+  if (
+    !first ||
+    listEntryPattern.test(first) ||
+    structuralMetadataPattern.test(first) ||
+    structuralDateLinePattern.test(first)
+  ) return false;
+  const following = lines
+    .slice(start + 1, end + 1)
+    .map((line) => line.sourceText.trim())
+    .filter(Boolean);
+  const second = following[0] ?? "";
+  const third = following[1] ?? "";
+  const fourth = following[2] ?? "";
+  const pipeParts = first.split("|").map((part) => part.trim()).filter(Boolean);
+
+  if (section === "workHistory") {
+    if (isStandaloneResumeLocation(first)) return false;
+    if (pipeParts.length >= 2) return true;
+    if (labelledWorkTitlePattern.test(first) && labelledWorkOrganizationPattern.test(second)) {
+      return true;
+    }
+    if (!looksLikeCompactHeader(first) || !looksLikeCompactHeader(second)) return false;
+    return following.length === 1 ||
+      structuralDateLinePattern.test(third) ||
+      /^location\s*:/i.test(third) ||
+      listEntryPattern.test(third) ||
+      isCompleteNarrative(third) ||
+      structuralDateLinePattern.test(fourth);
+  }
+  if (section === "projects") {
+    if (pipeParts.length >= 3 && structuralDatePattern.test(pipeParts.at(-1) ?? "")) return true;
+    return looksLikeCompactHeader(first) && (
+      structuralDateLinePattern.test(second) ||
+      /^(?:technologies?(?: used)?|tools|methods|platforms?)\s*:/i.test(second)
+    );
+  }
+  if (section === "education") {
+    return Boolean(second) && !listEntryPattern.test(second) && (
+      structuralDateLinePattern.test(third) || structuralDateLinePattern.test(fourth)
+    );
+  }
+  if (section === "certifications") {
+    if (pipeParts.length >= 2) return true;
+    return looksLikeCompactHeader(first) && Boolean(second) && (
+      structuralDateLinePattern.test(second) ||
+      structuralDateLinePattern.test(third) ||
+      /^credential id\s*:/i.test(second)
+    );
+  }
+  return false;
+}
+
+function isExplicitRecordStartAt(
+  section: ResumeSourceSectionName,
+  lines: ResumeSourceCatalogLine[],
+  start: number,
+  end: number
+) {
+  const first = lines[start]?.sourceText.trim() ?? "";
+  const following = lines
+    .slice(start + 1, end + 1)
+    .map((line) => line.sourceText.trim())
+    .filter(Boolean);
+  const pipeParts = first.split("|").map((part) => part.trim()).filter(Boolean);
+  if (section === "projects") {
+    return pipeParts.length >= 3 && structuralDatePattern.test(pipeParts.at(-1) ?? "");
+  }
+  if (section === "workHistory") {
+    return pipeParts.length >= 2 ||
+      (labelledWorkTitlePattern.test(first) &&
+        labelledWorkOrganizationPattern.test(following[0] ?? ""));
+  }
+  return false;
+}
+
+export function isDeterministicResumeRecordBoundary(
+  section: ResumeSourceSectionName,
+  previousRecord: string,
+  nextRecord: string
+) {
+  const candidateLines = nextRecord.split(/\r?\n/u).map((sourceText, index) => ({
+    id: `candidate-line-${index + 1}`,
+    sourceText,
+    startOffset: 0,
+    endOffset: sourceText.length
+  }));
+  const lastPreviousLine = previousRecord
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1) ?? "";
+  const boundaryBefore = isStructuralContinuation(lastPreviousLine) ||
+    structuralDateLinePattern.test(lastPreviousLine) ||
+    (section === "workHistory" && isStandaloneResumeLocation(lastPreviousLine));
+  return (
+    boundaryBefore ||
+    isExplicitRecordStartAt(section, candidateLines, 0, candidateLines.length - 1)
+  ) && isRecordStartAt(section, candidateLines, 0, candidateLines.length - 1);
+}
+
+type LineRange = { start: number; end: number };
+
+function nonemptyParagraphs(lines: ResumeSourceCatalogLine[]) {
+  const nonempty = lines.flatMap((line, index) => line.sourceText.trim() ? [index] : []);
+  if (nonempty.length === 0) return [];
+  const gaps = nonempty.slice(1).map((index, position) =>
+    index - nonempty[position]! - 1);
+  const hasAdjacentLines = gaps.some((gap) => gap === 0);
+  const positiveGaps = gaps.filter((gap) => gap > 0);
+  const layoutGap = hasAdjacentLines || positiveGaps.length === 0
+    ? 0
+    : Math.min(...positiveGaps);
+  const ranges: LineRange[] = [];
+  let start = nonempty[0]!;
+  nonempty.slice(1).forEach((index, position) => {
+    const gap = index - nonempty[position]! - 1;
+    if (gap > layoutGap) {
+      ranges.push({ start, end: nonempty[position]! });
+      start = index;
+    }
+  });
+  ranges.push({ start, end: nonempty.at(-1)! });
+  return ranges;
+}
+
+function previousNonemptyIndex(lines: ResumeSourceCatalogLine[], before: number, floor: number) {
+  for (let index = before; index >= floor; index -= 1) {
+    if (lines[index]!.sourceText.trim()) return index;
+  }
+  return null;
+}
+
+function splitInlineRecordStarts(
+  section: ResumeSourceSectionName,
+  lines: ResumeSourceCatalogLine[],
+  range: LineRange
+) {
+  const starts = [range.start];
+  for (let index = range.start + 1; index <= range.end; index += 1) {
+    if (!lines[index]!.sourceText.trim()) continue;
+    const previousIndex = previousNonemptyIndex(lines, index - 1, range.start);
+    if (previousIndex === null) continue;
+    const previous = lines[previousIndex]!.sourceText.trim();
+    const boundaryBefore = isStructuralContinuation(previous) ||
+      structuralDateLinePattern.test(previous) ||
+      (section === "workHistory" && isStandaloneResumeLocation(previous));
+    if (
+      (boundaryBefore || isExplicitRecordStartAt(section, lines, index, range.end)) &&
+      isRecordStartAt(section, lines, index, range.end)
+    ) starts.push(index);
+  }
+  return starts.map((start, index) => ({
+    start,
+    end: starts[index + 1] === undefined
+      ? range.end
+      : previousNonemptyIndex(lines, starts[index + 1]! - 1, start)!
+  }));
+}
+
+function deterministicStructuralRecordBlocks(
+  section: ResumeSourceSectionName,
+  lines: ResumeSourceCatalogLine[],
+  normalizedSource: string,
+  fieldPath: string
+) {
+  const paragraphs = nonemptyParagraphs(lines);
+  if (paragraphs.length === 0) return [];
+  const ranges: LineRange[] = [];
+  paragraphs.forEach((paragraph, paragraphIndex) => {
+    const segments = splitInlineRecordStarts(section, lines, paragraph);
+    segments.forEach((segment, segmentIndex) => {
+      const first = lines[segment.start]!.sourceText;
+      const recordStart = isRecordStartAt(section, lines, segment.start, segment.end);
+      if (ranges.length === 0) {
+        if (!recordStart && (paragraphs.length > 1 || segments.length > 1)) {
+          throw new PublicApiError(
+            `Resume ${section} structure is not deterministic enough to send to an AI provider. No master resume was changed.`,
+            422,
+            {
+              code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+              section,
+              fieldPath,
+              structureReason: "unsupported_record_start",
+              retryable: false
+            }
+          );
+        }
+        ranges.push(segment);
+        return;
+      }
+      if (recordStart) {
+        ranges.push(segment);
+        return;
+      }
+      if (segmentIndex === 0 && isStructuralContinuation(first)) {
+        ranges[ranges.length - 1]!.end = segment.end;
+        return;
+      }
+      throw new PublicApiError(
+        `Resume ${section} contains an ambiguous record boundary that cannot be sent safely. No master resume was changed.`,
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          section,
+          fieldPath,
+          structureReason: paragraphIndex > 0
+            ? "unsupported_record_boundary"
+            : "unsupported_inline_record_boundary",
+          retryable: false
+        }
+      );
+    });
+  });
+
+  return ranges.map((range) => {
+    const startOffset = lines[range.start]!.startOffset;
+    const endOffset = lines[range.end]!.endOffset;
+    return normalizedSource.slice(startOffset, endOffset);
+  });
+}
+
+function deterministicRecordBlocks(
+  section: ResumeSourceSectionName,
+  sourceText: string,
+  lines: ResumeSourceCatalogLine[],
+  normalizedSource: string,
+  fieldPath: string
+) {
   if (section === "contactInfo" || section === "summary") return [sourceText];
   if (section === "skills" || section === "achievements" || section === "additional") {
     return sourceText.split("\n").map((line) => line.trim()).filter(Boolean);
   }
+  if (structuralSections.has(section)) {
+    return deterministicStructuralRecordBlocks(
+      section,
+      lines,
+      normalizedSource,
+      fieldPath
+    );
+  }
   return [];
 }
 
-export function buildResumeSourceCatalog(rawSource: string): ResumeSourceCatalog {
+function catalogRecords(
+  normalizedSource: string,
+  sectionId: string,
+  sectionStartOffset: number,
+  lines: ResumeSourceCatalogLine[],
+  recordBlocks: string[]
+) {
+  let cursor = sectionStartOffset;
+  return recordBlocks.map((sourceText, index): ResumeSourceCatalogRecord => {
+    const startOffset = normalizedSource.indexOf(sourceText, cursor);
+    if (startOffset < 0) {
+      throw new PublicApiError(
+        "Resume record structure could not be bound to exact source offsets. No master resume was changed.",
+        422,
+        {
+          code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+          fieldPath: `sourceSections[${Number(sectionId.slice("section-".length)) - 1}].recordBlocks[${index}]`,
+          structureReason: "record_offset_binding_failed",
+          retryable: false
+        }
+      );
+    }
+    const endOffset = startOffset + sourceText.length;
+    cursor = endOffset;
+    return {
+      id: `${sectionId}-record-${index + 1}`,
+      sourceText,
+      startOffset,
+      endOffset,
+      lines: lines.filter((line) =>
+        line.endOffset > startOffset && line.startOffset < endOffset)
+    };
+  });
+}
+
+export function buildResumeSourceCatalog(
+  rawSource: string,
+  options: { requireStructuralRecords?: boolean } = {}
+): ResumeSourceCatalog {
   const normalizedSource = normalizeResumeLineEndings(rawSource);
   const lines = indexedLines(normalizedSource);
   const headings = lines.flatMap((line, index) => {
@@ -206,6 +560,22 @@ export function buildResumeSourceCatalog(rawSource: string): ResumeSourceCatalog
     sections: pending.map((section, index) => {
       const id = `section-${index + 1}`;
       const sourceText = normalizedSource.slice(section.startOffset, section.endOffset);
+      const lines = catalogLines(
+        normalizedSource,
+        id,
+        section.startOffset,
+        section.endOffset
+      );
+      const recordBlocks = structuralSections.has(section.section) &&
+        options.requireStructuralRecords === false
+        ? []
+        : deterministicRecordBlocks(
+            section.section,
+            sourceText,
+            lines,
+            normalizedSource,
+            `sourceSections[${index}].recordBlocks`
+          );
       return {
         id,
         section: section.section,
@@ -213,13 +583,15 @@ export function buildResumeSourceCatalog(rawSource: string): ResumeSourceCatalog
         sourceText,
         startOffset: section.startOffset,
         endOffset: section.endOffset,
-        lines: catalogLines(
+        lines,
+        recordBlocks,
+        records: catalogRecords(
           normalizedSource,
           id,
           section.startOffset,
-          section.endOffset
-        ),
-        recordBlocks: deterministicRecordBlocks(section.section, sourceText)
+          lines,
+          recordBlocks
+        )
       };
     })
   };
@@ -227,6 +599,26 @@ export function buildResumeSourceCatalog(rawSource: string): ResumeSourceCatalog
 
 export function buildResumeProviderSourceInput(rawSource: string): ResumeProviderSourceInput {
   const catalog = buildResumeSourceCatalog(rawSource);
+  return {
+    sections: catalog.sections.map((section) => ({
+      sectionId: section.id,
+      section: section.section,
+      heading: section.heading,
+      records: section.records.map((record) => ({
+        recordId: record.id,
+        lines: record.lines.map((line) => ({ lineId: line.id, text: line.sourceText }))
+      }))
+    }))
+  };
+}
+
+/**
+ * Historical one-call diagnostic format retained only to reproduce and classify
+ * the already-consumed v6 proof request. Production parsing uses server-owned
+ * records through buildResumeProviderSourceInput.
+ */
+export function buildResumeProviderSourceInputV6(rawSource: string) {
+  const catalog = buildResumeSourceCatalog(rawSource, { requireStructuralRecords: false });
   return {
     sections: catalog.sections.map((section) => ({
       sectionId: section.id,
