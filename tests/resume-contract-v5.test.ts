@@ -23,6 +23,7 @@ import {
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
 import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { PublicApiError } from "@/lib/api-errors";
+import { extractResumeDocxText } from "@/lib/resume-docx-text";
 import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
@@ -1102,9 +1103,18 @@ test("the full-size synthetic DOCX reproduces the privacy-safe source scale with
     "./fixtures/synthetic-resume-estimator-boundary.docx",
     import.meta.url
   ));
-  const extracted = (await mammoth.extractRawText({ buffer: fixture })).value;
+  const lossyExtraction = (await mammoth.extractRawText({ buffer: fixture })).value;
+  const extracted = await extractResumeDocxText(fixture);
 
+  assert.notEqual(lossyExtraction, fullSizeSyntheticDocxExtractedText);
+  assert.doesNotMatch(lossyExtraction, /• /);
   assert.equal(extracted, fullSizeSyntheticDocxExtractedText);
+  assert.match(extracted, /vendor governance, R&D coordination/);
+  assert.doesNotMatch(extracted, /&amp;/);
+  assert.match(
+    extracted,
+    /Completed a 480-hour applied program[^]*\n\nBachelor of Arts in Business Administration/
+  );
   assert.ok(Buffer.byteLength(extracted.trim(), "utf8") >= 6_200);
   assert.ok(Buffer.byteLength(extracted.trim(), "utf8") <= 6_800);
   assert.equal((extracted.match(/• /g) ?? []).length, 23);

@@ -29,7 +29,7 @@ const contactLines = [
 const summary = "Operations and delivery leader who builds reliable service workflows across customer support, analytics, platform operations, and cross-functional programs. Experienced in turning ambiguous requirements into measurable plans, coaching distributed teams, and improving data quality.";
 
 const skillGroups = [
-  "Operations: service delivery, incident coordination, capacity planning, quality controls, vendor governance, risk reviews, escalation design, and continuous improvement",
+  "Operations: service delivery, incident coordination, capacity planning, quality controls, vendor governance, R&D coordination, risk reviews, escalation design, and continuous improvement",
   "Data and platforms: SQL, PostgreSQL, TypeScript, Azure, reporting automation, dashboard design, data reconciliation, workflow instrumentation, and access reviews",
   "Leadership: program planning, stakeholder communication, team coaching, change management, process documentation, executive briefings, roadmap facilitation, and outcome measurement"
 ];
@@ -204,9 +204,9 @@ export const fullSizeSyntheticResumeText = [
 ].join("\n\n");
 
 export const fullSizeSyntheticDocxExtractedText =
-  `${fullSizeSyntheticResumeText.replace(/\n/g, "\n\n")}\n\n`;
+  `${fullSizeSyntheticResumeText}\n\n`;
 
-const asDocxBlock = (value: string) => value.replace(/\n/g, "\n\n");
+const asDocxBlock = (value: string) => value;
 
 export function fullSizeSyntheticProviderOutput(): ParsedResumeV5 {
   const contactSource = asDocxBlock(contactLines.join("\n"));
@@ -230,19 +230,19 @@ export function fullSizeSyntheticProviderOutput(): ParsedResumeV5 {
       {
         section: "workHistory",
         heading: "PROFESSIONAL EXPERIENCE",
-        sourceText: docxWorkRecords.join("\n\n\n\n"),
+        sourceText: docxWorkRecords.join("\n\n"),
         recordBlocks: docxWorkRecords
       },
       {
         section: "projects",
         heading: "SELECTED TECHNICAL PROJECTS",
-        sourceText: docxProjectRecords.join("\n\n\n\n"),
+        sourceText: docxProjectRecords.join("\n\n"),
         recordBlocks: docxProjectRecords
       },
       {
         section: "education",
         heading: "EDUCATION",
-        sourceText: docxEducationRecords.join("\n\n\n\n"),
+        sourceText: docxEducationRecords.join("\n\n"),
         recordBlocks: docxEducationRecords
       },
       {

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   Document,
   HeadingLevel,
+  PageBreak,
   Packer,
   Paragraph,
   TextRun
@@ -25,10 +26,49 @@ const sectionHeadings = new Set([
 ]);
 const recordHeading = /^(?:Director|Senior|Operations Analytics|Customer Experience|Business Process|Service Reliability|Planning Evidence|Certified Service)/;
 
-const paragraphs = fullSizeSyntheticResumeText.split("\n").map((text) => {
+const textRuns = (lines: string[]) => lines.flatMap((line, index) => [new TextRun({
+  text: line,
+  break: index === 0 ? undefined : 1,
+  font: "Arial",
+  size: 21
+})]);
+
+const blocks = fullSizeSyntheticResumeText.split("\n\n");
+const paragraphs: Paragraph[] = [];
+for (let index = 0; index < blocks.length; index += 1) {
+  const text = blocks[index]!;
+  const lines = text.split("\n");
+  const bulletStart = lines.findIndex((line) => line.startsWith("• "));
+  const next = blocks[index + 1];
+  if (text.startsWith("Graduate Certificate") && next?.startsWith("Bachelor of Arts")) {
+    paragraphs.push(new Paragraph({
+      spacing: { before: 0, after: 0, line: 240 },
+      children: [
+        ...textRuns(lines),
+        new PageBreak(),
+        ...textRuns(next.split("\n"))
+      ]
+    }));
+    index += 1;
+    continue;
+  }
+  if (bulletStart >= 0) {
+    paragraphs.push(new Paragraph({
+      spacing: { before: 0, after: 0, line: 240 },
+      children: textRuns(lines.slice(0, bulletStart))
+    }));
+    for (const bulletLine of lines.slice(bulletStart)) {
+      paragraphs.push(new Paragraph({
+        text: bulletLine.slice(2),
+        bullet: { level: 0 },
+        spacing: { before: 0, after: 0, line: 240 }
+      }));
+    }
+    continue;
+  }
   const isSectionHeading = sectionHeadings.has(text);
   const isRecordHeading = recordHeading.test(text);
-  return new Paragraph({
+  paragraphs.push(new Paragraph({
     heading: isSectionHeading
       ? HeadingLevel.HEADING_1
       : isRecordHeading
@@ -37,14 +77,9 @@ const paragraphs = fullSizeSyntheticResumeText.split("\n").map((text) => {
     style: text.startsWith("• ") ? "ListBullet" : undefined,
     spacing: { before: 0, after: 0, line: 240 },
     keepNext: isSectionHeading || isRecordHeading,
-    children: text ? [new TextRun({
-      text,
-      bold: isSectionHeading || isRecordHeading,
-      font: "Arial",
-      size: isSectionHeading ? 20 : 21
-    })] : []
-  });
-});
+    children: textRuns(lines).map((run) => run)
+  }));
+}
 
 const document = new Document({
   creator: "Apply Pilot Test Fixture",
