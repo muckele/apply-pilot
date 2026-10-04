@@ -6,6 +6,7 @@ import { getJobMatchEvidenceReferences } from "@/lib/ai/job-match";
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
+  classifyResumeValidationFailure,
   RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA,
   RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION,
   RESUME_PARSE_RESPONSE_JSON_SCHEMA,
@@ -577,8 +578,31 @@ export async function runPinnedGeminiResumeDiagnostic(
     ?.filter((part) => part.thought !== true)
     .map((part) => typeof part.text === "string" ? part.text : "")
     .join("") ?? "";
+  let value: unknown;
   try {
-    const value = JSON.parse(structuredText) as unknown;
+    value = JSON.parse(structuredText) as unknown;
+  } catch {
+    return {
+      outcome: "invalid_response" as const,
+      httpStatus: response.status,
+      category: "INVALID_STRUCTURED_OUTPUT" as const,
+      fieldPath: null,
+      validationStage: "structured_json" as const,
+      internalErrorCode: "STRUCTURED_JSON_PARSE_FAILED" as const,
+      section: null,
+      mismatchComponent: null,
+      expected: null,
+      actual: null,
+      fingerprintAlgorithm: null,
+      finishReason: "STOP" as const,
+      usage,
+      responseBodyBytes: body.bytes,
+      responseBodyTruncated: false
+    };
+  }
+
+  let consumerStage: "application_plan" | "job_match" | "tailoring" | null = null;
+  try {
     const validated = validateParsedResumeOutput(resumeText, value, { allowLegacy: false });
     const consumerResume = { ...validated, rawText: resumeText };
     const diagnosticJob = {
@@ -590,6 +614,7 @@ export async function runPinnedGeminiResumeDiagnostic(
       detectedTechStack: ["TypeScript"]
     };
 
+    consumerStage = "application_plan";
     const plan = buildApplicationPlanPayload({ job: diagnosticJob, resume: consumerResume });
     const evidenceIds = new Set(plan.evidenceCatalog.map((entry) => entry.id));
     if (
@@ -601,6 +626,7 @@ export async function runPinnedGeminiResumeDiagnostic(
       throw new Error("Application-plan consumer omitted canonical resume evidence.");
     }
 
+    consumerStage = "job_match";
     const refs = getJobMatchEvidenceReferences({ job: diagnosticJob, resume: consumerResume });
     if (
       !refs.applicant.includes("resume.rawText")
@@ -612,6 +638,7 @@ export async function runPinnedGeminiResumeDiagnostic(
       throw new Error("Job-match consumer omitted canonical resume evidence.");
     }
 
+    consumerStage = "tailoring";
     const tailoring = buildResumeTailoringPayload(diagnosticJob, consumerResume, null);
     const tailoringResume = tailoring.resume as Record<string, unknown> | null;
     if (
@@ -658,11 +685,23 @@ export async function runPinnedGeminiResumeDiagnostic(
       && /^[A-Za-z][A-Za-z0-9]*(?:\[[0-9]+\]|\.[A-Za-z][A-Za-z0-9]*)*$/u.test(candidatePath)
       ? candidatePath
       : null;
+    const classification = consumerStage === null
+      ? classifyResumeValidationFailure(resumeText, value, error, apiKey)
+      : {
+          validationStage: consumerStage,
+          internalErrorCode: "DIAGNOSTIC_CONSUMER_CHECK_FAILED" as const,
+          section: null,
+          mismatchComponent: null,
+          expected: null,
+          actual: null,
+          fingerprintAlgorithm: null
+        };
     return {
       outcome: "invalid_response" as const,
       httpStatus: response.status,
       category: "INVALID_STRUCTURED_OUTPUT" as const,
       fieldPath,
+      ...classification,
       finishReason: "STOP" as const,
       usage,
       responseBodyBytes: body.bytes,

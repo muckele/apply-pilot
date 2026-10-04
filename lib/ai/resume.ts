@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+
 import OpenAI from "openai";
 import { zodResponseFormat } from "openai/helpers/zod";
 import { z } from "zod";
@@ -31,8 +33,17 @@ import {
 } from "@/lib/ai/gemini";
 import { AI_FEATURE_POLICIES, assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros, getModelPricing, type AiProviderName } from "@/lib/ai/pricing";
+import {
+  buildResumeSourceCatalog,
+  hasResumeSectionHeading,
+  normalizeResumeLineEndings,
+  type ResumeSourceSectionName,
+  type ResumeTypedSectionName
+} from "@/lib/ai/resume-source-catalog";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
+
+export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
 export const RESUME_PARSE_PROMPT_VERSION = "6";
 export const RESUME_PARSE_CACHE_VERSION = "7";
@@ -104,17 +115,6 @@ type ResumeCertificationItem = {
   details: string[];
 };
 
-export type ResumeSourceSectionName =
-  | "contactInfo"
-  | "summary"
-  | "skills"
-  | "workHistory"
-  | "projects"
-  | "education"
-  | "certifications"
-  | "achievements"
-  | "additional";
-
 export type ResumeSourceSection = {
   section: ResumeSourceSectionName;
   heading: string | null;
@@ -165,6 +165,24 @@ export type LegacyParsedResume = Omit<ParsedResumeCore, "certifications" | "proj
 };
 
 export type ParsedResume = ParsedResumeV5 | LegacyParsedResume;
+
+export type ResumeValidationDiagnostic = {
+  validationStage: "resume_schema" | "lossless_source_authority" | "typed_projection";
+  internalErrorCode: string | null;
+  section: ResumeSourceSectionName | null;
+  mismatchComponent: string | null;
+  expected: {
+    unit: "utf8_bytes" | "properties";
+    count: number;
+    fingerprint: string | null;
+  } | null;
+  actual: {
+    unit: "utf8_bytes" | "properties";
+    count: number;
+    fingerprint: string | null;
+  } | null;
+  fingerprintAlgorithm: "HMAC-SHA256" | null;
+};
 
 export type TailoredResumeOutput = {
   professionalSummary: string;
@@ -518,18 +536,6 @@ function assertUnambiguousNarrativeEntries(entries: string[], section: string, f
   });
 }
 
-const sectionHeadings: Record<keyof ParsedResume["sectionStatus"], RegExp> = {
-  summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
-  skills: /^(?:(?:(?:TECHNICAL|KEY|CORE)\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
-  workHistory: /^(?:WORK|PROFESSIONAL|EMPLOYMENT|CAREER)?\s*(?:EXPERIENCE|HISTORY)$/i,
-  projects: /^(?:(?:SELECTED(?:\s+TECHNICAL)?|PROFESSIONAL)\s+)?PROJECTS?$/i,
-  education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
-  certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
-  achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
-};
-
-const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING|\s+EXPERIENCE)?|COMMUNITY\s+(?:INVOLVEMENT|SERVICE)|LEADERSHIP|PROFESSIONAL\s+(?:DEVELOPMENT|AFFILIATIONS?|MEMBERSHIPS?)|TRAINING|COURSES?|COURSEWORK|ACTIVITIES|PUBLICATIONS?|PATENTS?|PRESENTATIONS?|CONFERENCES?|REFERENCES?|ADDITIONAL\s+(?:EXPERIENCE|INFORMATION)|OTHER)$/i;
-
 const englishRegionNames = (() => {
   const names = new Set<string>();
   const displayNames = new Intl.DisplayNames(["en"], { type: "region" });
@@ -733,16 +739,8 @@ function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
   );
 }
 
-function sectionForHeading(line: string): keyof ParsedResume["sectionStatus"] | null {
-  const heading = line.trim().replace(/:$/, "");
-  for (const [section, pattern] of Object.entries(sectionHeadings)) {
-    if (pattern.test(heading)) return section as keyof ParsedResume["sectionStatus"];
-  }
-  return null;
-}
-
 function hasSectionHeading(source: string, section: keyof ParsedResume["sectionStatus"]) {
-  return source.split(/\r?\n/).some((line) => sectionHeadings[section].test(line.trim().replace(/:$/, "")));
+  return hasResumeSectionHeading(source, section as ResumeTypedSectionName);
 }
 
 function assertTypedContactCompleteness(contactBlock: string, contactInfo: ParsedResume["contactInfo"]) {
@@ -916,14 +914,6 @@ const legacyParsedResumeSchema: z.ZodType<LegacyParsedResume, z.ZodTypeDef, unkn
   warnings: z.array(z.string().trim().min(1).max(500)).max(20)
 }).strict();
 
-function sourceSectionNameForHeading(line: string): ResumeSourceSectionName | null {
-  const recognized = sectionForHeading(line);
-  if (recognized) return recognized;
-  const heading = line.trim().replace(/:$/, "");
-  if (/^CONTACT$/i.test(heading)) return "contactInfo";
-  return otherSectionHeading.test(heading) ? "additional" : null;
-}
-
 function lineBreakUnitsBefore(lines: string[], index: number) {
   if (index <= 0) return 0;
   let units = 1;
@@ -939,36 +929,11 @@ function paragraphBreakUnit(lines: string[]) {
 }
 
 function expectedSourceSections(source: string): Array<Omit<ResumeSourceSection, "recordBlocks">> {
-  const lines = source.split(/\r?\n/);
-  const headings = lines.flatMap((line, index) => {
-    const section = sourceSectionNameForHeading(line);
-    return section ? [{ index, section, heading: line.trim() }] : [];
-  });
-  if (!headings.some((item) => item.section !== "additional")) {
-    throw new PublicApiError(
-      "Resume structure could not be validated because no supported section headings were found. No master resume was changed.",
-      422,
-      { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", retryable: false }
-    );
-  }
-
-  const result: Array<Omit<ResumeSourceSection, "recordBlocks">> = [];
-  const preambleEnd = headings[0]?.index ?? lines.length;
-  const preamble = lines.slice(0, preambleEnd).join("\n").trim();
-  if (preamble) result.push({ section: "contactInfo", heading: null, sourceText: preamble });
-  headings.forEach((item, index) => {
-    const end = headings[index + 1]?.index ?? lines.length;
-    const sourceText = lines.slice(item.index + 1, end).join("\n").trim();
-    if (!sourceText) {
-      throw new PublicApiError(
-        `Resume parsing is incomplete for ${item.section}. No master resume was changed.`,
-        422,
-        { code: "RESUME_PARSE_INCOMPLETE", section: item.section, fieldPath: `sourceSections[${result.length}].sourceText`, retryable: false }
-      );
-    }
-    result.push({ section: item.section, heading: item.heading, sourceText });
-  });
-  return result;
+  return buildResumeSourceCatalog(source).sections.map((section) => ({
+    section: section.section,
+    heading: section.heading,
+    sourceText: section.sourceText
+  }));
 }
 
 function splitProjectPipeRecordBlocks(block: string) {
@@ -1266,10 +1231,6 @@ function legacyRecordBlocks(
     return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
   return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-}
-
-function normalizeResumeLineEndings(value: string) {
-  return value.replace(/\r\n?/g, "\n");
 }
 
 function normalizeParsedResumeLineEndings(output: ParsedResumeV5): ParsedResumeV5 {
@@ -2003,6 +1964,179 @@ export function validateParsedResumeOutput(
     );
   });
   return output;
+}
+
+const resumeValidationErrorCodes = new Set([
+  "RESUME_PARSE_INCOMPLETE",
+  "RESUME_PARSE_INVALID_OUTPUT",
+  "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+  "RESUME_PARSE_UNSUPPORTED_FACT"
+]);
+
+const resumeSourceSectionNames = new Set<ResumeSourceSectionName>([
+  "contactInfo",
+  "summary",
+  "skills",
+  "workHistory",
+  "projects",
+  "education",
+  "certifications",
+  "achievements",
+  "additional"
+]);
+
+function resumeValidationErrorDetails(error: unknown) {
+  if (!error || typeof error !== "object" || !("details" in error)) return null;
+  const details = (error as { details?: unknown }).details;
+  return details && typeof details === "object"
+    ? details as Record<string, unknown>
+    : null;
+}
+
+function safeResumeValidationErrorCode(details: Record<string, unknown> | null) {
+  const code = details?.code;
+  return typeof code === "string" && resumeValidationErrorCodes.has(code) ? code : null;
+}
+
+function safeResumeValidationSection(value: unknown): ResumeSourceSectionName | null {
+  return typeof value === "string" && resumeSourceSectionNames.has(value as ResumeSourceSectionName)
+    ? value as ResumeSourceSectionName
+    : null;
+}
+
+function sourceSectionIndexFromFieldPath(fieldPath: unknown) {
+  if (typeof fieldPath !== "string") return null;
+  const match = /^sourceSections\[([0-9]+)\](?:\.|$)/u.exec(fieldPath);
+  return match ? Number(match[1]) : null;
+}
+
+function diagnosticStringMeasure(value: string, fingerprintKey: string) {
+  return {
+    unit: "utf8_bytes" as const,
+    count: Buffer.byteLength(value, "utf8"),
+    fingerprint: createHmac("sha256", fingerprintKey).update(value).digest("hex")
+  };
+}
+
+function diagnosticFieldComponent(fieldPath: unknown) {
+  if (typeof fieldPath !== "string") return null;
+  const lastComponent = fieldPath.match(/(?:^|\.)([A-Za-z][A-Za-z0-9]*)(?:\[[0-9]+\])?$/u)?.[1];
+  return lastComponent ?? null;
+}
+
+function resumeSectionFromFieldPath(fieldPath: unknown) {
+  if (typeof fieldPath !== "string") return null;
+  const sectionStatus = /^sectionStatus\.([A-Za-z][A-Za-z0-9]*)$/u.exec(fieldPath)?.[1];
+  if (sectionStatus) return safeResumeValidationSection(sectionStatus);
+  const root = /^[A-Za-z][A-Za-z0-9]*/u.exec(fieldPath)?.[0];
+  return safeResumeValidationSection(root);
+}
+
+/**
+ * Reduces a resume validation failure to bounded, non-content diagnostics.
+ * Fingerprints are keyed so low-entropy resume fragments cannot be recovered
+ * with an offline dictionary. The key and compared values are never returned.
+ */
+export function classifyResumeValidationFailure(
+  rawSource: string,
+  value: unknown,
+  error: unknown,
+  fingerprintKey: string
+): ResumeValidationDiagnostic {
+  const details = resumeValidationErrorDetails(error);
+  const internalErrorCode = safeResumeValidationErrorCode(details);
+  const fieldPath = details?.fieldPath;
+  const sectionIndex = sourceSectionIndexFromFieldPath(fieldPath);
+  const fieldPathSection = resumeSectionFromFieldPath(fieldPath);
+  const normalizedSource = normalizeResumeLineEndings(rawSource);
+  let expectedSections: Array<Omit<ResumeSourceSection, "recordBlocks">> = [];
+  try {
+    expectedSections = expectedSourceSections(normalizedSource);
+  } catch {
+    // Diagnostics must never replace the original validation failure.
+  }
+
+  const schemaResult = parsedResumeSchema.safeParse(value);
+  if (!schemaResult.success) {
+    const expectedSection = sectionIndex === null ? null : expectedSections[sectionIndex] ?? null;
+    const actualSection = sectionIndex === null || !value || typeof value !== "object"
+      ? null
+      : (value as { sourceSections?: unknown }).sourceSections;
+    const actualItem = Array.isArray(actualSection) && sectionIndex !== null
+      ? actualSection[sectionIndex]
+      : null;
+    const firstIssue = schemaResult.error.issues[0];
+    const issueAtSectionObject = sectionIndex !== null
+      && firstIssue?.path.length === 2
+      && firstIssue.path[0] === "sourceSections"
+      && firstIssue.path[1] === sectionIndex;
+    const actualIsObject = actualItem !== null
+      && typeof actualItem === "object"
+      && !Array.isArray(actualItem);
+
+    if (expectedSection && issueAtSectionObject && actualIsObject) {
+      return {
+        validationStage: "resume_schema",
+        internalErrorCode,
+        section: expectedSection.section,
+        mismatchComponent: "objectShape",
+        expected: { unit: "properties", count: 4, fingerprint: null },
+        actual: {
+          unit: "properties",
+          count: Object.keys(actualItem as Record<string, unknown>).length,
+          fingerprint: null
+        },
+        fingerprintAlgorithm: null
+      };
+    }
+
+    const issueComponent = firstIssue?.path.at(-1);
+    return {
+      validationStage: "resume_schema",
+      internalErrorCode,
+      section: expectedSection?.section
+        ?? safeResumeValidationSection(details?.section)
+        ?? fieldPathSection,
+      mismatchComponent: typeof issueComponent === "string" ? issueComponent : null,
+      expected: null,
+      actual: null,
+      fingerprintAlgorithm: null
+    };
+  }
+
+  const output = normalizeParsedResumeLineEndings(schemaResult.data);
+  const expectedSection = sectionIndex === null ? null : expectedSections[sectionIndex] ?? null;
+  const actualSection = sectionIndex === null ? null : output.sourceSections[sectionIndex] ?? null;
+  if (expectedSection && actualSection) {
+    const differingComponent = (["section", "heading", "sourceText"] as const)
+      .find((component) => actualSection[component] !== expectedSection[component]);
+    if (differingComponent) {
+      const expectedValue = expectedSection[differingComponent] ?? "";
+      const actualValue = actualSection[differingComponent] ?? "";
+      return {
+        validationStage: "lossless_source_authority",
+        internalErrorCode,
+        section: expectedSection.section,
+        mismatchComponent: differingComponent,
+        expected: diagnosticStringMeasure(expectedValue, fingerprintKey),
+        actual: diagnosticStringMeasure(actualValue, fingerprintKey),
+        fingerprintAlgorithm: "HMAC-SHA256"
+      };
+    }
+  }
+
+  const detailsSection = safeResumeValidationSection(details?.section);
+  return {
+    validationStage: fieldPath === "sourceSections" || sectionIndex !== null
+      ? "lossless_source_authority"
+      : "typed_projection",
+    internalErrorCode,
+    section: expectedSection?.section ?? detailsSection ?? fieldPathSection,
+    mismatchComponent: diagnosticFieldComponent(fieldPath),
+    expected: null,
+    actual: null,
+    fingerprintAlgorithm: null
+  };
 }
 
 type ProviderUsage = Pick<GeminiUsage, "inputTokens" | "outputTokens" | "cachedInputTokens">;

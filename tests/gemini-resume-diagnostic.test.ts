@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -559,6 +559,227 @@ test("a successful response without usage metadata is not reported as cost-valid
     responseBodyTruncated: false
   });
   assert.ok(!JSON.stringify(result).includes(providerOutput));
+});
+
+test("classifies an exact source-envelope mismatch without returning either value", async () => {
+  const apiKey = "synthetic-secret";
+  const output = fullSizeSyntheticProviderOutput();
+  const expectedSourceText = output.sourceSections[1]!.sourceText;
+  const actualSourceText = expectedSourceText.slice(0, -1);
+  output.sourceSections[1]!.sourceText = actualSourceText;
+  const providerOutput = JSON.stringify(output);
+  const envelope = JSON.stringify({
+    candidates: [{
+      finishReason: "STOP",
+      content: { parts: [{ text: providerOutput }] }
+    }],
+    usageMetadata: {
+      promptTokenCount: 2_435,
+      candidatesTokenCount: 5_917,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 8_352
+    }
+  });
+
+  const result = await runLocalPinnedDiagnostic(apiKey, {
+    fetchImpl: async () => new Response(envelope, { status: 200 })
+  });
+
+  assert.deepEqual(result, {
+    outcome: "invalid_response",
+    httpStatus: 200,
+    category: "INVALID_STRUCTURED_OUTPUT",
+    fieldPath: "sourceSections[1]",
+    validationStage: "lossless_source_authority",
+    internalErrorCode: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+    section: "summary",
+    mismatchComponent: "sourceText",
+    expected: {
+      unit: "utf8_bytes",
+      count: Buffer.byteLength(expectedSourceText),
+      fingerprint: createHmac("sha256", apiKey).update(expectedSourceText).digest("hex")
+    },
+    actual: {
+      unit: "utf8_bytes",
+      count: Buffer.byteLength(actualSourceText),
+      fingerprint: createHmac("sha256", apiKey).update(actualSourceText).digest("hex")
+    },
+    fingerprintAlgorithm: "HMAC-SHA256",
+    finishReason: "STOP",
+    usage: {
+      inputTokens: 2_435,
+      outputTokens: 5_917,
+      cachedInputTokens: 0,
+      visibleOutputTokens: 5_917,
+      thinkingTokens: 0
+    },
+    responseBodyBytes: Buffer.byteLength(envelope),
+    responseBodyTruncated: false
+  });
+  assert.doesNotMatch(JSON.stringify(result), /Operations and delivery leader|Taylor Boundary/);
+  assert.ok(!JSON.stringify(result).includes(providerOutput));
+});
+
+test("distinguishes an object-shape failure at the same field path", async () => {
+  const output = fullSizeSyntheticProviderOutput() as ReturnType<
+    typeof fullSizeSyntheticProviderOutput
+  > & { sourceSections: Array<Record<string, unknown>> };
+  output.sourceSections[1]!.unexpected = "must-not-escape";
+  const providerOutput = JSON.stringify(output);
+  const envelope = JSON.stringify({
+    candidates: [{
+      finishReason: "STOP",
+      content: { parts: [{ text: providerOutput }] }
+    }],
+    usageMetadata: {
+      promptTokenCount: 2_435,
+      candidatesTokenCount: 5_917,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 8_352
+    }
+  });
+
+  const result = await runLocalPinnedDiagnostic("synthetic-secret", {
+    fetchImpl: async () => new Response(envelope, { status: 200 })
+  });
+
+  assert.equal(result.outcome, "invalid_response");
+  if (result.outcome !== "invalid_response") assert.fail("expected an invalid response");
+  assert.equal(result.fieldPath, "sourceSections[1]");
+  assert.equal(result.validationStage, "resume_schema");
+  assert.equal(result.internalErrorCode, "RESUME_PARSE_INVALID_OUTPUT");
+  assert.equal(result.section, "summary");
+  assert.equal(result.mismatchComponent, "objectShape");
+  assert.deepEqual(result.expected, { unit: "properties", count: 4, fingerprint: null });
+  assert.deepEqual(result.actual, { unit: "properties", count: 5, fingerprint: null });
+  assert.equal(result.fingerprintAlgorithm, null);
+  assert.doesNotMatch(JSON.stringify(result), /must-not-escape|unexpected/);
+  assert.ok(!JSON.stringify(result).includes(providerOutput));
+});
+
+test("maps a typed projection failure to its canonical section", async () => {
+  const output = fullSizeSyntheticProviderOutput();
+  output.workHistory[0]!.title = "Invented Private Role";
+  const providerOutput = JSON.stringify(output);
+  const envelope = JSON.stringify({
+    candidates: [{
+      finishReason: "STOP",
+      content: { parts: [{ text: providerOutput }] }
+    }],
+    usageMetadata: {
+      promptTokenCount: 2_435,
+      candidatesTokenCount: 5_917,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 8_352
+    }
+  });
+
+  const result = await runLocalPinnedDiagnostic("synthetic-secret", {
+    fetchImpl: async () => new Response(envelope, { status: 200 })
+  });
+
+  assert.equal(result.outcome, "invalid_response");
+  if (result.outcome !== "invalid_response") assert.fail("expected an invalid response");
+  assert.equal(result.fieldPath, "workHistory[0].title");
+  assert.equal(result.validationStage, "typed_projection");
+  assert.equal(result.internalErrorCode, "RESUME_PARSE_UNSUPPORTED_FACT");
+  assert.equal(result.section, "workHistory");
+  assert.equal(result.mismatchComponent, "title");
+  assert.doesNotMatch(JSON.stringify(result), /Invented Private Role|Taylor Boundary/);
+  assert.ok(!JSON.stringify(result).includes(providerOutput));
+});
+
+test("maps a nested schema failure to its canonical section", async () => {
+  const output = fullSizeSyntheticProviderOutput();
+  output.projects[0]!.technologies = Array.from({ length: 26 }, (_, index) => `Private ${index}`);
+  const providerOutput = JSON.stringify(output);
+  const envelope = JSON.stringify({
+    candidates: [{
+      finishReason: "STOP",
+      content: { parts: [{ text: providerOutput }] }
+    }],
+    usageMetadata: {
+      promptTokenCount: 2_435,
+      candidatesTokenCount: 5_917,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 8_352
+    }
+  });
+
+  const result = await runLocalPinnedDiagnostic("synthetic-secret", {
+    fetchImpl: async () => new Response(envelope, { status: 200 })
+  });
+
+  assert.equal(result.outcome, "invalid_response");
+  if (result.outcome !== "invalid_response") assert.fail("expected an invalid response");
+  assert.equal(result.fieldPath, "projects[0].technologies");
+  assert.equal(result.validationStage, "resume_schema");
+  assert.equal(result.internalErrorCode, "RESUME_PARSE_INVALID_OUTPUT");
+  assert.equal(result.section, "projects");
+  assert.equal(result.mismatchComponent, "technologies");
+  assert.doesNotMatch(JSON.stringify(result), /Private 25|Taylor Boundary/);
+  assert.ok(!JSON.stringify(result).includes(providerOutput));
+});
+
+test("maps a section-status schema failure to its named canonical section", async () => {
+  const output = fullSizeSyntheticProviderOutput();
+  (output.sectionStatus as Record<string, unknown>).workHistory = "private-invalid-status";
+  const providerOutput = JSON.stringify(output);
+  const envelope = JSON.stringify({
+    candidates: [{
+      finishReason: "STOP",
+      content: { parts: [{ text: providerOutput }] }
+    }],
+    usageMetadata: {
+      promptTokenCount: 2_435,
+      candidatesTokenCount: 5_917,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 8_352
+    }
+  });
+
+  const result = await runLocalPinnedDiagnostic("synthetic-secret", {
+    fetchImpl: async () => new Response(envelope, { status: 200 })
+  });
+
+  assert.equal(result.outcome, "invalid_response");
+  if (result.outcome !== "invalid_response") assert.fail("expected an invalid response");
+  assert.equal(result.fieldPath, "sectionStatus.workHistory");
+  assert.equal(result.validationStage, "resume_schema");
+  assert.equal(result.internalErrorCode, "RESUME_PARSE_INVALID_OUTPUT");
+  assert.equal(result.section, "workHistory");
+  assert.equal(result.mismatchComponent, "workHistory");
+  assert.doesNotMatch(JSON.stringify(result), /private-invalid-status|Taylor Boundary/);
+  assert.ok(!JSON.stringify(result).includes(providerOutput));
+});
+
+test("labels malformed structured JSON without returning it", async () => {
+  const malformedOutput = "{\"private\":\"must-not-escape\"";
+  const envelope = JSON.stringify({
+    candidates: [{
+      finishReason: "STOP",
+      content: { parts: [{ text: malformedOutput }] }
+    }],
+    usageMetadata: {
+      promptTokenCount: 2_435,
+      candidatesTokenCount: 12,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 2_447
+    }
+  });
+
+  const result = await runLocalPinnedDiagnostic("synthetic-secret", {
+    fetchImpl: async () => new Response(envelope, { status: 200 })
+  });
+
+  assert.equal(result.outcome, "invalid_response");
+  if (result.outcome !== "invalid_response") assert.fail("expected an invalid response");
+  assert.equal(result.validationStage, "structured_json");
+  assert.equal(result.internalErrorCode, "STRUCTURED_JSON_PARSE_FAILED");
+  assert.equal(result.section, null);
+  assert.equal(result.mismatchComponent, null);
+  assert.doesNotMatch(JSON.stringify(result), /must-not-escape|private/);
+  assert.ok(!JSON.stringify(result).includes(malformedOutput));
 });
 
 test("cancels an oversized response body and never retries", async () => {
