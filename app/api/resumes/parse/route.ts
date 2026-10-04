@@ -10,6 +10,7 @@ import {
   validateParsedResumeOutput
 } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
+import { extractResumeDocxText } from "@/lib/resume-docx-text";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { deletePrivateFile, savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -107,9 +108,7 @@ async function extractTextFromFile(file: File) {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
     lowerName.endsWith(".docx")
   ) {
-    const mammoth = await import("mammoth");
-    const parsed = await mammoth.extractRawText({ buffer });
-    return { text: parsed.value, buffer };
+    return { text: await extractResumeDocxText(buffer), buffer };
   }
 
   if (file.type.startsWith("text/") || lowerName.endsWith(".txt")) {

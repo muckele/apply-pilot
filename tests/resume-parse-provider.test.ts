@@ -3,7 +3,9 @@ import { test, type TestContext } from "node:test";
 import OpenAI from "openai";
 
 import {
+  estimateResumeParseMaximumOutputBytes,
   parseResumeTextWithMeta,
+  RESUME_PARSE_PLANNED_JSON_BYTES,
   RESUME_PARSE_PROMPT_VERSION,
   RESUME_PARSE_RESPONSE_JSON_SCHEMA,
   validateParsedResumeOutput,
@@ -13,6 +15,10 @@ import { getOpenAIClient } from "@/lib/ai/client";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { resumeParsePrompt } from "@/prompts/resumeParsePrompt";
+import {
+  fullSizeSyntheticDocxExtractedText,
+  fullSizeSyntheticProviderOutput
+} from "@/tests/fixtures/resume-estimator-boundary-data";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -248,6 +254,53 @@ test("Gemini resume parsing requires combined data and maximum-cost confirmation
   assert.equal(providerCalls, 0);
 });
 
+test("full-size lossless parsing still requires cost confirmation before provider transport", async (t) => {
+  environment(t);
+  installLedger(t);
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    return providerResponse(fullSizeSyntheticProviderOutput());
+  });
+
+  await assert.rejects(
+    parseResumeTextWithMeta(fullSizeSyntheticDocxExtractedText, "user-1"),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.status === 428 &&
+      error.details?.code === "AI_COST_CONFIRMATION_REQUIRED"
+  );
+
+  assert.equal(providerCalls, 0);
+});
+
+test("confirmed full-size stub output remains inside its admission bound", async (t) => {
+  environment(t);
+  installLedger(t);
+  const output = fullSizeSyntheticProviderOutput();
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    return providerResponse(output, {
+      promptTokenCount: 4_000,
+      candidatesTokenCount: 7_500,
+      thoughtsTokenCount: 100,
+      totalTokenCount: 11_600
+    });
+  });
+
+  const result = await parseResumeTextWithMeta(fullSizeSyntheticDocxExtractedText, "user-1", {
+    highCostConfirmed: true,
+    dataSharingConfirmed: true
+  });
+
+  assert.equal(providerCalls, 1);
+  assert.equal(result.data.workHistory.length, 5);
+  assert.ok(Buffer.byteLength(JSON.stringify(output), "utf8") <=
+    estimateResumeParseMaximumOutputBytes(fullSizeSyntheticDocxExtractedText));
+  assert.ok(estimateResumeParseMaximumOutputBytes(fullSizeSyntheticDocxExtractedText) <=
+    RESUME_PARSE_PLANNED_JSON_BYTES);
+});
+
 test("confirmed Gemini parsing uses the configured model, typed response schema, reservation, and source-backed v5 output", async (t) => {
   environment(t);
   const ledger = installLedger(t);
@@ -264,7 +317,7 @@ test("confirmed Gemini parsing uses the configured model, typed response schema,
 
   assert.equal(result.meta.provider, "gemini");
   assert.equal(result.meta.model, "gemini-3.8-flash");
-  assert.equal(result.meta.promptVersion, "5");
+  assert.equal(result.meta.promptVersion, "6");
   assert.equal(result.meta.outputTokens, 100);
   assert.deepEqual(result.data.workHistory, parsedOutput.workHistory);
   assert.deepEqual(result.data.education, parsedOutput.education);
@@ -1027,19 +1080,24 @@ test("one project record cannot absorb a second pipe-delimited project header", 
   );
 });
 
-test("resume parse schema and prompt version require nullable project dates in v5", () => {
+test("resume parse schema and prompt revision preserve nullable project dates and exact heading aliases", () => {
   const projectItems = RESUME_PARSE_RESPONSE_JSON_SCHEMA.properties.projects.items;
 
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "5");
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "6");
   assert.deepEqual(projectItems.properties.date.type, ["string", "null"]);
   assert.ok(projectItems.required.includes("date"));
+  assert.equal(projectItems.properties.technologies.maxItems, 25);
+  assert.equal(projectItems.properties.bullets.maxItems, 25);
   assert.match(resumeParsePrompt, /project date/i);
   assert.match(resumeParsePrompt, /name \| description \| date/i);
+  assert.match(resumeParsePrompt, /at most 25 source-backed entries per record/i);
+  assert.match(resumeParsePrompt, /CORE SKILLS/);
+  assert.match(resumeParsePrompt, /SELECTED TECHNICAL PROJECTS/);
 });
 
-test("a version-four cache entry cannot be replayed as a version-five parse", async (t) => {
+test("a version-five cache entry cannot be replayed under prompt revision six", async (t) => {
   environment(t);
-  installLedger(t, parsedOutput, { cachedPromptVersion: "4" });
+  installLedger(t, parsedOutput, { cachedPromptVersion: "5" });
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
 

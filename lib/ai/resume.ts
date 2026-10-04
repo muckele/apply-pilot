@@ -34,25 +34,31 @@ import { estimateAiCostMicros, getModelPricing, type AiProviderName } from "@/li
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
-export const RESUME_PARSE_PROMPT_VERSION = "5";
-export const RESUME_PARSE_CACHE_VERSION = "5";
+export const RESUME_PARSE_PROMPT_VERSION = "6";
+export const RESUME_PARSE_CACHE_VERSION = "6";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
 const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
 export const RESUME_PARSE_PLANNED_JSON_BYTES =
   RESUME_PARSE_PLANNED_JSON_TOKENS * RESUME_PARSE_JSON_BYTES_PER_TOKEN;
-const RESUME_PARSE_JSON_FIXED_BYTES = 8_500;
-const RESUME_PARSE_JSON_BYTES_PER_LINE = 150;
-const RESUME_PARSE_JSON_BYTES_PER_SECTION = 250;
-const RESUME_PARSE_JSON_BYTES_PER_RECORD = 240;
-const RESUME_PARSE_SECTION_CONTENT_COPIES: Record<ResumeSourceSectionName, number> = {
-  contactInfo: 11,
+// JSON.stringify can expand one UTF-16 code unit to a six-byte `\uXXXX` escape.
+// Reserve the full escaped warning budget so optional metadata cannot invalidate
+// an otherwise-safe structured-output admission estimate.
+const RESUME_PARSE_WARNING_CONTENT_BYTES = 5 * 100 * 6;
+// sourceSections.sourceText plus its ordered recordBlocks account for two copies.
+// The remaining copies are the minimum conservative allowance for the required
+// typed projection: one canonical source/source-list copy, one semantic projection
+// copy for structural records, and one extra project copy because technologies may
+// legitimately overlap narrative bullets. JSON keys and collection punctuation are
+// measured separately from the actual response shape below.
+const RESUME_PARSE_REQUIRED_CONTENT_COPIES: Record<ResumeSourceSectionName, number> = {
+  contactInfo: 4,
   summary: 3,
   skills: 3,
-  workHistory: 9,
-  projects: 8,
-  education: 9,
-  certifications: 8,
+  workHistory: 4,
+  projects: 5,
+  education: 4,
+  certifications: 4,
   achievements: 3,
   additional: 2
 };
@@ -180,9 +186,14 @@ const nullableContactSourceString = z.union([
   z.null()
 ]);
 const sourceStringList = z.array(boundedSourceString).max(100);
+const RESUME_PARSE_SOURCE_SECTION_LIMIT = 100;
+const RESUME_PARSE_RECORD_BLOCK_LIMIT = 100;
+const RESUME_PARSE_RECORD_PROJECTION_ITEMS = 25;
+const recordSourceStringList = z.array(boundedSourceString)
+  .max(RESUME_PARSE_RECORD_PROJECTION_ITEMS);
 const sectionStatusSchema = z.enum(["present", "absent"]);
 const forbiddenResumeControlCharacters = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u;
-const warningSchema = z.string().trim().min(1).max(200)
+const warningSchema = z.string().trim().min(1).max(100)
   .refine((value) => !/[\u0000-\u001F\u007F]/u.test(value));
 
 const sourceSectionSchema = z.object({
@@ -192,12 +203,12 @@ const sourceSectionSchema = z.object({
   ]),
   heading: nullableSourceString,
   sourceText: boundedSourceBlock,
-  recordBlocks: z.array(boundedSourceBlock).min(1).max(100)
+  recordBlocks: z.array(boundedSourceBlock).min(1).max(RESUME_PARSE_RECORD_BLOCK_LIMIT)
 }).strict();
 
 export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown> = z.object({
   contractVersion: z.literal("5"),
-  sourceSections: z.array(sourceSectionSchema).min(1).max(100),
+  sourceSections: z.array(sourceSectionSchema).min(1).max(RESUME_PARSE_SOURCE_SECTION_LIMIT),
   contactInfo: z.object({
     sourceText: z.string().trim().max(20_000),
     name: nullableContactSourceString,
@@ -218,15 +229,15 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
     location: nullableSourceString,
     startDate: nullableSourceString,
     endDate: nullableSourceString,
-    bullets: sourceStringList
+    bullets: recordSourceStringList
   }).strict()).max(50),
   projects: z.array(z.object({
     sourceText: boundedSourceBlock,
     name: boundedSourceString,
     description: nullableSourceString,
     date: nullableSourceString,
-    technologies: sourceStringList,
-    bullets: sourceStringList
+    technologies: recordSourceStringList,
+    bullets: recordSourceStringList
   }).strict()).max(50),
   education: z.array(z.object({
     sourceText: boundedSourceBlock,
@@ -235,7 +246,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
     fieldOfStudy: nullableSourceString,
     startDate: nullableSourceString,
     endDate: nullableSourceString,
-    details: sourceStringList
+    details: recordSourceStringList
   }).strict()).max(30),
   certifications: z.array(z.object({
     sourceText: boundedSourceBlock,
@@ -243,7 +254,7 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
     issuer: nullableSourceString,
     date: nullableSourceString,
     expirationDate: nullableSourceString,
-    details: sourceStringList
+    details: recordSourceStringList
   }).strict()).max(50),
   achievements: sourceStringList,
   sectionStatus: z.object({
@@ -255,13 +266,18 @@ export const parsedResumeSchema: z.ZodType<ParsedResumeV5, z.ZodTypeDef, unknown
     certifications: sectionStatusSchema,
     achievements: sectionStatusSchema
   }).strict(),
-  warnings: z.array(warningSchema).max(10)
+  warnings: z.array(warningSchema).max(5)
 }).strict();
 
 const nullableJsonString = { type: ["string", "null"], maxLength: 2_000 } as const;
 const jsonString = { type: "string", maxLength: 2_000 } as const;
 const jsonSourceBlock = { type: "string", maxLength: 20_000 } as const;
 const jsonStringArray = { type: "array", items: jsonString, maxItems: 100 } as const;
+const jsonRecordStringArray = {
+  type: "array",
+  items: jsonString,
+  maxItems: RESUME_PARSE_RECORD_PROJECTION_ITEMS
+} as const;
 
 export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
   type: "object",
@@ -283,12 +299,16 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           },
           heading: nullableJsonString,
           sourceText: jsonSourceBlock,
-          recordBlocks: { type: "array", items: jsonSourceBlock, maxItems: 100 }
+          recordBlocks: {
+            type: "array",
+            items: jsonSourceBlock,
+            maxItems: RESUME_PARSE_RECORD_BLOCK_LIMIT
+          }
         },
         required: ["section", "heading", "sourceText", "recordBlocks"]
       },
       minItems: 1,
-      maxItems: 100
+      maxItems: RESUME_PARSE_SOURCE_SECTION_LIMIT
     },
     contactInfo: {
       type: "object",
@@ -320,7 +340,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           location: nullableJsonString,
           startDate: nullableJsonString,
           endDate: nullableJsonString,
-          bullets: jsonStringArray
+          bullets: jsonRecordStringArray
         },
         required: ["sourceText", "company", "title", "location", "startDate", "endDate", "bullets"]
       },
@@ -336,8 +356,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           name: jsonString,
           description: nullableJsonString,
           date: nullableJsonString,
-          technologies: jsonStringArray,
-          bullets: jsonStringArray
+          technologies: jsonRecordStringArray,
+          bullets: jsonRecordStringArray
         },
         required: ["sourceText", "name", "description", "date", "technologies", "bullets"]
       },
@@ -355,7 +375,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           fieldOfStudy: nullableJsonString,
           startDate: nullableJsonString,
           endDate: nullableJsonString,
-          details: jsonStringArray
+          details: jsonRecordStringArray
         },
         required: ["sourceText", "institution", "credential", "fieldOfStudy", "startDate", "endDate", "details"]
       },
@@ -372,7 +392,7 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
           issuer: nullableJsonString,
           date: nullableJsonString,
           expirationDate: nullableJsonString,
-          details: jsonStringArray
+          details: jsonRecordStringArray
         },
         required: ["sourceText", "name", "issuer", "date", "expirationDate", "details"]
       },
@@ -397,8 +417,8 @@ export const RESUME_PARSE_RESPONSE_JSON_SCHEMA = {
     },
     warnings: {
       type: "array",
-      items: { type: "string", maxLength: 200, pattern: "^[^\\u0000-\\u001F\\u007F]*$" },
-      maxItems: 10
+      items: { type: "string", maxLength: 100, pattern: "^[^\\u0000-\\u001F\\u007F]*$" },
+      maxItems: 5
     }
   },
   required: [
@@ -455,15 +475,22 @@ function assertOrderedSourceProjectionList(source: string, values: string[], fie
   }
 }
 
+function isExplicitResumeListEntry(entry: string) {
+  return /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry);
+}
+
 function isUnambiguousNarrativeEntry(entry: string) {
-  const explicitBullet = /^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(entry);
+  const explicitBullet = isExplicitResumeListEntry(entry);
   const completeStatement = !/[\r\n]/.test(entry) && /[.!?…]$/u.test(entry);
   return explicitBullet || completeStatement;
 }
 
 function assertUnambiguousNarrativeEntries(entries: string[], section: string, fieldPath: string) {
   entries.forEach((entry, index) => {
-    if (!isUnambiguousNarrativeEntry(entry)) {
+    const ambiguousWorkPipeNarrative = section === "workHistory" &&
+      entry.includes("|") &&
+      !isExplicitResumeListEntry(entry);
+    if (!isUnambiguousNarrativeEntry(entry) || ambiguousWorkPipeNarrative) {
       throw new PublicApiError(
         `Resume parsing returned an ambiguous ${section} detail that could be a merged record boundary. No master resume was changed.`,
         422,
@@ -475,9 +502,9 @@ function assertUnambiguousNarrativeEntries(entries: string[], section: string, f
 
 const sectionHeadings: Record<keyof ParsedResume["sectionStatus"], RegExp> = {
   summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
-  skills: /^(?:(?:TECHNICAL\s+|KEY\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
+  skills: /^(?:(?:(?:TECHNICAL|KEY|CORE)\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
   workHistory: /^(?:WORK|PROFESSIONAL|EMPLOYMENT|CAREER)?\s*(?:EXPERIENCE|HISTORY)$/i,
-  projects: /^(?:SELECTED\s+|PROFESSIONAL\s+)?PROJECTS?$/i,
+  projects: /^(?:(?:SELECTED(?:\s+TECHNICAL)?|PROFESSIONAL)\s+)?PROJECTS?$/i,
   education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
   certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
   achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
@@ -553,7 +580,6 @@ const resumeDatePattern = new RegExp(
   `^(?:(?:issued|expires?|expiration|completed|graduated|expected|anticipated)[:\\s]+)?(?:${resumeDateAtom})(?:\\s*(?:-|–|—|to|through)\\s*(?:${resumeDateAtom}))?$`,
   "i"
 );
-
 function assertResumeDate(
   value: string | null,
   section: string,
@@ -969,26 +995,205 @@ function jsonEscapedByteLength(value: string) {
   return Math.max(0, Buffer.byteLength(JSON.stringify(value), "utf8") - 2);
 }
 
+const structuralRecordLimits: Partial<Record<ResumeSourceSectionName, number>> = {
+  workHistory: 50,
+  projects: 50,
+  education: 30,
+  certifications: 50
+};
+
+function structuralRecordCounts(
+  section: ResumeSourceSectionName,
+  sourceText: string,
+  paragraphUnit: number
+) {
+  const splitBlocks = splitStructuralRecordBlocks(section, sourceText, paragraphUnit);
+  const splitCount = splitBlocks.length;
+  const dateCount = sourceText.split(/\r?\n/).filter((line) =>
+    resumeDatePattern.test(line.trim())
+  ).length;
+  const pipeHeaderCount = sourceText.split(/\r?\n/).filter((line) => {
+    const parts = line.split("|").map((part) => part.trim()).filter(Boolean);
+    if (isExplicitResumeListEntry(line.trim())) return false;
+    return section === "projects"
+      ? parts.length >= 3 && resumeDatePattern.test(parts.at(-1)!)
+      : section === "workHistory" && parts.length >= 2;
+  }).length;
+  const declaredBlockCount = splitBlocks.filter((block) => {
+    const firstLine = block.split(/\r?\n/, 1)[0]!.trim();
+    if (
+      isExplicitResumeListEntry(firstLine) ||
+      resumeDatePattern.test(firstLine) ||
+      /^(?:location|technologies?(?: used)?|tools|methods|platforms?|credential id|details?)\s*:/i.test(firstLine)
+    ) return false;
+    if (firstLine.includes(" | ")) return true;
+    return !isUnambiguousNarrativeEntry(firstLine);
+  }).length;
+  const definite = Math.max(1, dateCount, pipeHeaderCount, declaredBlockCount);
+  return {
+    definite,
+    estimated: Math.max(definite, splitCount)
+  };
+}
+
+function emptyStrings(count: number) {
+  return Array.from({ length: count }, () => "");
+}
+
+function expectedNonStructuralRecordBlocks(
+  section: ResumeSourceSectionName,
+  sourceText: string
+) {
+  if (section === "contactInfo" || section === "summary") return [sourceText];
+  return sourceText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function resumeSourceStructureFitsContract(
+  sections: Array<Omit<ResumeSourceSection, "recordBlocks">>,
+  paragraphUnit: number
+) {
+  if (sections.length > RESUME_PARSE_SOURCE_SECTION_LIMIT) return false;
+  const structuralTotals = new Map<ResumeSourceSectionName, number>();
+  for (const section of sections) {
+    const structuralLimit = structuralRecordLimits[section.section];
+    const recordCount = structuralLimit
+      ? structuralRecordCounts(section.section, section.sourceText, paragraphUnit).definite
+      : expectedNonStructuralRecordBlocks(section.section, section.sourceText).length;
+    if (recordCount > RESUME_PARSE_RECORD_BLOCK_LIMIT) return false;
+    if (structuralLimit) {
+      const total = (structuralTotals.get(section.section) ?? 0) + recordCount;
+      if (total > structuralLimit) return false;
+      structuralTotals.set(section.section, total);
+    }
+  }
+  return true;
+}
+
+function estimateResumeParseEnvelopeBytes(
+  sections: Array<Omit<ResumeSourceSection, "recordBlocks">>,
+  paragraphUnit: number
+) {
+  const structuralCounts = sections.map((section) => ({
+    section: section.section,
+    counts: structuralRecordLimits[section.section]
+      ? structuralRecordCounts(section.section, section.sourceText, paragraphUnit)
+      : null
+  }));
+  const remainingStructuralRecords = new Map<ResumeSourceSectionName, number>();
+  for (const [section, limit] of Object.entries(structuralRecordLimits) as Array<
+    [ResumeSourceSectionName, number]
+  >) {
+    const definite = structuralCounts.reduce((total, item) =>
+      item.section === section ? total + (item.counts?.definite ?? 0) : total, 0);
+    remainingStructuralRecords.set(section, Math.max(0, limit - definite));
+  }
+  const sectionMetrics = sections.map((section) => {
+    const counts = structuralRecordLimits[section.section]
+      ? structuralRecordCounts(section.section, section.sourceText, paragraphUnit)
+      : null;
+    const remaining = remainingStructuralRecords.get(section.section) ?? 0;
+    const extra = counts ? Math.min(remaining, counts.estimated - counts.definite) : 0;
+    const recordCount = counts
+      ? counts.definite + extra
+      : expectedNonStructuralRecordBlocks(section.section, section.sourceText).length;
+    if (counts) remainingStructuralRecords.set(section.section, remaining - extra);
+    return { ...section, recordCount };
+  });
+  const metricsFor = (section: ResumeSourceSectionName) =>
+    sectionMetrics.filter((item) => item.section === section);
+  const structuralMetricsFor = (section: ResumeSourceSectionName) => {
+    const items = metricsFor(section);
+    const recordCount = items.reduce((total, item) => total + item.recordCount, 0);
+    return { recordCount };
+  };
+  const work = structuralMetricsFor("workHistory");
+  const projects = structuralMetricsFor("projects");
+  const education = structuralMetricsFor("education");
+  const certifications = structuralMetricsFor("certifications");
+  const status = (section: keyof ParsedResumeCore["sectionStatus"]) =>
+    metricsFor(section).length > 0 ? "present" : "absent";
+  const envelope = {
+    contractVersion: "5",
+    sourceSections: sectionMetrics.map((section) => ({
+      section: section.section,
+      heading: section.heading,
+      sourceText: "",
+      recordBlocks: emptyStrings(section.recordCount)
+    })),
+    contactInfo: {
+      sourceText: "",
+      name: null,
+      headline: null,
+      email: null,
+      phone: null,
+      location: null,
+      linkedin: null,
+      github: null,
+      portfolio: null
+    },
+    summary: "",
+    skills: metricsFor("skills").length > 0 ? emptyStrings(100) : [],
+    workHistory: Array.from({ length: work.recordCount }, () => ({
+      sourceText: "",
+      company: "",
+      title: "",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    projects: Array.from({ length: projects.recordCount }, () => ({
+      sourceText: "",
+      name: "",
+      description: null,
+      date: null,
+      technologies: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS),
+      bullets: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    education: Array.from({ length: education.recordCount }, () => ({
+      sourceText: "",
+      institution: "",
+      credential: null,
+      fieldOfStudy: null,
+      startDate: null,
+      endDate: null,
+      details: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    certifications: Array.from({ length: certifications.recordCount }, () => ({
+      sourceText: "",
+      name: "",
+      issuer: null,
+      date: null,
+      expirationDate: null,
+      details: emptyStrings(RESUME_PARSE_RECORD_PROJECTION_ITEMS)
+    })),
+    achievements: metricsFor("achievements").length > 0 ? emptyStrings(100) : [],
+    sectionStatus: {
+      summary: status("summary"),
+      skills: status("skills"),
+      workHistory: status("workHistory"),
+      projects: status("projects"),
+      education: status("education"),
+      certifications: status("certifications"),
+      achievements: status("achievements")
+    },
+    warnings: emptyStrings(5)
+  };
+  return Buffer.byteLength(JSON.stringify(envelope), "utf8") +
+    RESUME_PARSE_WARNING_CONTENT_BYTES;
+}
+
 export function estimateResumeParseMaximumOutputBytes(source: string) {
   const normalizedSource = normalizeResumeLineEndings(source);
   const sections = expectedSourceSections(normalizedSource);
   const paragraphUnit = paragraphBreakUnit(normalizedSource.split("\n"));
-  const nonemptyLineCount = normalizedSource.split("\n").filter((line) => line.trim()).length;
-  const structuralRecordCount = sections.reduce((total, section) =>
-    ["workHistory", "projects", "education", "certifications"].includes(section.section)
-      ? total + splitStructuralRecordBlocks(
-        section.section,
-        section.sourceText,
-        paragraphUnit
-      ).length
-      : total, 0);
-  return RESUME_PARSE_JSON_FIXED_BYTES +
-    sections.reduce((total, section) =>
-      total + jsonEscapedByteLength(section.sourceText) *
-        RESUME_PARSE_SECTION_CONTENT_COPIES[section.section], 0) +
-    nonemptyLineCount * RESUME_PARSE_JSON_BYTES_PER_LINE +
-    sections.length * RESUME_PARSE_JSON_BYTES_PER_SECTION +
-    structuralRecordCount * RESUME_PARSE_JSON_BYTES_PER_RECORD;
+  if (!resumeSourceStructureFitsContract(sections, paragraphUnit)) {
+    return RESUME_PARSE_PLANNED_JSON_BYTES + 1;
+  }
+  const requiredContentBytes = sections.reduce((total, section) =>
+    total + jsonEscapedByteLength(section.sourceText) *
+      RESUME_PARSE_REQUIRED_CONTENT_COPIES[section.section], 0);
+  return requiredContentBytes + estimateResumeParseEnvelopeBytes(sections, paragraphUnit);
 }
 
 function resumeParseOutputTokenLimit(provider: AiProviderName) {
@@ -1175,6 +1380,7 @@ function hasDeclaredRecordBoundary(
   if (Number.isFinite(paragraphUnit) && newlineCount >= paragraphUnit * 2) return true;
   if (recordHasDateLine(previousRecord) && recordHasDateLine(nextRecord)) return true;
   const firstLine = nextRecord.split(/\r?\n/, 1)[0]!.trim();
+  if (isExplicitResumeListEntry(firstLine)) return false;
   const pipeParts = firstLine.split("|").map((part) => part.trim()).filter(Boolean);
   if (section === "projects") {
     return pipeParts.length >= 3 && resumeDatePattern.test(pipeParts.at(-1)!);
@@ -1216,6 +1422,36 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
       canonicalCursor,
       canonicalCursor + section.recordBlocks.length
     ) ?? null;
+    if (!canonicalRecords) {
+      const expectedBlocks = expectedNonStructuralRecordBlocks(
+        section.section,
+        section.sourceText
+      );
+      const exactBlocks = section.recordBlocks.length === expectedBlocks.length &&
+        section.recordBlocks.every((record, index) => record === expectedBlocks[index]);
+      if (!exactBlocks) {
+        let expectedCursor = 0;
+        const orderedSubset = section.recordBlocks.every((record) => {
+          const index = expectedBlocks.indexOf(record, expectedCursor);
+          if (index < 0) return false;
+          expectedCursor = index + 1;
+          return true;
+        });
+        const omittedBlock = orderedSubset && section.recordBlocks.length < expectedBlocks.length;
+        throw new PublicApiError(
+          omittedBlock
+            ? "Resume parsing omitted a non-structural source record. No master resume was changed."
+            : "Resume parsing invented a non-structural record boundary. No master resume was changed.",
+          422,
+          {
+            code: omittedBlock ? "RESUME_PARSE_INCOMPLETE" : "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+            section: section.section,
+            fieldPath: `${basePath}.recordBlocks`,
+            retryable: false
+          }
+        );
+      }
+    }
     if (canonicalRecords && (
       sectionCanonicalRecords!.length !== section.recordBlocks.length ||
       sectionCanonicalRecords!.some((record, index) => record !== section.recordBlocks[index])
@@ -1414,7 +1650,12 @@ function assertNoUndeclaredRecordHeaderAfterNarrative(
         (match[0].match(/\n/g) ?? []).length >= paragraphUnit * 2
     );
     const lines = gap.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (lines.some((line) => line.includes(" | ") && !/[.!?…]$/u.test(line))) return true;
+    if (lines.some((line) =>
+      line.split("|").map((part) => part.trim()).filter(Boolean).length >= 2 &&
+      !isExplicitResumeListEntry(line)
+    )) {
+      return true;
+    }
     const looksLikeHeader = (candidate: string) =>
       /[\p{L}\p{N}]/u.test(candidate) &&
       !/^(?:[-*•▪◦–—]\s+|\d+[.)]\s+)/u.test(candidate) &&
@@ -1523,6 +1764,19 @@ function assertNoUnprojectedHeaderPairBeforeNarrative(
 }
 
 function assertWorkHeaderSemantics(item: ResumeWorkHistoryItem, fieldPath: string) {
+  const firstLine = item.sourceText.split(/\r?\n/, 1)[0]!.trim();
+  if (isExplicitResumeListEntry(firstLine)) {
+    throw new PublicApiError(
+      "Resume parsing returned a work-history record whose source header is a narrative list item. No master resume was changed.",
+      422,
+      {
+        code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+        section: "workHistory",
+        fieldPath: `${fieldPath}.sourceText`,
+        retryable: false
+      }
+    );
+  }
   const firstNarrative = firstFactIndex(item.sourceText, item.bullets);
   for (const [field, value] of [["title", item.title], ["company", item.company]] as const) {
     const position = item.sourceText.indexOf(value);

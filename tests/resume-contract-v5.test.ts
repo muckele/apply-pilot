@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import mammoth from "mammoth";
 
 import {
   RESUME_PARSE_CACHE_VERSION,
@@ -7,6 +9,7 @@ import {
   RESUME_PARSE_PLANNED_JSON_BYTES,
   estimateResumeParseMaximumOutputBytes,
   parseResumeTextWithMeta,
+  parsedResumeSchema,
   validateParsedResumeOutput,
   type ParsedResumeV5
 } from "@/lib/ai/resume";
@@ -20,6 +23,11 @@ import {
 import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
 import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { PublicApiError } from "@/lib/api-errors";
+import { extractResumeDocxText } from "@/lib/resume-docx-text";
+import {
+  fullSizeSyntheticDocxExtractedText,
+  fullSizeSyntheticProviderOutput
+} from "./fixtures/resume-estimator-boundary-data";
 import { syntheticDocxExtractedText } from "./fixtures/resume-contract-v5-data";
 
 export const completeSyntheticResumeText = `Jordan Example
@@ -229,9 +237,9 @@ function publicError(error: unknown, code: string, fieldPath?: string) {
     (fieldPath === undefined || error.details?.fieldPath === fieldPath);
 }
 
-test("resume parsing uses coherent v5 contract, prompt, and cache revisions", () => {
-  assert.equal(RESUME_PARSE_PROMPT_VERSION, "5");
-  assert.equal(RESUME_PARSE_CACHE_VERSION, "5");
+test("resume parsing uses the v5 contract with coherent prompt and cache revisions", () => {
+  assert.equal(RESUME_PARSE_PROMPT_VERSION, "6");
+  assert.equal(RESUME_PARSE_CACHE_VERSION, "6");
   assert.equal(completeSyntheticParsedResume().contractVersion, "5");
   const fixtureOutputTokens = Math.ceil(Buffer.byteLength(
     JSON.stringify(completeSyntheticParsedResume()),
@@ -396,7 +404,7 @@ test("a blank before bullets cannot invent a second canonical work record", () =
 
   assert.throws(
     () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
-    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[1].title")
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[1].sourceText")
   );
 });
 
@@ -519,6 +527,30 @@ test("repeated canonical headings partition typed records in source order", () =
   assert.equal(validateParsedResumeOutput(source, output, { allowLegacy: false }).workHistory.length, 2);
 });
 
+test("non-structural record blocks cannot invent boundaries inside one source line", () => {
+  const output = fullSizeSyntheticProviderOutput();
+  const additionalIndex = output.sourceSections.findIndex(
+    (section) => section.section === "additional"
+  );
+  const additional = output.sourceSections[additionalIndex]!;
+  const splitAt = additional.sourceText.indexOf(":") + 1;
+  additional.recordBlocks = [
+    additional.sourceText.slice(0, splitAt),
+    additional.sourceText.slice(splitAt).trim()
+  ];
+
+  assert.throws(
+    () => validateParsedResumeOutput(fullSizeSyntheticDocxExtractedText, output, {
+      allowLegacy: false
+    }),
+    (error) => publicError(
+      error,
+      "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+      `sourceSections[${additionalIndex}].recordBlocks`
+    )
+  );
+});
+
 test("lossless authority rejects an omitted source fact with a privacy-safe field path", () => {
   const omitted = completeSyntheticParsedResume();
   omitted.sourceSections[2]!.recordBlocks.pop();
@@ -621,6 +653,117 @@ Contoso Labs
   assert.throws(
     () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
     (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("punctuated pipe work headers cannot be merged into one record", () => {
+  const mergedBlock = `Role 1 | Acme, Inc.
+• Delivered result 1.
+
+Role 2 | Acme, Inc.
+• Delivered result 2.`;
+  const source = `Jordan Example
+
+EXPERIENCE
+${mergedBlock}`;
+  const output: ParsedResumeV5 = {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+      { section: "workHistory", heading: "EXPERIENCE", sourceText: mergedBlock, recordBlocks: [mergedBlock] }
+    ],
+    contactInfo: {
+      sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+      email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: mergedBlock,
+      company: "Acme, Inc.",
+      title: "Role 1",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: ["• Delivered result 1.", "• Delivered result 2."]
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_STRUCTURE_AMBIGUOUS", "workHistory[0].sourceText")
+  );
+});
+
+test("a marked pipe narrative cannot establish an invented work record", () => {
+  const first = `Role 1
+Acme
+2020 - Present
+• Delivered result 1.`;
+  const markedNarrative = "• Compared A | B.";
+  const workSource = `${first}\n${markedNarrative}`;
+  const source = `Jordan Example\n\nEXPERIENCE\n${workSource}`;
+  const output: ParsedResumeV5 = {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Jordan Example", recordBlocks: ["Jordan Example"] },
+      {
+        section: "workHistory",
+        heading: "EXPERIENCE",
+        sourceText: workSource,
+        recordBlocks: [first, markedNarrative]
+      }
+    ],
+    contactInfo: {
+      sourceText: "Jordan Example", name: "Jordan Example", headline: null,
+      email: null, phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: first,
+      company: "Acme",
+      title: "Role 1",
+      location: null,
+      startDate: "2020",
+      endDate: "Present",
+      bullets: ["• Delivered result 1."]
+    }, {
+      sourceText: markedNarrative,
+      company: "B.",
+      title: "Compared A",
+      location: null,
+      startDate: null,
+      endDate: null,
+      bullets: []
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+
+  assert.throws(
+    () => validateParsedResumeOutput(source, output, { allowLegacy: false }),
+    (error) => publicError(
+      error,
+      "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+      "sourceSections[1].recordBlocks[1]"
+    )
   );
 });
 
@@ -872,6 +1015,26 @@ test("resume source admission is bounded by the lossless response capacity befor
     (index) => `P${index} | D${index} | 202${index}\n${escapeHeavyPayload}`
   );
   const escapeHeavySource = `Jordan Example\n\nPROJECTS\n${escapeHeavyRecords.join("\n\n")}`;
+  const tooManySkillBlocks = `Jordan Example\n\nSKILLS\n${Array.from(
+    { length: 101 },
+    (_, index) => `Skill ${index + 1}`
+  ).join("\n")}`;
+  const tooManyProjects = `Jordan Example\n\nPROJECTS\n${Array.from(
+    { length: 51 },
+    (_, index) => `Project ${index + 1} | Synthetic subtitle | 2025`
+  ).join("\n\n")}`;
+  const oneWorkRecordWithManyParagraphs = `Jordan Example\n\nEXPERIENCE\nOperations Analyst\nExample Co\n2020 - Present\n${Array.from(
+    { length: 51 },
+    (_, index) => `• Evidence paragraph ${index + 1}.`
+  ).join("\n\n")}`;
+  const tooManyPunctuatedWorkHeaders = `Jordan Example\n\nEXPERIENCE\n${Array.from(
+    { length: 51 },
+    (_, index) => `Role ${index + 1} | Acme, Inc.\n• Delivered result ${index + 1}.`
+  ).join("\n\n")}`;
+  const tooManyDatelessWorkRecords = `Jordan Example\n\nEXPERIENCE\n${Array.from(
+    { length: 51 },
+    (_, index) => `Role ${index + 1}\nAcme ${index + 1}\n• Delivered result ${index + 1}.`
+  ).join("\n\n")}`;
   assert.ok(
     estimateResumeParseMaximumOutputBytes(completeSyntheticResumeText) <=
       RESUME_PARSE_PLANNED_JSON_BYTES
@@ -884,6 +1047,26 @@ test("resume source admission is bounded by the lossless response capacity befor
     estimateResumeParseMaximumOutputBytes(escapeHeavySource) >
       RESUME_PARSE_PLANNED_JSON_BYTES
   );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(tooManySkillBlocks) >
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(tooManyProjects) >
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(oneWorkRecordWithManyParagraphs) <=
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(tooManyPunctuatedWorkHeaders) >
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(tooManyDatelessWorkRecords) >
+      RESUME_PARSE_PLANNED_JSON_BYTES
+  );
 
   await assert.rejects(
     parseResumeTextWithMeta(escapeHeavySource, "user-1"),
@@ -892,6 +1075,20 @@ test("resume source admission is bounded by the lossless response capacity befor
       error.details?.code === "RESUME_PARSE_SOURCE_TOO_LARGE_FOR_LOSSLESS_OUTPUT"
   );
 
+  for (const source of [
+    tooManySkillBlocks,
+    tooManyProjects,
+    tooManyPunctuatedWorkHeaders,
+    tooManyDatelessWorkRecords
+  ]) {
+    await assert.rejects(
+      parseResumeTextWithMeta(source, "user-1"),
+      (error: unknown) => error instanceof PublicApiError &&
+        error.status === 413 &&
+        error.details?.code === "RESUME_PARSE_SOURCE_TOO_LARGE_FOR_LOSSLESS_OUTPUT"
+    );
+  }
+
   await assert.rejects(
     parseResumeTextWithMeta(`Jordan Example\n\nSUMMARY\n${"\0".repeat(1_100)}`, "user-1"),
     (error: unknown) => error instanceof PublicApiError &&
@@ -899,6 +1096,134 @@ test("resume source admission is bounded by the lossless response capacity befor
       error.details?.code === "RESUME_PARSE_UNSUPPORTED_CONTROL_CHARACTERS" &&
       error.details?.fieldPath === "rawText"
   );
+});
+
+test("the full-size synthetic DOCX reproduces the privacy-safe source scale without private content", async () => {
+  const fixture = await readFile(new URL(
+    "./fixtures/synthetic-resume-estimator-boundary.docx",
+    import.meta.url
+  ));
+  const lossyExtraction = (await mammoth.extractRawText({ buffer: fixture })).value;
+  const extracted = await extractResumeDocxText(fixture);
+
+  assert.notEqual(lossyExtraction, fullSizeSyntheticDocxExtractedText);
+  assert.doesNotMatch(lossyExtraction, /• /);
+  assert.equal(extracted, fullSizeSyntheticDocxExtractedText);
+  assert.match(extracted, /vendor governance, R&D coordination/);
+  assert.doesNotMatch(extracted, /&amp;/);
+  assert.match(
+    extracted,
+    /Completed a 480-hour applied program[^]*\n\nBachelor of Arts in Business Administration/
+  );
+  assert.ok(Buffer.byteLength(extracted.trim(), "utf8") >= 6_200);
+  assert.ok(Buffer.byteLength(extracted.trim(), "utf8") <= 6_800);
+  assert.equal((extracted.match(/• /g) ?? []).length, 23);
+  const output = fullSizeSyntheticProviderOutput();
+  assert.equal(output.workHistory.flatMap((record) => record.bullets).length, 21);
+  assert.equal(output.projects.flatMap((record) => record.bullets).length, 2);
+  assert.match(extracted, /CERTIFICATIONS/);
+  assert.match(extracted, /ACHIEVEMENTS/);
+  assert.match(extracted, /ADDITIONAL INFORMATION/);
+});
+
+test("source authority recognizes Core Skills and Selected Technical Projects headings", () => {
+  const parsed = validateParsedResumeOutput(
+    fullSizeSyntheticDocxExtractedText,
+    fullSizeSyntheticProviderOutput(),
+    { allowLegacy: false }
+  );
+
+  assert.equal(parsed.sourceSections[2]?.section, "skills");
+  assert.equal(parsed.sourceSections[2]?.heading, "CORE SKILLS");
+  assert.equal(parsed.sourceSections[4]?.section, "projects");
+  assert.equal(parsed.sourceSections[4]?.heading, "SELECTED TECHNICAL PROJECTS");
+  assert.deepEqual(
+    parsed.sourceSections.slice(-3).map((section) => section.section),
+    ["certifications", "achievements", "additional"]
+  );
+  assert.equal(parsed.certifications[0]?.details[0], "Credential ID: SYN-OPS-6403");
+  assert.equal(parsed.achievements.length, 2);
+});
+
+test("contract-derived estimate admits a realistic lossless response and bounds its serialized bytes", () => {
+  const output = fullSizeSyntheticProviderOutput();
+  const serializedBytes = Buffer.byteLength(JSON.stringify(output), "utf8");
+  const estimatedBytes = estimateResumeParseMaximumOutputBytes(fullSizeSyntheticDocxExtractedText);
+
+  assert.ok(serializedBytes < RESUME_PARSE_PLANNED_JSON_BYTES);
+  assert.ok(estimatedBytes >= serializedBytes);
+  assert.ok(estimatedBytes <= RESUME_PARSE_PLANNED_JSON_BYTES);
+});
+
+test("contract-derived estimate rejects a realistic source whose lossless authority exceeds capacity", () => {
+  const longAdditionalSection = Array.from({ length: 80 }, (_, index) =>
+    `Community program ${index + 1} documented ownership, delivery evidence, review status, and follow-up decisions.`
+  ).join("\n\n");
+  const oversizedSource = `${fullSizeSyntheticDocxExtractedText.trim()}\n\nADDITIONAL INFORMATION\n\n${longAdditionalSection}`;
+
+  assert.ok(
+    estimateResumeParseMaximumOutputBytes(oversizedSource) > RESUME_PARSE_PLANNED_JSON_BYTES
+  );
+});
+
+test("narrative year lists do not inflate the structural record envelope", () => {
+  const output = fullSizeSyntheticProviderOutput();
+  const originalBullet = output.workHistory[0]!.bullets[0]!;
+  const yearList = Array.from({ length: 20 }, (_, index) => String(1970 + index)).join(", ");
+  const replacementBullet = `• Compared annual service evidence across ${yearList}.`;
+  const source = fullSizeSyntheticDocxExtractedText.replace(originalBullet, replacementBullet);
+  output.workHistory[0]!.sourceText = output.workHistory[0]!.sourceText.replace(
+    originalBullet,
+    replacementBullet
+  );
+  output.workHistory[0]!.bullets[0] = replacementBullet;
+  const workSection = output.sourceSections.find((section) => section.section === "workHistory")!;
+  workSection.sourceText = workSection.sourceText.replace(originalBullet, replacementBullet);
+  workSection.recordBlocks[0] = workSection.recordBlocks[0]!.replace(
+    originalBullet,
+    replacementBullet
+  );
+
+  assert.doesNotThrow(() => validateParsedResumeOutput(source, output, { allowLegacy: false }));
+  const serializedBytes = Buffer.byteLength(JSON.stringify(output), "utf8");
+  const estimatedBytes = estimateResumeParseMaximumOutputBytes(source);
+  assert.ok(serializedBytes < RESUME_PARSE_PLANNED_JSON_BYTES);
+  assert.ok(estimatedBytes >= serializedBytes);
+  assert.ok(estimatedBytes <= RESUME_PARSE_PLANNED_JSON_BYTES);
+});
+
+test("warning limits retain a byte-safe maximum for the structured-response plan", () => {
+  const tooMany = fullSizeSyntheticProviderOutput();
+  tooMany.warnings = Array.from({ length: 6 }, () => "Synthetic ambiguity.");
+  assert.throws(
+    () => validateParsedResumeOutput(fullSizeSyntheticDocxExtractedText, tooMany, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_INVALID_OUTPUT", "warnings")
+  );
+
+  const tooLong = fullSizeSyntheticProviderOutput();
+  tooLong.warnings = ["x".repeat(101)];
+  assert.throws(
+    () => validateParsedResumeOutput(fullSizeSyntheticDocxExtractedText, tooLong, { allowLegacy: false }),
+    (error) => publicError(error, "RESUME_PARSE_INVALID_OUTPUT", "warnings[0]")
+  );
+
+  const maximumEscaped = fullSizeSyntheticProviderOutput();
+  maximumEscaped.warnings = Array.from({ length: 5 }, () => "\ud800".repeat(100));
+  const validated = validateParsedResumeOutput(
+    fullSizeSyntheticDocxExtractedText,
+    maximumEscaped,
+    { allowLegacy: false }
+  );
+  assert.equal(validated.warnings.length, 5);
+  assert.ok(Buffer.byteLength(JSON.stringify(maximumEscaped), "utf8") <=
+    estimateResumeParseMaximumOutputBytes(fullSizeSyntheticDocxExtractedText));
+});
+
+test("nested record projections enforce the estimator's per-record array envelope", () => {
+  const output = fullSizeSyntheticProviderOutput();
+  output.projects[0]!.technologies = Array.from({ length: 26 }, () => "TypeScript");
+
+  assert.equal(parsedResumeSchema.safeParse(output).success, false);
 });
 
 test("provider warnings cannot amplify control characters outside source evidence", () => {

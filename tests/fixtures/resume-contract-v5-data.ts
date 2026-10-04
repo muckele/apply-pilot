@@ -57,9 +57,9 @@ Customer Impact: Recognized for clear incident communications.
 ADDITIONAL INFORMATION
 Volunteer: Mentored career changers through a community technology program.`;
 
-export const syntheticDocxExtractedText = `${syntheticResumeText.replace(/\n/g, "\n\n")}\n\n`;
-
 const block = (value: string) => value.replace(/\n/g, "\n\n");
+export const syntheticDocxExtractedText =
+  `${syntheticResumeText.split("\n\n").map(block).join("\n\n")}\n\n`;
 const contact = block(`Jordan Example
 Systems Operations Analyst
 Location: Toronto, Canada | jordan@example.test | +1 (555) 010-1000`);
@@ -110,9 +110,9 @@ export function syntheticDocxProviderOutput(): ParsedResumeV5 {
         sourceText: skillsSource,
         recordBlocks: ["Data: SQL, Excel, reporting", "Delivery: Agile, stakeholder communication", "Platforms: TypeScript, PostgreSQL, Azure"]
       },
-      { section: "workHistory", heading: "EXPERIENCE", sourceText: `${firstWork}\n\n\n\n${secondWork}`, recordBlocks: [firstWork, secondWork] },
-      { section: "projects", heading: "PROJECTS", sourceText: `${firstProject}\n\n\n\n${secondProject}`, recordBlocks: [firstProject, secondProject] },
-      { section: "education", heading: "EDUCATION", sourceText: `${firstEducation}\n\n\n\n${secondEducation}`, recordBlocks: [firstEducation, secondEducation] },
+      { section: "workHistory", heading: "EXPERIENCE", sourceText: `${firstWork}\n\n${secondWork}`, recordBlocks: [firstWork, secondWork] },
+      { section: "projects", heading: "PROJECTS", sourceText: `${firstProject}\n\n${secondProject}`, recordBlocks: [firstProject, secondProject] },
+      { section: "education", heading: "EDUCATION", sourceText: `${firstEducation}\n\n${secondEducation}`, recordBlocks: [firstEducation, secondEducation] },
       { section: "certifications", heading: "CERTIFICATIONS", sourceText: certification, recordBlocks: [certification] },
       {
         section: "achievements",
