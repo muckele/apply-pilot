@@ -3,10 +3,26 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { AlignmentType, Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
 
-import { resumeV9StructuralTwinText } from "@/tests/fixtures/resume-v9-structural-twin-data";
+import {
+  resumeV9OwnerTopologyTwinText,
+  resumeV9StructuralTwinText
+} from "@/tests/fixtures/resume-v9-structural-twin-data";
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const output = join(directory, "synthetic-resume-v9-structural-twin.docx");
+const outputs = [
+  {
+    filename: "synthetic-resume-v9-structural-twin.docx",
+    text: resumeV9StructuralTwinText,
+    title: "Private-Free Resume V9 Structural Twin",
+    subject: "Synthetic complete-document boundary authority fixture"
+  },
+  {
+    filename: "synthetic-resume-v9-owner-topology-twin.docx",
+    text: resumeV9OwnerTopologyTwinText,
+    title: "Private-Free Resume V9 Owner-Topology Twin",
+    subject: "Synthetic owner-topology boundary authority fixture"
+  }
+];
 const headings = new Set([
   "SUMMARY",
   "SKILLS",
@@ -41,26 +57,33 @@ function paragraph(block: string) {
   });
 }
 
-const document = new Document({
-  creator: "Apply Pilot Test Fixture",
-  title: "Private-Free Resume V9 Structural Twin",
-  subject: "Synthetic complete-document boundary authority fixture",
-  styles: {
-    default: {
-      document: { run: { font: "Arial", size: 21, color: "000000" } },
-      heading1: { run: { font: "Arial", size: 20, bold: true, color: "000000" } }
-    }
-  },
-  sections: [{
-    properties: {
-      page: { margin: { top: 792, right: 1008, bottom: 792, left: 1008 } }
+function fixtureDocument(title: string, subject: string, text: string) {
+  return new Document({
+    creator: "Apply Pilot Test Fixture",
+    title,
+    subject,
+    styles: {
+      default: {
+        document: { run: { font: "Arial", size: 21, color: "000000" } },
+        heading1: { run: { font: "Arial", size: 20, bold: true, color: "000000" } }
+      }
     },
-    children: resumeV9StructuralTwinText.split("\n\n").map(paragraph)
-  }]
-});
+    sections: [{
+      properties: {
+        page: { margin: { top: 792, right: 1008, bottom: 792, left: 1008 } }
+      },
+      children: text.split("\n\n").map(paragraph)
+    }]
+  });
+}
 
 async function main() {
-  await writeFile(output, await Packer.toBuffer(document));
+  await Promise.all(outputs.map(async ({ filename, text, title, subject }) =>
+    writeFile(
+      join(directory, filename),
+      await Packer.toBuffer(fixtureDocument(title, subject, text))
+    )
+  ));
 }
 
 void main();

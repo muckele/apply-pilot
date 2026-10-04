@@ -180,6 +180,41 @@ export const resumeV9StructuralTwinText = [
 
 export const resumeV9StructuralTwinDocxText = `${resumeV9StructuralTwinText}\n\n`;
 
+const ownerTopologyWorkLines = workRecords.flatMap((record, index) => [
+  ...(index === 0 ? [] : [""]),
+  ...workRecordText(record).split("\n")
+]);
+const ownerTopologyProjectLines = projects.flatMap((record, index) => [
+  ...(index === 0 ? [] : [""]),
+  ...projectRecordText(record).split("\n")
+]);
+
+export const resumeV9OwnerTopologyTwinText = [
+  ...contactLines,
+  "",
+  "SUMMARY",
+  "",
+  summary,
+  "",
+  "SKILLS",
+  "",
+  ...skillGroups,
+  "",
+  "EXPERIENCE",
+  "",
+  ...ownerTopologyWorkLines,
+  "",
+  "PROJECTS",
+  "",
+  ...ownerTopologyProjectLines,
+  "",
+  "EDUCATION",
+  "",
+  ...educationLines
+].join("\n");
+
+export const resumeV9OwnerTopologyTwinDocxText = `${resumeV9OwnerTopologyTwinText}\n\n`;
+
 export function resumeV9StructuralTwinCanonical(): ParsedResumeV5 {
   const contactSource = contactLines.join("\n");
   const workBlocks = workRecords.map(workRecordText);
@@ -267,5 +302,24 @@ export function resumeV9StructuralTwinCanonical(): ParsedResumeV5 {
       achievements: "present"
     },
     warnings: []
+  };
+}
+
+export function resumeV9OwnerTopologyTwinCanonical(): ParsedResumeV5 {
+  const full = resumeV9StructuralTwinCanonical();
+  return {
+    ...full,
+    sourceSections: full.sourceSections.filter((section) =>
+      section.section !== "certifications"
+      && section.section !== "achievements"
+      && section.section !== "additional"
+    ),
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      ...full.sectionStatus,
+      certifications: "absent",
+      achievements: "absent"
+    }
   };
 }

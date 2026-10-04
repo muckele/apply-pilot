@@ -6,6 +6,7 @@ import { PublicApiError } from "@/lib/api-errors";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 import { fullSizeSyntheticDocxExtractedText } from "@/tests/fixtures/resume-estimator-boundary-data";
 import {
+  resumeV9OwnerTopologyTwinDocxText,
   resumeV9StructuralTwinDocxText,
   resumeV9StructuralTwinText
 } from "@/tests/fixtures/resume-v9-structural-twin-data";
@@ -279,6 +280,73 @@ test("extracts the private-free V9 structural twin with the complete observed li
   assert.match(extracted, /480-hour/u);
   assert.match(extracted, /SYNTHETIC-ONLY-4821/u);
   assert.match(extracted, /ADDITIONAL INFORMATION/u);
+});
+
+test("extracts the private-free 65-line owner-topology twin", async () => {
+  const fixture = await readFile(new URL(
+    "./fixtures/synthetic-resume-v9-owner-topology-twin.docx",
+    import.meta.url
+  )).catch(() => null);
+  assert.ok(fixture, "the owner-topology DOCX fixture must exist");
+
+  const extracted = await extractResumeDocxText(fixture);
+  assert.equal(extracted, resumeV9OwnerTopologyTwinDocxText);
+  assert.equal(extracted.split(/\r?\n/u).length, 65);
+  assert.equal(extracted.split(/\r?\n/u).filter((line) => line.trim()).length, 46);
+});
+
+test("V9 preserves the exact 65-line owner topology without optional trailing sections", async () => {
+  const { buildResumeSourceCatalog, buildResumeSourceCatalogV9 } = await loadCatalogModule();
+  const sourceLines = resumeV9OwnerTopologyTwinDocxText.split(/\r?\n/u);
+  const factualLines = sourceLines.filter((line) => line.trim());
+  const compactSource = resumeV9OwnerTopologyTwinDocxText;
+
+  assert.equal(factualLines.length, 46);
+  assert.equal(sourceLines.length, 65);
+  assert.deepEqual(
+    sourceLines.flatMap((line, index) => line.trim() ? [] : [index + 1]),
+    [2, 4, 7, 9, 11, 13, 17, 19, 25, 31, 38, 43, 50, 52, 55, 58, 60, 64, 65]
+  );
+  assert.ok(Buffer.byteLength(compactSource) >= 5_000);
+  assert.ok(Buffer.byteLength(compactSource) < 8_000);
+
+  const v8 = buildResumeSourceCatalog(compactSource);
+  const v9 = buildResumeSourceCatalogV9(compactSource);
+  const records = (catalog: typeof v9, section: string) => catalog.sections
+    .filter((item) => item.section === section)
+    .flatMap((item) => item.records);
+
+  assert.deepEqual(v9.sections.map((section) => section.section), [
+    "contactInfo",
+    "summary",
+    "skills",
+    "workHistory",
+    "projects",
+    "education"
+  ]);
+  assert.equal(records(v9, "workHistory").length, 5);
+  assert.deepEqual(
+    records(v9, "workHistory").map((record) => record.lines.filter(
+      (line) => /^•\s/u.test(line.sourceText)
+    ).length),
+    [4, 4, 5, 3, 5]
+  );
+  assert.equal(records(v9, "projects").length, 2);
+  assert.deepEqual(records(v9, "projects").map((record) => record.lines.length), [2, 2]);
+  assert.deepEqual(records(v8, "education").map((record) => record.lines.length), [3]);
+  assert.deepEqual(records(v9, "education").map((record) => record.lines.length), [2, 1]);
+  assert.deepEqual(records(v9, "certifications"), []);
+  assert.deepEqual(records(v9, "achievements"), []);
+  assert.deepEqual(records(v9, "additional"), []);
+
+  const reachable = v9.sections.flatMap((section) => [
+    section.heading,
+    section.sourceText,
+    ...section.records.map((record) => record.sourceText)
+  ]).filter(Boolean).join("\n");
+  for (const line of factualLines) {
+    assert.ok(reachable.includes(line), "a compact source line became unreachable");
+  }
 });
 
 test("keeps internal blanks and blank-before-bullets inside one work record", async () => {

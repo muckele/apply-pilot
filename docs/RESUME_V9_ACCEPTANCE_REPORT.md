@@ -25,23 +25,54 @@ Branch: `codex/resume-contract-v9-boundaries`
   in failure diagnostics or rendered by the owner upload UI.
 - The private-free synthetic DOCX extracts to the expected 6,075 bytes and 83
   lines and covers the complete requested structural topology end to end.
+- A second private-free DOCX is the exact structural topology twin for the
+  owner's audited source: 65 lines, 46 nonblank lines, six ordered sections,
+  three skill groups, five work records/21 bullets, two projects, and education
+  record lengths `[2, 1]`. The broader 83-line fixture remains separate for
+  certification, achievement, and additional-section coverage.
+- The exact V9 live diagnostic is prepared but unexecuted. It is pinned to the
+  reviewed implementation commit, synthetic source, request, schema, versions,
+  model, one-call transport, response size, timeout, and maximum cost.
+
+## Evidence provenance and owner-document reconciliation
+
+The exact authorized owner DOCX was found in the local Downloads folder and
+freshly re-audited without provider transport. Its identity matched the
+authorized 40,241-byte file and SHA-256
+`18092ea6562e744523cf22295aeb28513d8cd028480427cef49acb69d234ed0d`.
+Extraction reproduced 6,489 UTF-8 bytes, 65 lines, and 46 nonblank lines. V9
+produced the exact six-section order, three skill records, five work records
+with bullet counts `[4, 4, 5, 3, 5]`, two two-line projects, and education
+record lengths `[2, 1]`. Every nonblank line was reachable exactly once; exact
+source slices, record order, non-overlap, provider-payload identity, and offline
+V9 request/schema preparation all passed.
+
+The owner bytes and extracted text remain local and uncommitted. The private-free
+65-line twin reproduces the same line positions and structural cardinalities
+without reproducing personal content. Its 5,447-byte source has 46 nonblank
+lines and 19 blank lines. The separate 83-line fixture retains 58 nonblank lines
+and all nine recognized sections so optional-section behavior remains covered.
 
 ## Acceptance matrix
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Full unit/integration suite | Passed | `npm test`: 1,701/1,701 passed |
+| Full unit/integration suite | Passed | `npm test`: 1,708/1,708 passed after exact-topology preparation; the initial sandbox run's sole loopback `EPERM` disappeared under the guarded local-network rerun |
 | TypeScript | Passed | `npm run typecheck` passed from clean generated state |
 | Lint | Passed | `npm run lint` passed with no warnings |
 | Browser suite | Passed | `npm run test:browser`: 369/369 passed |
-| Focused V9 source/provider/route flow | Passed | 56/56 passed after final boundary changes |
-| Independent adversarial review | Passed | No Critical/Important findings; a 65-case supported-header matrix passed against the current bytes and V8 matched base `67094ff` in every case |
+| Focused V9 source/provider/route flow | Passed | 63/63 source-catalog, diagnostic, V9 provider, and route tests passed |
+| Pinned V9 diagnostic preparation | Passed offline / not executed live | 5/5 request, injected one-call flow, empty and count-preserving canonical-projection omission rejection, and bounded CLI tests passed; no provider transport occurred |
+| Exact 65-line owner topology twin | Passed | 46 nonblank facts, 19 blanks, six sections; V8 education `[3]`, V9 education `[2, 1]`, five work records/21 bullets, two projects, absent certification/achievement/additional sections, and every nonblank line reachable |
+| Broader 83-line complete topology | Passed | Nine sections retain certification, achievement, and additional-section extraction and consumer coverage independently of the exact-topology diagnostic |
+| Independent adversarial review | Passed | No Critical/Required/Optional/Nit findings in the exact-topology follow-up; the reviewer independently reproduced 63/63 focused tests, all four immutable hashes, absent-section consumers, privacy/transport stops, and unchanged 83-line extracted content. The earlier 65-case supported-header matrix also passed with V8 matching base `67094ff` |
 | Synthetic DOCX extraction through consumers | Passed | Extraction -> stubbed provider -> V9 validation -> route persistence stubs -> stored decoding/application plan/job match/tailoring |
 | Negative authority cases | Passed | Omitted/invented/reordered IDs and source, cross-record facts, adjacent merges, and unsafe diagnostics fail closed |
-| Production build | Failed / pre-existing blocker | `npm run build` could not start Turbopack because the environment denied its internal bind (`EPERM`). `npx next build --webpack` compiled successfully, then Next's generated route-export checker rejected existing exported route factory helpers in unchanged routes. Clean standalone typecheck passes. |
+| Local production build | Failed / environment and pre-existing repository blockers | `npm run build` could not start Turbopack because the environment denied its internal bind (`EPERM`), including after an approved unsandboxed retry. `npx next build --webpack` compiled successfully, then Next's generated route-export checker rejected existing exported route factory helpers in unchanged routes. Clean standalone typecheck passes. |
+| Hosted committed-candidate build | Passed for `e712ad7` only | Push and pull-request GitHub Actions runs for `e712ad7829f2706b147f4b76ef49337c0d246e1b` passed the repository's normal `npm run build`; the current fixture/diagnostic/report preparation remains uncommitted and therefore has no hosted CI result |
 | PostgreSQL suite | Not applicable | No Prisma schema, migration, or persistent database behavior changed; no database reset or mutation was run |
 | Real provider / paid parse | Intentionally untested | Prohibited by scope; provider JSON was stubbed |
-| Private resume corpus / owner's resume | Intentionally untested | Prohibited by scope; only the synthetic fixture was used |
+| Owner DOCX | Fresh offline audit passed | Exact 40,241-byte/SHA-256 identity; 6,489-byte extraction, 65 lines/46 nonblank, six sections, full reachability, five work records/21 bullets, two projects, and V9 education `[2, 1]`; no provider transport or retained private extract |
 | Production database write | Intentionally untested | Prohibited by scope |
 | Merge / deploy / application submission | Intentionally untested | Prohibited by scope |
 
@@ -60,12 +91,30 @@ regression, and an overbroad consumer-losslessness claim. The final design:
   intentionally bounded application-plan raw projection.
 
 The final independent verdict is ready for the next authorized step, with no
-remaining Critical or Important findings.
+remaining Critical or Important findings. The diagnostic-specific follow-up
+independently reproduced rejection of empty/null omissions, count-preserving
+truncation, a shortened work bullet, and a shortened project technology using
+injected responses only. The exact-topology follow-up additionally found no
+Critical, Required, Optional, or Nit issues; it independently verified the
+65-line/46-nonblank fixture, absent-section consumers, immutable pins,
+privacy/transport stops, and unchanged broader-fixture extracted content.
 
-## Remaining blocker
+## Production identity and remaining boundaries
 
-The repository-wide Next production build does not reach a clean completion in
-this workspace for the two reasons recorded above. No changed V9 file is named
-by the webpack route-export failure. This draft must not be described as having
-a passing build until CI or a repository-wide route-export correction proves
-that separately.
+The canonical read-only production health check on 2026-10-04 returned HTTP 200,
+environment `production`, and version `67094ff27c2e`. Readiness returned HTTP
+200 with database and configuration checks `ok`; Gemini was reported as
+`configured_unverified`. This supersedes the stale assumption that production
+still ran `df8d104`. Deployment identity supplied for this checkpoint is
+`6845321195`.
+
+The repository-wide Next production build still does not complete locally for
+the two reasons recorded above, and no changed V9 file is named by the webpack
+route-export failure. Exact-head hosted CI separately proves that the normal
+build passes on its runner.
+
+No live V9 provider response, paid request, or production database write has
+occurred. Provider availability, real structured-output compatibility, actual
+usage/cost, and database persistence against production remain unverified. The
+diagnostic wrapper is an approval packet, not authorization to execute it. See
+`docs/RESUME_V9_LIVE_DIAGNOSTIC_PACKET.md`.
