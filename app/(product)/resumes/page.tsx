@@ -1,14 +1,16 @@
 import Link from "next/link";
 
+import { MasterResumeDetail } from "@/components/master-resume-detail";
 import { ResumeUploadForm } from "@/components/resume-upload-form";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
+import { getMasterResumeDetail } from "@/lib/resumes/master-resume-detail";
 
 export default async function ResumesPage() {
   const userId = await requirePageUserId();
   const [masterResume, versions] = await Promise.all([
-    prisma.resume.findFirst({ where: { userId, isMaster: true }, orderBy: { updatedAt: "desc" } }),
+    getMasterResumeDetail(userId),
     prisma.resumeVersion.findMany({
       where: { userId },
       include: { jobPosting: true },
@@ -31,27 +33,7 @@ export default async function ResumesPage() {
         </Panel>
 
         <section className="space-y-6">
-          <Panel>
-            <PanelHeader title="Master resume profile" />
-            {masterResume ? (
-              <div className="space-y-4 p-5">
-                <div>
-                  <p className="text-sm font-semibold text-slate-950">{masterResume.title}</p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Parsed {masterResume.parsedAt ? masterResume.parsedAt.toISOString().slice(0, 10) : "date unavailable"}
-                  </p>
-                </div>
-                {masterResume.summary ? <p className="text-sm leading-6 text-slate-700">{masterResume.summary}</p> : null}
-                <div className="flex flex-wrap gap-2">
-                  {masterResume.skills.slice(0, 16).map((skill) => (
-                    <StatusBadge key={skill} status={skill} />
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="p-5 text-sm text-slate-600">No master resume uploaded yet.</div>
-            )}
-          </Panel>
+          <MasterResumeDetail resume={masterResume} />
 
           <Panel>
             <PanelHeader title="Resume versions by job" />
