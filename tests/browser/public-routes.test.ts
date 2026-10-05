@@ -313,9 +313,12 @@ test("public routes remain outside AppShell while protected boundaries remain in
   assert.equal(new URL(page.url()).pathname, "/login");
   assert.equal(new URL(page.url()).searchParams.get("callbackUrl"), "/dashboard");
 
-  const apiResponse = await page.request.get(`${origin}/api/profile`);
-  assert.equal(apiResponse.status(), 401);
-  assert.deepEqual(await apiResponse.json(), { error: "Authentication required" });
+  for (const path of ["/api/profile", "/api/resumes/master"]) {
+    const apiResponse = await page.request.get(`${origin}${path}`);
+    assert.equal(apiResponse.status(), 401, path);
+    assert.equal(apiResponse.headers()["cache-control"], "private, no-store", path);
+    assert.deepEqual(await apiResponse.json(), { error: "Authentication required" }, path);
+  }
 
   await page.close();
 });

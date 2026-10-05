@@ -77,11 +77,12 @@ test("public API exceptions pass through without exposing protected or lookalike
     assertPassThrough(path);
   }
 
-  for (const path of ["/api/profile", "/api/authz"]) {
+  for (const path of ["/api/profile", "/api/resumes/master", "/api/authz"]) {
     const response = proxy(request(path));
 
     assert.equal(response.status, 401);
     assert.equal(response.headers.get("location"), null);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
     assert.deepEqual(await response.json(), { error: "Authentication required" });
   }
 });
@@ -112,6 +113,7 @@ test("demo-user behavior remains limited to nonproduction environments", async (
 
     const response = proxy(request("/api/profile"));
     assert.equal(response.status, 401);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
     assert.deepEqual(await response.json(), { error: "Authentication required" });
   } finally {
     restoreEnvironment("NODE_ENV", previousNodeEnv);
