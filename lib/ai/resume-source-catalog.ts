@@ -48,6 +48,8 @@ export type ResumeSourceCatalog = {
   sections: ResumeSourceCatalogSection[];
 };
 
+export type ResumeSourceCatalogVersion = "8" | "9";
+
 export type ResumeProviderSourceInput = {
   sections: Array<{
     sectionId: string;
@@ -156,6 +158,7 @@ const labelledWorkTitlePattern = /^(?:title|role|position)\s*:/i;
 const labelledWorkOrganizationPattern = /^(?:company|employer|organization)\s*:/i;
 const structuralDatePattern = /(?:(?:19|20)\d{2}|present|current|ongoing|now)/i;
 const structuralDateLinePattern = /^(?:(?:issued|expires?|expiration|completed|graduated|expected|anticipated)[:\s]+)?[^|\n]*(?:(?:19|20)\d{2}|present|current|ongoing|now)[^|\n]*$/i;
+const educationCredentialPattern = /(?:associate|bachelor|master|doctor|ph\.?d|b\.?\s*[as]\.?|m\.?\s*[as]\.?|mba|degree|diploma|certificate|certification|license|licence|credential)/iu;
 
 const resumeEnglishRegionNames = (() => {
   const names = new Set<string>();
@@ -205,11 +208,28 @@ function isStructuralContinuation(line: string) {
     isCompleteNarrative(trimmed);
 }
 
+function hasExplicitPipeRecordHeader(
+  section: ResumeSourceSectionName,
+  pipeParts: string[],
+  catalogVersion: ResumeSourceCatalogVersion
+) {
+  if (section === "workHistory") return pipeParts.length >= 2;
+  if (section === "projects") {
+    return pipeParts.length >= 3 && structuralDatePattern.test(pipeParts.at(-1) ?? "");
+  }
+  if (catalogVersion === "9" && section === "education") {
+    return pipeParts.length >= 3 && structuralDatePattern.test(pipeParts.at(-1) ?? "");
+  }
+  if (section === "certifications") return pipeParts.length >= 2;
+  return false;
+}
+
 function isRecordStartAt(
   section: ResumeSourceSectionName,
   lines: ResumeSourceCatalogLine[],
   start: number,
-  end: number
+  end: number,
+  catalogVersion: ResumeSourceCatalogVersion
 ) {
   const first = lines[start]?.sourceText.trim() ?? "";
   if (
@@ -227,9 +247,10 @@ function isRecordStartAt(
   const fourth = following[2] ?? "";
   const pipeParts = first.split("|").map((part) => part.trim()).filter(Boolean);
 
+  if (hasExplicitPipeRecordHeader(section, pipeParts, catalogVersion)) return true;
+
   if (section === "workHistory") {
     if (isStandaloneResumeLocation(first)) return false;
-    if (pipeParts.length >= 2) return true;
     if (labelledWorkTitlePattern.test(first) && labelledWorkOrganizationPattern.test(second)) {
       return true;
     }
@@ -242,19 +263,21 @@ function isRecordStartAt(
       structuralDateLinePattern.test(fourth);
   }
   if (section === "projects") {
-    if (pipeParts.length >= 3 && structuralDatePattern.test(pipeParts.at(-1) ?? "")) return true;
     return looksLikeCompactHeader(first) && (
       structuralDateLinePattern.test(second) ||
       /^(?:technologies?(?: used)?|tools|methods|platforms?)\s*:/i.test(second)
     );
   }
   if (section === "education") {
-    return Boolean(second) && !listEntryPattern.test(second) && (
+    return Boolean(second) &&
+      !listEntryPattern.test(second) &&
+      (catalogVersion !== "9" ||
+        educationCredentialPattern.test(first) ||
+        educationCredentialPattern.test(second)) && (
       structuralDateLinePattern.test(third) || structuralDateLinePattern.test(fourth)
     );
   }
   if (section === "certifications") {
-    if (pipeParts.length >= 2) return true;
     return looksLikeCompactHeader(first) && Boolean(second) && (
       structuralDateLinePattern.test(second) ||
       structuralDateLinePattern.test(third) ||
@@ -268,7 +291,8 @@ function isExplicitRecordStartAt(
   section: ResumeSourceSectionName,
   lines: ResumeSourceCatalogLine[],
   start: number,
-  end: number
+  end: number,
+  catalogVersion: ResumeSourceCatalogVersion
 ) {
   const first = lines[start]?.sourceText.trim() ?? "";
   const following = lines
@@ -276,13 +300,16 @@ function isExplicitRecordStartAt(
     .map((line) => line.sourceText.trim())
     .filter(Boolean);
   const pipeParts = first.split("|").map((part) => part.trim()).filter(Boolean);
-  if (section === "projects") {
-    return pipeParts.length >= 3 && structuralDatePattern.test(pipeParts.at(-1) ?? "");
-  }
+  // V8 treated certification pipe headers as ordinary record candidates. Keep
+  // that historical boundary behavior frozen so stored V8 projections decode
+  // against the same catalog that originally accepted them.
+  if (
+    hasExplicitPipeRecordHeader(section, pipeParts, catalogVersion) &&
+    (catalogVersion === "9" || section !== "certifications")
+  ) return true;
   if (section === "workHistory") {
-    return pipeParts.length >= 2 ||
-      (labelledWorkTitlePattern.test(first) &&
-        labelledWorkOrganizationPattern.test(following[0] ?? ""));
+    return labelledWorkTitlePattern.test(first) &&
+      labelledWorkOrganizationPattern.test(following[0] ?? "");
   }
   return false;
 }
@@ -290,7 +317,8 @@ function isExplicitRecordStartAt(
 export function isDeterministicResumeRecordBoundary(
   section: ResumeSourceSectionName,
   previousRecord: string,
-  nextRecord: string
+  nextRecord: string,
+  catalogVersion: ResumeSourceCatalogVersion = "8"
 ) {
   const candidateLines = nextRecord.split(/\r?\n/u).map((sourceText, index) => ({
     id: `candidate-line-${index + 1}`,
@@ -308,8 +336,20 @@ export function isDeterministicResumeRecordBoundary(
     (section === "workHistory" && isStandaloneResumeLocation(lastPreviousLine));
   return (
     boundaryBefore ||
-    isExplicitRecordStartAt(section, candidateLines, 0, candidateLines.length - 1)
-  ) && isRecordStartAt(section, candidateLines, 0, candidateLines.length - 1);
+    isExplicitRecordStartAt(
+      section,
+      candidateLines,
+      0,
+      candidateLines.length - 1,
+      catalogVersion
+    )
+  ) && isRecordStartAt(
+    section,
+    candidateLines,
+    0,
+    candidateLines.length - 1,
+    catalogVersion
+  );
 }
 
 type LineRange = { start: number; end: number };
@@ -344,10 +384,76 @@ function previousNonemptyIndex(lines: ResumeSourceCatalogLine[], before: number,
   return null;
 }
 
+function isV9AdjacentDatedRecordStart(
+  section: ResumeSourceSectionName,
+  lines: ResumeSourceCatalogLine[],
+  segmentStart: number,
+  start: number,
+  end: number,
+  catalogVersion: ResumeSourceCatalogVersion
+) {
+  if (catalogVersion !== "9") return false;
+  const currentSegment = lines
+    .slice(segmentStart, start)
+    .map((line) => line.sourceText.trim())
+    .filter(Boolean);
+  const currentSegmentHasDate = currentSegment.some((text) => {
+    if (structuralDateLinePattern.test(text)) return true;
+    const pipeParts = text.split("|").map((part) => part.trim()).filter(Boolean);
+    return hasExplicitPipeRecordHeader(section, pipeParts, catalogVersion) &&
+      structuralDatePattern.test(pipeParts.at(-1) ?? "");
+  });
+  // One line can still be the first half of a compact header (for example a
+  // project name followed by its subtitle/date), so it is not an established
+  // preceding record. Two source lines, or explicit date evidence, are enough
+  // to recognize a later strong dated header without model-owned merging.
+  if (!currentSegmentHasDate && currentSegment.length < 2) return false;
+  const candidate = lines
+    .slice(start, end + 1)
+    .map((line) => line.sourceText.trim())
+    .filter(Boolean);
+  const [first, second, third, fourth] = candidate;
+  if (section === "workHistory") {
+    if (!looksLikeCompactHeader(first ?? "") || !looksLikeCompactHeader(second ?? "")) {
+      return false;
+    }
+    if (isStandaloneResumeLocation(second ?? "")) return false;
+    return candidate.length === 2 ||
+      structuralDateLinePattern.test(third ?? "") ||
+      /^location\s*:/iu.test(third ?? "") ||
+      listEntryPattern.test(third ?? "") ||
+      isCompleteNarrative(third ?? "") || (
+      (isStandaloneResumeLocation(third ?? "") || /^location\s*:/iu.test(third ?? "")) &&
+      structuralDateLinePattern.test(fourth ?? "")
+    );
+  }
+  if (section === "projects") {
+    return looksLikeCompactHeader(first ?? "") && (
+      structuralDateLinePattern.test(second ?? "") ||
+      /^(?:technologies?(?: used)?|tools|methods|platforms?)\s*:/iu.test(second ?? "")
+    );
+  }
+  if (section === "education") {
+    return looksLikeCompactHeader(first ?? "") &&
+      (educationCredentialPattern.test(first ?? "") ||
+        educationCredentialPattern.test(second ?? "")) &&
+      (structuralDateLinePattern.test(third ?? "") || structuralDateLinePattern.test(fourth ?? ""));
+  }
+  if (section === "certifications") {
+    return looksLikeCompactHeader(first ?? "") && Boolean(second) && (
+      structuralDateLinePattern.test(second ?? "") ||
+      structuralDateLinePattern.test(third ?? "") ||
+      /^credential id\s*:/iu.test(second ?? "")
+    );
+  }
+  return false;
+}
+
 function splitInlineRecordStarts(
   section: ResumeSourceSectionName,
   lines: ResumeSourceCatalogLine[],
-  range: LineRange
+  range: LineRange,
+  catalogVersion: ResumeSourceCatalogVersion
 ) {
   const starts = [range.start];
   for (let index = range.start + 1; index <= range.end; index += 1) {
@@ -358,9 +464,29 @@ function splitInlineRecordStarts(
     const boundaryBefore = isStructuralContinuation(previous) ||
       structuralDateLinePattern.test(previous) ||
       (section === "workHistory" && isStandaloneResumeLocation(previous));
+    const recordStart = isRecordStartAt(
+      section,
+      lines,
+      index,
+      range.end,
+      catalogVersion
+    );
     if (
-      (boundaryBefore || isExplicitRecordStartAt(section, lines, index, range.end)) &&
-      isRecordStartAt(section, lines, index, range.end)
+      (boundaryBefore || isExplicitRecordStartAt(
+        section,
+        lines,
+        index,
+        range.end,
+        catalogVersion
+      ) || isV9AdjacentDatedRecordStart(
+        section,
+        lines,
+        starts.at(-1)!,
+        index,
+        range.end,
+        catalogVersion
+      )) &&
+      recordStart
     ) starts.push(index);
   }
   return starts.map((start, index) => ({
@@ -375,16 +501,23 @@ function deterministicStructuralRecordBlocks(
   section: ResumeSourceSectionName,
   lines: ResumeSourceCatalogLine[],
   normalizedSource: string,
-  fieldPath: string
+  fieldPath: string,
+  catalogVersion: ResumeSourceCatalogVersion
 ) {
   const paragraphs = nonemptyParagraphs(lines);
   if (paragraphs.length === 0) return [];
   const ranges: LineRange[] = [];
   paragraphs.forEach((paragraph, paragraphIndex) => {
-    const segments = splitInlineRecordStarts(section, lines, paragraph);
+    const segments = splitInlineRecordStarts(section, lines, paragraph, catalogVersion);
     segments.forEach((segment, segmentIndex) => {
       const first = lines[segment.start]!.sourceText;
-      const recordStart = isRecordStartAt(section, lines, segment.start, segment.end);
+      const recordStart = isRecordStartAt(
+        section,
+        lines,
+        segment.start,
+        segment.end,
+        catalogVersion
+      );
       if (ranges.length === 0) {
         if (!recordStart && (paragraphs.length > 1 || segments.length > 1)) {
           throw new PublicApiError(
@@ -438,7 +571,8 @@ function deterministicRecordBlocks(
   sourceText: string,
   lines: ResumeSourceCatalogLine[],
   normalizedSource: string,
-  fieldPath: string
+  fieldPath: string,
+  catalogVersion: ResumeSourceCatalogVersion
 ) {
   if (section === "contactInfo" || section === "summary") return [sourceText];
   if (section === "skills" || section === "achievements" || section === "additional") {
@@ -449,7 +583,8 @@ function deterministicRecordBlocks(
       section,
       lines,
       normalizedSource,
-      fieldPath
+      fieldPath,
+      catalogVersion
     );
   }
   return [];
@@ -490,8 +625,9 @@ function catalogRecords(
   });
 }
 
-export function buildResumeSourceCatalog(
+function buildVersionedResumeSourceCatalog(
   rawSource: string,
+  catalogVersion: ResumeSourceCatalogVersion,
   options: { requireStructuralRecords?: boolean } = {}
 ): ResumeSourceCatalog {
   const normalizedSource = normalizeResumeLineEndings(rawSource);
@@ -574,7 +710,8 @@ export function buildResumeSourceCatalog(
             sourceText,
             lines,
             normalizedSource,
-            `sourceSections[${index}].recordBlocks`
+            `sourceSections[${index}].recordBlocks`,
+            catalogVersion
           );
       return {
         id,
@@ -597,8 +734,28 @@ export function buildResumeSourceCatalog(
   };
 }
 
+export function buildResumeSourceCatalogV8(
+  rawSource: string,
+  options: { requireStructuralRecords?: boolean } = {}
+) {
+  return buildVersionedResumeSourceCatalog(rawSource, "8", options);
+}
+
+export function buildResumeSourceCatalogV9(
+  rawSource: string,
+  options: { requireStructuralRecords?: boolean } = {}
+) {
+  return buildVersionedResumeSourceCatalog(rawSource, "9", options);
+}
+
+/** Historical default retained for V8 and earlier callers. */
+export const buildResumeSourceCatalog = buildResumeSourceCatalogV8;
+
 export function buildResumeProviderSourceInput(rawSource: string): ResumeProviderSourceInput {
-  const catalog = buildResumeSourceCatalog(rawSource);
+  return buildResumeProviderSourceInputV8(rawSource);
+}
+
+function providerSourceInput(catalog: ResumeSourceCatalog): ResumeProviderSourceInput {
   return {
     sections: catalog.sections.map((section) => ({
       sectionId: section.id,
@@ -612,13 +769,21 @@ export function buildResumeProviderSourceInput(rawSource: string): ResumeProvide
   };
 }
 
+export function buildResumeProviderSourceInputV8(rawSource: string): ResumeProviderSourceInput {
+  return providerSourceInput(buildResumeSourceCatalogV8(rawSource));
+}
+
+export function buildResumeProviderSourceInputV9(rawSource: string): ResumeProviderSourceInput {
+  return providerSourceInput(buildResumeSourceCatalogV9(rawSource));
+}
+
 /**
  * Historical one-call diagnostic format retained only to reproduce and classify
  * the already-consumed v6 proof request. Production parsing uses server-owned
  * records through buildResumeProviderSourceInput.
  */
 export function buildResumeProviderSourceInputV6(rawSource: string) {
-  const catalog = buildResumeSourceCatalog(rawSource, { requireStructuralRecords: false });
+  const catalog = buildResumeSourceCatalogV8(rawSource, { requireStructuralRecords: false });
   return {
     sections: catalog.sections.map((section) => ({
       sectionId: section.id,

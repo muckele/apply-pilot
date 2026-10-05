@@ -43,9 +43,12 @@ test("v8 provider owns only semantic projections and uses isolated revisions", (
   const candidate = resumeModule as V8Candidate;
   const output = providerV8Fixture();
 
-  assert.equal(resumeModule.RESUME_PARSE_PROMPT_VERSION, "10");
-  assert.equal(resumeModule.RESUME_PARSE_CACHE_VERSION, "11");
-  assert.equal(resumeModule.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "5");
+  assert.equal(resumeModule.RESUME_PARSE_PROMPT_VERSION, "11");
+  assert.equal(resumeModule.RESUME_PARSE_CACHE_VERSION, "12");
+  assert.equal(resumeModule.RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION, "6");
+  assert.equal(resumeModule.RESUME_PARSE_V8_PROMPT_VERSION, "10");
+  assert.equal(resumeModule.RESUME_PARSE_V8_CACHE_VERSION, "11");
+  assert.equal(resumeModule.RESUME_PARSE_V8_GEMINI_WIRE_SCHEMA_VERSION, "5");
   assert.equal(candidate.resumeParseProviderV8Schema?.safeParse(output).success, true);
 
   const schemaText = JSON.stringify(candidate.RESUME_PARSE_PROVIDER_V8_JSON_SCHEMA);

@@ -3,7 +3,7 @@ import { createHmac } from "node:crypto";
 import OpenAI from "openai";
 import { z } from "zod";
 
-import { resumeParsePromptV7, resumeParsePromptV8 } from "@/prompts/resumeParsePrompt";
+import { resumeParsePromptV7, resumeParsePromptV8, resumeParsePromptV9 } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 import {
   generateJson,
@@ -34,28 +34,36 @@ import { AI_FEATURE_POLICIES, assertAiInputWithinLimits } from "@/lib/ai/policy"
 import { estimateAiCostMicros, getModelPricing, type AiProviderName } from "@/lib/ai/pricing";
 import {
   buildResumeSourceCatalog,
+  buildResumeSourceCatalogV8,
+  buildResumeSourceCatalogV9,
   buildResumeProviderSourceInput,
+  buildResumeProviderSourceInputV9,
   hasResumeSectionHeading,
   isDeterministicResumeRecordBoundary,
   isStandaloneResumeLocation,
   normalizeResumeLineEndings,
   type ResumeSourceCatalog,
+  type ResumeSourceCatalogVersion,
   type ResumeSourceSectionName,
   type ResumeTypedSectionName
 } from "@/lib/ai/resume-source-catalog";
 import { assembleParsedResumeFromSpans } from "@/lib/ai/resume-source-spans";
 import {
   assembleParsedResumeFromRecords,
-  assembleParsedResumeV8FromRecords
+  assembleParsedResumeV8FromRecords,
+  assembleParsedResumeV9FromRecords
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
-export const RESUME_PARSE_PROMPT_VERSION = "10";
-export const RESUME_PARSE_CACHE_VERSION = "11";
-export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "5";
+export const RESUME_PARSE_V8_PROMPT_VERSION = "10";
+export const RESUME_PARSE_V8_CACHE_VERSION = "11";
+export const RESUME_PARSE_V8_GEMINI_WIRE_SCHEMA_VERSION = "5";
+export const RESUME_PARSE_PROMPT_VERSION = "11";
+export const RESUME_PARSE_CACHE_VERSION = "12";
+export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "6";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
 const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
@@ -181,13 +189,18 @@ export type ParsedResumeV8 = ParsedResumeCore & {
   sourceSections: ResumeSourceSection[];
 };
 
+export type ParsedResumeV9 = ParsedResumeCore & {
+  contractVersion: "9";
+  sourceSections: ResumeSourceSection[];
+};
+
 export type LegacyParsedResume = Omit<ParsedResumeCore, "certifications" | "projects"> & {
   contractVersion: "3";
   projects: Array<Omit<ResumeProjectItem, "date"> & { date?: string | null }>;
   certifications: Array<Omit<ResumeCertificationItem, "details"> & { details?: string[] }>;
 };
 
-export type ParsedResume = ParsedResumeV8 | ParsedResumeV7 | ParsedResumeV6 | ParsedResumeV5 | LegacyParsedResume;
+export type ParsedResume = ParsedResumeV9 | ParsedResumeV8 | ParsedResumeV7 | ParsedResumeV6 | ParsedResumeV5 | LegacyParsedResume;
 
 export type ResumeParseRecordSpanV6 = {
   sectionId: string;
@@ -235,6 +248,10 @@ export type ResumeParseProviderV8 = {
   education: Array<RecordProjection<ResumeEducationItem>>;
   certifications: Array<RecordProjection<ResumeCertificationItem>>;
   warnings: string[];
+};
+
+export type ResumeParseProviderV9 = Omit<ResumeParseProviderV8, "contractVersion"> & {
+  contractVersion: "9";
 };
 
 export type ResumeValidationDiagnostic = {
@@ -525,11 +542,7 @@ export const resumeParseProviderV7Schema: z.ZodType<
   warnings: z.array(warningSchema).max(5)
 }).strict();
 
-export const resumeParseProviderV8Schema: z.ZodType<
-  ResumeParseProviderV8,
-  z.ZodTypeDef,
-  unknown
-> = z.object({
+const resumeParseProviderV8ObjectSchema = z.object({
   contractVersion: z.literal("8"),
   contactInfo: z.object({
     name: nullableContactSourceString,
@@ -578,6 +591,20 @@ export const resumeParseProviderV8Schema: z.ZodType<
   }).strict()).max(50),
   warnings: z.array(warningSchema).max(5)
 }).strict();
+
+export const resumeParseProviderV8Schema: z.ZodType<
+  ResumeParseProviderV8,
+  z.ZodTypeDef,
+  unknown
+> = resumeParseProviderV8ObjectSchema;
+
+export const resumeParseProviderV9Schema: z.ZodType<
+  ResumeParseProviderV9,
+  z.ZodTypeDef,
+  unknown
+> = resumeParseProviderV8ObjectSchema.extend({
+  contractVersion: z.literal("9")
+});
 
 const nullableJsonString = { type: ["string", "null"], maxLength: 2_000 } as const;
 const jsonString = { type: "string", maxLength: 2_000 } as const;
@@ -1113,6 +1140,14 @@ export const RESUME_PARSE_PROVIDER_V8_JSON_SCHEMA = {
   ]
 } as const;
 
+export const RESUME_PARSE_PROVIDER_V9_JSON_SCHEMA = (() => {
+  const schema = structuredClone(RESUME_PARSE_PROVIDER_V8_JSON_SCHEMA) as unknown as {
+    properties: { contractVersion: { type: string; enum: string[] } };
+  };
+  schema.properties.contractVersion.enum = ["9"];
+  return schema as Record<string, unknown>;
+})();
+
 export function buildResumeParseProviderV7JsonSchema(
   input: ReturnType<typeof buildResumeProviderSourceInput>
 ) {
@@ -1167,6 +1202,33 @@ export function buildResumeParseProviderV8JsonSchema(
   return schema as Record<string, unknown>;
 }
 
+export function buildResumeParseProviderV9JsonSchema(
+  input: ReturnType<typeof buildResumeProviderSourceInputV9>
+) {
+  const schema = structuredClone(RESUME_PARSE_PROVIDER_V9_JSON_SCHEMA) as {
+    properties: Record<string, {
+      items?: { properties?: { recordId?: Record<string, unknown> } };
+    }>;
+  };
+  for (const section of [
+    "workHistory",
+    "projects",
+    "education",
+    "certifications"
+  ] as const) {
+    const recordIds = input.sections
+      .filter((item) => item.section === section)
+      .flatMap((item) => item.records.map((record) => record.recordId));
+    const properties = schema.properties[section]?.items?.properties;
+    if (!properties?.recordId) continue;
+    properties.recordId = {
+      type: "string",
+      enum: recordIds.length > 0 ? recordIds : [`no-${section}-records`]
+    };
+  }
+  return schema as Record<string, unknown>;
+}
+
 function omitMaxItemsFromJsonSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(omitMaxItemsFromJsonSchema);
   if (!value || typeof value !== "object") return value;
@@ -1193,6 +1255,9 @@ export const RESUME_PARSE_GEMINI_PROVIDER_V7_JSON_SCHEMA =
 export const RESUME_PARSE_GEMINI_PROVIDER_V8_JSON_SCHEMA =
   omitMaxItemsFromJsonSchema(RESUME_PARSE_PROVIDER_V8_JSON_SCHEMA) as Record<string, unknown>;
 
+export const RESUME_PARSE_GEMINI_PROVIDER_V9_JSON_SCHEMA =
+  omitMaxItemsFromJsonSchema(RESUME_PARSE_PROVIDER_V9_JSON_SCHEMA) as Record<string, unknown>;
+
 export function buildResumeParseGeminiProviderV7JsonSchema(
   input: ReturnType<typeof buildResumeProviderSourceInput>
 ) {
@@ -1206,6 +1271,14 @@ export function buildResumeParseGeminiProviderV8JsonSchema(
 ) {
   return omitMaxItemsFromJsonSchema(
     buildResumeParseProviderV8JsonSchema(input)
+  ) as Record<string, unknown>;
+}
+
+export function buildResumeParseGeminiProviderV9JsonSchema(
+  input: ReturnType<typeof buildResumeProviderSourceInputV9>
+) {
+  return omitMaxItemsFromJsonSchema(
+    buildResumeParseProviderV9JsonSchema(input)
   ) as Record<string, unknown>;
 }
 
@@ -1552,6 +1625,27 @@ function assertProjectStructure(item: ResumeProjectItem, fieldPath: string) {
   });
 }
 
+function assertProjectDateProjection(item: ResumeProjectItem, fieldPath: string) {
+  const firstLineParts = (item.sourceText.split(/\r?\n/, 1)[0] ?? "").split(" | ");
+  if (
+    !item.date &&
+    firstLineParts.length === 3 &&
+    firstLineParts[0] === item.name &&
+    resumeDatePattern.test(firstLineParts[2] ?? "")
+  ) {
+    throw new PublicApiError(
+      "Resume parsing omitted a project date present in the source header. No master resume was changed.",
+      422,
+      {
+        code: "RESUME_PARSE_INCOMPLETE",
+        section: "projects",
+        fieldPath: `${fieldPath}.date`,
+        retryable: false
+      }
+    );
+  }
+}
+
 function firstFactIndex(sourceText: string, values: Array<string | null>) {
   let first = Number.POSITIVE_INFINITY;
   for (const value of values) {
@@ -1802,9 +1896,13 @@ function paragraphBreakUnit(lines: string[]) {
 
 function expectedSourceSections(
   source: string,
-  requireStructuralRecords = false
+  requireStructuralRecords = false,
+  catalogVersion: ResumeSourceCatalogVersion = "8"
 ): Array<Omit<ResumeSourceSection, "recordBlocks">> {
-  return buildResumeSourceCatalog(source, { requireStructuralRecords }).sections.map((section) => ({
+  const catalog = catalogVersion === "9"
+    ? buildResumeSourceCatalogV9(source, { requireStructuralRecords })
+    : buildResumeSourceCatalogV8(source, { requireStructuralRecords });
+  return catalog.sections.map((section) => ({
     section: section.section,
     heading: section.heading,
     sourceText: section.sourceText
@@ -2163,9 +2261,14 @@ function estimateProviderProjectionContentBytes(section: Omit<ResumeSourceSectio
   return 0;
 }
 
-export function estimateResumeParseMaximumProviderOutputBytes(source: string) {
+export function estimateResumeParseMaximumProviderOutputBytes(
+  source: string,
+  catalogVersion: ResumeSourceCatalogVersion = "8"
+) {
   const normalizedSource = normalizeResumeLineEndings(source);
-  const catalog = buildResumeSourceCatalog(normalizedSource);
+  const catalog = catalogVersion === "9"
+    ? buildResumeSourceCatalogV9(normalizedSource)
+    : buildResumeSourceCatalogV8(normalizedSource);
   if (!resumeSourceCatalogFitsProviderContract(catalog)) {
     return RESUME_PARSE_PLANNED_JSON_BYTES + 1;
   }
@@ -2181,7 +2284,11 @@ function resumeParseOutputTokenLimit(provider: AiProviderName) {
     : OPENAI_RESUME_PARSE_OUTPUT_TOKENS;
 }
 
-function assertResumeParseOutputCapacity(source: string, provider: AiProviderName) {
+function assertResumeParseOutputCapacity(
+  source: string,
+  provider: AiProviderName,
+  catalogVersion: ResumeSourceCatalogVersion = "8"
+) {
   if (forbiddenResumeControlCharacters.test(source)) {
     throw new PublicApiError(
       "Resume text contains unsupported control characters and cannot be parsed safely.",
@@ -2193,7 +2300,9 @@ function assertResumeParseOutputCapacity(source: string, provider: AiProviderNam
       }
     );
   }
-  const exactCatalog = buildResumeSourceCatalog(source);
+  const exactCatalog = catalogVersion === "9"
+    ? buildResumeSourceCatalogV9(source)
+    : buildResumeSourceCatalogV8(source);
   if (!resumeSourceCatalogFitsProviderContract(exactCatalog)) {
     throw new PublicApiError(
       "Resume text has more exact source records than the structured response can preserve safely.",
@@ -2208,7 +2317,7 @@ function assertResumeParseOutputCapacity(source: string, provider: AiProviderNam
       }
     );
   }
-  const maximumOutputBytes = estimateResumeParseMaximumProviderOutputBytes(source);
+  const maximumOutputBytes = estimateResumeParseMaximumProviderOutputBytes(source, catalogVersion);
   if (maximumOutputBytes <= RESUME_PARSE_PLANNED_JSON_BYTES) return;
   throw new PublicApiError(
     "Resume text is too large or escape-heavy to preserve losslessly within the configured structured-response limit.",
@@ -2259,6 +2368,30 @@ export function prepareResumeParseV8Request(
   const providerResponseSchema = buildResumeParseProviderV8JsonSchema(payload);
   const geminiResponseSchema = buildResumeParseGeminiProviderV8JsonSchema(payload);
   const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV8, {
+    payload,
+    responseJsonSchema: providerResponseSchema
+  });
+  return {
+    normalizedText,
+    outputTokenLimit,
+    payload,
+    providerResponseSchema,
+    geminiResponseSchema,
+    policy
+  };
+}
+
+export function prepareResumeParseV9Request(
+  text: string,
+  provider: AiProviderName
+) {
+  const normalizedText = normalizeResumeLineEndings(text);
+  assertResumeParseOutputCapacity(normalizedText, provider, "9");
+  const outputTokenLimit = resumeParseOutputTokenLimit(provider);
+  const payload = buildResumeProviderSourceInputV9(normalizedText);
+  const providerResponseSchema = buildResumeParseProviderV9JsonSchema(payload);
+  const geminiResponseSchema = buildResumeParseGeminiProviderV9JsonSchema(payload);
+  const { policy } = assertAiInputWithinLimits("RESUME_PARSE", resumeParsePromptV9, {
     payload,
     responseJsonSchema: providerResponseSchema
   });
@@ -2427,8 +2560,19 @@ function hasDeclaredRecordBoundary(
   return isDeterministicResumeRecordBoundary(section, previousRecord, nextRecord);
 }
 
-function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
-  const expected = expectedSourceSections(source);
+function assertLosslessSourceAuthority(
+  source: string,
+  output: ParsedResumeV5,
+  options: {
+    catalogVersion: ResumeSourceCatalogVersion;
+    boundaryAuthority: "legacy_heuristic" | "server_catalog";
+  }
+) {
+  const expected = (options.boundaryAuthority === "server_catalog"
+    ? options.catalogVersion === "9"
+      ? buildResumeSourceCatalogV9(source)
+      : buildResumeSourceCatalogV8(source)
+    : buildResumeSourceCatalogV8(source, { requireStructuralRecords: false })).sections;
   const paragraphUnit = paragraphBreakUnit(source.split(/\r?\n/));
   const recordCursors = new Map<ResumeSourceSectionName, number>();
   if (output.sourceSections.length !== expected.length) {
@@ -2451,6 +2595,30 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
         422,
         { code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS", fieldPath: basePath, retryable: false }
       );
+    }
+
+    if (options.boundaryAuthority === "server_catalog") {
+      const mismatch = section.recordBlocks.findIndex(
+        (record, index) => record !== expectedSection.recordBlocks[index]
+      );
+      if (
+        mismatch >= 0 ||
+        section.recordBlocks.length !== expectedSection.recordBlocks.length
+      ) {
+        const mismatchIndex = mismatch >= 0
+          ? mismatch
+          : Math.min(section.recordBlocks.length, expectedSection.recordBlocks.length);
+        throw new PublicApiError(
+          "Resume parsing changed record order, cardinality, or server-owned boundaries. No master resume was changed.",
+          422,
+          {
+            code: "RESUME_PARSE_STRUCTURE_AMBIGUOUS",
+            section: section.section,
+            fieldPath: `${basePath}.recordBlocks[${mismatchIndex}]`,
+            retryable: false
+          }
+        );
+      }
     }
 
     const canonicalRecords = ["workHistory", "projects", "education", "certifications"].includes(section.section)
@@ -2529,6 +2697,7 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
       }
       if (
         canonicalRecords &&
+        options.boundaryAuthority !== "server_catalog" &&
         recordIndex > 0 &&
         !hasDeclaredRecordBoundary(
           section.section,
@@ -2551,7 +2720,10 @@ function assertLosslessSourceAuthority(source: string, output: ParsedResumeV5) {
       }
       characters.fill(" ", start, start + record.length);
       cursor = start + record.length;
-      if (["workHistory", "education", "certifications"].includes(section.section)) {
+      if (
+        options.boundaryAuthority !== "server_catalog" &&
+        ["workHistory", "education", "certifications"].includes(section.section)
+      ) {
         const dateLines = record.split(/\r?\n/).filter((line) => resumeDatePattern.test(line.trim()));
         if (dateLines.length > 1) {
           throw new PublicApiError(
@@ -2843,11 +3015,18 @@ function recordBoundaryAnchors(
 export function validateParsedResumeOutput(
   rawSource: string,
   value: unknown,
-  options: { allowLegacy?: boolean } = {}
+  options: {
+    allowLegacy?: boolean;
+    catalogVersion?: ResumeSourceCatalogVersion;
+    boundaryAuthority?: "legacy_heuristic" | "server_catalog";
+  } = {}
 ): ParsedResumeV5 {
   const source = normalizeResumeLineEndings(rawSource);
   const output = decodeParsedResume(source, value, options.allowLegacy !== false);
-  assertLosslessSourceAuthority(source, output);
+  const catalogVersion = options.catalogVersion ?? "8";
+  const boundaryAuthority = options.boundaryAuthority ?? "legacy_heuristic";
+  const serverCatalogAuthority = boundaryAuthority === "server_catalog";
+  assertLosslessSourceAuthority(source, output, { catalogVersion, boundaryAuthority });
   const sections: Array<[keyof ParsedResume["sectionStatus"], unknown[]]> = [
     ["summary", output.summary ? [output.summary] : []],
     ["skills", output.skills],
@@ -2907,15 +3086,19 @@ export function validateParsedResumeOutput(
     assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
     assertWorkHeaderSemantics(item, `workHistory[${index}]`);
     assertWorkLocationSemantics(item);
-    assertUnambiguousNarrativeEntries(item.bullets, "workHistory", `workHistory[${index}].bullets`);
-    assertNoUnprojectedHeaderPairBeforeNarrative(
+    if (!serverCatalogAuthority) assertUnambiguousNarrativeEntries(
+      item.bullets,
+      "workHistory",
+      `workHistory[${index}].bullets`
+    );
+    if (!serverCatalogAuthority) assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
       item.bullets,
       [item.company, item.title, item.location, item.startDate, item.endDate],
       "workHistory",
       `workHistory[${index}].sourceText`
     );
-    assertNoUndeclaredRecordHeaderAfterNarrative(
+    if (!serverCatalogAuthority) assertNoUndeclaredRecordHeaderAfterNarrative(
       item.sourceText,
       recordBoundaryAnchors(
         item.sourceText,
@@ -2936,16 +3119,21 @@ export function validateParsedResumeOutput(
     assertOrderedSourceProjectionList(item.sourceText, item.technologies, `projects[${index}].technologies`);
     assertOrderedSourceProjectionList(item.sourceText, item.bullets, `projects[${index}].bullets`);
     assertResumeDate(item.date, "projects", "projects date", `projects[${index}].date`);
-    assertProjectStructure(item, `projects[${index}]`);
-    assertUnambiguousNarrativeEntries(item.bullets, "projects", `projects[${index}].bullets`);
-    assertNoUnprojectedHeaderPairBeforeNarrative(
+    if (serverCatalogAuthority) assertProjectDateProjection(item, `projects[${index}]`);
+    else assertProjectStructure(item, `projects[${index}]`);
+    if (!serverCatalogAuthority) assertUnambiguousNarrativeEntries(
+      item.bullets,
+      "projects",
+      `projects[${index}].bullets`
+    );
+    if (!serverCatalogAuthority) assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
       item.bullets,
       [item.name, item.description, item.date, ...item.technologies],
       "projects",
       `projects[${index}].sourceText`
     );
-    assertNoUndeclaredRecordHeaderAfterNarrative(
+    if (!serverCatalogAuthority) assertNoUndeclaredRecordHeaderAfterNarrative(
       item.sourceText,
       recordBoundaryAnchors(
         item.sourceText,
@@ -2967,15 +3155,19 @@ export function validateParsedResumeOutput(
     assertOrderedSourceProjectionList(item.sourceText, item.details, `education[${index}].details`);
     assertResumeDate(item.startDate, "education", "education date", `education[${index}].startDate`);
     assertResumeDate(item.endDate, "education", "education date", `education[${index}].endDate`);
-    assertUnambiguousNarrativeEntries(item.details, "education", `education[${index}].details`);
-    assertNoUnprojectedHeaderPairBeforeNarrative(
+    if (!serverCatalogAuthority) assertUnambiguousNarrativeEntries(
+      item.details,
+      "education",
+      `education[${index}].details`
+    );
+    if (!serverCatalogAuthority) assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
       item.details,
       [item.institution, item.credential, item.fieldOfStudy, item.startDate, item.endDate],
       "education",
       `education[${index}].sourceText`
     );
-    assertNoUndeclaredRecordHeaderAfterNarrative(
+    if (!serverCatalogAuthority) assertNoUndeclaredRecordHeaderAfterNarrative(
       item.sourceText,
       recordBoundaryAnchors(
         item.sourceText,
@@ -2997,14 +3189,14 @@ export function validateParsedResumeOutput(
     assertOrderedSourceProjectionList(item.sourceText, item.details, `certifications[${index}].details`);
     assertResumeDate(item.date, "certifications", "certification date", `certifications[${index}].date`);
     assertResumeDate(item.expirationDate, "certifications", "certification date", `certifications[${index}].expirationDate`);
-    assertNoUnprojectedHeaderPairBeforeNarrative(
+    if (!serverCatalogAuthority) assertNoUnprojectedHeaderPairBeforeNarrative(
       item.sourceText,
       item.details,
       [item.name, item.issuer, item.date, item.expirationDate],
       "certifications",
       `certifications[${index}].sourceText`
     );
-    assertNoUndeclaredRecordHeaderAfterNarrative(
+    if (!serverCatalogAuthority) assertNoUndeclaredRecordHeaderAfterNarrative(
       item.sourceText,
       recordBoundaryAnchors(
         item.sourceText,
@@ -3096,6 +3288,36 @@ export function assembleAndValidateResumeV8(
   return { ...validated, contractVersion: "8" };
 }
 
+export function assembleAndValidateResumeV9(
+  rawSource: string,
+  value: unknown
+): ParsedResumeV9 {
+  const parsed = resumeParseProviderV9Schema.safeParse(value);
+  if (!parsed.success) {
+    const fieldPath = zodFieldPath(parsed.error.issues[0]?.path ?? []);
+    throw new PublicApiError(
+      "Resume parsing returned an invalid structured result. No master resume was changed.",
+      422,
+      {
+        code: "RESUME_PARSE_INVALID_OUTPUT",
+        ...(fieldPath ? { fieldPath } : {}),
+        retryable: false
+      }
+    );
+  }
+  const assembled = assembleParsedResumeV9FromRecords(rawSource, parsed.data);
+  const validated = validateParsedResumeOutput(
+    rawSource,
+    { ...assembled, contractVersion: "5" },
+    {
+      allowLegacy: false,
+      catalogVersion: "9",
+      boundaryAuthority: "server_catalog"
+    }
+  );
+  return { ...validated, contractVersion: "9" };
+}
+
 function restoreStoredResumeV8Authority(
   rawSource: string,
   stored: ParsedResumeV5
@@ -3173,7 +3395,51 @@ function restoreStoredLegacySourceAuthority(
 export function decodeStoredParsedResume(
   rawSource: string,
   value: unknown
-): ParsedResumeV8 | ParsedResumeV7 | ParsedResumeV6 | ParsedResumeV5 {
+): ParsedResumeV9 | ParsedResumeV8 | ParsedResumeV7 | ParsedResumeV6 | ParsedResumeV5 {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as Record<string, unknown>).contractVersion === "9"
+  ) {
+    const stored = decodeParsedResume(
+      normalizeResumeLineEndings(rawSource),
+      { ...(value as Record<string, unknown>), contractVersion: "5" },
+      false
+    );
+    const catalog = buildResumeSourceCatalogV9(rawSource);
+    const ids = (section: "workHistory" | "projects" | "education" | "certifications") =>
+      catalog.sections
+        .filter((item) => item.section === section)
+        .flatMap((item) => item.records.map((record) => record.id));
+    const project = <T extends { sourceText: string }>(
+      record: T,
+      recordId: string | undefined
+    ) => {
+      const semantic: Partial<T> = { ...record };
+      delete semantic.sourceText;
+      return {
+        recordId: recordId ?? "missing-record-reference",
+        ...semantic as Omit<T, "sourceText">
+      };
+    };
+    const contactInfo: Partial<typeof stored.contactInfo> = { ...stored.contactInfo };
+    delete contactInfo.sourceText;
+    return assembleAndValidateResumeV9(rawSource, {
+      contractVersion: "9",
+      contactInfo: contactInfo as ResumeParseProviderV9["contactInfo"],
+      skills: stored.skills,
+      workHistory: stored.workHistory.map((record, index) =>
+        project(record, ids("workHistory")[index])),
+      projects: stored.projects.map((record, index) =>
+        project(record, ids("projects")[index])),
+      education: stored.education.map((record, index) =>
+        project(record, ids("education")[index])),
+      certifications: stored.certifications.map((record, index) =>
+        project(record, ids("certifications")[index])),
+      warnings: stored.warnings
+    });
+  }
   if (
     value &&
     typeof value === "object" &&
@@ -3319,6 +3585,45 @@ export function classifyResumeValidationFailure(
     expectedSections = expectedSourceSections(normalizedSource);
   } catch {
     // Diagnostics must never replace the original validation failure.
+  }
+
+  const providerV9 = value && typeof value === "object" && !Array.isArray(value) &&
+    (value as Record<string, unknown>).contractVersion === "9";
+  if (providerV9) {
+    const providerResult = resumeParseProviderV9Schema.safeParse(value);
+    if (!providerResult.success) {
+      const firstIssue = providerResult.error.issues[0];
+      const issuePath = zodFieldPath(firstIssue?.path ?? []);
+      const issueComponent = firstIssue?.path.at(-1);
+      return {
+        validationStage: "resume_schema",
+        internalErrorCode,
+        section: resumeSectionFromFieldPath(issuePath)
+          ?? safeResumeValidationSection(details?.section),
+        mismatchComponent: typeof issueComponent === "string" ? issueComponent : null,
+        expected: null,
+        actual: null,
+        fingerprintAlgorithm: null
+      };
+    }
+    const structuralReferenceFailure = typeof fieldPath === "string" && (
+      fieldPath.endsWith(".recordId") ||
+      (
+        ["workHistory", "projects", "education", "certifications"].includes(fieldPath) &&
+        typeof details?.structureReason === "string"
+      )
+    );
+    return {
+      validationStage: structuralReferenceFailure
+        ? "lossless_source_authority"
+        : "typed_projection",
+      internalErrorCode,
+      section: safeResumeValidationSection(details?.section) ?? fieldPathSection,
+      mismatchComponent: diagnosticFieldComponent(fieldPath),
+      expected: null,
+      actual: null,
+      fingerprintAlgorithm: null
+    };
   }
 
   const providerV8 = value && typeof value === "object" && !Array.isArray(value) &&
@@ -3567,6 +3872,8 @@ async function callOpenAiResumeProvider(input: {
   payload: ReturnType<typeof buildResumeProviderSourceInput>;
   responseJsonSchema: Record<string, unknown>;
   maxOutputTokens: number;
+  systemPrompt: string;
+  schemaName: string;
 }) {
   const client = getOpenAIClient();
   if (!client) throw new LocalAiUnavailableError();
@@ -3579,13 +3886,13 @@ async function callOpenAiResumeProvider(input: {
       response_format: {
         type: "json_schema",
         json_schema: {
-          name: "resume_parse_v8",
+          name: input.schemaName,
           strict: true,
           schema: input.responseJsonSchema
         }
       },
       messages: [
-        { role: "system", content: resumeParsePromptV8 },
+        { role: "system", content: input.systemPrompt },
         { role: "user", content: JSON.stringify(input.payload) }
       ]
     });
@@ -3711,7 +4018,7 @@ export async function parseResumeTextWithMeta(
     providerResponseSchema,
     geminiResponseSchema,
     policy
-  } = prepareResumeParseV8Request(text, provider);
+  } = prepareResumeParseV9Request(text, provider);
   if (getAiRuntimeMode(provider) !== provider) throw new LocalAiUnavailableError();
   if (!userId) {
     throw new PublicApiError("Resume parsing requires an authenticated budget owner.", 503, {
@@ -3822,7 +4129,7 @@ export async function parseResumeTextWithMeta(
       ? await callGeminiJsonProvider({
           apiKey: process.env.GEMINI_API_KEY!.trim(),
           model,
-          systemPrompt: resumeParsePromptV8,
+          systemPrompt: resumeParsePromptV9,
           payload,
           responseJsonSchema: geminiResponseSchema,
           maxOutputTokens: outputTokenLimit,
@@ -3833,7 +4140,9 @@ export async function parseResumeTextWithMeta(
             model,
             payload,
             responseJsonSchema: providerResponseSchema,
-            maxOutputTokens: outputTokenLimit
+            maxOutputTokens: outputTokenLimit,
+            systemPrompt: resumeParsePromptV9,
+            schemaName: "resume_parse_v9"
           })
         : (() => { throw new PublicApiError(`Unsupported resume parsing provider: ${provider}.`, 503); })();
     usage = response.usage;
@@ -3852,7 +4161,7 @@ export async function parseResumeTextWithMeta(
         usage
       });
     }
-    const data = assembleAndValidateResumeV8(normalizedText, response.value);
+    const data = assembleAndValidateResumeV9(normalizedText, response.value);
     try {
       await reconcileAiReservation({
         reservationId: reservation.id,

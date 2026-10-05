@@ -17,8 +17,12 @@ import {
   fullSizeSyntheticDocxExtractedText,
   fullSizeSyntheticProviderOutput
 } from "@/tests/fixtures/resume-estimator-boundary-data";
-import { providerV8FromCanonical } from "@/tests/fixtures/resume-v8-provider-data";
-import type { ResumeParseProviderV8 } from "@/lib/ai/resume";
+import { providerV9FromCanonical } from "@/tests/fixtures/resume-v9-provider-data";
+import {
+  resumeV9StructuralTwinCanonical,
+  resumeV9StructuralTwinDocxText
+} from "@/tests/fixtures/resume-v9-structural-twin-data";
+import type { ResumeParseProviderV9 } from "@/lib/ai/resume";
 
 const resumeText = `Jordan Example
 jordan@example.test
@@ -334,14 +338,14 @@ test("validated parsing switches the master and records analysis plus audit in o
   assert.equal(state.analyses.length, 1);
   assert.equal(state.audits.length, 1);
   assert.equal(state.analyses[0]?.model, "gemini-3.8-flash");
-  assert.equal(state.analyses[0]?.promptVersion, "10");
+  assert.equal(state.analyses[0]?.promptVersion, "11");
   assert.equal((state.analyses[0]?.input as Record<string, unknown>).resumeId, body.resume.id);
   assert.equal(typeof (state.analyses[0]?.input as Record<string, unknown>).submissionHash, "string");
 });
 
-const invalidV8RouteCases: Array<{
+const invalidV9RouteCases: Array<{
   name: string;
-  mutate: (output: ResumeParseProviderV8) => void;
+  mutate: (output: ResumeParseProviderV9) => void;
 }> = [
   {
     name: "omitted server-owned record projection",
@@ -370,10 +374,10 @@ const invalidV8RouteCases: Array<{
   }
 ];
 
-for (const invalidCase of invalidV8RouteCases) {
-  test(`v8 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
+for (const invalidCase of invalidV9RouteCases) {
+  test(`v9 ${invalidCase.name} writes no resume, analysis, audit, or cache`, async (t) => {
     const state = setup(t, undefined, false);
-    const output = providerV8FromCanonical(
+    const output = providerV9FromCanonical(
       fullSizeSyntheticDocxExtractedText,
       fullSizeSyntheticProviderOutput()
     );
@@ -528,13 +532,13 @@ test("a file with pasted-equivalent text has distinct replay identity and privat
   assert.equal(state.storedFiles.length, 1);
 });
 
-test("synthetic mixed-contact DOCX runs extraction through stubbed v8 parsing, persistence, and all canonical consumers", async (t) => {
+test("synthetic mixed-contact DOCX runs extraction through stubbed v9 parsing, persistence, and all canonical consumers", async (t) => {
   const providerOutput = syntheticDocxProviderOutput();
   const state = setup(t, undefined, false);
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(providerV8FromCanonical(syntheticDocxExtractedText, providerOutput));
+    return providerResponse(providerV9FromCanonical(syntheticDocxExtractedText, providerOutput));
   });
   const fixture = await readFile(new URL("./fixtures/synthetic-resume-contract-v5.docx", import.meta.url));
   const form = new FormData();
@@ -553,7 +557,7 @@ test("synthetic mixed-contact DOCX runs extraction through stubbed v8 parsing, p
   const body = await response.json();
   assert.equal(providerCalls, 1);
   assert.equal(body.resume.rawText, syntheticDocxExtractedText);
-  assert.equal(body.parsed.contractVersion, "8");
+  assert.equal(body.parsed.contractVersion, "9");
   assert.equal(body.parsed.education[1].fieldOfStudy, "Business Administration");
   assert.equal(body.parsed.education[0].details[0].includes("480-hour"), true);
   assert.equal(body.parsed.certifications[0].details[0], "Credential ID: SYN-12345");
@@ -573,7 +577,7 @@ test("synthetic mixed-contact DOCX runs extraction through stubbed v8 parsing, p
   assert.equal(state.resumes.length, 1);
   assert.deepEqual(state.resumes[0]?.contactInfo, body.parsed.contactInfo);
   assert.equal(state.analyses.length, 1);
-  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "8");
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "9");
   assert.equal(state.audits.length, 1);
 
   const reachableSource = body.parsed.sourceSections.flatMap((section: {
@@ -636,13 +640,133 @@ test("synthetic mixed-contact DOCX runs extraction through stubbed v8 parsing, p
 
 });
 
-test("full-size synthetic DOCX passes extraction, stubbed v8 provider, persistence, and all canonical consumers", async (t) => {
+test("complete V9 structural-twin DOCX preserves lossless parse authority and explicit consumer bounds", async (t) => {
+  const canonical = resumeV9StructuralTwinCanonical();
+  const state = setup(t, undefined, false);
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    return providerResponse(providerV9FromCanonical(resumeV9StructuralTwinDocxText, canonical));
+  });
+  const fixture = await readFile(new URL(
+    "./fixtures/synthetic-resume-v9-structural-twin.docx",
+    import.meta.url
+  ));
+  const form = new FormData();
+  form.set("submissionId", SUBMISSION_ID_2);
+  form.set("title", "V9 Structural Twin");
+  form.set("file", new File([fixture], "synthetic-resume-v9-structural-twin.docx", {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  }));
+
+  const response = await invoke(form, {
+    "x-ai-cost-confirmed": "true",
+    "x-ai-data-confirmed": "true"
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(providerCalls, 1);
+  assert.equal(body.resume.rawText, resumeV9StructuralTwinDocxText);
+  assert.equal(body.parsed.contractVersion, "9");
+  for (const key of [
+    "contactInfo",
+    "summary",
+    "skills",
+    "workHistory",
+    "projects",
+    "education",
+    "certifications",
+    "achievements",
+    "sectionStatus"
+  ] as const) {
+    assert.deepEqual(body.parsed[key], canonical[key], `canonical typed field mismatch: ${key}`);
+  }
+  assert.equal(state.resumes.length, 1);
+  assert.equal(state.analyses.length, 1);
+  assert.equal(state.audits.length, 1);
+
+  const reachableSource = body.parsed.sourceSections.flatMap((section: {
+    heading: string | null;
+    sourceText: string;
+    recordBlocks: string[];
+  }) => [section.heading, section.sourceText, ...section.recordBlocks])
+    .filter(Boolean)
+    .join("\n");
+  for (const line of resumeV9StructuralTwinDocxText
+    .split(/\r?\n/u)
+    .map((item) => item.trim())
+    .filter(Boolean)) {
+    assert.ok(reachableSource.includes(line), `unreachable source line: ${line}`);
+  }
+
+  const resumeInput = {
+    rawText: body.resume.rawText,
+    summary: body.resume.summary,
+    skills: body.resume.skills,
+    achievements: body.resume.achievements,
+    workHistory: body.resume.workHistory,
+    projects: body.resume.projects,
+    education: body.resume.education,
+    certifications: body.resume.certifications
+  };
+  const job = {
+    title: "Service Operations Director",
+    company: "Synthetic Employer",
+    description: "Lead TypeScript, PostgreSQL, service delivery, and reporting programs.",
+    requirements: ["TypeScript", "PostgreSQL", "service delivery"]
+  };
+  const planner = buildApplicationPlanPayload({ job, resume: resumeInput });
+  assert.ok(planner.evidenceCatalog.some((item) =>
+    item.id === "education-2" && item.text.includes("Business Administration")));
+  assert.ok(planner.evidenceCatalog.some((item) =>
+    item.id === "project-1-highlight-1" && item.text.includes("TypeScript")));
+  assert.ok(planner.evidenceCatalog.some((item) =>
+    item.id === "certification-1-detail-1" && item.text.includes("SYNTHETIC-ONLY-4821")));
+  const boundedRawEvidence = planner.evidenceCatalog.find((item) => item.id === "raw-source-1");
+  assert.equal(
+    boundedRawEvidence?.text,
+    resumeV9StructuralTwinDocxText.trim().slice(0, 2_500)
+  );
+  assert.doesNotMatch(boundedRawEvidence?.text ?? "", /Languages: English and Spanish/u);
+  assert.deepEqual(
+    planner.projectionOmissions.find((item) => item.sourcePath === "resume.rawText"),
+    {
+      sourcePath: "resume.rawText",
+      omittedIds: [],
+      omittedCount: 0,
+      truncatedIds: ["raw-source-1"]
+    }
+  );
+
+  const matchInput: MatchInput = { job, resume: resumeInput };
+  const refs = getJobMatchEvidenceReferences(matchInput).applicant;
+  assert.ok(refs.includes("resume.projects[0]"));
+  assert.ok(refs.includes("resume.education[1]"));
+  assert.ok(refs.includes("resume.certifications[0]"));
+  assert.ok(refs.includes("resume.rawText"));
+
+  const tailoring = buildResumeTailoringPayload(
+    job,
+    { ...resumeInput, filePath: "/private/never-expose.docx", contactInfo: body.resume.contactInfo },
+    { careerGoals: "Reliable operations", email: "private@example.test" }
+  );
+  assert.deepEqual(tailoring.resume?.projects, body.resume.projects);
+  assert.deepEqual(tailoring.resume?.education, body.resume.education);
+  assert.deepEqual(tailoring.resume?.certifications, body.resume.certifications);
+  assert.equal(tailoring.resume?.rawText, resumeV9StructuralTwinDocxText);
+  assert.match(tailoring.resume?.rawText ?? "", /Languages: English and Spanish/u);
+  assert.ok(tailoring.resume && !("filePath" in tailoring.resume));
+  assert.ok(tailoring.resume && !("contactInfo" in tailoring.resume));
+});
+
+test("full-size synthetic DOCX passes extraction, stubbed v9 provider, persistence, and all canonical consumers", async (t) => {
   const canonicalV5 = fullSizeSyntheticProviderOutput();
   const state = setup(t, undefined, false);
   let providerCalls = 0;
   stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return providerResponse(providerV8FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
+    return providerResponse(providerV9FromCanonical(fullSizeSyntheticDocxExtractedText, canonicalV5));
   });
   const fixture = await readFile(new URL(
     "./fixtures/synthetic-resume-estimator-boundary.docx",
@@ -663,7 +787,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v8 provider, persisten
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(providerCalls, 1);
-  assert.equal(body.parsed.contractVersion, "8");
+  assert.equal(body.parsed.contractVersion, "9");
   assert.equal(body.resume.rawText, fullSizeSyntheticDocxExtractedText);
   assert.equal(body.parsed.sourceSections[2].heading, "CORE SKILLS");
   assert.equal(body.parsed.sourceSections[4].heading, "SELECTED TECHNICAL PROJECTS");
@@ -676,7 +800,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v8 provider, persisten
   assert.equal(body.parsed.sourceSections.at(-1).section, "additional");
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);
-  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "8");
+  assert.equal((state.analyses[0]?.output as { contractVersion: string }).contractVersion, "9");
   assert.equal(state.audits.length, 1);
 
   const reachableSource = body.parsed.sourceSections.flatMap((section: {
@@ -739,7 +863,7 @@ test("full-size synthetic DOCX passes extraction, stubbed v8 provider, persisten
   assert.equal(replay.status, 200);
   const replayBody = await replay.json();
   assert.equal(replayBody.replayed, true);
-  assert.equal(replayBody.parsed.contractVersion, "8");
+  assert.equal(replayBody.parsed.contractVersion, "9");
   assert.equal(providerCalls, 1);
   assert.equal(state.resumes.length, 1);
   assert.equal(state.analyses.length, 1);

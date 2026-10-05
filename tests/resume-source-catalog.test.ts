@@ -1,10 +1,21 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
+import { extractResumeDocxText } from "@/lib/resume-docx-text";
 import { fullSizeSyntheticDocxExtractedText } from "@/tests/fixtures/resume-estimator-boundary-data";
+import {
+  resumeV9OwnerTopologyTwinDocxText,
+  resumeV9StructuralTwinDocxText,
+  resumeV9StructuralTwinText
+} from "@/tests/fixtures/resume-v9-structural-twin-data";
 
 type CatalogModule = typeof import("@/lib/ai/resume-source-catalog");
+type VersionedCatalogModule = CatalogModule & {
+  buildResumeSourceCatalogV8?: CatalogModule["buildResumeSourceCatalog"];
+  buildResumeSourceCatalogV9?: CatalogModule["buildResumeSourceCatalog"];
+};
 
 async function loadCatalogModule() {
   const loaded = await import("@/lib/ai/resume-source-catalog").catch(() => null);
@@ -201,6 +212,143 @@ test("builds exact server-owned structural records for the complete synthetic re
   );
 });
 
+test("splits a final-line education pipe header after an unbulleted complete narrative", async () => {
+  const candidate = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(candidate.buildResumeSourceCatalogV9);
+  const catalog = candidate.buildResumeSourceCatalogV9(resumeV9StructuralTwinText);
+  const education = catalog.sections.find((section) => section.section === "education");
+
+  assert.ok(education);
+  assert.deepEqual(education.records.map((record) => record.lines.map((line) => line.id)), [
+    ["section-6-line-1", "section-6-line-2"],
+    ["section-6-line-3"]
+  ]);
+});
+
+test("keeps historical V8 boundaries while V9 splits the complete structural twin", async () => {
+  const candidate = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(candidate.buildResumeSourceCatalogV8);
+  assert.ok(candidate.buildResumeSourceCatalogV9);
+
+  const v8Education = candidate.buildResumeSourceCatalogV8(resumeV9StructuralTwinText)
+    .sections.find((section) => section.section === "education");
+  const v9Education = candidate.buildResumeSourceCatalogV9(resumeV9StructuralTwinText)
+    .sections.find((section) => section.section === "education");
+
+  assert.deepEqual(v8Education?.records.map((record) => record.lines.map((line) => line.id)), [
+    ["section-6-line-1", "section-6-line-2", "section-6-line-3"]
+  ]);
+  assert.deepEqual(v9Education?.records.map((record) => record.lines.map((line) => line.id)), [
+    ["section-6-line-1", "section-6-line-2"],
+    ["section-6-line-3"]
+  ]);
+});
+
+test("V9 splits an adjacent certification header without splitting issued and expiry metadata", async () => {
+  const candidate = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(candidate.buildResumeSourceCatalogV9);
+  const source = [
+    "Casey Structure",
+    "",
+    "CERTIFICATIONS",
+    "Synthetic Reliability Certificate | Example Board | 2024",
+    "Issued: 2024",
+    "Expires: 2027",
+    "Completed an evidence-based assessment.",
+    "Synthetic Delivery Certificate | Example Board | 2025"
+  ].join("\n");
+  const certifications = candidate.buildResumeSourceCatalogV9(source)
+    .sections.find((section) => section.section === "certifications");
+
+  assert.deepEqual(certifications?.records.map((record) => record.lines.map((line) => line.id)), [
+    ["section-2-line-1", "section-2-line-2", "section-2-line-3", "section-2-line-4"],
+    ["section-2-line-5"]
+  ]);
+});
+
+test("extracts the private-free V9 structural twin with the complete observed line topology", async () => {
+  const fixture = await readFile(new URL(
+    "./fixtures/synthetic-resume-v9-structural-twin.docx",
+    import.meta.url
+  ));
+  const extracted = await extractResumeDocxText(fixture);
+
+  assert.equal(extracted, resumeV9StructuralTwinDocxText);
+  assert.equal(Buffer.byteLength(extracted), 6_075);
+  assert.equal(extracted.split(/\r?\n/u).length, 83);
+  assert.match(extracted, /example\.test/u);
+  assert.match(extracted, /480-hour/u);
+  assert.match(extracted, /SYNTHETIC-ONLY-4821/u);
+  assert.match(extracted, /ADDITIONAL INFORMATION/u);
+});
+
+test("extracts the private-free 65-line owner-topology twin", async () => {
+  const fixture = await readFile(new URL(
+    "./fixtures/synthetic-resume-v9-owner-topology-twin.docx",
+    import.meta.url
+  )).catch(() => null);
+  assert.ok(fixture, "the owner-topology DOCX fixture must exist");
+
+  const extracted = await extractResumeDocxText(fixture);
+  assert.equal(extracted, resumeV9OwnerTopologyTwinDocxText);
+  assert.equal(extracted.split(/\r?\n/u).length, 65);
+  assert.equal(extracted.split(/\r?\n/u).filter((line) => line.trim()).length, 46);
+});
+
+test("V9 preserves the exact 65-line owner topology without optional trailing sections", async () => {
+  const { buildResumeSourceCatalog, buildResumeSourceCatalogV9 } = await loadCatalogModule();
+  const sourceLines = resumeV9OwnerTopologyTwinDocxText.split(/\r?\n/u);
+  const factualLines = sourceLines.filter((line) => line.trim());
+  const compactSource = resumeV9OwnerTopologyTwinDocxText;
+
+  assert.equal(factualLines.length, 46);
+  assert.equal(sourceLines.length, 65);
+  assert.deepEqual(
+    sourceLines.flatMap((line, index) => line.trim() ? [] : [index + 1]),
+    [2, 4, 7, 9, 11, 13, 17, 19, 25, 31, 38, 43, 50, 52, 55, 58, 60, 64, 65]
+  );
+  assert.ok(Buffer.byteLength(compactSource) >= 5_000);
+  assert.ok(Buffer.byteLength(compactSource) < 8_000);
+
+  const v8 = buildResumeSourceCatalog(compactSource);
+  const v9 = buildResumeSourceCatalogV9(compactSource);
+  const records = (catalog: typeof v9, section: string) => catalog.sections
+    .filter((item) => item.section === section)
+    .flatMap((item) => item.records);
+
+  assert.deepEqual(v9.sections.map((section) => section.section), [
+    "contactInfo",
+    "summary",
+    "skills",
+    "workHistory",
+    "projects",
+    "education"
+  ]);
+  assert.equal(records(v9, "workHistory").length, 5);
+  assert.deepEqual(
+    records(v9, "workHistory").map((record) => record.lines.filter(
+      (line) => /^•\s/u.test(line.sourceText)
+    ).length),
+    [4, 4, 5, 3, 5]
+  );
+  assert.equal(records(v9, "projects").length, 2);
+  assert.deepEqual(records(v9, "projects").map((record) => record.lines.length), [2, 2]);
+  assert.deepEqual(records(v8, "education").map((record) => record.lines.length), [3]);
+  assert.deepEqual(records(v9, "education").map((record) => record.lines.length), [2, 1]);
+  assert.deepEqual(records(v9, "certifications"), []);
+  assert.deepEqual(records(v9, "achievements"), []);
+  assert.deepEqual(records(v9, "additional"), []);
+
+  const reachable = v9.sections.flatMap((section) => [
+    section.heading,
+    section.sourceText,
+    ...section.records.map((record) => record.sourceText)
+  ]).filter(Boolean).join("\n");
+  for (const line of factualLines) {
+    assert.ok(reachable.includes(line), "a compact source line became unreachable");
+  }
+});
+
 test("keeps internal blanks and blank-before-bullets inside one work record", async () => {
   const { buildResumeSourceCatalog } = await loadCatalogModule();
   const source = [
@@ -246,6 +394,253 @@ test("splits adjacent dateless labeled work records without model-owned boundari
   assert.deepEqual(work?.recordBlocks, [
     "Title: VP\nCompany: Yahoo!\n• Led reliable delivery.",
     "Role: Engineer\nEmployer: Acme Partners.\n• Built safe systems."
+  ]);
+});
+
+test("V9 splits an adjacent plain title-company-date record after unpunctuated narrative", async () => {
+  const { buildResumeSourceCatalogV8, buildResumeSourceCatalogV9 } =
+    await loadCatalogModule() as VersionedCatalogModule;
+  const source = [
+    "Casey Structure",
+    "",
+    "EXPERIENCE",
+    "Operations Lead",
+    "Example Organization",
+    "2022 - Present",
+    "Managed service delivery across teams",
+    "Program Manager",
+    "Second Organization",
+    "2020 - 2021",
+    "Led service redesign"
+  ].join("\n");
+
+  const v8 = buildResumeSourceCatalogV8(source).sections
+    .find((section) => section.section === "workHistory");
+  const v9 = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "workHistory");
+  assert.equal(v8?.records.length, 1);
+  assert.deepEqual(v9?.records.map((record) => record.lines.map((line) => line.sourceText)), [
+    [
+      "Operations Lead",
+      "Example Organization",
+      "2022 - Present",
+      "Managed service delivery across teams"
+    ],
+    ["Program Manager", "Second Organization", "2020 - 2021", "Led service redesign"]
+  ]);
+});
+
+test("V9 does not mistake a company-location-date suffix for a second work record", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(buildResumeSourceCatalogV9);
+  const source = [
+    "Casey Structure",
+    "",
+    "EXPERIENCE",
+    "Customer Success Manager",
+    "Example Co",
+    "Remote",
+    "2022 - Present",
+    "Led customer onboarding."
+  ].join("\n");
+
+  const work = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "workHistory");
+  assert.deepEqual(work?.recordBlocks, [
+    "Customer Success Manager\nExample Co\nRemote\n2022 - Present\nLed customer onboarding."
+  ]);
+});
+
+test("V9 splits adjacent plain dated projects after unpunctuated narrative", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(buildResumeSourceCatalogV9);
+  const source = [
+    "Casey Structure",
+    "",
+    "PROJECTS",
+    "Service Workbench",
+    "2025",
+    "Built a dashboard",
+    "Planning Catalog",
+    "2024",
+    "Built an evidence library"
+  ].join("\n");
+  const projects = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "projects");
+  assert.deepEqual(projects?.recordBlocks, [
+    "Service Workbench\n2025\nBuilt a dashboard",
+    "Planning Catalog\n2024\nBuilt an evidence library"
+  ]);
+});
+
+test("V9 splits a plain dated project after a dated pipe-header record", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  const source = [
+    "Casey Structure",
+    "",
+    "PROJECTS",
+    "Service Workbench | Dashboard | 2025",
+    "Built a dashboard",
+    "Planning Catalog",
+    "2024",
+    "Built an evidence library"
+  ].join("\n");
+  const projects = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "projects");
+  assert.deepEqual(projects?.recordBlocks, [
+    "Service Workbench | Dashboard | 2025\nBuilt a dashboard",
+    "Planning Catalog\n2024\nBuilt an evidence library"
+  ]);
+});
+
+test("V9 splits a dated project after a complete undated project record", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  const source = [
+    "Casey Structure",
+    "",
+    "PROJECTS",
+    "Service Workbench",
+    "Technologies: TypeScript",
+    "Built a dashboard",
+    "Planning Catalog",
+    "2024",
+    "Built an evidence library"
+  ].join("\n");
+  const projects = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "projects");
+  assert.deepEqual(projects?.recordBlocks, [
+    "Service Workbench\nTechnologies: TypeScript\nBuilt a dashboard",
+    "Planning Catalog\n2024\nBuilt an evidence library"
+  ]);
+});
+
+test("V9 splits every supported strong project and certification next-header shape", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  const cases = [{
+    section: "projects",
+    heading: "PROJECTS",
+    first: ["Service Workbench", "Technologies: React", "Built a dashboard"],
+    second: ["Planning Catalog", "Technologies: TypeScript", "Built an evidence library"]
+  }, {
+    section: "certifications",
+    heading: "CERTIFICATIONS",
+    first: ["Reliability Certificate", "2024", "Completed assessment"],
+    second: ["Delivery Certificate", "2025", "Completed delivery review"]
+  }, {
+    section: "certifications",
+    heading: "CERTIFICATIONS",
+    first: ["Reliability Certificate", "Credential ID: SYN-01", "Completed assessment"],
+    second: ["Delivery Certificate", "Credential ID: SYN-02", "Completed delivery review"]
+  }] as const;
+
+  for (const fixture of cases) {
+    const source = [
+      "Casey Structure",
+      "",
+      fixture.heading,
+      ...fixture.first,
+      ...fixture.second
+    ].join("\n");
+    const section = buildResumeSourceCatalogV9(source).sections
+      .find((item) => item.section === fixture.section);
+    assert.deepEqual(section?.recordBlocks, [
+      fixture.first.join("\n"),
+      fixture.second.join("\n")
+    ]);
+  }
+});
+
+test("V9 splits supported dateless plain work next-header shapes", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  const cases = [
+    ["Program Manager", "Second Organization"],
+    ["Program Manager", "Second Organization", "• Led service redesign."],
+    ["Program Manager", "Second Organization", "Led service redesign."]
+  ];
+
+  for (const second of cases) {
+    const first = [
+      "Operations Lead",
+      "Example Organization",
+      "2022 - Present",
+      "Managed service delivery across teams"
+    ];
+    const source = ["Casey Structure", "", "EXPERIENCE", ...first, ...second].join("\n");
+    const work = buildResumeSourceCatalogV9(source).sections
+      .find((section) => section.section === "workHistory");
+    assert.deepEqual(work?.recordBlocks, [first.join("\n"), second.join("\n")]);
+  }
+});
+
+test("V9 splits adjacent plain dated certifications after unpunctuated narrative", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(buildResumeSourceCatalogV9);
+  const source = [
+    "Casey Structure",
+    "",
+    "CERTIFICATIONS",
+    "Reliability Certificate",
+    "Example Board",
+    "2024",
+    "Completed assessment",
+    "Delivery Certificate",
+    "Other Board",
+    "2025",
+    "Completed delivery review"
+  ].join("\n");
+  const certifications = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "certifications");
+  assert.deepEqual(certifications?.recordBlocks, [
+    "Reliability Certificate\nExample Board\n2024\nCompleted assessment",
+    "Delivery Certificate\nOther Board\n2025\nCompleted delivery review"
+  ]);
+});
+
+test("V9 keeps each education narrative with its preceding plain dated record", async () => {
+  const { buildResumeSourceCatalogV9 } = await loadCatalogModule() as VersionedCatalogModule;
+  assert.ok(buildResumeSourceCatalogV9);
+  const source = [
+    "Casey Structure",
+    "",
+    "EDUCATION",
+    "Example University",
+    "Bachelor of Arts",
+    "2020",
+    "Completed research program",
+    "Other University",
+    "Master of Arts",
+    "2024",
+    "Completed graduate research"
+  ].join("\n");
+  const education = buildResumeSourceCatalogV9(source).sections
+    .find((section) => section.section === "education");
+  assert.deepEqual(education?.recordBlocks, [
+    "Example University\nBachelor of Arts\n2020\nCompleted research program",
+    "Other University\nMaster of Arts\n2024\nCompleted graduate research"
+  ]);
+});
+
+test("V8 keeps its historical certification pipe-header boundary behavior", async () => {
+  const { buildResumeSourceCatalogV8, buildResumeSourceCatalogV9 } =
+    await loadCatalogModule() as VersionedCatalogModule;
+  const source = [
+    "Casey Structure",
+    "",
+    "CERTIFICATIONS",
+    "Certificate One | Example Board",
+    "Completed assessment",
+    "Certificate Two | Other Board"
+  ].join("\n");
+
+  const records = (version: "8" | "9") =>
+    (version === "8" ? buildResumeSourceCatalogV8(source) : buildResumeSourceCatalogV9(source))
+      .sections.find((section) => section.section === "certifications")?.recordBlocks;
+  assert.deepEqual(records("8"), [
+    "Certificate One | Example Board\nCompleted assessment\nCertificate Two | Other Board"
+  ]);
+  assert.deepEqual(records("9"), [
+    "Certificate One | Example Board\nCompleted assessment",
+    "Certificate Two | Other Board"
   ]);
 });
 
