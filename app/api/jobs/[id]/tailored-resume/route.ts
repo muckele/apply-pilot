@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { tailorResume } from "@/lib/ai/resume";
-import { buildResumeTailoringPayload } from "@/lib/ai/resume-tailoring-payload";
+import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -11,7 +12,7 @@ type Params = {
   params: Promise<{ id: string }>;
 };
 
-export async function POST(_request: NextRequest, { params }: Params) {
+export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     await checkRateLimit(`tailor-resume:${userId}`, 12, 60_000);
@@ -23,9 +24,10 @@ export async function POST(_request: NextRequest, { params }: Params) {
     ]);
 
     const tailored = await tailorResume(
-      buildResumeTailoringPayload(job, resume, profile),
+      buildApplicationDocumentPayload(job, resume, profile),
       resume?.rawText ?? "",
-      userId
+      userId,
+      aiInvocationFromRequest(request)
     );
     const version = await prisma.resumeVersion.create({
       data: {
@@ -38,8 +40,8 @@ export async function POST(_request: NextRequest, { params }: Params) {
         bullets: tailored.bulletRewrites,
         fullText: tailored.resumeText,
         changeNotes: tailored.rolesOrProjectsToEmphasize.join("; "),
-        atsCompatibility: tailored.atsCompatibilityScore,
-        jobFitScore: tailored.jobFitScore
+        atsCompatibility: null,
+        jobFitScore: null
       }
     });
 
@@ -54,7 +56,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
         inputHash: tailored.inputHash,
         input: { jobId: job.id, resumeId: resume?.id },
         output: tailored,
-        confidence: tailored.jobFitScore
+        confidence: null
       }
     });
 

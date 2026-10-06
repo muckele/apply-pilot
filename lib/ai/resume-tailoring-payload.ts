@@ -1,8 +1,10 @@
-export function buildResumeTailoringPayload(
+import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
+
+export function buildApplicationDocumentPayload(
   job: unknown,
   resume: unknown,
   profile: unknown
-) {
+): ApplicationDocumentPayload {
   const pick = (value: unknown, keys: string[]) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const source = value as Record<string, unknown>;
@@ -59,3 +61,7 @@ export function buildResumeTailoringPayload(
     ])
   };
 }
+
+// Compatibility name for callers that have not yet moved to the shared
+// application-document projection.
+export const buildResumeTailoringPayload = buildApplicationDocumentPayload;

@@ -82,6 +82,28 @@ async function parseJson(response: Response) {
   return (await response.json().catch(() => null)) as { error?: string; [key: string]: unknown } | null;
 }
 
+function formatAiActionError(
+  json: { error?: string; [key: string]: unknown } | null,
+  fallback: string
+) {
+  const parts = [typeof json?.error === "string" ? json.error : fallback];
+  if (typeof json?.fieldPath === "string" && /^[a-zA-Z][a-zA-Z0-9_.\[\]]{0,127}$/.test(json.fieldPath)) {
+    parts.push(`Field: ${json.fieldPath}.`);
+  }
+  if (["known", "not_charged", "uncertain"].includes(String(json?.billingStatus))) {
+    parts.push(`Billing status: ${json?.billingStatus}.`);
+  }
+  if (
+    typeof json?.actualCostMicros === "number" &&
+    Number.isSafeInteger(json.actualCostMicros) &&
+    json.actualCostMicros >= 0 &&
+    json.actualCostMicros <= 1_000_000_000
+  ) {
+    parts.push(`Recorded provider cost: $${(json.actualCostMicros / 1_000_000).toFixed(6)}.`);
+  }
+  return parts.join(" ");
+}
+
 async function runJsonPost(url: string, body?: Record<string, unknown>) {
   const response = await fetch(url, {
     method: "POST",
@@ -274,13 +296,9 @@ export function ApplyPacketBuilder({
           : `/api/jobs/${job.id}/cover-letter`;
 
     try {
-      if (action === "match") {
-        const response = await fetchWithAiCostConfirmation(endpoint, { method: "POST" });
-        const json = await parseJson(response);
-        if (!response.ok) throw new Error(json?.error ?? "Action failed.");
-      } else {
-        await runJsonPost(endpoint);
-      }
+      const response = await fetchWithAiCostConfirmation(endpoint, { method: "POST" });
+      const json = await parseJson(response);
+      if (!response.ok) throw new Error(formatAiActionError(json, "Action failed."));
       setMessage(
         action === "match"
           ? "Match analysis updated."
@@ -302,11 +320,15 @@ export function ApplyPacketBuilder({
 
     try {
       if (!selectedResume) {
-        await runJsonPost(`/api/jobs/${job.id}/tailored-resume`);
+        const response = await fetchWithAiCostConfirmation(`/api/jobs/${job.id}/tailored-resume`, { method: "POST" });
+        const json = await parseJson(response);
+        if (!response.ok) throw new Error(formatAiActionError(json, "Could not tailor resume."));
       }
 
       if (includeCoverLetter && !selectedCover) {
-        await runJsonPost(`/api/jobs/${job.id}/cover-letter`);
+        const response = await fetchWithAiCostConfirmation(`/api/jobs/${job.id}/cover-letter`, { method: "POST" });
+        const json = await parseJson(response);
+        if (!response.ok) throw new Error(formatAiActionError(json, "Could not draft cover letter."));
       }
 
       setMessage(

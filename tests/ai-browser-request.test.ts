@@ -86,6 +86,43 @@ test("resume parsing confirmation names the data recipient and retries once with
   assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");
 });
 
+test("application packet confirmation names OpenAI, projected private data, call purpose, and retries once", async (t) => {
+  const requests: RequestInit[] = [];
+  let confirmation = "";
+  stub(t, globalThis, "window", { confirm: (message: string) => { confirmation = message; return true; } });
+  stub(t, globalThis, "fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(init ?? {});
+    return requests.length === 1
+      ? new Response(JSON.stringify({
+          error: "Confirm application packet data and cost.",
+          code: "AI_COST_CONFIRMATION_REQUIRED",
+          maximumCostMicros: 12_000,
+          provider: "openai",
+          dataType: "application_packet",
+          feature: "RESUME_TAILOR",
+          model: "gpt-4o-mini",
+          promptVersion: "3"
+        }), { status: 428, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ ok: true }), { status: 200 });
+  });
+
+  const response = await fetchWithAiCostConfirmation("/api/jobs/job-1/tailored-resume", {
+    method: "POST"
+  });
+
+  assert.equal(response.status, 200);
+  assert.match(confirmation, /OpenAI/);
+  assert.match(confirmation, /job, resume, and profile/i);
+  assert.match(confirmation, /tailored resume/i);
+  assert.match(confirmation, /gpt-4o-mini/);
+  assert.match(confirmation, /prompt\/cache version 3/i);
+  assert.match(confirmation, /no automatic retry/i);
+  assert.match(confirmation, /\$0\.012(?:\D|$)/);
+  assert.equal(requests.length, 2);
+  assert.equal(new Headers(requests[1].headers).get("x-ai-data-confirmed"), "true");
+  assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");
+});
+
 test("an unrelated 428 response remains readable by its caller", async (t) => {
   stub(t, globalThis, "window", { confirm: () => { throw new Error("must not confirm"); } });
   stub(t, globalThis, "fetch", async () => new Response(
