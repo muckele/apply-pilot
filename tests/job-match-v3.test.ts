@@ -103,8 +103,8 @@ function cloneOutput() {
   return structuredClone(baseModelOutput);
 }
 
-test("JOB_MATCH uses prompt/cache revision 3.1 for the corrected v3 result contract", () => {
-  assert.equal(JOB_MATCH_PROMPT_VERSION, "3.1");
+test("JOB_MATCH uses prompt/cache revision 3.2 for the resume-only evidence contract", () => {
+  assert.equal(JOB_MATCH_PROMPT_VERSION, "3.2");
 });
 
 test("compensation keeps null distinct from a genuine numeric zero", () => {
@@ -218,6 +218,32 @@ test("skills marked not to exaggerate cannot support a positive factual match", 
   };
 
   assert.throws(() => normalizeJobMatchOutput(baseInput, negativeControl), /unknown applicant evidence reference/i);
+});
+
+test("profile preferences cannot support a positive qualification match", () => {
+  for (const [ref, excerpt] of [
+    ["profile.careerGoals", "Build reliable services"],
+    ["profile.preferredRoles[0]", "Platform Engineer"],
+    ["profile.preferredLocations[0]", "Remote"],
+    ["profile.remotePreference", "Remote"],
+    ["profile.salaryTargetMin", "125000"],
+    ["profile.skillsToEmphasize[0]", "TypeScript"]
+  ]) {
+    const input = structuredClone(baseInput);
+    input.job.requirements = [excerpt];
+    const preferenceMatch = cloneOutput();
+    preferenceMatch.factualMatches = [{
+      applicantEvidence: [{ ref, excerpt }],
+      jobEvidence: [{ ref: "job.requirements[0]", excerpt }],
+      supportedKeywords: [excerpt]
+    }];
+    preferenceMatch.requirementGaps = [];
+    assert.throws(
+      () => normalizeJobMatchOutput(input, preferenceMatch),
+      /unknown applicant evidence reference/i,
+      ref
+    );
+  }
 });
 
 test("unsupported evidence excerpts and keywords are rejected locally", () => {
@@ -360,7 +386,7 @@ test("blank scalar, indexed, and gap fields are never offered as evidence refs",
   assert.ok(!applicantRefs.includes("resume.skills[0]"));
   assert.ok(applicantRefs.includes("resume.skills[1]"));
   assert.ok(applicantRefs.includes("resume.workHistory[0]"));
-  assert.ok(applicantRefs.includes("profile.salaryTargetMin"));
+  assert.ok(!applicantRefs.includes("profile.salaryTargetMin"));
   assert.ok(!jobRefs.includes("job.requirements[0]"));
   assert.ok(jobRefs.includes("job.requirements[1]"));
   assert.ok(jobRefs.includes("job.salaryMin"));
@@ -396,7 +422,7 @@ test("work-history evidence accepts one submitted item but rejects invented chil
   assert.throws(() => normalizeJobMatchOutput(input, childPath), /unknown applicant evidence reference/i);
 });
 
-test("missing-keyword validation searches positive profile evidence and requires a keyword", () => {
+test("missing-keyword validation ignores profile preferences and requires a keyword", () => {
   const input = structuredClone(baseInput);
   input.profile!.preferredRoles = ["Software Engineering"];
   input.job.requirements = ["TypeScript", "Software Engineering"];
@@ -407,7 +433,7 @@ test("missing-keyword validation searches positive profile evidence and requires
     missingKeywords: ["Software Engineering"]
   };
 
-  assert.throws(() => normalizeJobMatchOutput(input, falseGap), /present in submitted applicant evidence/i);
+  assert.doesNotThrow(() => normalizeJobMatchOutput(input, falseGap));
 
   const noKeyword = cloneOutput();
   noKeyword.requirementGaps[0].missingKeywords = [];

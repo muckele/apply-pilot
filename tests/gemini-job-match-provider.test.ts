@@ -307,6 +307,33 @@ test("Gemini provider fails closed on truncation, missing usage and HTTP errors 
   }
 });
 
+test("Gemini provider rejects an oversized success body without retrying or retaining it", async () => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      candidates: [{
+        finishReason: "STOP",
+        content: { parts: [{ text: JSON.stringify({ value: "x".repeat(2_000) }) }] }
+      }],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10, totalTokenCount: 20 }
+    }), { status: 200 });
+  };
+
+  await assert.rejects(callGeminiJsonProvider({
+    apiKey: "synthetic-secret",
+    model: "gemini-3.8-flash",
+    systemPrompt: "test",
+    payload: {},
+    responseJsonSchema: responseSchema,
+    maxOutputTokens: 8_192,
+    thinkingLevel: "MEDIUM",
+    maxResponseBytes: 100,
+    fetchImpl
+  }), /response exceeded the configured body limit/i);
+  assert.equal(calls, 1);
+});
+
 test("a non-JSON Gemini HTTP rejection is definitely not charged and never retried", async () => {
   let calls = 0;
   const fetchImpl: typeof fetch = async () => {

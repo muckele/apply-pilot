@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Download, Loader2, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { FormattedDocumentPreview } from "@/components/formatted-document-preview";
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
 import {
-  paginateResumeText,
   type ResumeFontFamily,
   type ResumeFormat,
   type ResumePageSize,
@@ -44,7 +44,6 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
   });
   const [busy, setBusy] = useState<"save" | ExportFormat | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const pages = useMemo(() => paginateResumeText(fullText, format), [format, fullText]);
 
   function updateFormat<Key extends keyof ResumeFormat>(key: Key, value: ResumeFormat[Key]) {
     setFormat((current) => ({ ...current, [key]: value }));
@@ -99,10 +98,6 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
     URL.revokeObjectURL(url);
     setBusy(null);
   }
-
-  const paperWidth = format.pageSize === "A4" ? "min(100%, 49.6rem)" : "min(100%, 51rem)";
-  const paperAspect = format.pageSize === "A4" ? "210 / 297" : "8.5 / 11";
-  const previewFont = fontLabels[format.fontFamily];
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(520px,1.1fr)]">
@@ -225,60 +220,7 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
         </div>
       </section>
 
-      <section className="min-w-0 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-950">Live preview</h2>
-            <p className="text-sm text-slate-500">Estimated {pages.length} {pages.length === 1 ? "page" : "pages"}</p>
-          </div>
-          {pages.length > 2 ? (
-            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900">Review length</span>
-          ) : null}
-        </div>
-        <div className="space-y-5 overflow-x-auto rounded-lg bg-slate-200 p-3 sm:p-5">
-          {pages.map((lines, pageIndex) => (
-              <article
-                key={pageIndex}
-                className="mx-auto overflow-hidden bg-white shadow-sm"
-                style={{
-                  width: paperWidth,
-                  aspectRatio: paperAspect,
-                  padding: format.template === "COMPACT" ? "5.8%" : "7.2%",
-                  fontFamily: previewFont,
-                  fontSize: `${format.fontSize * (4 / 3)}px`,
-                  lineHeight: format.lineSpacing / 100
-                }}
-              >
-                <div className="h-full overflow-hidden text-slate-800">
-                  {lines.map((line, lineIndex) => {
-                    const trimmed = line.trim();
-                    const heading = /^(SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|TECHNICAL SKILLS):?$/i.test(trimmed);
-                    const bullet = /^\u2022\s+/.test(line);
-                    return (
-                      <div
-                        key={`${pageIndex}-${lineIndex}`}
-                        className={
-                          heading
-                            ? format.template === "MODERN"
-                              ? "mb-1 mt-3 border-l-4 py-0.5 pl-2 font-bold uppercase"
-                              : "mb-1 mt-3 border-b pb-1 font-bold uppercase"
-                            : bullet
-                              ? "ml-4 list-item pl-1"
-                              : trimmed
-                                ? "min-h-[1em]"
-                                : "h-[0.65em]"
-                        }
-                        style={heading ? { color: format.accentColor, borderColor: format.accentColor } : undefined}
-                      >
-                        {bullet ? line.replace(/^\u2022\s+/, "") : line || " "}
-                      </div>
-                    );
-                  })}
-                </div>
-              </article>
-          ))}
-        </div>
-      </section>
+      <FormattedDocumentPreview text={fullText} title="Live preview" format={format} headingLevel={2} />
     </div>
   );
 }
