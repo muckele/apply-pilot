@@ -1,5 +1,8 @@
 import type { QualificationPreparation } from "@/lib/ai/job-match-qualification";
-import type { QualificationReviewGuide } from "@/lib/ai/job-match-qualification-owner-review";
+import {
+  QUALIFICATION_REVIEW_GUIDE_VERSION,
+  type QualificationReviewGuide
+} from "@/lib/ai/job-match-qualification-review-guide";
 
 const SYNTHETIC_RESUME_PROJECTION_HASH = "a63c149f938e31c602bdcee155815392da410cf6f887c57937aa6919926bfb0b";
 const SYNTHETIC_PROFILE_PROJECTION_HASH = "1642b14b94933d9cc59ab85a5e25b1b99fe1ca387d605fa7640fe799b8b4a0d6";
@@ -22,7 +25,7 @@ type GuideSeed = Readonly<{
 const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   "laserfiche-presales-engineer-i": {
     expectedJobProjectionHash: "52031f913656015dc6f2b790f2532f0e1f046e949b389e2d0c7c5ef49e2db3bc",
-    expectedInputHash: "da32d58c71ed17811343f0d578f4cdfd44d6ed353dd4c87d17d8869c12419997",
+    expectedInputHash: "edbc88e878c1e847832cbcef3553128b21c6772563f8f1b3f16688c986a6cad0",
     supported: {
       "job.requirements[0]": ["resume.education[0]"],
       "job.requirements[1]": ["resume.projects[0]", "resume.achievements[0]"],
@@ -55,7 +58,7 @@ const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   },
   "sentry-solutions-engineer": {
     expectedJobProjectionHash: "ea8651b522a6ff3f6201e2260ab77e6189b62c031b23546c4daf1e155109915f",
-    expectedInputHash: "fa3c2177dc2864872565f35a3071f759fad6a4470a523977f0299c42e143b9bc",
+    expectedInputHash: "8e48e236cfffb507c39b1ff1be3c923e54135e276a7dd25c0f047f579aa37117",
     supported: {
       "job.requirements[2]": ["resume.skills[3]", "resume.workHistory[0]"],
       "job.requirements[3]": ["resume.projects[0]", "resume.achievements[0]"],
@@ -92,7 +95,7 @@ const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   },
   "flint-customer-success-engineer": {
     expectedJobProjectionHash: "fd86863498043f64aee0ff9357a0607dc04c8ea0d65b439433cc446e454874e1",
-    expectedInputHash: "194415a0eb12865038910238ff01e2b50301e820294e874ca2d217f363b0f908",
+    expectedInputHash: "d25f097a35591c8501c3455b8ddc0182a1bc5e05b7ba0a334ce54592fbaf84d0",
     supported: {
       "job.requirements[1]": ["resume.achievements[0]", "resume.projects[0]"]
     },
@@ -125,7 +128,7 @@ const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   },
   "roku-technical-account-manager-10909": {
     expectedJobProjectionHash: "6b0bca5bc8bdd182022ede402fd8aa0679684c3b0a3bcd2862d8a8884147e493",
-    expectedInputHash: "bb8f32436787f81be0d4953cf1a982924394e53e6b3ef1ec29de81f25562a544",
+    expectedInputHash: "49e26391c12be5f7f70d8c9f378d0df841eab8561903829e7d009fcbb4f7354d",
     supported: {
       "job.requirements[2]": ["resume.skills[2]", "resume.skills[3]", "resume.workHistory[0]"],
       "job.requirements[6]": ["resume.skills[2]", "resume.workHistory[0]"],
@@ -195,9 +198,10 @@ export function buildSyntheticQualificationReviewGuides(
     ];
     const questioned = new Set(seed.questions.flatMap((question) => question.jobRefs));
     return Object.freeze({
-      version: "1" as const,
+      version: QUALIFICATION_REVIEW_GUIDE_VERSION,
       caseId: prepared.caseId,
       inputHash: seed.expectedInputHash,
+      jobProjectionHash: seed.expectedJobProjectionHash,
       requirements: Object.freeze(requirements.map((jobRef) => Object.freeze({
         jobRef,
         disposition: seed.supported[jobRef]
@@ -216,6 +220,7 @@ export function buildSyntheticQualificationReviewGuides(
       }))),
       clarifications: Object.freeze(seed.questions.map((question) => Object.freeze({
         ...question,
+        decisionChanging: true as const,
         jobRefs: Object.freeze([...question.jobRefs])
       })))
     });

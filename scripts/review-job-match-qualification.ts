@@ -1,7 +1,11 @@
 import { JOB_MATCH_QUALIFICATION_CASES } from "@/evaluation/job-match-qualification-corpus";
 import { SYNTHETIC_QUALIFICATION_SNAPSHOT } from "@/evaluation/job-match-qualification-synthetic-preview";
 import { buildSyntheticQualificationReviewGuides } from "@/evaluation/job-match-qualification-synthetic-review-guides";
-import { buildQualificationPreparation, type QualificationExpectedCheckpoint } from "@/lib/ai/job-match-qualification";
+import {
+  buildQualificationPreparation,
+  createGeminiQualificationTransport,
+  type QualificationExpectedCheckpoint
+} from "@/lib/ai/job-match-qualification";
 import { buildOwnerBrowserHandoffSnippet } from "@/lib/ai/job-match-qualification-bridge";
 import { startJobMatchQualificationOwnerReview } from "@/lib/ai/job-match-qualification-owner-review";
 
@@ -64,6 +68,13 @@ async function main() {
     ...(syntheticPreview
       ? { syntheticSnapshot: SYNTHETIC_QUALIFICATION_SNAPSHOT }
       : { allowedOrigin: origin }),
+    ...(!syntheticPreview ? {
+      execution: {
+        activateTransport: () => createGeminiQualificationTransport({
+          apiKey: process.env.GEMINI_API_KEY ?? ""
+        })
+      }
+    } : {}),
     now,
     ...(timeout ? { captureTimeoutMs: Math.min(timeout, 5 * 60_000), sessionTimeoutMs: timeout } : {})
   });
@@ -89,11 +100,25 @@ async function main() {
     const ready = await workflow.readyForConsent;
     process.stdout.write(`${JSON.stringify({
       status: "awaiting_separate_google_consent",
-      safeManifest: ready.preparation.safeManifest,
-      reviewArtifactCount: ready.reviewArtifacts.length,
+      safeManifest: ready.safeManifest,
+      reviewArtifactCount: ready.reviewArtifactCount,
       providerCallCount: 0,
-      nextApprovalRequired: "Separate owner approval bound to this final manifest is required before credential access or any Google request. Keep this exact process running; exit requires a new exact-equality recapture and review."
+      nextApprovalRequired: syntheticPreview
+        ? "Synthetic preview has no execution path. End the local session when review is complete."
+        : "Use the local screen for separate owner approval bound to this exact manifest. Credential access occurs only after that accepted consent. Keep this exact process running; exit requires a new exact-equality recapture and review."
     })}\n`);
+    if (!syntheticPreview) {
+      try {
+        const safeReport = await workflow.executionFinished;
+        process.stdout.write(`${JSON.stringify({
+          status: "qualification_execution_finished",
+          providerCallCount: workflow.providerCallCount(),
+          safeReport
+        })}\n`);
+      } catch {
+        // Session closure is reported below without exposing private execution state.
+      }
+    }
     const outcome = await workflow.closed;
     process.stdout.write(`${JSON.stringify({ status: "local_review_closed", reason: outcome.reason })}\n`);
   } catch {

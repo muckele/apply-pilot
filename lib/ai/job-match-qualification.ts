@@ -124,6 +124,7 @@ export type QualificationExecutionConsent = {
   approvedCallCount: number;
   approvedMaximumCostMicros: number;
   privateApplicantDataSharingApproved: true;
+  existingCredentialUseApproved: true;
   noRetry: true;
   noDatabaseWrites: true;
   noRoutingWrites: true;
@@ -530,7 +531,7 @@ export function buildQualificationPreparation(
   return deepFreeze({ safeManifest, privateInputs: deepFreeze(privateInputs) });
 }
 
-function assertExecutionConsent(
+export function assertQualificationExecutionConsent(
   preparation: QualificationPreparation,
   consent: QualificationExecutionConsent
 ) {
@@ -543,6 +544,7 @@ function assertExecutionConsent(
     && consent.approvedCallCount === manifest.caseCount
     && consent.approvedMaximumCostMicros === manifest.maximumCostMicros
     && consent.privateApplicantDataSharingApproved === true
+    && consent.existingCredentialUseApproved === true
     && consent.noRetry === true
     && consent.noDatabaseWrites === true
     && consent.noRoutingWrites === true
@@ -638,6 +640,19 @@ function assertPreparationIntegrity(preparation: QualificationPreparation) {
     )
   ) {
     throw new Error("JOB_MATCH qualification applicant projection correspondence check failed.");
+  }
+}
+
+export function assertQualificationExecutionPreflight(
+  preparation: QualificationPreparation,
+  consent: QualificationExecutionConsent,
+  now: Date
+) {
+  assertPreparationIntegrity(preparation);
+  assertQualificationExecutionConsent(preparation, consent);
+  const maximumCostMicros = currentMaximumCostMicros(now);
+  if (maximumCostMicros === null || maximumCostMicros !== preparation.safeManifest.maximumCostMicros) {
+    throw new Error("JOB_MATCH qualification pricing changed or expired after preparation.");
   }
 }
 
@@ -788,13 +803,8 @@ export async function runJobMatchQualification({
   reviewCase: QualificationReviewCase;
   now?: Date;
 }) {
-  assertPreparationIntegrity(preparation);
-  assertExecutionConsent(preparation, consent);
-
-  const maximumCostMicros = currentMaximumCostMicros(now);
-  if (maximumCostMicros === null || maximumCostMicros !== preparation.safeManifest.maximumCostMicros) {
-    throw new Error("JOB_MATCH qualification pricing changed or expired after preparation.");
-  }
+  assertQualificationExecutionPreflight(preparation, consent, now);
+  const maximumCostMicros = preparation.safeManifest.maximumCostMicros as number;
 
   const results: Array<Record<string, unknown>> = [];
   let totalEstimatedCostMicros = 0;

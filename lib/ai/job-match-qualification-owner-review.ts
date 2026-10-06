@@ -1,7 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-
-import { z } from "zod";
+import { createServer, type IncomingMessage } from "node:http";
 
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { getJobMatchEvidenceReferences, type MatchInput } from "@/lib/ai/job-match";
@@ -13,79 +11,46 @@ import {
   type QualificationExpectedCheckpoint,
   type QualificationHumanReviewAttestation,
   type QualificationPreparation,
-  type QualificationReviewArtifactData,
   QUALIFICATION_REVIEW_ARTIFACT_VERSION
 } from "@/lib/ai/job-match-qualification";
-import { qualificationOwnerReviewHtml } from "@/lib/ai/job-match-qualification-owner-review-page";
+import {
+  buildConservativeQualificationReviewGuides,
+  createQualificationReviewGuide,
+  getQualificationEvidenceCandidates,
+  type QualificationReviewGuide,
+  validatedQualificationReviewGuide
+} from "@/lib/ai/job-match-qualification-review-guide";
+import {
+  createQualificationExecutionSession,
+  type QualificationExecutionActivation
+} from "@/lib/ai/job-match-qualification-execution-session";
+import {
+  assertQualificationOwnerReviewCheckpoint as assertCheckpoint,
+  deepFreeze,
+  parseQualificationOwnerReviewDecision,
+  type QualificationJobContext,
+  type QualificationReviewArtifact,
+  type ReviewEvidenceItem
+} from "@/lib/ai/job-match-qualification-owner-review-contract";
+import {
+  createRepeatableSubmissionAdmission,
+  ownerReviewSecurityHeaders as securityHeaders,
+  readBoundedOwnerReviewBody as readBoundedBody,
+  sendOwnerReviewJson as sendJson,
+  serveOwnerReviewAsset
+} from "@/lib/ai/job-match-qualification-owner-review-http";
+
+export {
+  buildConservativeQualificationReviewGuides,
+  createQualificationReviewGuide
+} from "@/lib/ai/job-match-qualification-review-guide";
+export type { QualificationReviewGuide } from "@/lib/ai/job-match-qualification-review-guide";
+export type { QualificationOwnerReviewDecision } from "@/lib/ai/job-match-qualification-owner-review-contract";
+export type { QualificationReviewArtifact } from "@/lib/ai/job-match-qualification-owner-review-contract";
 
 const DEFAULT_CAPTURE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_SESSION_TIMEOUT_MS = 30 * 60_000;
 const MAX_SESSION_TIMEOUT_MS = 60 * 60_000;
-const MAX_BODY_BYTES = 2_000_000;
-
-const recommendationSchema = z.enum(["apply now", "consider", "skip"]);
-const preferenceDispositionSchema = z.enum(["aligned", "conflict", "unknown", "not_applicable"]);
-const caseDecisionSchema = z.object({
-  caseId: z.string().min(1),
-  factsCurrent: z.literal(true),
-  clarifications: z.array(z.object({
-    questionId: z.string().min(1),
-    answer: z.enum(["yes", "no", "not_sure", "skip"]),
-    context: z.string().max(2_000)
-  }).strict()),
-  preferences: z.object({
-    location: preferenceDispositionSchema,
-    workStyle: preferenceDispositionSchema,
-    compensation: preferenceDispositionSchema
-  }).strict(),
-  recommendation: recommendationSchema,
-  rationale: z.string().trim().min(1).max(2_000)
-}).strict();
-
-export type QualificationOwnerReviewDecision = z.infer<typeof caseDecisionSchema>;
-
-export type QualificationReviewArtifact = QualificationReviewArtifactData;
-
-export type QualificationReviewGuide = Readonly<{
-  version: "1";
-  caseId: string;
-  inputHash: string;
-  requirements: readonly Readonly<{
-    jobRef: string;
-    disposition: "supported" | "confirmed_gap" | "unknown" | "not_material";
-    materiality: "must_have" | "important" | "preferred";
-    applicantRefs: readonly string[];
-    rationale: string;
-  }>[];
-  clarifications: readonly Readonly<{
-    id: string;
-    title: string;
-    question: string;
-    whyItMatters: string;
-    jobRefs: readonly string[];
-  }>[];
-}>;
-
-type ReviewEvidenceItem = Readonly<{
-  ref: string;
-  label: string;
-  title: string;
-  details: readonly string[];
-  selectionLabel: string;
-}>;
-
-type QualificationJobContext = Readonly<{
-  title: string;
-  company: string;
-  location: string;
-  workArrangement: string;
-  compensation: string;
-  responsibilities: readonly string[];
-  technologies: readonly string[];
-  sourceUrl: string;
-  capturedAt: string;
-  capturedAtLabel: string;
-}>;
 
 type QualificationSourceResume = Readonly<{
   title: string;
@@ -100,7 +65,7 @@ type QualificationSourceResume = Readonly<{
 }>;
 
 export type QualificationOwnerReviewView = Readonly<{
-  phase: "reviewing" | "awaiting_separate_google_consent";
+  phase: "authoring_evidence_guides" | "reviewing" | "awaiting_separate_google_consent";
   memoryNotice: string;
   reviewedCaseCount: number;
   caseCount: number;
@@ -144,18 +109,12 @@ export type QualificationOwnerReviewView = Readonly<{
       disposition: "supported" | "confirmed_gap" | "unknown" | "not_material";
       materiality: "must_have" | "important" | "preferred";
       evidence: readonly ReviewEvidenceItem[];
+      candidateEvidence: readonly ReviewEvidenceItem[];
+      candidateCategory: string;
       rationale: string;
     }>[];
   }>[];
 }>;
-
-function deepFreeze<T>(value: T): T {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const item of Object.values(value as Record<string, unknown>)) deepFreeze(item);
-  }
-  return value;
-}
 
 function recordValue(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -334,75 +293,6 @@ function evidenceItems(input: MatchInput, refs: readonly string[]) {
   return refs.map((ref) => formatEvidence(ref, resolveEvidence(input, ref)));
 }
 
-function validatedReviewGuide(
-  preparation: QualificationPreparation,
-  guide: QualificationReviewGuide
-) {
-  const prepared = preparation.privateInputs.find((entry) => entry.caseId === guide.caseId);
-  if (!prepared || guide.version !== "1" || guide.inputHash !== prepared.inputHash) {
-    throw new Error("Qualification review guide is not bound to the exact case input.");
-  }
-  const refs = getJobMatchEvidenceReferences(prepared.input);
-  if (
-    guide.requirements.length !== refs.gap.length
-    || guide.requirements.some((entry, index) => entry.jobRef !== refs.gap[index])
-  ) {
-    throw new Error("Qualification review guide must cover every requirement exactly once in source order.");
-  }
-  const allowedApplicantRefs = new Set(refs.applicant);
-  const jobRefs = new Set(refs.gap);
-  const questionIds = new Set<string>();
-  for (const question of guide.clarifications) {
-    if (!question.id.trim() || questionIds.has(question.id) || question.jobRefs.some((ref) => !jobRefs.has(ref))) {
-      throw new Error("Qualification review guide contains an invalid clarification question.");
-    }
-    questionIds.add(question.id);
-  }
-  for (const requirement of guide.requirements) {
-    const applicantRefs = new Set(requirement.applicantRefs);
-    if (applicantRefs.size !== requirement.applicantRefs.length
-      || requirement.applicantRefs.some((ref) => !allowedApplicantRefs.has(ref))) {
-      throw new Error("Qualification review guide used unknown applicant evidence.");
-    }
-    if ((requirement.disposition === "supported") !== (requirement.applicantRefs.length > 0)) {
-      throw new Error("Qualification review guide support must be backed by applicant evidence.");
-    }
-  }
-  return guide;
-}
-
-export function buildConservativeQualificationReviewGuides(
-  preparation: QualificationPreparation,
-  cases: readonly QualificationCase[]
-): readonly QualificationReviewGuide[] {
-  const byId = new Map(cases.map((entry) => [entry.id, entry]));
-  return deepFreeze(preparation.privateInputs.map((prepared) => {
-    const refs = getJobMatchEvidenceReferences(prepared.input);
-    const prompts = byId.get(prepared.caseId)?.humanReview.openGaps ?? [];
-    return {
-      version: "1" as const,
-      caseId: prepared.caseId,
-      inputHash: prepared.inputHash,
-      requirements: refs.gap.map((jobRef) => ({
-        jobRef,
-        disposition: "unknown" as const,
-        materiality: jobRef.startsWith("job.preferredQualifications[")
-          ? "preferred" as const
-          : "important" as const,
-        applicantRefs: [],
-        rationale: "No independently reviewed applicant evidence map was supplied for this requirement."
-      })),
-      clarifications: prompts.map((question, index) => ({
-        id: `question-${index + 1}`,
-        title: `Clarification ${index + 1}`,
-        question,
-        whyItMatters: "This could change the human fit decision, but it does not create résumé history.",
-        jobRefs: []
-      }))
-    };
-  }));
-}
-
 function sourceResumePreview(items: readonly ReviewEvidenceItem[], syntheticPreview: boolean): QualificationSourceResume {
   const section = (prefixes: readonly string[]) => items.filter((entry) =>
     prefixes.some((prefix) => entry.ref === prefix || entry.ref.startsWith(`${prefix}[`)));
@@ -430,8 +320,11 @@ export function buildQualificationOwnerReviewView(
   const syntheticPreview = options.syntheticPreview === true;
   const caseById = new Map(cases.map((entry) => [entry.id, entry]));
   const reviewGuides = options.reviewGuides
-    ?? buildConservativeQualificationReviewGuides(preparation, cases);
-  const guideById = new Map(reviewGuides.map((guide) => [guide.caseId, validatedReviewGuide(preparation, guide)]));
+    ?? buildConservativeQualificationReviewGuides(preparation);
+  const guideById = new Map(reviewGuides.map((guide) => [
+    guide.caseId,
+    validatedQualificationReviewGuide(preparation, guide)
+  ]));
   const reviewedCaseCount = preparation.privateInputs.filter((entry) => entry.humanReviewAttestation).length;
   return deepFreeze({
     phase: preparation.safeManifest.readiness === "ready_for_separate_execution_consent"
@@ -450,7 +343,7 @@ export function buildQualificationOwnerReviewView(
       const refs = getJobMatchEvidenceReferences(prepared.input);
       const sourceCase = caseById.get(prepared.caseId);
       const safeCase = preparation.safeManifest.cases.find((entry) => entry.id === prepared.caseId);
-      const applicantEvidence = evidenceItems(prepared.input, refs.applicant);
+      const applicantEvidence = evidenceItems(prepared.input, [...refs.applicant, ...refs.preference]);
       const applicantEvidenceByRef = new Map(applicantEvidence.map((entry) => [entry.ref, entry]));
       const requirementEvidenceByRef = new Map(
         evidenceItems(prepared.input, refs.gap).map((entry) => [entry.ref, entry])
@@ -462,6 +355,9 @@ export function buildQualificationOwnerReviewView(
         disposition: entry.disposition,
         materiality: entry.materiality,
         evidence: entry.applicantRefs.map((ref) => applicantEvidenceByRef.get(ref) as ReviewEvidenceItem),
+        candidateEvidence: getQualificationEvidenceCandidates(prepared.input, entry.jobRef).applicantRefs
+          .map((ref) => applicantEvidenceByRef.get(ref) as ReviewEvidenceItem),
+        candidateCategory: getQualificationEvidenceCandidates(prepared.input, entry.jobRef).category,
         rationale: entry.rationale
       }));
       const sourceUrl = safeCase?.sourceUrl ?? sourceCase?.provenance.sourceUrl ?? "";
@@ -537,13 +433,13 @@ export function createQualificationReviewArtifact({
   decision: unknown;
   reviewedAt: string;
 }) {
-  const decision = caseDecisionSchema.parse(decisionValue);
+  const decision = parseQualificationOwnerReviewDecision(decisionValue);
   const prepared = preparation.privateInputs.find((entry) => entry.caseId === decision.caseId);
   if (!prepared) throw new Error("Qualification review referenced an unknown case.");
   if (!Number.isFinite(Date.parse(reviewedAt))) throw new Error("Qualification review time is invalid.");
   const guideValue = reviewGuides.find((entry) => entry.caseId === prepared.caseId);
   if (!guideValue) throw new Error("Qualification review guide is missing a frozen case.");
-  const guide = validatedReviewGuide(preparation, guideValue);
+  const guide = validatedQualificationReviewGuide(preparation, guideValue);
   if (decision.clarifications.length !== guide.clarifications.length
     || decision.clarifications.some((entry, index) => entry.questionId !== guide.clarifications[index].id)) {
     throw new Error("Qualification review must answer every clarification exactly once in source order.");
@@ -591,7 +487,7 @@ export function createQualificationReviewArtifact({
       userAttestationIds
     };
   });
-  const reviewGuideHash = hashAiInput("jobMatchQualificationReviewGuide", "1", guide);
+  const reviewGuideHash = hashAiInput("jobMatchQualificationReviewGuide", guide.version, guide);
   const artifact: QualificationReviewArtifact = deepFreeze({
     version: QUALIFICATION_REVIEW_ARTIFACT_VERSION,
     caseId: prepared.caseId,
@@ -626,55 +522,6 @@ export function createQualificationReviewArtifact({
   return deepFreeze({ artifact, attestation });
 }
 
-function validHash(value: string) {
-  return /^[a-f0-9]{64}$/u.test(value);
-}
-
-function assertCheckpoint(expected: QualificationExpectedCheckpoint, actual: QualificationPreparation) {
-  if (!validHash(expected.manifestHash)
-    || !validHash(expected.resumeProjectionHash)
-    || !validHash(expected.profileProjectionHash)
-    || expected.manifestHash !== actual.safeManifest.manifestHash
-    || expected.resumeProjectionHash !== actual.safeManifest.resumeProjectionHash
-    || expected.profileProjectionHash !== actual.safeManifest.profileProjectionHash) {
-    throw new Error("Qualification review checkpoint did not exactly match the recaptured input.");
-  }
-}
-
-async function readBoundedBody(request: IncomingMessage) {
-  const declared = Number(request.headers["content-length"] ?? 0);
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
-    request.resume();
-    throw new RangeError("body_limit");
-  }
-  const chunks: Buffer[] = [];
-  let received = 0;
-  for await (const chunkValue of request) {
-    const chunk = Buffer.isBuffer(chunkValue) ? chunkValue : Buffer.from(chunkValue);
-    received += chunk.byteLength;
-    if (received > MAX_BODY_BYTES) throw new RangeError("body_limit");
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function securityHeaders(contentType: string) {
-  return {
-    "content-type": contentType,
-    "cache-control": "private, no-store",
-    "content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; font-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-    "referrer-policy": "no-referrer",
-    "x-content-type-options": "nosniff",
-    "x-frame-options": "DENY",
-    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
-  };
-}
-
-function sendJson(response: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) {
-  response.writeHead(status, { ...securityHeaders("application/json; charset=utf-8"), ...extra });
-  response.end(JSON.stringify(body));
-}
-
 type CloseReason = "navigation_or_owner_cancel" | "session_timeout" | "test_cleanup" | "closed";
 
 export async function startJobMatchQualificationOwnerReview({
@@ -683,6 +530,7 @@ export async function startJobMatchQualificationOwnerReview({
   reviewGuides,
   allowedOrigin,
   syntheticSnapshot,
+  execution,
   now = new Date(),
   captureTimeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS,
   sessionTimeoutMs = DEFAULT_SESSION_TIMEOUT_MS
@@ -692,6 +540,7 @@ export async function startJobMatchQualificationOwnerReview({
   reviewGuides?: readonly QualificationReviewGuide[];
   allowedOrigin?: string;
   syntheticSnapshot?: ApplicantQualificationSnapshot;
+  execution?: QualificationExecutionActivation;
   now?: Date;
   captureTimeoutMs?: number;
   sessionTimeoutMs?: number;
@@ -705,6 +554,13 @@ export async function startJobMatchQualificationOwnerReview({
   if ((allowedOrigin ? 1 : 0) + (syntheticSnapshot ? 1 : 0) !== 1) {
     throw new Error("Qualification owner review requires exactly one real-capture or synthetic-preview source.");
   }
+  if (allowedOrigin && reviewGuides) {
+    throw new Error("Pre-authored qualification review guides are allowed only for synthetic preview.");
+  }
+  if (syntheticSnapshot && execution) {
+    throw new Error("Synthetic preview cannot activate qualification execution.");
+  }
+  const isSyntheticPreview = Boolean(syntheticSnapshot);
 
   const reviewToken = randomBytes(32).toString("base64url");
   const captureToken = randomBytes(32).toString("base64url");
@@ -714,23 +570,33 @@ export async function startJobMatchQualificationOwnerReview({
   let activeReviewGuides: readonly QualificationReviewGuide[] = [];
   let reviewArtifacts: QualificationReviewArtifact[] = [];
   let attestations: QualificationHumanReviewAttestation[] = [];
+  let finalSafeManifest: QualificationPreparation["safeManifest"] | null = null;
+  let finalReviewArtifactCount = 0;
+  let executionSession: ReturnType<typeof createQualificationExecutionSession> | null = null;
+  const repeatableSubmissionAdmission = createRepeatableSubmissionAdmission();
   let currentCaseIndex = 0;
-  let phase: "awaiting_capture" | "capturing" | "reviewing" | "awaiting_separate_google_consent" | "closed" = "awaiting_capture";
+  let phase: "awaiting_capture" | "capturing" | "authoring_evidence_guides" | "reviewing" | "awaiting_separate_google_consent" | "closed" = "awaiting_capture";
   let closed = false;
-  let readyValueDelivered = false;
   const activePrivateBodyRequests = new Set<IncomingMessage>();
-  let resolveReady!: (value: { preparation: QualificationPreparation; reviewArtifacts: readonly QualificationReviewArtifact[] }) => void;
+  let resolveReady!: (value: { safeManifest: QualificationPreparation["safeManifest"]; reviewArtifactCount: number }) => void;
   let rejectReady!: (error: Error) => void;
+  let resolveExecutionFinished!: (report: unknown) => void;
+  let rejectExecutionFinished!: (error: Error) => void;
   let resolveClosed!: (value: { reason: CloseReason }) => void;
   const readyForConsent = new Promise<{
-    preparation: QualificationPreparation;
-    reviewArtifacts: readonly QualificationReviewArtifact[];
+    safeManifest: QualificationPreparation["safeManifest"];
+    reviewArtifactCount: number;
   }>((resolve, reject) => {
     resolveReady = resolve;
     rejectReady = reject;
   });
   // A caller may legitimately wait only for closure after cancellation.
   void readyForConsent.catch(() => undefined);
+  const executionFinished = new Promise<unknown>((resolve, reject) => {
+    resolveExecutionFinished = resolve;
+    rejectExecutionFinished = reject;
+  });
+  void executionFinished.catch(() => undefined);
   const closedPromise = new Promise<{ reason: CloseReason }>((resolve) => { resolveClosed = resolve; });
   let captureTimer: NodeJS.Timeout | undefined;
   let sessionTimer: NodeJS.Timeout | undefined;
@@ -741,6 +607,8 @@ export async function startJobMatchQualificationOwnerReview({
     phase = "closed";
     if (captureTimer) clearTimeout(captureTimer);
     if (sessionTimer) clearTimeout(sessionTimer);
+    executionSession?.close();
+    executionSession = null;
     preparation = null;
     snapshot = null;
     activeReviewGuides = [];
@@ -749,22 +617,29 @@ export async function startJobMatchQualificationOwnerReview({
     for (const request of activePrivateBodyRequests) request.destroy();
     activePrivateBodyRequests.clear();
     rejectReady(new Error(`Qualification owner review closed: ${reason}.`));
+    rejectExecutionFinished(new Error(`Qualification execution closed: ${reason}.`));
     server.close();
     resolveClosed({ reason });
   };
 
+  const effectivePhase = () => executionSession?.phase() ?? phase;
+
   const admitSnapshot = (candidate: ApplicantQualificationSnapshot) => {
     const draft = buildQualificationPreparation(candidate, cases, now);
     assertCheckpoint(expectedCheckpoint, draft);
-    const guides = reviewGuides ?? buildConservativeQualificationReviewGuides(draft, cases);
-    if (guides.length !== draft.privateInputs.length) {
-      throw new Error("Qualification review guides must cover every frozen case.");
+    if (reviewGuides) {
+      if (reviewGuides.length !== draft.privateInputs.length) {
+        throw new Error("Qualification review guides must cover every frozen case.");
+      }
+      reviewGuides.forEach((guide) => validatedQualificationReviewGuide(draft, guide));
+      activeReviewGuides = deepFreeze([...reviewGuides]);
+      phase = "reviewing";
+    } else {
+      activeReviewGuides = buildConservativeQualificationReviewGuides(draft);
+      phase = "reviewing";
     }
-    guides.forEach((guide) => validatedReviewGuide(draft, guide));
     snapshot = candidate;
     preparation = draft;
-    activeReviewGuides = deepFreeze([...guides]);
-    phase = "reviewing";
     currentCaseIndex = 0;
     if (captureTimer) clearTimeout(captureTimer);
     sessionTimer = setTimeout(() => close("session_timeout"), sessionTimeoutMs);
@@ -826,42 +701,181 @@ export async function startJobMatchQualificationOwnerReview({
 
       const reviewPath = `/review/${reviewToken}`;
       const statePath = `/api/state/${reviewToken}`;
+      const guideSubmissionPath = `/api/guides/${reviewToken}`;
       const submissionPath = `/api/reviews/${reviewToken}`;
+      const consentPath = `/api/execution-consent/${reviewToken}`;
+      const executionReviewPath = `/api/execution-reviews/${reviewToken}`;
       const cancelPath = `/api/cancel/${reviewToken}`;
-      if (requestUrl.pathname === reviewPath && request.method === "GET") {
-        response.writeHead(200, securityHeaders("text/html; charset=utf-8"));
-        response.end(qualificationOwnerReviewHtml({ statePath, submissionPath, cancelPath }));
-        return;
-      }
-      if (requestUrl.pathname === "/review.css" && request.method === "GET") {
-        response.writeHead(200, securityHeaders("text/css; charset=utf-8"));
-        response.end(qualificationOwnerReviewHtml.css);
-        return;
-      }
-      if (requestUrl.pathname === "/review.js" && request.method === "GET") {
-        response.writeHead(200, securityHeaders("text/javascript; charset=utf-8"));
-        response.end(qualificationOwnerReviewHtml.javascript);
+      if (serveOwnerReviewAsset(requestUrl.pathname, request.method, response, {
+        reviewPath,
+        statePath,
+        guideSubmissionPath,
+        submissionPath,
+        consentPath,
+        executionReviewPath,
+        cancelPath
+      })) {
         return;
       }
       if (requestUrl.pathname === statePath && request.method === "GET") {
+        const currentPhase = effectivePhase();
+        if (finalSafeManifest && (
+          currentPhase === "awaiting_separate_google_consent"
+          || currentPhase === "execution_starting"
+          || currentPhase === "executing"
+          || currentPhase === "reviewing_provider_result"
+          || currentPhase === "execution_complete"
+          || currentPhase === "execution_stopped"
+        )) {
+          const executionView = executionSession?.view();
+          sendJson(response, 200, {
+            phase: currentPhase,
+            memoryNotice: executionSession?.hasPrivateInput()
+              ? "The exact reviewed preparation remains only in this loopback process for the separately consented run. The current provider result is rendered only while its review is pending."
+              : "Private execution input has been released from the local workflow; only the safe manifest and safe report remain.",
+            reviewedCaseCount: finalSafeManifest.caseCount,
+            caseCount: finalSafeManifest.caseCount,
+            syntheticPreview: isSyntheticPreview,
+            finalManifest: finalSafeManifest,
+            cases: [],
+            executionAvailable: Boolean(executionSession),
+            providerCallCount: executionSession?.providerCallCount() ?? 0,
+            currentCaseIndex: executionView?.providerResultReview
+              ? executionView.providerResultReview.index - 1
+              : finalSafeManifest.caseCount,
+            providerResultReview: executionView?.providerResultReview ?? null,
+            safeReport: executionView?.safeReport ?? null
+          });
+          return;
+        }
         if (!preparation || phase === "awaiting_capture") {
           sendJson(response, 200, { phase: "awaiting_capture" });
           return;
         }
+        const viewGuides = phase === "authoring_evidence_guides"
+          ? buildConservativeQualificationReviewGuides(preparation)
+          : activeReviewGuides;
         const view = buildQualificationOwnerReviewView(preparation, cases, {
-          syntheticPreview: Boolean(syntheticSnapshot),
-          reviewGuides: activeReviewGuides
+          syntheticPreview: isSyntheticPreview,
+          reviewGuides: viewGuides
         });
         sendJson(response, 200, {
           ...view,
           phase,
           currentCaseIndex,
-          cases: phase === "reviewing" ? [view.cases[currentCaseIndex]] : []
+          cases: phase === "reviewing" || phase === "authoring_evidence_guides"
+            ? [view.cases[currentCaseIndex]]
+            : []
         });
         return;
       }
+      if (requestUrl.pathname === consentPath && request.method === "POST") {
+        if (request.headers.origin !== origin) {
+          sendJson(response, 403, { error: "Origin rejected" });
+          return;
+        }
+        if (!executionSession || effectivePhase() !== "awaiting_separate_google_consent") {
+          sendJson(response, 409, { error: "Qualification execution consent unavailable" });
+          return;
+        }
+        activePrivateBodyRequests.add(request);
+        try {
+          const raw = await readBoundedBody(request);
+          if (closed || !executionSession || effectivePhase() !== "awaiting_separate_google_consent") {
+            if (!response.destroyed) sendJson(response, 409, { error: "Qualification execution consent unavailable" });
+            return;
+          }
+          executionSession.authorize(JSON.parse(raw));
+          sendJson(response, 202, { phase: effectivePhase() });
+        } finally {
+          activePrivateBodyRequests.delete(request);
+        }
+        return;
+      }
+      if (requestUrl.pathname === executionReviewPath && request.method === "POST") {
+        if (request.headers.origin !== origin) {
+          sendJson(response, 403, { error: "Origin rejected" });
+          return;
+        }
+        if (!executionSession || effectivePhase() !== "reviewing_provider_result") {
+          sendJson(response, 409, { error: "Qualification provider-result review unavailable" });
+          return;
+        }
+        const releaseAdmission = repeatableSubmissionAdmission.acquire("provider_review");
+        if (!releaseAdmission) {
+          sendJson(response, 409, { error: "Qualification provider-result review unavailable" });
+          return;
+        }
+        activePrivateBodyRequests.add(request);
+        try {
+          const raw = await readBoundedBody(request);
+          if (closed || !executionSession || effectivePhase() !== "reviewing_provider_result") {
+            if (!response.destroyed) sendJson(response, 409, { error: "Qualification provider-result review unavailable" });
+            return;
+          }
+          executionSession.submitProviderReview(JSON.parse(raw));
+          sendJson(response, 200, { phase: effectivePhase() });
+        } finally {
+          activePrivateBodyRequests.delete(request);
+          releaseAdmission();
+        }
+        return;
+      }
+      if (requestUrl.pathname === guideSubmissionPath && request.method === "POST") {
+        if (request.headers.origin !== origin) {
+          sendJson(response, 403, { error: "Origin rejected" });
+          return;
+        }
+        if (phase !== "authoring_evidence_guides" || !preparation) {
+          sendJson(response, 409, { error: "Evidence-guide authoring unavailable" });
+          return;
+        }
+        const releaseAdmission = repeatableSubmissionAdmission.acquire("guide");
+        if (!releaseAdmission) {
+          sendJson(response, 409, { error: "Evidence-guide authoring unavailable" });
+          return;
+        }
+        activePrivateBodyRequests.add(request);
+        try {
+          const raw = await readBoundedBody(request);
+          const activePreparation = preparation;
+          if (closed || phase !== "authoring_evidence_guides" || !activePreparation) {
+            if (!response.destroyed) sendJson(response, 409, { error: "Evidence-guide authoring unavailable" });
+            return;
+          }
+          const guide = createQualificationReviewGuide({
+            preparation: activePreparation,
+            draft: JSON.parse(raw)
+          });
+          const expectedCase = activePreparation.privateInputs[currentCaseIndex];
+          if (guide.caseId !== expectedCase.caseId) {
+            throw new Error("Qualification evidence guides must follow the frozen case order.");
+          }
+          activeReviewGuides = deepFreeze([...activeReviewGuides, guide]);
+          currentCaseIndex += 1;
+          if (currentCaseIndex === activePreparation.privateInputs.length) {
+            phase = "reviewing";
+            currentCaseIndex = 0;
+          }
+          sendJson(response, 200, { phase, currentCaseIndex });
+        } finally {
+          activePrivateBodyRequests.delete(request);
+          releaseAdmission();
+        }
+        return;
+      }
       if (requestUrl.pathname === submissionPath && request.method === "POST") {
-        if (request.headers.origin !== origin || phase !== "reviewing" || !preparation || !snapshot) {
+        if (
+          request.headers.origin !== origin
+          || phase !== "reviewing"
+          || !preparation
+          || !snapshot
+        ) {
+          sendJson(response, 409, { error: "Review unavailable" });
+          return;
+        }
+        const releaseAdmission = repeatableSubmissionAdmission.acquire("owner_review");
+        if (!releaseAdmission) {
           sendJson(response, 409, { error: "Review unavailable" });
           return;
         }
@@ -888,22 +902,33 @@ export async function startJobMatchQualificationOwnerReview({
           attestations.push(result.attestation);
           currentCaseIndex += 1;
           if (currentCaseIndex === activePreparation.privateInputs.length) {
-            preparation = buildQualificationPreparation(activeSnapshot, cases, now, attestations);
+            const reviewedPreparation = buildQualificationPreparation(activeSnapshot, cases, now, attestations);
+            finalSafeManifest = reviewedPreparation.safeManifest;
+            finalReviewArtifactCount = reviewArtifacts.length;
             phase = "awaiting_separate_google_consent";
-            readyValueDelivered = true;
-            resolveReady({
-              preparation,
-              reviewArtifacts: deepFreeze([...reviewArtifacts])
-            });
+            if (execution) {
+              executionSession = createQualificationExecutionSession({
+                preparation: reviewedPreparation,
+                activation: execution
+              });
+              void executionSession.finished.then(resolveExecutionFinished);
+            }
+            preparation = null;
+            snapshot = null;
+            activeReviewGuides = [];
+            attestations = [];
+            reviewArtifacts = [];
+            resolveReady({ safeManifest: finalSafeManifest, reviewArtifactCount: finalReviewArtifactCount });
             sendJson(response, 200, {
               phase,
-              finalManifestHash: preparation.safeManifest.manifestHash
+              finalManifestHash: finalSafeManifest.manifestHash
             });
             return;
           }
           sendJson(response, 200, { phase, currentCaseIndex });
         } finally {
           activePrivateBodyRequests.delete(request);
+          releaseAdmission();
         }
         return;
       }
@@ -953,13 +978,17 @@ export async function startJobMatchQualificationOwnerReview({
     reviewUrl: `${origin}/review/${reviewToken}`,
     stateUrl: `${origin}/api/state/${reviewToken}`,
     reviewSubmissionUrl: `${origin}/api/reviews/${reviewToken}`,
+    guideSubmissionUrl: `${origin}/api/guides/${reviewToken}`,
+    consentSubmissionUrl: `${origin}/api/execution-consent/${reviewToken}`,
+    executionReviewSubmissionUrl: `${origin}/api/execution-reviews/${reviewToken}`,
     cancelUrl: `${origin}/api/cancel/${reviewToken}`,
     captureUrl: allowedOrigin ? `${origin}/capture/${captureToken}` : null,
     readyForConsent,
+    executionFinished,
     closed: closedPromise,
     close,
-    phase: () => phase,
-    hasPrivateInput: () => preparation !== null || snapshot !== null || readyValueDelivered,
-    providerCallCount: () => 0
+    phase: effectivePhase,
+    hasPrivateInput: () => preparation !== null || snapshot !== null || executionSession?.hasPrivateInput() === true,
+    providerCallCount: () => executionSession?.providerCallCount() ?? 0
   });
 }

@@ -163,7 +163,7 @@ test("the execution bridge keeps the exact handoff in memory through review, con
     attestHumanInputs: async (draft) => {
       assert.equal(draft.safeManifest.readiness, "blocked_human_review_required");
       assert.match(draft.privateInputs[0].input.resume?.rawText ?? "", /PRIVATE RAW RESUME/);
-      const reviewGuides = buildConservativeQualificationReviewGuides(draft, JOB_MATCH_QUALIFICATION_CASES);
+      const reviewGuides = buildConservativeQualificationReviewGuides(draft);
       return draft.privateInputs.map((entry) => createQualificationReviewArtifact({
         preparation: draft,
         reviewGuides,
@@ -193,6 +193,7 @@ test("the execution bridge keeps the exact handoff in memory through review, con
         approvedCallCount: 4,
         approvedMaximumCostMicros: manifest.maximumCostMicros as number,
         privateApplicantDataSharingApproved: true,
+        existingCredentialUseApproved: true,
         noRetry: true,
         noDatabaseWrites: true,
         noRoutingWrites: true,

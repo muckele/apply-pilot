@@ -21,8 +21,9 @@ import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
 import { PublicApiError } from "@/lib/api-errors";
 
-// Result contract remains v3; prompt/cache revision 3.1 adds input-specific refs.
-export const JOB_MATCH_PROMPT_VERSION = "3.1";
+// Result contract remains v3; prompt/cache revision 3.2 makes factual evidence
+// resume-only while retaining profile values as preference-fit context.
+export const JOB_MATCH_PROMPT_VERSION = "3.2";
 export const JOB_MATCH_PROVIDER = "gemini" as const;
 export const JOB_MATCH_MODEL = "gemini-3.8-flash";
 export const JOB_MATCH_THINKING_LEVEL = "MEDIUM" as const;
@@ -200,7 +201,9 @@ export function getJobMatchEvidenceReferences(input: MatchInput) {
     ...workHistoryReferences,
     ...indexedReferences("resume.projects", input.resume?.projects),
     ...indexedReferences("resume.education", input.resume?.education),
-    ...indexedReferences("resume.certifications", input.resume?.certifications),
+    ...indexedReferences("resume.certifications", input.resume?.certifications)
+  ];
+  const preference = [
     ...exactReferences([["profile.careerGoals", input.profile?.careerGoals]]),
     ...indexedReferences("profile.preferredRoles", input.profile?.preferredRoles),
     ...indexedReferences("profile.preferredLocations", input.profile?.preferredLocations),
@@ -229,7 +232,7 @@ export function getJobMatchEvidenceReferences(input: MatchInput) {
     ...indexedReferences("job.requirements", input.job.requirements),
     ...indexedReferences("job.preferredQualifications", input.job.preferredQualifications)
   ];
-  return { applicant, job, gap };
+  return { applicant, preference, job, gap };
 }
 
 function jsonCitation(refs: string[], emptySentinel: string) {
@@ -347,11 +350,7 @@ function exactValue(ref: string, values: Record<string, unknown>): ResolvedEvide
 function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvidence {
   const exact = exactValue(ref, {
     "resume.summary": input.resume?.summary,
-    "resume.rawText": input.resume?.rawText,
-    "profile.careerGoals": input.profile?.careerGoals,
-    "profile.remotePreference": input.profile?.remotePreference,
-    "profile.salaryTargetMin": input.profile?.salaryTargetMin,
-    "profile.salaryTargetMax": input.profile?.salaryTargetMax
+    "resume.rawText": input.resume?.rawText
   });
   if (exact.found) return exact;
 
@@ -369,10 +368,7 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
       ref,
       "resume.certifications",
       Array.isArray(input.resume?.certifications) ? input.resume.certifications : undefined
-    ),
-    indexedValue(ref, "profile.preferredRoles", input.profile?.preferredRoles),
-    indexedValue(ref, "profile.preferredLocations", input.profile?.preferredLocations),
-    indexedValue(ref, "profile.skillsToEmphasize", input.profile?.skillsToEmphasize)
+    )
   ].find((candidate) => candidate.found);
   return indexed ?? { found: false };
 }
@@ -442,14 +438,7 @@ function applicantEvidenceText(input: MatchInput) {
     input.resume?.education,
     input.resume?.certifications,
     ...(input.resume?.skills ?? []),
-    ...(input.resume?.achievements ?? []),
-    input.profile?.careerGoals,
-    ...(input.profile?.preferredRoles ?? []),
-    ...(input.profile?.preferredLocations ?? []),
-    input.profile?.remotePreference,
-    input.profile?.salaryTargetMin,
-    input.profile?.salaryTargetMax,
-    ...(input.profile?.skillsToEmphasize ?? [])
+    ...(input.resume?.achievements ?? [])
   ].filter((value) => value !== null && value !== undefined);
   return comparable(values.map(evidenceText).join("\n"));
 }

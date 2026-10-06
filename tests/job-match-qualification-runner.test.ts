@@ -100,6 +100,7 @@ function approvedConsent(manifestHash: string): QualificationExecutionConsent {
     approvedCallCount: 4,
     approvedMaximumCostMicros: 290_880,
     privateApplicantDataSharingApproved: true,
+    existingCredentialUseApproved: true,
     noRetry: true,
     noDatabaseWrites: true,
     noRoutingWrites: true,
@@ -115,7 +116,7 @@ function reviewedPreparation(): QualificationPreparation {
   const snapshot = buildApplicantQualificationSnapshot(master, profile);
   const now = new Date("2026-10-05T17:00:00Z");
   const draft = buildQualificationPreparation(snapshot, JOB_MATCH_QUALIFICATION_CASES, now);
-  const reviewGuides = buildConservativeQualificationReviewGuides(draft, JOB_MATCH_QUALIFICATION_CASES);
+  const reviewGuides = buildConservativeQualificationReviewGuides(draft);
   const attestations = draft.privateInputs.map((entry) => createQualificationReviewArtifact({
     preparation: draft,
     reviewGuides,
