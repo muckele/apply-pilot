@@ -53,6 +53,15 @@ type ApplyPacketBuilderProps = {
   resumeVersions: PacketResumeOption[];
   coverLetters: PacketCoverLetterOption[];
   application: PacketApplication;
+  previewMode?: "synthetic-local";
+  syntheticReview?: {
+    supportedCount: number;
+    unresolvedCount: number;
+    gapCount: number;
+    suitabilityLabel: string;
+    suitabilityDetail: string;
+    documentState: "awaiting" | "approved" | "documents-changed" | "review-changed";
+  };
 };
 
 type ExportFormat = "docx" | "pdf";
@@ -117,16 +126,28 @@ async function downloadGeneratedFile(payload: {
   URL.revokeObjectURL(url);
 }
 
-function StepPill({ label, complete }: { label: string; complete: boolean }) {
+function StepPill({
+  label,
+  complete,
+  changed = false,
+  compact = false
+}: {
+  label: string;
+  complete: boolean;
+  changed?: boolean;
+  compact?: boolean;
+}) {
   return (
     <div
-      className={`flex min-h-12 items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
-        complete
+      className={`flex items-center rounded-lg border ${compact ? "min-h-14 flex-col justify-center gap-1 px-1 py-2 text-center text-[11px] sm:text-xs" : "min-h-12 gap-2 px-3 py-2 text-sm"} ${
+        changed
+          ? "border-amber-300 bg-amber-50 text-amber-900"
+          : complete
           ? "border-emerald-200 bg-emerald-50 text-emerald-800"
           : "border-slate-200 bg-slate-50 text-slate-600"
       }`}
     >
-      <CheckCircle2 size={16} className={complete ? "text-emerald-600" : "text-slate-300"} aria-hidden="true" />
+      <CheckCircle2 size={compact ? 14 : 16} className={changed ? "text-amber-600" : complete ? "text-emerald-600" : "text-slate-300"} aria-hidden="true" />
       <span className="font-medium">{label}</span>
     </div>
   );
@@ -136,7 +157,9 @@ export function ApplyPacketBuilder({
   job,
   resumeVersions,
   coverLetters,
-  application
+  application,
+  previewMode,
+  syntheticReview
 }: ApplyPacketBuilderProps) {
   const router = useRouter();
   const [selectedResumeId, setSelectedResumeId] = useState(application?.resumeVersionId ?? resumeVersions[0]?.id ?? "");
@@ -165,6 +188,76 @@ export function ApplyPacketBuilder({
     selectedCoverId && application?.coverLetterVersionId === selectedCoverId
   );
   const packetSaved = selectedResumeSaved && selectedCoverSaved;
+
+  if (previewMode === "synthetic-local" && syntheticReview) {
+    const reviewApproved = syntheticReview.documentState === "approved";
+    const documentsChanged = syntheticReview.documentState === "documents-changed";
+    const reviewChanged = documentsChanged || syntheticReview.documentState === "review-changed";
+    const reviewStatus = documentsChanged
+      ? "Documents changed"
+      : syntheticReview.documentState === "review-changed"
+        ? "Review changed"
+        : reviewApproved
+          ? "Documents approved"
+          : "Documents awaiting review";
+
+    return (
+      <div className="space-y-4 p-4 sm:p-5">
+        <div className="grid grid-cols-5 gap-2" data-synthetic-progress>
+          <StepPill label="Evidence" complete compact />
+          <StepPill label="Resume" complete compact />
+          <StepPill label="Letter" complete compact />
+          <StepPill label="Review" complete={reviewApproved} changed={reviewChanged} compact />
+          <StepPill label="Apply" complete={false} compact />
+        </div>
+
+        <p
+          className={`rounded-lg border px-3 py-2 text-sm font-semibold ${reviewChanged ? "border-amber-300 bg-amber-50 text-amber-900" : reviewApproved ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-slate-50 text-slate-700"}`}
+          data-synthetic-document-status
+        >
+          {reviewStatus}
+        </p>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+            <p className="text-xs font-bold uppercase tracking-[0.08em] text-emerald-800">Experience match</p>
+            <p className="mt-1 text-sm font-semibold text-emerald-950">
+              {syntheticReview.supportedCount} requirements supported by résumé evidence
+            </p>
+            <p className="mt-1 text-xs leading-5 text-emerald-800">This is evidence coverage, not an application recommendation.</p>
+          </section>
+          <section className={`rounded-lg border p-4 ${syntheticReview.suitabilityLabel === "Not eligible for this role" ? "border-rose-200 bg-rose-50" : "border-amber-200 bg-amber-50"}`} aria-live="polite">
+            <p className="text-xs font-bold uppercase tracking-[0.08em] text-slate-700">Application suitability</p>
+            <p className="mt-1 text-sm font-semibold text-slate-950">{syntheticReview.suitabilityLabel}</p>
+            <p className="mt-1 text-xs leading-5 text-slate-700">{syntheticReview.suitabilityDetail}</p>
+            <p className="mt-2 text-xs text-slate-600">
+              {syntheticReview.unresolvedCount} unanswered · {syntheticReview.gapCount} requirement {syntheticReview.gapCount === 1 ? "gap" : "gaps"}
+            </p>
+          </section>
+        </div>
+
+        <details className="rounded-lg border border-slate-200 bg-slate-50">
+          <summary className="flex min-h-11 cursor-pointer items-center px-4 py-2 text-sm font-semibold text-slate-800">
+            Selected packet documents
+          </summary>
+          <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-2">
+            <label className="block text-xs font-medium text-slate-600">
+              Resume
+              <select value={selectedResumeId} disabled className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                {resumeVersions.map((version) => <option key={version.id} value={version.id}>{version.title}</option>)}
+              </select>
+            </label>
+            <label className="block text-xs font-medium text-slate-600">
+              Cover letter included
+              <select value={selectedCoverId} disabled className="mt-1 min-h-11 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+                {coverLetters.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}
+              </select>
+            </label>
+          </div>
+        </details>
+      </div>
+    );
+  }
 
   async function runJobAction(action: "match" | "resume" | "cover") {
     setPending(action);
@@ -290,6 +383,11 @@ export function ApplyPacketBuilder({
 
   return (
     <div className="space-y-5 p-5">
+      {previewMode === "synthetic-local" ? (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Local fixture selection only. This does not save, export, apply, or create production approval.
+        </p>
+      ) : null}
       <div className="grid gap-3 md:grid-cols-5">
         <StepPill label="Match" complete={job.hasFitAnalysis} />
         <StepPill label="Resume" complete={Boolean(selectedResume)} />
@@ -307,7 +405,7 @@ export function ApplyPacketBuilder({
             <StatusBadge status={job.recommendation} />
           </div>
           <p className="mt-3 text-sm leading-6 text-slate-700">{job.keyReason}</p>
-          <div className="mt-4 flex flex-wrap gap-2">
+          {previewMode !== "synthetic-local" ? <div className="mt-4 flex flex-wrap gap-2">
             <SecondaryButton type="button" onClick={() => runJobAction("match")} disabled={Boolean(pending)}>
               {pending === "match" ? (
                 <Loader2 className="mr-2 animate-spin" size={15} />
@@ -324,7 +422,7 @@ export function ApplyPacketBuilder({
               )}
               Build packet
             </SecondaryButton>
-          </div>
+          </div> : null}
         </section>
 
         <section className="space-y-4 rounded-lg border border-slate-200 p-4">
@@ -335,7 +433,7 @@ export function ApplyPacketBuilder({
                 value={selectedResumeId}
                 onChange={(event) => setSelectedResumeId(event.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                disabled={!resumeVersions.length}
+                disabled={previewMode === "synthetic-local" || !resumeVersions.length}
               >
                 {resumeVersions.length ? (
                   resumeVersions.map((version) => (
@@ -361,6 +459,7 @@ export function ApplyPacketBuilder({
                   checked={includeCoverLetter}
                   onChange={(event) => setIncludeCoverLetter(event.target.checked)}
                   className="h-4 w-4 rounded border-slate-300"
+                  disabled={previewMode === "synthetic-local"}
                 />
                 Include cover letter
               </span>
@@ -368,7 +467,7 @@ export function ApplyPacketBuilder({
                 value={selectedCoverId}
                 onChange={(event) => setSelectedCoverId(event.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
-                disabled={!includeCoverLetter || !coverLetters.length}
+                disabled={previewMode === "synthetic-local" || !includeCoverLetter || !coverLetters.length}
               >
                 {coverLetters.length ? (
                   coverLetters.map((document) => (
@@ -388,7 +487,7 @@ export function ApplyPacketBuilder({
             </label>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          {previewMode !== "synthetic-local" ? <div className="flex flex-wrap gap-2">
             <SecondaryButton type="button" onClick={() => runJobAction("resume")} disabled={Boolean(pending)}>
               {pending === "resume" ? (
                 <Loader2 className="mr-2 animate-spin" size={15} />
@@ -421,11 +520,11 @@ export function ApplyPacketBuilder({
               <Download className="mr-2" size={15} />
               Cover PDF
             </SecondaryButton>
-          </div>
+          </div> : null}
         </section>
       </div>
 
-      <div className="flex flex-col gap-3 rounded-lg border border-slate-200 p-4 md:flex-row md:items-center md:justify-between">
+      {previewMode !== "synthetic-local" ? <div className="flex flex-col gap-3 rounded-lg border border-slate-200 p-4 md:flex-row md:items-center md:justify-between">
         <div className="text-sm text-slate-700">
           <p className="font-semibold text-slate-950">{application?.status?.replaceAll("_", " ") ?? "Not saved"}</p>
           <p className="mt-1 text-xs text-slate-500">Applied date: {formatDate(application?.dateApplied ?? null)}</p>
@@ -453,7 +552,7 @@ export function ApplyPacketBuilder({
             I applied
           </PrimaryButton>
         </div>
-      </div>
+      </div> : null}
     </div>
   );
 }

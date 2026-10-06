@@ -3,6 +3,7 @@ import {
   QUALIFICATION_REVIEW_GUIDE_VERSION,
   type QualificationReviewGuide
 } from "@/lib/ai/job-match-qualification-review-guide";
+import { LASERFICHE_SYNTHETIC_QUALIFICATION } from "@/evaluation/job-match-qualification-laserfiche-public-projection";
 
 const SYNTHETIC_RESUME_PROJECTION_HASH = "a63c149f938e31c602bdcee155815392da410cf6f887c57937aa6919926bfb0b";
 const SYNTHETIC_PROFILE_PROJECTION_HASH = "1642b14b94933d9cc59ab85a5e25b1b99fe1ca387d605fa7640fe799b8b4a0d6";
@@ -24,37 +25,12 @@ type GuideSeed = Readonly<{
 
 const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   "laserfiche-presales-engineer-i": {
-    expectedJobProjectionHash: "52031f913656015dc6f2b790f2532f0e1f046e949b389e2d0c7c5ef49e2db3bc",
-    expectedInputHash: "edbc88e878c1e847832cbcef3553128b21c6772563f8f1b3f16688c986a6cad0",
-    supported: {
-      "job.requirements[0]": ["resume.education[0]"],
-      "job.requirements[1]": ["resume.projects[0]", "resume.achievements[0]"],
-      "job.requirements[2]": ["resume.skills[0]", "resume.skills[1]", "resume.workHistory[0]"],
-      "job.requirements[3]": ["resume.skills[3]", "resume.workHistory[0]"]
-    },
-    rationales: {
-      "job.requirements[0]": "The source résumé records a Bachelor of Arts; a STEM field is preferred rather than required.",
-      "job.requirements[1]": "The synthetic project and workflow improvement are direct problem-solving evidence.",
-      "job.requirements[2]": "The source résumé names TypeScript, SQL, and technical workflow delivery.",
-      "job.requirements[3]": "The source résumé explicitly records technical demonstrations and customer discovery."
-    },
-    mustHave: ["job.requirements[5]"],
-    questions: [
-      {
-        id: "independent-and-team-work",
-        title: "Independent and team delivery",
-        question: "Can you provide a concrete example of working independently and as part of a team?",
-        whyItMatters: "The source résumé does not explicitly establish both parts of this requirement.",
-        jobRefs: ["job.requirements[4]"]
-      },
-      {
-        id: "work-authorization",
-        title: "Work authorization",
-        question: "Are you authorized to work full-time in the United States without employer sponsorship for this role?",
-        whyItMatters: "The posting states this as a must-have condition.",
-        jobRefs: ["job.requirements[5]"]
-      }
-    ]
+    expectedJobProjectionHash: LASERFICHE_SYNTHETIC_QUALIFICATION.expectedJobProjectionHash,
+    expectedInputHash: LASERFICHE_SYNTHETIC_QUALIFICATION.expectedInputHash,
+    supported: LASERFICHE_SYNTHETIC_QUALIFICATION.supported,
+    rationales: LASERFICHE_SYNTHETIC_QUALIFICATION.rationales,
+    mustHave: LASERFICHE_SYNTHETIC_QUALIFICATION.mustHave,
+    questions: LASERFICHE_SYNTHETIC_QUALIFICATION.questions
   },
   "sentry-solutions-engineer": {
     expectedJobProjectionHash: "ea8651b522a6ff3f6201e2260ab77e6189b62c031b23546c4daf1e155109915f",
