@@ -611,6 +611,95 @@ test("the local screen binds exact consent and pauses four mocked calls for post
   assert.doesNotMatch(JSON.stringify(report), /Synthetic model angle|SYNTHETIC OWNER REVIEW PREVIEW/);
 });
 
+test("one delayed status poll preserves a pending provider-result review", async (t) => {
+  const preparation = buildQualificationPreparation(
+    SYNTHETIC_QUALIFICATION_SNAPSHOT,
+    JOB_MATCH_QUALIFICATION_CASES,
+    new Date("2026-10-05T17:00:00.000Z")
+  );
+  let calls = 0;
+  const workflow = await startJobMatchQualificationOwnerReview({
+    expectedCheckpoint: {
+      manifestHash: preparation.safeManifest.manifestHash,
+      resumeProjectionHash: preparation.safeManifest.resumeProjectionHash,
+      profileProjectionHash: preparation.safeManifest.profileProjectionHash
+    },
+    cases: JOB_MATCH_QUALIFICATION_CASES,
+    allowedOrigin: "https://apply.example.test",
+    now: new Date("2026-10-05T17:00:00.000Z"),
+    sessionTimeoutMs: 120_000,
+    execution: {
+      clock: () => new Date("2026-10-05T17:00:00.000Z"),
+      activateTransport: async () => async (request) => {
+        calls += 1;
+        return {
+          value: browserModelOutput(request.expectedRecommendation),
+          finishReason: "STOP",
+          responseBytes: 500,
+          elapsedMs: 10,
+          requestId: `delayed-poll-${calls}`,
+          usage: {
+            inputTokens: 100,
+            outputTokens: 100,
+            cachedInputTokens: 0,
+            visibleOutputTokens: 100,
+            thinkingTokens: 0
+          }
+        };
+      }
+    }
+  });
+  t.after(() => workflow.close("test_cleanup"));
+  await prepareRealWorkflowForConsent(workflow);
+  const page = await browser.newPage();
+  t.after(() => page.close());
+  await page.goto(workflow.reviewUrl, { waitUntil: "networkidle" });
+  const consent = page.locator("form[data-execution-consent]");
+  for (let index = 0; index < 4; index += 1) await consent.locator('input[type="checkbox"]').nth(index).check();
+  await consent.getByRole("button", { name: "Approve this exact four-call test" }).click();
+  const review = page.locator("form[data-provider-review-case-id]");
+  await review.waitFor();
+  assert.equal(calls, 1);
+  await review.locator('input[value="advice_claim"]').check();
+
+  let delayed = false;
+  let stateRequests = 0;
+  let releaseRetry!: () => void;
+  const holdRetry = new Promise<void>((resolve) => { releaseRetry = resolve; });
+  await page.route(workflow.stateUrl, async (route) => {
+    delayed = true;
+    stateRequests += 1;
+    if (stateRequests === 1) await new Promise((resolve) => setTimeout(resolve, 1_750));
+    if (stateRequests === 2) await holdRetry;
+    await route.continue().catch(() => undefined);
+  });
+  await page.waitForFunction(
+    (text) => document.getElementById("status")?.textContent === text,
+    "Local status was briefly unavailable. Retrying before ending the review.",
+    { timeout: 4_000 }
+  );
+  assert.equal(await review.getByRole("button", { name: "Record result review and continue" }).isDisabled(), true);
+  assert.equal(await review.getByRole("button", { name: "Stop and release memory" }).isEnabled(), true);
+  assert.equal(await review.locator('input[value="advice_claim"]').isChecked(), true);
+  assert.equal(calls, 1);
+  releaseRetry();
+  await review.getByRole("button", { name: "Record result review and continue" }).waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const button = document.querySelector('form[data-provider-review-case-id] button[type="submit"]');
+    return button instanceof HTMLButtonElement && !button.disabled;
+  });
+
+  assert.equal(delayed, true);
+  assert.equal(calls, 1);
+  assert.equal(await review.count(), 1);
+  assert.equal(await review.getByRole("button", { name: "Record result review and continue" }).isEnabled(), true);
+  assert.equal(await review.locator('input[value="advice_claim"]').isChecked(), true);
+  assert.doesNotMatch(await page.locator("body").innerText(), /local evidence view is closed/i);
+
+  await page.getByRole("button", { name: "Stop and release memory" }).click();
+  assert.equal((await workflow.closed).trigger, "owner_cancel");
+});
+
 test("execution progress offers an acknowledged stop during a blocked call", async (t) => {
   const preparation = buildQualificationPreparation(
     SYNTHETIC_QUALIFICATION_SNAPSHOT,
@@ -665,7 +754,17 @@ test("execution progress offers an acknowledged stop during a blocked call", asy
   await consent.getByRole("button", { name: "Approve this exact four-call test" }).click();
   await page.getByRole("heading", { name: "Running one consented call." }).waitFor();
   await page.getByRole("button", { name: "Stop and release memory" }).click();
-  assert.equal((await workflow.closed).reason, "navigation_or_owner_cancel");
+  const receipt = await workflow.closed;
+  assert.equal(receipt.reason, "navigation_or_owner_cancel");
+  assert.equal(receipt.trigger, "owner_cancel");
+  assert.equal(receipt.providerCallsStarted, 1);
+  assert.equal(receipt.providerCallsCompleted, 0);
+  assert.equal(receipt.knownInputTokens, 0);
+  assert.equal(receipt.knownOutputTokens, 0);
+  assert.equal(receipt.knownCachedInputTokens, 0);
+  assert.equal(receipt.knownEstimatedCostMicros, 0);
+  assert.equal(receipt.unknownBillingCallCount, 1);
+  assert.equal(receipt.billingStatus, "unknown_for_started_calls");
   unblock();
   await page.waitForTimeout(20);
   assert.equal(calls, 1);
@@ -721,11 +820,16 @@ test("loss of loopback contact during execution reports provider completion and 
   await page.goto(workflow.reviewUrl, { waitUntil: "networkidle" });
   const consent = page.locator("form[data-execution-consent]");
   for (let index = 0; index < 4; index += 1) await consent.locator('input[type="checkbox"]').nth(index).check();
-  await page.route(workflow.stateUrl, (route) => route.abort());
+  let stateRequests = 0;
+  await page.route(workflow.stateUrl, (route) => {
+    stateRequests += 1;
+    return route.abort();
+  });
   await consent.getByRole("button", { name: "Approve this exact four-call test" }).click();
   await page.getByText("A started request may have completed and may be billable", { exact: false }).waitFor({ timeout: 5_000 });
   assert.match(await page.locator("body").innerText(), /no later call can start after cancellation is acknowledged/i);
-  assert.equal((await workflow.closed).reason, "navigation_or_owner_cancel");
+  assert.equal((await workflow.closed).trigger, "status_poll_failure");
+  assert.equal(stateRequests, 2);
   unblock();
 });
 
@@ -794,7 +898,7 @@ test("a lost consent acknowledgement is treated as possibly accepted and billabl
   await consent.getByRole("button", { name: "Approve this exact four-call test" }).click();
   await page.locator("#app").getByText("The action may have been accepted", { exact: false }).waitFor();
   assert.match(await page.locator("body").innerText(), /may have started, completed, and may be billable/i);
-  assert.equal((await workflow.closed).reason, "navigation_or_owner_cancel");
+  assert.equal((await workflow.closed).trigger, "action_acknowledgement_lost");
   unblock();
   assert.equal(calls, 1);
 });
@@ -861,7 +965,7 @@ test("a lost provider-review acknowledgement does not claim the next call was bl
   await review.getByRole("button", { name: "Record result review and continue" }).click();
   await page.locator("#app").getByText("The action may have been accepted", { exact: false }).waitFor();
   assert.doesNotMatch(await page.locator("body").innerText(), /No later provider call was started/i);
-  assert.equal((await workflow.closed).reason, "navigation_or_owner_cancel");
+  assert.equal((await workflow.closed).trigger, "action_acknowledgement_lost");
   assert.equal(calls, 2);
 });
 
@@ -876,8 +980,49 @@ test("navigation loss closes the actual command before any review or consent art
 
   assert.doesNotMatch(preview.output(), /awaiting_separate_google_consent/);
   assert.match(preview.output(), /navigation_or_owner_cancel/);
+  assert.match(preview.output(), /"trigger":"pagehide"/);
   assert.doesNotMatch(preview.output(), /Synthetic owner evidence|SYNTHETIC OWNER REVIEW PREVIEW|generateContent/i);
   await page.close();
+});
+
+test("a definitive invalid state response fails closed without transient retry", async (t) => {
+  const preview = await startPreview();
+  t.after(() => preview.stop());
+  const page = await browser.newPage();
+  t.after(() => page.close());
+  await page.goto(preview.reviewUrl, { waitUntil: "networkidle" });
+  await page.locator("form[data-case-id]").waitFor();
+  const stateUrl = await page.evaluate(() => new URL(document.body.dataset.statePath ?? "", location.href).href);
+  let stateRequests = 0;
+  await page.route(stateUrl, (route) => {
+    stateRequests += 1;
+    return route.fulfill({ status: 409, contentType: "application/json", body: '{"error":"synthetic closed"}' });
+  });
+
+  await waitForExit(preview.child);
+  assert.equal(stateRequests, 1);
+  assert.match(preview.output(), /"trigger":"status_poll_failure"/);
+  assert.doesNotMatch(preview.output(), /Synthetic owner evidence|SYNTHETIC OWNER REVIEW PREVIEW/);
+});
+
+test("a malformed successful state response fails closed without transient retry", async (t) => {
+  const preview = await startPreview();
+  t.after(() => preview.stop());
+  const page = await browser.newPage();
+  t.after(() => page.close());
+  await page.goto(preview.reviewUrl, { waitUntil: "networkidle" });
+  await page.locator("form[data-case-id]").waitFor();
+  const stateUrl = await page.evaluate(() => new URL(document.body.dataset.statePath ?? "", location.href).href);
+  let stateRequests = 0;
+  await page.route(stateUrl, (route) => {
+    stateRequests += 1;
+    return route.fulfill({ status: 200, contentType: "application/json", body: '{"phase":"reviewing"}' });
+  });
+
+  await waitForExit(preview.child);
+  assert.equal(stateRequests, 1);
+  assert.match(preview.output(), /"trigger":"status_poll_failure"/);
+  assert.doesNotMatch(preview.output(), /Synthetic owner evidence|SYNTHETIC OWNER REVIEW PREVIEW/);
 });
 
 test("server timeout clears applicant evidence from the still-open browser tab", async (t) => {
@@ -893,7 +1038,7 @@ test("server timeout clears applicant evidence from the still-open browser tab",
   await page.waitForTimeout(4_000);
   assert.match(await page.locator("body").innerText(), /This tab cleared its rendered applicant evidence/);
   assert.equal(await page.getByText("Synthetic owner evidence", { exact: false }).count(), 0);
-  assert.match(command.output(), /session_timeout/);
+  assert.match(command.output(), /"reason":"session_timeout","trigger":"session_timeout"/);
   assert.doesNotMatch(command.output(), /awaiting_separate_google_consent/);
   await page.close();
 });

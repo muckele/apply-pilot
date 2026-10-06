@@ -7,6 +7,7 @@ import {
   QualificationRunStoppedError,
   runJobMatchQualification,
   type QualificationDisagreementCategory,
+  type QualificationCompletedCallMetrics,
   type QualificationExecutionConsent,
   type QualificationPreparation,
   type QualificationReviewCase,
@@ -101,6 +102,12 @@ export function createQualificationExecutionSession({
   let rejectPendingReview: ((error: Error) => void) | null = null;
   let safeReport: unknown = null;
   let providerCallCount = 0;
+  let providerCallsCompleted = 0;
+  let providerCallsWithKnownBilling = 0;
+  let knownInputTokens = 0;
+  let knownOutputTokens = 0;
+  let knownCachedInputTokens = 0;
+  let knownEstimatedCostMicros = 0;
   let closed = false;
   let resolveFinished!: (report: unknown) => void;
   const finished = new Promise<unknown>((resolve) => { resolveFinished = resolve; });
@@ -123,6 +130,15 @@ export function createQualificationExecutionSession({
     rejectPendingReview = null;
     preparation = null;
     resolveFinished(report);
+  };
+
+  const recordCompletedCall = (metrics: QualificationCompletedCallMetrics) => {
+    if (metrics.providerCompleted) providerCallsCompleted += 1;
+    if (metrics.inputTokens !== null) knownInputTokens += metrics.inputTokens;
+    if (metrics.outputTokens !== null) knownOutputTokens += metrics.outputTokens;
+    if (metrics.cachedInputTokens !== null) knownCachedInputTokens += metrics.cachedInputTokens;
+    if (metrics.estimatedCostMicros !== null) knownEstimatedCostMicros += metrics.estimatedCostMicros;
+    if (metrics.billingKnown) providerCallsWithKnownBilling += 1;
   };
 
   const run = async (consent: QualificationExecutionConsent, executionNow: Date) => {
@@ -150,6 +166,7 @@ export function createQualificationExecutionSession({
         consent,
         transport: countedTransport,
         reviewCase,
+        onProviderCallCompleted: recordCompletedCall,
         now: executionNow
       });
       finish(report, "execution_complete");
@@ -226,6 +243,23 @@ export function createQualificationExecutionSession({
     hasPrivateInput: () => preparation !== null || pendingReview !== null,
     phase: () => phase,
     providerCallCount: () => providerCallCount,
+    closureReceipt: () => {
+      const unknownBillingCallCount = Math.max(0, providerCallCount - providerCallsWithKnownBilling);
+      return {
+        providerCallsStarted: providerCallCount,
+        providerCallsCompleted,
+        knownInputTokens,
+        knownOutputTokens,
+        knownCachedInputTokens,
+        knownEstimatedCostMicros,
+        unknownBillingCallCount,
+        billingStatus: providerCallCount === 0
+          ? "no_provider_calls_started" as const
+          : unknownBillingCallCount > 0
+            ? "unknown_for_started_calls" as const
+            : "known_for_all_started_calls" as const
+      };
+    },
     finished
   });
 }

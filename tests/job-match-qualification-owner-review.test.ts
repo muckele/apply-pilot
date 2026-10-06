@@ -19,6 +19,7 @@ import {
   type JobMatchModelOutput
 } from "@/lib/ai/job-match";
 import { hashAiInput } from "@/lib/ai/input-hash";
+import { GeminiProviderError } from "@/lib/ai/gemini";
 import {
   buildConservativeQualificationReviewGuides,
   buildQualificationOwnerReviewView,
@@ -1446,7 +1447,18 @@ test("timeout or owner cancellation before and during execution clears state and
       }
     }
   });
-  assert.equal((await expired.closed).reason, "session_timeout");
+  assert.deepEqual(await expired.closed, {
+    reason: "session_timeout",
+    trigger: "session_timeout",
+    providerCallsStarted: 0,
+    providerCallsCompleted: 0,
+    knownInputTokens: 0,
+    knownOutputTokens: 0,
+    knownCachedInputTokens: 0,
+    knownEstimatedCostMicros: 0,
+    unknownBillingCallCount: 0,
+    billingStatus: "no_provider_calls_started"
+  });
   assert.equal(expiredActivations, 0);
   assert.equal(expired.hasPrivateInput(), false);
 
@@ -1497,16 +1509,258 @@ test("timeout or owner cancellation before and during execution clears state and
   });
   assert.equal(consent.status, 202);
   await transportStarted;
-  const cancel = await fetch(cancelled.cancelUrl, {
+  const cancel = await fetch(`${cancelled.cancelUrl}?trigger=owner_cancel`, {
     method: "POST",
     headers: { origin: cancelled.origin }
   });
   assert.equal(cancel.status, 204);
-  assert.equal((await cancelled.closed).reason, "navigation_or_owner_cancel");
+  assert.deepEqual(await cancelled.closed, {
+    reason: "navigation_or_owner_cancel",
+    trigger: "owner_cancel",
+    providerCallsStarted: 1,
+    providerCallsCompleted: 0,
+    knownInputTokens: 0,
+    knownOutputTokens: 0,
+    knownCachedInputTokens: 0,
+    knownEstimatedCostMicros: 0,
+    unknownBillingCallCount: 1,
+    billingStatus: "unknown_for_started_calls"
+  });
   unblock();
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(calls, 1);
   assert.equal(cancelled.hasPrivateInput(), false);
+});
+
+test("cancellation receipt retains only known completed-call cost metadata", async (t) => {
+  let calls = 0;
+  const workflow = await startJobMatchQualificationOwnerReview({
+    expectedCheckpoint: checkpoint(),
+    cases: JOB_MATCH_QUALIFICATION_CASES,
+    allowedOrigin: "https://apply.example.test",
+    now,
+    sessionTimeoutMs: 10_000,
+    execution: {
+      clock: () => now,
+      activateTransport: async () => async (request) => {
+        calls += 1;
+        return {
+          value: validModelOutput(request.expectedRecommendation),
+          finishReason: "STOP",
+          responseBytes: 500,
+          elapsedMs: 10,
+          requestId: `receipt-${calls}`,
+          usage: {
+            inputTokens: 100,
+            outputTokens: 100,
+            cachedInputTokens: 0,
+            visibleOutputTokens: 100,
+            thinkingTokens: 0
+          }
+        };
+      }
+    }
+  });
+  t.after(() => workflow.close("test_cleanup"));
+  await admitRealSnapshot(workflow);
+  const ready = await finishOwnerReviews(workflow);
+  assert.equal((await fetch(workflow.consentSubmissionUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: workflow.origin },
+    body: JSON.stringify(executionConsent(ready.safeManifest))
+  })).status, 202);
+  await waitForPhase(workflow, "reviewing_provider_result");
+  assert.equal(calls, 1);
+
+  assert.equal((await fetch(`${workflow.cancelUrl}?trigger=status_poll_failure`, {
+    method: "POST",
+    headers: { origin: workflow.origin }
+  })).status, 204);
+  const receipt = await workflow.closed;
+  assert.deepEqual(receipt, {
+    reason: "navigation_or_owner_cancel",
+    trigger: "status_poll_failure",
+    providerCallsStarted: 1,
+    providerCallsCompleted: 1,
+    knownInputTokens: 100,
+    knownOutputTokens: 100,
+    knownCachedInputTokens: 0,
+    knownEstimatedCostMicros: 450,
+    unknownBillingCallCount: 0,
+    billingStatus: "known_for_all_started_calls"
+  });
+  assert.doesNotMatch(JSON.stringify(receipt), /SYNTHETIC|Laserfiche|resume|profile/i);
+});
+
+test("cancellation receipt retains known billing for a completed invalid provider response", async (t) => {
+  const workflow = await startJobMatchQualificationOwnerReview({
+    expectedCheckpoint: checkpoint(),
+    cases: JOB_MATCH_QUALIFICATION_CASES,
+    allowedOrigin: "https://apply.example.test",
+    now,
+    sessionTimeoutMs: 10_000,
+    execution: {
+      clock: () => now,
+      activateTransport: async () => async () => ({
+        value: { rawPrivateModelText: "PRIVATE INVALID MODEL OUTPUT" },
+        finishReason: "STOP",
+        responseBytes: 321,
+        elapsedMs: 45,
+        requestId: "invalid-receipt",
+        usage: {
+          inputTokens: 1_000,
+          outputTokens: 500,
+          cachedInputTokens: 0,
+          visibleOutputTokens: 300,
+          thinkingTokens: 200
+        }
+      })
+    }
+  });
+  t.after(() => workflow.close("test_cleanup"));
+  await admitRealSnapshot(workflow);
+  const ready = await finishOwnerReviews(workflow);
+  assert.equal((await fetch(workflow.consentSubmissionUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: workflow.origin },
+    body: JSON.stringify(executionConsent(ready.safeManifest))
+  })).status, 202);
+  await waitForPhase(workflow, "execution_stopped");
+
+  assert.equal((await fetch(`${workflow.cancelUrl}?trigger=owner_cancel`, {
+    method: "POST",
+    headers: { origin: workflow.origin }
+  })).status, 204);
+  const receipt = await workflow.closed;
+  assert.equal(receipt.providerCallsStarted, 1);
+  assert.equal(receipt.providerCallsCompleted, 1);
+  assert.equal(receipt.knownInputTokens, 1_000);
+  assert.equal(receipt.knownOutputTokens, 500);
+  assert.equal(receipt.knownCachedInputTokens, 0);
+  assert.ok(receipt.knownEstimatedCostMicros > 0);
+  assert.equal(receipt.unknownBillingCallCount, 0);
+  assert.equal(receipt.billingStatus, "known_for_all_started_calls");
+  assert.doesNotMatch(JSON.stringify(receipt), /PRIVATE INVALID MODEL OUTPUT|rawPrivateModelText/);
+});
+
+test("cancellation receipt retains a definite zero-cost provider rejection", async (t) => {
+  const workflow = await startJobMatchQualificationOwnerReview({
+    expectedCheckpoint: checkpoint(),
+    cases: JOB_MATCH_QUALIFICATION_CASES,
+    allowedOrigin: "https://apply.example.test",
+    now,
+    sessionTimeoutMs: 10_000,
+    execution: {
+      clock: () => now,
+      activateTransport: async () => async () => {
+        throw new GeminiProviderError("PRIVATE PROVIDER DETAIL", {
+          providerResponded: false,
+          billingDisposition: "not_charged",
+          httpStatus: null,
+          providerCode: null,
+          requestId: null
+        });
+      }
+    }
+  });
+  t.after(() => workflow.close("test_cleanup"));
+  await admitRealSnapshot(workflow);
+  const ready = await finishOwnerReviews(workflow);
+  assert.equal((await fetch(workflow.consentSubmissionUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: workflow.origin },
+    body: JSON.stringify(executionConsent(ready.safeManifest))
+  })).status, 202);
+  await waitForPhase(workflow, "execution_stopped");
+
+  assert.equal((await fetch(`${workflow.cancelUrl}?trigger=owner_cancel`, {
+    method: "POST",
+    headers: { origin: workflow.origin }
+  })).status, 204);
+  const receipt = await workflow.closed;
+  assert.equal(receipt.providerCallsStarted, 1);
+  assert.equal(receipt.providerCallsCompleted, 0);
+  assert.equal(receipt.knownEstimatedCostMicros, 0);
+  assert.equal(receipt.unknownBillingCallCount, 0);
+  assert.equal(receipt.billingStatus, "known_for_all_started_calls");
+  assert.doesNotMatch(JSON.stringify(receipt), /PRIVATE PROVIDER DETAIL/);
+});
+
+test("cancellation receipt preserves a known subtotal while a later call remains uncertain", async (t) => {
+  let calls = 0;
+  let releaseSecond!: () => void;
+  const secondBlocked = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let markSecondStarted!: () => void;
+  const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
+  const workflow = await startJobMatchQualificationOwnerReview({
+    expectedCheckpoint: checkpoint(),
+    cases: JOB_MATCH_QUALIFICATION_CASES,
+    allowedOrigin: "https://apply.example.test",
+    now,
+    sessionTimeoutMs: 10_000,
+    execution: {
+      clock: () => now,
+      activateTransport: async () => async (request) => {
+        calls += 1;
+        if (calls === 2) {
+          markSecondStarted();
+          await secondBlocked;
+        }
+        return {
+          value: validModelOutput(request.expectedRecommendation),
+          finishReason: "STOP",
+          responseBytes: 500,
+          elapsedMs: 10,
+          requestId: `partial-receipt-${calls}`,
+          usage: {
+            inputTokens: 100,
+            outputTokens: 100,
+            cachedInputTokens: 0,
+            visibleOutputTokens: 100,
+            thinkingTokens: 0
+          }
+        };
+      }
+    }
+  });
+  t.after(() => {
+    releaseSecond();
+    workflow.close("test_cleanup");
+  });
+  await admitRealSnapshot(workflow);
+  const ready = await finishOwnerReviews(workflow);
+  assert.equal((await fetch(workflow.consentSubmissionUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: workflow.origin },
+    body: JSON.stringify(executionConsent(ready.safeManifest))
+  })).status, 202);
+  await waitForPhase(workflow, "reviewing_provider_result");
+  assert.equal((await fetch(workflow.executionReviewSubmissionUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: workflow.origin },
+    body: JSON.stringify({
+      caseId: JOB_MATCH_QUALIFICATION_CASES[0].id,
+      disagreementCategories: []
+    })
+  })).status, 200);
+  await secondStarted;
+
+  assert.equal((await fetch(`${workflow.cancelUrl}?trigger=status_poll_failure`, {
+    method: "POST",
+    headers: { origin: workflow.origin }
+  })).status, 204);
+  assert.deepEqual(await workflow.closed, {
+    reason: "navigation_or_owner_cancel",
+    trigger: "status_poll_failure",
+    providerCallsStarted: 2,
+    providerCallsCompleted: 1,
+    knownInputTokens: 100,
+    knownOutputTokens: 100,
+    knownCachedInputTokens: 0,
+    knownEstimatedCostMicros: 450,
+    unknownBillingCallCount: 1,
+    billingStatus: "unknown_for_started_calls"
+  });
 });
 
 test("capture admission is one-shot and a timed-out partial body cannot repopulate private state", async (t) => {

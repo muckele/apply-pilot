@@ -34,8 +34,12 @@ const javascript = String.raw`
   };
   let sessionEnded = false;
   let pollTimer;
+  let consecutivePollFailures = 0;
+  let suspendedControls = [];
   let renderedPhase = "";
   let renderedCaseIndex = -1;
+
+  const cancellationUrl = (trigger) => paths.cancel + "?trigger=" + encodeURIComponent(trigger);
 
   const element = (tag, options = {}) => {
     const node = document.createElement(tag);
@@ -172,6 +176,32 @@ const javascript = String.raw`
     live.textContent = message;
   };
 
+  const suspendInteractiveControls = () => {
+    suspendedControls = [...app.querySelectorAll("button:not([data-session-cancel]),input,select,textarea")]
+      .map((control) => [control, control.disabled]);
+    for (const [control] of suspendedControls) control.disabled = true;
+  };
+
+  const restoreInteractiveControls = () => {
+    for (const [control, wasDisabled] of suspendedControls) {
+      if (control.isConnected) control.disabled = wasDisabled;
+    }
+    suspendedControls = [];
+  };
+
+  const isTransientStateFailure = (error) =>
+    error instanceof TypeError || error?.name === "AbortError";
+
+  const fetchStateWithTransientRetry = async () => {
+    try {
+      return await fetchState();
+    } catch (error) {
+      if (!isTransientStateFailure(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return fetchState();
+    }
+  };
+
   const cancelSession = async () => {
     if (sessionEnded) return;
     const providerOutcomeUncertain = renderedPhase === "execution_starting"
@@ -180,7 +210,7 @@ const javascript = String.raw`
     sessionEnded = true;
     if (pollTimer) clearTimeout(pollTimer);
     try {
-      const response = await fetch(paths.cancel, { method: "POST", keepalive: true });
+      const response = await fetch(cancellationUrl("owner_cancel"), { method: "POST", keepalive: true });
       if (!response.ok) throw new Error("Cancellation was not acknowledged");
       clearRenderedEvidence("Local review ended.");
     } catch {
@@ -199,7 +229,7 @@ const javascript = String.raw`
     sessionEnded = true;
     let cancellationAcknowledged = false;
     try {
-      const response = await fetch(paths.cancel, { method: "POST", keepalive: true });
+      const response = await fetch(cancellationUrl("action_acknowledgement_lost"), { method: "POST", keepalive: true });
       cancellationAcknowledged = response.ok;
     } catch {
       // The terminal timeout or process exit remains the fallback.
@@ -220,14 +250,15 @@ const javascript = String.raw`
   const refreshAfterAcceptedMutation = async ({ nextPhase, providerOutcomeUncertain }) => {
     renderedPhase = nextPhase;
     try {
-      await load(true);
+      const state = await fetchStateWithTransientRetry();
+      applyLoadedState(state, true);
       window.scrollTo({ top: 0, behavior: "auto" });
       return true;
     } catch {
       sessionEnded = true;
       let cancellationAcknowledged = false;
       try {
-        const response = await fetch(paths.cancel, { method: "POST", keepalive: true });
+        const response = await fetch(cancellationUrl("status_poll_failure"), { method: "POST", keepalive: true });
         cancellationAcknowledged = response.ok;
       } catch {
         // The terminal timeout or process exit remains the fallback.
@@ -340,7 +371,7 @@ const javascript = String.raw`
       section.append(consent);
     }
     const actions = element("div", { className: "actions decision" });
-    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button" } });
+    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button", "data-session-cancel": "" } });
     end.addEventListener("click", () => { void cancelSession(); });
     actions.append(element("span", { className: "hint", text: "Ending the process requires a future recapture; hashes can verify equality but cannot restore memory." }), end);
     section.append(actions);
@@ -354,7 +385,7 @@ const javascript = String.raw`
     section.append(element("p", { text: "Calls completed or in flight: " + state.providerCallCount + " of " + state.caseCount + ". Calls are sequential and never retried." }));
     section.append(element("p", { className: "hint", text: "Closing or navigating away stops progression. An in-flight network request may finish, but it cannot start a duplicate or later case." }));
     const actions = element("div", { className: "actions" });
-    const stop = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button" } });
+    const stop = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     stop.addEventListener("click", () => { void cancelSession(); });
     actions.append(stop);
     section.append(actions);
@@ -414,7 +445,7 @@ const javascript = String.raw`
     form.append(categories);
     const error = element("p", { className: "error", attrs: { role: "alert" } });
     const actions = element("div", { className: "actions decision" });
-    const cancel = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button" } });
+    const cancel = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     cancel.addEventListener("click", () => { void cancelSession(); });
     const submit = element("button", { className: "button button-primary", text: "Record result review and continue", attrs: { type: "submit" } });
     actions.append(cancel, submit);
@@ -460,7 +491,7 @@ const javascript = String.raw`
     report.append(element("h3", { text: "Safe final report" }), element("pre", { text: JSON.stringify(state.safeReport, null, 2) }));
     section.append(report);
     const actions = element("div", { className: "actions decision" });
-    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button" } });
+    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button", "data-session-cancel": "" } });
     end.addEventListener("click", () => { void cancelSession(); });
     actions.append(element("span", { className: "hint", text: "Ending the session releases the remaining safe in-process report." }), end);
     section.append(actions);
@@ -562,7 +593,7 @@ const javascript = String.raw`
 
     const error = element("p", { className: "error", attrs: { role: "alert" } });
     const actions = element("div", { className: "actions decision" });
-    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button" } });
+    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     cancel.addEventListener("click", () => { void cancelSession(); });
     const submit = element("button", { className: "button button-primary", text: "Bind guide to this exact case", attrs: { type: "submit" } });
     actions.append(cancel, submit);
@@ -819,7 +850,7 @@ const javascript = String.raw`
     decision.append(confirmation);
     const error = element("p", { className: "error", attrs: { role: "alert" } });
     const actions = element("div", { className: "actions" });
-    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button" } });
+    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     cancel.addEventListener("click", () => { void cancelSession(); });
     const submit = element("button", { className: "button button-primary", text: "Record review and continue", attrs: { type: "submit" } });
     actions.append(cancel, submit);
@@ -907,17 +938,26 @@ const javascript = String.raw`
     const deadline = setTimeout(() => controller.abort(), 1500);
     try {
       const response = await fetch(paths.state, { cache: "no-store", signal: controller.signal });
-      if (!response.ok) throw new Error("State unavailable");
-      return response.json();
+      if (!response.ok) throw new Error("Invalid local state response");
+      let state;
+      try {
+        state = await response.json();
+      } catch {
+        throw new Error("Invalid local state response");
+      }
+      if (!state || typeof state !== "object" || typeof state.phase !== "string") {
+        throw new Error("Invalid local state response");
+      }
+      return state;
     } finally {
       clearTimeout(deadline);
     }
   }
 
-  async function load(focusHeading = false) {
-    if (pollTimer) clearTimeout(pollTimer);
-    const state = await fetchState();
+  function applyLoadedState(state, focusHeading = false) {
     applyState(state);
+    suspendedControls = [];
+    consecutivePollFailures = 0;
     if (focusHeading) {
       const heading = app.querySelector("h2");
       if (heading) {
@@ -928,25 +968,57 @@ const javascript = String.raw`
     schedulePoll();
   }
 
+  async function load(focusHeading = false) {
+    if (pollTimer) clearTimeout(pollTimer);
+    const state = await fetchState();
+    applyLoadedState(state, focusHeading);
+  }
+
+  const failClosedAfterStateLoss = () => {
+    sessionEnded = true;
+    navigator.sendBeacon(cancellationUrl("status_poll_failure"));
+    const providerMayHaveActed = renderedPhase === "execution_starting"
+      || renderedPhase === "executing"
+      || renderedPhase === "reviewing_provider_result";
+    clearRenderedEvidence(
+      providerMayHaveActed
+        ? "Contact was lost during execution; provider completion and billing are uncertain."
+        : "Contact with the local review process was lost before execution.",
+      providerMayHaveActed
+        ? "This tab cleared its rendered evidence and sent cancellation best-effort. A started request may have completed and may be billable; no later call can start after cancellation is acknowledged. Stop the terminal process now if acknowledgement is unavailable."
+        : "This tab cleared its rendered applicant evidence after losing contact with the loopback server. No consented provider execution had started. Cancellation was sent best-effort; stop the terminal process now or rely on its timeout fallback."
+    );
+  };
+
   async function poll() {
+    let state;
     try {
-      const state = await fetchState();
-      if (state.phase !== renderedPhase || (state.currentCaseIndex ?? -1) !== renderedCaseIndex) applyState(state);
+      state = await fetchState();
+    } catch (error) {
+      const retryable = isTransientStateFailure(error);
+      if (retryable && consecutivePollFailures === 0) {
+        consecutivePollFailures = 1;
+        suspendInteractiveControls();
+        live.textContent = "Local status was briefly unavailable. Retrying before ending the review.";
+        pollTimer = setTimeout(() => { void poll(); }, 250);
+        return;
+      }
+      failClosedAfterStateLoss();
+      return;
+    }
+    try {
+      const recovered = consecutivePollFailures > 0;
+      const stateChanged = state.phase !== renderedPhase || (state.currentCaseIndex ?? -1) !== renderedCaseIndex;
+      if (stateChanged) {
+        applyState(state);
+        suspendedControls = [];
+      } else if (recovered) {
+        restoreInteractiveControls();
+      }
+      consecutivePollFailures = 0;
       schedulePoll();
     } catch {
-      sessionEnded = true;
-      navigator.sendBeacon(paths.cancel, "state_contact_lost");
-      const providerMayHaveActed = renderedPhase === "execution_starting"
-        || renderedPhase === "executing"
-        || renderedPhase === "reviewing_provider_result";
-      clearRenderedEvidence(
-        providerMayHaveActed
-          ? "Contact was lost during execution; provider completion and billing are uncertain."
-          : "Contact with the local review process was lost before execution.",
-        providerMayHaveActed
-          ? "This tab cleared its rendered evidence and sent cancellation best-effort. A started request may have completed and may be billable; no later call can start after cancellation is acknowledged. Stop the terminal process now if acknowledgement is unavailable."
-          : "This tab cleared its rendered applicant evidence after losing contact with the loopback server. No consented provider execution had started. Cancellation was sent best-effort; stop the terminal process now or rely on its timeout fallback."
-      );
+      failClosedAfterStateLoss();
     }
   }
 
@@ -954,7 +1026,7 @@ const javascript = String.raw`
     if (sessionEnded) return;
     sessionEnded = true;
     if (pollTimer) clearTimeout(pollTimer);
-    navigator.sendBeacon(paths.cancel, "navigation_loss");
+    navigator.sendBeacon(cancellationUrl("pagehide"));
     clearRenderedEvidence("Navigation ended the local review.");
   }, { once: true });
 

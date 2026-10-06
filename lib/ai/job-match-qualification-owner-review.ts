@@ -523,6 +523,51 @@ export function createQualificationReviewArtifact({
 }
 
 type CloseReason = "navigation_or_owner_cancel" | "session_timeout" | "test_cleanup" | "closed";
+type CloseTrigger =
+  | "status_poll_failure"
+  | "action_acknowledgement_lost"
+  | "pagehide"
+  | "owner_cancel"
+  | "session_timeout"
+  | "test_cleanup"
+  | "process_close";
+
+const emptyExecutionClosureReceipt = Object.freeze({
+  providerCallsStarted: 0,
+  providerCallsCompleted: 0,
+  knownInputTokens: 0,
+  knownOutputTokens: 0,
+  knownCachedInputTokens: 0,
+  knownEstimatedCostMicros: 0,
+  unknownBillingCallCount: 0,
+  billingStatus: "no_provider_calls_started" as const
+});
+
+type QualificationClosedOutcome = Readonly<{
+  reason: CloseReason;
+  trigger: CloseTrigger;
+  providerCallsStarted: number;
+  providerCallsCompleted: number;
+  knownInputTokens: number;
+  knownOutputTokens: number;
+  knownCachedInputTokens: number;
+  knownEstimatedCostMicros: number;
+  unknownBillingCallCount: number;
+  billingStatus: "no_provider_calls_started" | "known_for_all_started_calls" | "unknown_for_started_calls";
+}>;
+
+function defaultCloseTrigger(reason: CloseReason): CloseTrigger {
+  if (reason === "session_timeout") return "session_timeout";
+  if (reason === "test_cleanup") return "test_cleanup";
+  if (reason === "navigation_or_owner_cancel") return "owner_cancel";
+  return "process_close";
+}
+
+function browserCloseTrigger(value: string | null): Extract<CloseTrigger, "status_poll_failure" | "action_acknowledgement_lost" | "pagehide" | "owner_cancel"> {
+  if (value === null || value === "owner_cancel") return "owner_cancel";
+  if (value === "status_poll_failure" || value === "action_acknowledgement_lost" || value === "pagehide") return value;
+  throw new Error("Invalid qualification close trigger.");
+}
 
 export async function startJobMatchQualificationOwnerReview({
   expectedCheckpoint,
@@ -582,7 +627,7 @@ export async function startJobMatchQualificationOwnerReview({
   let rejectReady!: (error: Error) => void;
   let resolveExecutionFinished!: (report: unknown) => void;
   let rejectExecutionFinished!: (error: Error) => void;
-  let resolveClosed!: (value: { reason: CloseReason }) => void;
+  let resolveClosed!: (value: QualificationClosedOutcome) => void;
   const readyForConsent = new Promise<{
     safeManifest: QualificationPreparation["safeManifest"];
     reviewArtifactCount: number;
@@ -597,12 +642,13 @@ export async function startJobMatchQualificationOwnerReview({
     rejectExecutionFinished = reject;
   });
   void executionFinished.catch(() => undefined);
-  const closedPromise = new Promise<{ reason: CloseReason }>((resolve) => { resolveClosed = resolve; });
+  const closedPromise = new Promise<QualificationClosedOutcome>((resolve) => { resolveClosed = resolve; });
   let captureTimer: NodeJS.Timeout | undefined;
   let sessionTimer: NodeJS.Timeout | undefined;
 
-  const close = (reason: CloseReason = "closed") => {
+  const close = (reason: CloseReason = "closed", trigger: CloseTrigger = defaultCloseTrigger(reason)) => {
     if (closed) return;
+    const executionClosureReceipt = executionSession?.closureReceipt() ?? emptyExecutionClosureReceipt;
     closed = true;
     phase = "closed";
     if (captureTimer) clearTimeout(captureTimer);
@@ -619,7 +665,7 @@ export async function startJobMatchQualificationOwnerReview({
     rejectReady(new Error(`Qualification owner review closed: ${reason}.`));
     rejectExecutionFinished(new Error(`Qualification execution closed: ${reason}.`));
     server.close();
-    resolveClosed({ reason });
+    resolveClosed({ reason, trigger, ...executionClosureReceipt });
   };
 
   const effectivePhase = () => executionSession?.phase() ?? phase;
@@ -937,9 +983,10 @@ export async function startJobMatchQualificationOwnerReview({
           sendJson(response, 403, { error: "Origin rejected" });
           return;
         }
+        const trigger = browserCloseTrigger(requestUrl.searchParams.get("trigger"));
         response.writeHead(204, securityHeaders("text/plain; charset=utf-8"));
         response.end();
-        close("navigation_or_owner_cancel");
+        close("navigation_or_owner_cancel", trigger);
         return;
       }
       sendJson(response, 404, { error: "Not found" });
