@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import { FormattedDocumentPreview } from "@/components/formatted-document-preview";
 
 export type JobResumeVersionOption = {
   id: string;
@@ -285,6 +286,9 @@ export function JobDocumentWorkspace({
             placeholder="Generate a cover letter to preview and edit it here."
             disabled={!selectedCover}
           />
+          {selectedCover ? (
+            <FormattedDocumentPreview text={coverText} title="Cover letter preview" />
+          ) : null}
           <div className="flex flex-wrap gap-2">
             <PrimaryButton type="button" onClick={saveCoverLetter} disabled={!selectedCover || coverState !== "idle"}>
               {coverState === "saving" ? <Loader2 className="mr-2 animate-spin" size={15} /> : <Save className="mr-2" size={15} />}

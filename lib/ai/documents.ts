@@ -5,13 +5,27 @@ import { emailReplyPrompt } from "@/prompts/emailReplyPrompt";
 import { interviewFeedbackPrompt } from "@/prompts/interviewFeedbackPrompt";
 import { interviewPrepPrompt } from "@/prompts/interviewPrepPrompt";
 import { generateJson } from "@/lib/ai/client";
+import type { AiInvocationOptions } from "@/lib/ai/client";
+import {
+  validateCoverLetterClaims,
+  type ApplicationDocumentClaimEvidence,
+  type ApplicationDocumentPayload
+} from "@/lib/ai/application-document-claims";
+
+const applicationDocumentCitationSchema = z.object({
+  ref: z.string().min(1),
+  excerpt: z.string().min(1)
+}).strict();
 
 const coverLetterSchema = z.object({
   title: z.string(),
   coverLetter: z.string(),
   angle: z.string(),
-  claimsUsed: z.array(z.string())
-});
+  claimsUsed: z.array(z.object({
+    claim: z.string().min(1),
+    citations: z.array(applicationDocumentCitationSchema).min(1)
+  }).strict())
+}).strict();
 
 const emailReplySchema = z.object({
   summary: z.string(),
@@ -46,16 +60,18 @@ const interviewFeedbackSchema = z.object({
   thankYouEmailDraft: z.string()
 });
 
-export async function draftCoverLetter(payload: {
-  job: { title: string; company: string };
-  resume?: unknown;
-  profile?: unknown;
-}, userId?: string) {
+export async function draftCoverLetter(
+  payload: ApplicationDocumentPayload,
+  userId?: string,
+  options: AiInvocationOptions = {}
+) {
+  const company = typeof payload.job?.company === "string" ? payload.job.company : "the employer";
+  const jobTitle = typeof payload.job?.title === "string" ? payload.job.title : "the role";
   const fallback = {
-    title: `${payload.job.company} ${payload.job.title} cover letter`,
-    coverLetter: `Dear ${payload.job.company} Hiring Team,\n\nI am writing about the ${payload.job.title} position. I am interested in learning more about the role and how I might contribute to your team.\n\nThank you for your time and consideration.\n\nSincerely,\n[Your name]`,
+    title: `${company} ${jobTitle} cover letter`,
+    coverLetter: `Dear ${company} Hiring Team,\n\nI am writing about the ${jobTitle} position. I am interested in learning more about the role and how I might contribute to your team.\n\nThank you for your time and consideration.\n\nSincerely,\n[Your name]`,
     angle: "Generic draft requiring applicant personalization and review before use.",
-    claimsUsed: [] as string[]
+    claimsUsed: [] as ApplicationDocumentClaimEvidence[]
   };
 
   const generated = await generateJson({
@@ -64,7 +80,8 @@ export async function draftCoverLetter(payload: {
     payload,
     fallback,
     schema: coverLetterSchema,
-    context: userId ? { userId, feature: "COVER_LETTER", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "COVER_LETTER", promptVersion: "3", ...options } : undefined,
+    validate: (value) => validateCoverLetterClaims(payload, value)
   });
 
   return {

@@ -85,8 +85,15 @@ test("unavailable resume parsing fails closed and cannot persist heuristic outpu
   assert.doesNotMatch(source, /heuristic-local|confidence: parsedResult\.meta\.mocked \? null : 70/);
 });
 
-test("successful local drafts and feedback do not claim numeric AI confidence", () => {
-  assert.match(route("app/api/jobs/[id]/cover-letter/route.ts"), /confidence: drafted\.usage\.mocked \? null : 78/);
+test("application document routes use one explicit projection and never persist model self-scores", () => {
+  const resumeRoute = route("app/api/jobs/[id]/tailored-resume/route.ts");
+  const coverRoute = route("app/api/jobs/[id]/cover-letter/route.ts");
+  assert.match(resumeRoute, /buildApplicationDocumentPayload\(job, resume, profile\)/);
+  assert.match(coverRoute, /buildApplicationDocumentPayload\(job, resume, profile\)/);
+  assert.doesNotMatch(coverRoute, /draftCoverLetter\(\{ job, resume, profile \}/);
+  assert.match(resumeRoute, /atsCompatibility: null/);
+  assert.match(resumeRoute, /jobFitScore: null/);
+  assert.match(coverRoute, /confidence: null/);
   assert.match(route("app/api/interviews/route.ts"), /confidence: prep\.usage\.mocked \? null : 76/);
   assert.match(route("app/api/interviews/[id]/feedback/route.ts"), /confidence: feedback\.usage\.mocked \? null : 76/);
 });

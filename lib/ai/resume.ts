@@ -55,6 +55,10 @@ import {
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
+import {
+  validateTailoredResumeClaims,
+  type ApplicationDocumentClaimEvidence
+} from "@/lib/ai/application-document-claims";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
@@ -279,12 +283,10 @@ export type TailoredResumeOutput = {
   rolesOrProjectsToEmphasize: string[];
   unsupportedKeywords: string[];
   formattingWarnings: string[];
-  atsCompatibilityScore: number;
-  jobFitScore: number;
   resumeText: string;
+  claimEvidence: ApplicationDocumentClaimEvidence[];
 };
 
-const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
 function hasWellFormedUtf16(value: string) {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
@@ -1295,10 +1297,15 @@ const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknow
   rolesOrProjectsToEmphasize: z.array(z.string()),
   unsupportedKeywords: z.array(z.string()),
   formattingWarnings: z.array(z.string()),
-  atsCompatibilityScore: scoreSchema,
-  jobFitScore: scoreSchema,
-  resumeText: z.string()
-});
+  resumeText: z.string(),
+  claimEvidence: z.array(z.object({
+    claim: z.string().min(1),
+    citations: z.array(z.object({
+      ref: z.string().min(1),
+      excerpt: z.string().min(1)
+    }).strict()).min(1)
+  }).strict())
+}).strict();
 
 function assertSourceSupported(source: string, value: string | null, path: string) {
   if (value === null || value === "") return;
@@ -4229,13 +4236,19 @@ export async function parseResumeText(text: string, userId?: string, options: Ai
   return (await parseResumeTextWithMeta(text, userId, options)).data;
 }
 
-export async function tailorResume(payload: unknown, _fallbackText: string, userId?: string) {
+export async function tailorResume(
+  payload: unknown,
+  _fallbackText: string,
+  userId?: string,
+  options: AiInvocationOptions = {}
+) {
   const generated = await generateJson<TailoredResumeOutput>({
     promptName: "resumeTailorPrompt",
     systemPrompt: resumeTailorPrompt,
     payload,
     schema: tailoredResumeSchema,
-    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "2" } : undefined
+    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "3", ...options } : undefined,
+    validate: (value) => validateTailoredResumeClaims(payload as Parameters<typeof validateTailoredResumeClaims>[0], value)
   });
 
   return {

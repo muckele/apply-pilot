@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { draftCoverLetter } from "@/lib/ai/documents";
+import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
+import { aiInvocationFromRequest } from "@/lib/ai/http";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -10,7 +12,7 @@ type Params = {
   params: Promise<{ id: string }>;
 };
 
-export async function POST(_request: NextRequest, { params }: Params) {
+export async function POST(request: NextRequest, { params }: Params) {
   try {
     const userId = await requireUserId();
     await checkRateLimit(`cover-letter:${userId}`, 12, 60_000);
@@ -20,7 +22,11 @@ export async function POST(_request: NextRequest, { params }: Params) {
       prisma.resume.findFirst({ where: { userId, isMaster: true }, orderBy: { updatedAt: "desc" } }),
       prisma.userProfile.findUnique({ where: { userId } })
     ]);
-    const drafted = await draftCoverLetter({ job, resume, profile }, userId);
+    const drafted = await draftCoverLetter(
+      buildApplicationDocumentPayload(job, resume, profile),
+      userId,
+      aiInvocationFromRequest(request)
+    );
     const document = await prisma.generatedDocument.create({
       data: {
         userId,
@@ -43,7 +49,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
         inputHash: drafted.inputHash,
         input: { jobId: job.id, resumeId: resume?.id },
         output: drafted,
-        confidence: drafted.usage.mocked ? null : 78
+        confidence: null
       }
     });
 
