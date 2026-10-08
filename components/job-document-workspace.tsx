@@ -15,6 +15,7 @@ export type JobResumeVersionOption = {
   summary: string | null;
   atsCompatibility: number | null;
   jobFitScore: number | null;
+  evidenceCurrent: boolean;
   createdAt: string;
 };
 
@@ -22,6 +23,7 @@ export type JobCoverLetterOption = {
   id: string;
   title: string;
   content: string;
+  evidenceCurrent: boolean;
   createdAt: string;
 };
 
@@ -202,6 +204,7 @@ export function JobDocumentWorkspace({
           {selectedResume ? (
             <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
               <span>Created {formatDate(selectedResume.createdAt)}</span>
+              {!selectedResume.evidenceCurrent ? <span className="font-semibold text-amber-700">Older reviewed evidence — regenerate before export</span> : null}
               {selectedResume.atsCompatibility ? <span>{selectedResume.atsCompatibility}% ATS compatible</span> : null}
               {selectedResume.jobFitScore ? <span>{selectedResume.jobFitScore}% job fit</span> : null}
             </div>
@@ -226,7 +229,7 @@ export function JobDocumentWorkspace({
                 key={format}
                 type="button"
                 onClick={() => exportResume(format)}
-                disabled={!selectedResume || resumeState !== "idle"}
+                disabled={!selectedResume?.evidenceCurrent || resumeState !== "idle"}
               >
                 {resumeState === "exporting" ? (
                   <Loader2 className="mr-2 animate-spin" size={15} />
@@ -236,7 +239,7 @@ export function JobDocumentWorkspace({
                 {format.toUpperCase()}
               </SecondaryButton>
             ))}
-            {selectedResume ? (
+            {selectedResume?.evidenceCurrent ? (
               <Link
                 href={`/resumes/${selectedResume.id}`}
                 className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
@@ -275,7 +278,7 @@ export function JobDocumentWorkspace({
               )}
             </select>
           </div>
-          {selectedCover ? <p className="mt-3 text-xs text-slate-500">Created {formatDate(selectedCover.createdAt)}</p> : null}
+          {selectedCover ? <p className="mt-3 text-xs text-slate-500">Created {formatDate(selectedCover.createdAt)}{!selectedCover.evidenceCurrent ? " · Older reviewed evidence — regenerate before export" : ""}</p> : null}
         </div>
         <div className="space-y-3 p-4">
           <textarea
@@ -299,7 +302,7 @@ export function JobDocumentWorkspace({
                 key={format}
                 type="button"
                 onClick={() => exportCoverLetter(format)}
-                disabled={!selectedCover || coverState !== "idle"}
+                disabled={!selectedCover?.evidenceCurrent || coverState !== "idle"}
               >
                 {coverState === "exporting" ? (
                   <Loader2 className="mr-2 animate-spin" size={15} />

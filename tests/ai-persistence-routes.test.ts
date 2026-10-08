@@ -88,8 +88,14 @@ test("unavailable resume parsing fails closed and cannot persist heuristic outpu
 test("application document routes use one explicit projection and never persist model self-scores", () => {
   const resumeRoute = route("app/api/jobs/[id]/tailored-resume/route.ts");
   const coverRoute = route("app/api/jobs/[id]/cover-letter/route.ts");
-  assert.match(resumeRoute, /buildApplicationDocumentPayload\(job, resume, profile\)/);
-  assert.match(coverRoute, /buildApplicationDocumentPayload\(job, resume, profile\)/);
+  assert.match(resumeRoute, /readApplicationDocumentEvidence\(prisma, userId, id\)/);
+  assert.match(coverRoute, /readApplicationDocumentEvidence\(prisma, userId, id\)/);
+  assert.match(resumeRoute, /evidenceSnapshotId: fresh\.job\.currentEvidenceSnapshotId/);
+  assert.match(coverRoute, /evidenceSnapshotId: fresh\.job\.currentEvidenceSnapshotId/);
+  assert.match(resumeRoute, /APPLICATION_DOCUMENT_INPUT_STALE/);
+  assert.match(coverRoute, /APPLICATION_DOCUMENT_INPUT_STALE/);
+  assert.match(resumeRoute, /PrismaClientKnownRequestError[\s\S]*P2034[\s\S]*APPLICATION_DOCUMENT_INPUT_STALE/);
+  assert.match(coverRoute, /PrismaClientKnownRequestError[\s\S]*P2034[\s\S]*APPLICATION_DOCUMENT_INPUT_STALE/);
   assert.doesNotMatch(coverRoute, /draftCoverLetter\(\{ job, resume, profile \}/);
   assert.match(resumeRoute, /atsCompatibility: null/);
   assert.match(resumeRoute, /jobFitScore: null/);
@@ -137,12 +143,30 @@ test("unavailable personalized match writes no job scores or AI analysis", async
 
 test("unavailable tailoring returns 503 without a resume version or AI analysis", async (t) => {
   const prisma = await localRouteSetup(t);
-  const job = { id: "job-1", title: "Engineer", company: "Acme" };
+  const reviewedAt = new Date("2026-10-08T12:00:00.000Z");
+  const job = {
+    id: "job-1",
+    title: "Engineer",
+    company: "Acme",
+    currentEvidenceSnapshotId: "snapshot-1",
+    evidenceSnapshotGeneration: 1,
+    currentEvidenceSnapshot: {
+      id: "snapshot-1",
+      resumeId: "resume-1",
+      sourceResumeUpdatedAt: reviewedAt,
+      snapshotHash: "a".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    }
+  };
   let versions = 0;
   let analyses = 0;
   let audits = 0;
   stub(t, prisma.jobPosting, "findFirstOrThrow", async () => job);
-  stub(t, prisma.resume, "findFirst", async () => ({ id: "resume-1", rawText: "Alice Example\nExcel" }));
+  stub(t, prisma.resume, "findFirst", async () => ({
+    id: "resume-1",
+    updatedAt: reviewedAt,
+    rawText: "Alice Example\nExcel"
+  }));
   stub(t, prisma.userProfile, "findUnique", async () => null);
   stub(t, prisma.resumeVersion, "create", async () => { versions++; return { id: "version-1" }; });
   stub(t, prisma.aIAnalysis, "create", async () => { analyses++; return { id: "analysis-1" }; });

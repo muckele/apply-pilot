@@ -14,6 +14,7 @@ export type ApplicationDocumentPayload = {
   job?: Record<string, unknown> | null;
   resume?: Record<string, unknown> | null;
   profile?: Record<string, unknown> | null;
+  reviewedEvidence?: Record<string, unknown> | null;
 };
 
 type TailoredResumeClaimsOutput = {
@@ -49,6 +50,13 @@ function present(value: unknown) {
 }
 
 function resolveReference(payload: ApplicationDocumentPayload, ref: string) {
+  const reviewedFact = ref.match(/^reviewedEvidence\.facts\[(\d+)\]\.fact$/u);
+  if (reviewedFact && Array.isArray(payload.reviewedEvidence?.facts)) {
+    const value = payload.reviewedEvidence.facts[Number(reviewedFact[1])];
+    if (value && typeof value === "object" && !Array.isArray(value) && present(value.fact)) {
+      return value.fact;
+    }
+  }
   for (const [root, fields] of Object.entries(exactReferenceFields)) {
     const record = payload[root as keyof ApplicationDocumentPayload];
     for (const field of fields) {
@@ -189,6 +197,7 @@ function sameTokens(left: string[], right: string[]) {
 
 function referenceCanSupportApplicantClaim(ref: string) {
   return ref.startsWith("resume.") ||
+    /^reviewedEvidence\.facts\[\d+\]\.fact$/.test(ref) ||
     /^profile\.skillsToEmphasize\[\d+\]$/.test(ref);
 }
 
@@ -212,6 +221,7 @@ function unsupportedApplicantTerms(payload: ApplicationDocumentPayload) {
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
   const qualificationEvidence = {
     resume: payload.resume ?? {},
+    reviewedEvidence: payload.reviewedEvidence ?? {},
     skillsToEmphasize: Array.isArray(payload.profile?.skillsToEmphasize)
       ? payload.profile.skillsToEmphasize
       : []

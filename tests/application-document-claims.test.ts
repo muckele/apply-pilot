@@ -635,3 +635,33 @@ test("claim-validation failures expose a safe code and field path without echoin
       !error.message.includes("987654321")
   );
 });
+
+test("job-only reviewed evidence can support a document claim through an explicit provenance-bearing reference", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const reviewedPayload = {
+    ...payload,
+    reviewedEvidence: {
+      schema: "apply-pilot/job-match-reviewed-evidence/v1",
+      snapshotId: "snapshot-1",
+      snapshotHash: "a".repeat(64),
+      facts: [{
+        gapId: "gap:0",
+        fact: "Completed 480 hours of synthetic customer training.",
+        provenance: "OWNER_ATTESTED",
+        sourceRef: null
+      }],
+      unresolvedGapIds: []
+    }
+  };
+  const sentence = "Completed 480 hours of synthetic customer training.";
+  assert.doesNotThrow(() => claims.validateCoverLetterClaims(reviewedPayload, {
+    title: "Example Co cover letter",
+    coverLetter: `Dear Example Co Hiring Team,\n\n${sentence}\n\nSincerely,\nSynthetic Applicant`,
+    angle: "Use explicitly reviewed evidence.",
+    claimsUsed: [{
+      claim: sentence,
+      citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: sentence }]
+    }]
+  }));
+});

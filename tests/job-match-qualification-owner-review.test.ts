@@ -28,6 +28,7 @@ import {
   qualificationSourceOriginLabel,
   startJobMatchQualificationOwnerReview
 } from "@/lib/ai/job-match-qualification-owner-review";
+import { fixedSyntheticProviderRecommendation } from "@/tests/fixtures/job-match-qualification-provider-results";
 
 const now = new Date("2026-10-05T17:00:00.000Z");
 
@@ -1153,7 +1154,7 @@ test("same-process execution validates exact consent before credential activatio
     await Promise.resolve();
     active -= 1;
     return {
-      value: validModelOutput(request.expectedRecommendation),
+      value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
       finishReason: "STOP",
       responseBytes: 500,
       elapsedMs: 10,
@@ -1314,7 +1315,7 @@ test("repeatable owner-review and provider-review submissions are serialized aga
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1517,7 +1518,7 @@ test("timeout or owner cancellation before and during execution clears state and
         releaseTransport();
         await blocked;
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1582,7 +1583,7 @@ test("cancellation receipt retains only known completed-call cost metadata", asy
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1744,7 +1745,7 @@ test("cancellation receipt preserves a known subtotal while a later call remains
           await secondBlocked;
         }
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,

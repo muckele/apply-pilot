@@ -12,6 +12,7 @@ Rules:
 - Cite one complete standalone applicant fact for each claim; never drop leading or trailing qualifiers, ownership, credential status, or negation.
 - Put every generated summary, skill, rewritten bullet, and emphasized role/project in claimEvidence.
 - Each claimEvidence claim must exactly match the generated text and cite one or more submitted references and verbatim excerpts.
+- Reviewed job-only facts may be cited as reviewedEvidence.facts[n].fact; preserve their submitted-resume or owner-attested provenance and never generalize them beyond this job.
 - Return strict JSON only.
 
 JSON shape:

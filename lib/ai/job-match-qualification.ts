@@ -216,7 +216,6 @@ export type QualificationCompletedCallMetrics = Readonly<{
 
 export type QualificationTransportRequest = {
   caseId: string;
-  expectedRecommendation: Recommendation;
   model: typeof JOB_MATCH_MODEL;
   promptVersion: typeof JOB_MATCH_PROMPT_VERSION;
   thinkingLevel: typeof JOB_MATCH_THINKING_LEVEL;
@@ -837,7 +836,6 @@ export async function runJobMatchQualification({
       });
       response = await transport({
         caseId: prepared.caseId,
-        expectedRecommendation: reviewedRecommendation,
         model: JOB_MATCH_MODEL,
         promptVersion: JOB_MATCH_PROMPT_VERSION,
         thinkingLevel: JOB_MATCH_THINKING_LEVEL,
@@ -954,6 +952,9 @@ export async function runJobMatchQualification({
         failureCode,
         validationStage: error instanceof JobMatchOutputValidationError
           ? error.validationStage
+          : null,
+        validationCode: error instanceof JobMatchOutputValidationError
+          ? error.validationCode
           : null,
         failureFieldPath: error instanceof JobMatchOutputValidationError
           ? error.fieldPath

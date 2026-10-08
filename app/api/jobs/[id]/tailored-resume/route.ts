@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 
 import { tailorResume } from "@/lib/ai/resume";
-import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
+import { hashAiInput } from "@/lib/ai/input-hash";
 import { aiInvocationFromRequest } from "@/lib/ai/http";
+import { PublicApiError } from "@/lib/api-errors";
+import { readApplicationDocumentEvidence } from "@/lib/jobs/application-document-evidence";
 import { prisma } from "@/lib/prisma";
 import { writeAuditLog } from "@/lib/security/audit-log";
 import { checkRateLimit } from "@/lib/security/rate-limit";
@@ -17,48 +20,65 @@ export async function POST(request: NextRequest, { params }: Params) {
     const userId = await requireUserId();
     await checkRateLimit(`tailor-resume:${userId}`, 12, 60_000);
     const { id } = await params;
-    const [job, resume, profile] = await Promise.all([
-      prisma.jobPosting.findFirstOrThrow({ where: { id, userId } }),
-      prisma.resume.findFirst({ where: { userId, isMaster: true }, orderBy: { updatedAt: "desc" } }),
-      prisma.userProfile.findUnique({ where: { userId } })
-    ]);
+    const sources = await readApplicationDocumentEvidence(prisma, userId, id);
 
     const tailored = await tailorResume(
-      buildApplicationDocumentPayload(job, resume, profile),
-      resume?.rawText ?? "",
+      sources.payload,
+      sources.resume?.rawText ?? "",
       userId,
       aiInvocationFromRequest(request)
     );
-    const version = await prisma.resumeVersion.create({
-      data: {
-        userId,
-        resumeId: resume?.id,
-        jobPostingId: job.id,
-        title: `${job.company} - ${job.title} tailored resume`,
-        summary: tailored.professionalSummary,
-        skills: tailored.skillsSection,
-        bullets: tailored.bulletRewrites,
-        fullText: tailored.resumeText,
-        changeNotes: tailored.rolesOrProjectsToEmphasize.join("; "),
-        atsCompatibility: null,
-        jobFitScore: null
+    let version;
+    try {
+      version = await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "JobPosting" WHERE "id" = ${id} AND "userId" = ${userId} FOR UPDATE`;
+        const fresh = await readApplicationDocumentEvidence(tx, userId, id);
+        if (hashAiInput("resumeTailorPrompt", tailored.promptVersion, fresh.payload) !== tailored.inputHash) {
+          throw new PublicApiError("Evidence changed while the resume was being generated. Generate it again.", 409, {
+            code: "APPLICATION_DOCUMENT_INPUT_STALE"
+          });
+        }
+        const created = await tx.resumeVersion.create({
+          data: {
+            userId,
+            resumeId: fresh.resume?.id,
+            jobPostingId: fresh.job.id,
+            evidenceSnapshotId: fresh.job.currentEvidenceSnapshotId,
+            title: `${fresh.job.company} - ${fresh.job.title} tailored resume`,
+            summary: tailored.professionalSummary,
+            skills: tailored.skillsSection,
+            bullets: tailored.bulletRewrites,
+            fullText: tailored.resumeText,
+            changeNotes: tailored.rolesOrProjectsToEmphasize.join("; "),
+            atsCompatibility: null,
+            jobFitScore: null
+          }
+        });
+        await tx.aIAnalysis.create({
+          data: {
+            userId,
+            jobPostingId: fresh.job.id,
+            evidenceSnapshotId: fresh.job.currentEvidenceSnapshotId,
+            type: "RESUME_TAILOR",
+            model: tailored.model,
+            promptName: "resumeTailorPrompt",
+            promptVersion: tailored.promptVersion,
+            inputHash: tailored.inputHash,
+            input: { jobId: fresh.job.id, resumeId: fresh.resume?.id, evidenceSnapshotId: fresh.job.currentEvidenceSnapshotId },
+            output: tailored,
+            confidence: null
+          }
+        });
+        return created;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034") {
+        throw new PublicApiError("Evidence changed while the resume was being generated. Generate it again.", 409, {
+          code: "APPLICATION_DOCUMENT_INPUT_STALE"
+        });
       }
-    });
-
-    await prisma.aIAnalysis.create({
-      data: {
-        userId,
-        jobPostingId: job.id,
-        type: "RESUME_TAILOR",
-        model: tailored.model,
-        promptName: "resumeTailorPrompt",
-        promptVersion: tailored.promptVersion,
-        inputHash: tailored.inputHash,
-        input: { jobId: job.id, resumeId: resume?.id },
-        output: tailored,
-        confidence: null
-      }
-    });
+      throw error;
+    }
 
     await writeAuditLog({
       userId,

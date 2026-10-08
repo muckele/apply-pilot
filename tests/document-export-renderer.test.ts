@@ -16,11 +16,26 @@ const USER_ID = "user-export-test";
 const DOCUMENT_ID = "document-export-test";
 const RESUME_VERSION_ID = "resume-export-test";
 
+type ExportJobEvidence = {
+  currentEvidenceSnapshotId: string | null;
+  evidenceSnapshotGeneration: number;
+  currentEvidenceSnapshot: {
+    id: string;
+    resumeId: string;
+    sourceResumeUpdatedAt: Date;
+    snapshotHash: string;
+    reviewPayload: unknown;
+  } | null;
+  user: { resumes: Array<{ id: string; updatedAt: Date }> };
+};
+
 type GeneratedDocumentRow = {
   id: string;
   userId: string;
   title: string;
   content: string;
+  evidenceSnapshotId?: string | null;
+  jobPosting?: ExportJobEvidence | null;
 };
 
 type ResumeVersionRow = {
@@ -34,7 +49,25 @@ type ResumeVersionRow = {
   accentColor: string;
   fontSize: number;
   lineSpacing: number;
+  evidenceSnapshotId?: string | null;
+  jobPosting?: ExportJobEvidence | null;
 };
+
+function exportJobEvidence(snapshotId: string): ExportJobEvidence {
+  const updatedAt = new Date("2026-10-08T12:00:00.000Z");
+  return {
+    currentEvidenceSnapshotId: snapshotId,
+    evidenceSnapshotGeneration: 1,
+    currentEvidenceSnapshot: {
+      id: snapshotId,
+      resumeId: "resume-master",
+      sourceResumeUpdatedAt: updatedAt,
+      snapshotHash: "a".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    },
+    user: { resumes: [{ id: "resume-master", updatedAt }] }
+  };
+}
 
 function generatedDocument(overrides: Partial<GeneratedDocumentRow> = {}): GeneratedDocumentRow {
   return {
@@ -210,6 +243,32 @@ test("generic generated-document Markdown returns exact content without prependi
   assert.equal(response.headers.get("content-type"), "text/markdown; charset=utf-8");
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="Generated_Cover_Letter.md"');
   assert.deepEqual(calls.document, [{ id: DOCUMENT_ID, userId: USER_ID }]);
+});
+
+test("export rejects an artifact bound to older reviewed evidence", async () => {
+  const { handlers } = route({
+    document: null,
+    resume: resumeVersion({
+      evidenceSnapshotId: "snapshot-old",
+      jobPosting: exportJobEvidence("snapshot-current")
+    })
+  });
+  const response = await handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "markdown" }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, "APPLICATION_DOCUMENT_EVIDENCE_STALE");
+});
+
+test("export allows an artifact with an exact current non-null reviewed-evidence binding", async () => {
+  const { handlers } = route({
+    document: null,
+    resume: resumeVersion({
+      evidenceSnapshotId: "snapshot-current",
+      jobPosting: exportJobEvidence("snapshot-current")
+    })
+  });
+  const response = await handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "markdown" }));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "SUMMARY\nResume body only");
 });
 
 test("generic generated-document DOCX prepends title and uses the current generic default format", async () => {

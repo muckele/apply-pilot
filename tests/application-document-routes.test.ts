@@ -54,6 +54,7 @@ async function invokeRoute(path: string, handler: () => Promise<Response>) {
     ));
 }
 
+const reviewedAt = new Date("2026-10-08T12:00:00.000Z");
 const job = {
   id: "job-1",
   userId: "demo-user",
@@ -66,12 +67,22 @@ const job = {
   description: "Build reliable TypeScript services.",
   requirements: ["TypeScript"],
   preferredQualifications: ["Kubernetes"],
-  detectedTechStack: ["TypeScript", "Kubernetes"]
+  detectedTechStack: ["TypeScript", "Kubernetes"],
+  currentEvidenceSnapshotId: "snapshot-1",
+  evidenceSnapshotGeneration: 1,
+  currentEvidenceSnapshot: {
+    id: "snapshot-1",
+    resumeId: "resume-1",
+    sourceResumeUpdatedAt: reviewedAt,
+    snapshotHash: "a".repeat(64),
+    reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+  }
 };
 
 const resume = {
   id: "resume-1",
   userId: "demo-user",
+  updatedAt: reviewedAt,
   rawText: [
     "Synthetic Applicant",
     "Platform Engineer",
@@ -135,6 +146,24 @@ function installLedger(t: TestContext, prisma: Awaited<ReturnType<typeof setup>>
   const reconciliations: Array<Record<string, unknown>> = [];
   const cacheWrites: Array<Record<string, unknown>> = [];
   const tx = {
+    jobPosting: {
+      findFirstOrThrow: (args: unknown) => prisma.jobPosting.findFirstOrThrow(args as never)
+    },
+    resume: {
+      findFirst: (args: unknown) => prisma.resume.findFirst(args as never)
+    },
+    userProfile: {
+      findUnique: (args: unknown) => prisma.userProfile.findUnique(args as never)
+    },
+    resumeVersion: {
+      create: (args: unknown) => prisma.resumeVersion.create(args as never)
+    },
+    generatedDocument: {
+      create: (args: unknown) => prisma.generatedDocument.create(args as never)
+    },
+    aIAnalysis: {
+      create: (args: unknown) => prisma.aIAnalysis.create(args as never)
+    },
     aIBudgetLedger: {
       upsert: async () => ({ id: "ledger-1" }),
       updateMany: async () => ({ count: 1 })
@@ -158,7 +187,8 @@ function installLedger(t: TestContext, prisma: Awaited<ReturnType<typeof setup>>
         return create;
       }
     },
-    $executeRaw: async () => 1
+    $executeRaw: async () => 1,
+    $queryRaw: async () => [{ id: job.id }]
   };
   stub(t, prisma, "$transaction", async (callback: (transaction: typeof tx) => unknown) => callback(tx));
   return { reconciliations, cacheWrites };

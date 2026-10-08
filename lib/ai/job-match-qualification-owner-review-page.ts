@@ -517,7 +517,8 @@ const javascript = String.raw`
     readable.append(whyFits);
 
     const missing = element("section", { className: "readable-section" });
-    missing.append(element("h3", { text: "What is missing" }));
+    missing.append(element("h3", { text: "Not evidenced in the submitted resume" }));
+    missing.append(element("p", { className: "section-copy", text: "Exact terms not found are evidence-review signals, not proof that the applicant lacks the capability." }));
     missing.append(element("p", { className: "section-copy", text: "These are requirements the model said were not supported by the submitted applicant evidence. Confirm each against the cited source." }));
     missing.append(element("h4", { text: "Important gaps reported by the model" }));
     if (!output.requirementGaps.length) {
@@ -527,7 +528,7 @@ const javascript = String.raw`
       const card = element("article", { className: "result-card" });
       card.append(element("h4", { text: gap.requirement }));
       card.append(citationGroup("Job requirement cited", [gap.jobRequirement]));
-      card.append(element("p", { className: "keyword-line", text: "Missing keywords: " + (gap.missingKeywords.length ? gap.missingKeywords.join(", ") : "None listed") }));
+      card.append(element("p", { className: "keyword-line", text: "Exact terms not found: " + (gap.missingKeywords.length ? gap.missingKeywords.join(", ") : "None listed") }));
       missing.append(card);
     });
     readable.append(missing);
@@ -666,6 +667,7 @@ const javascript = String.raw`
       failureFacts.append(
         factCard("Failure code", safeReport.failureCode),
         factCard("Validation stage", safeReport.validationStage ?? "Not applicable"),
+        factCard("Validation code", safeReport.validationCode ?? "Not available"),
         factCard("Validation field", safeReport.failureFieldPath ?? "Not available"),
         factCard("Provider responded", failedCall.providerResponded === true ? "Yes" : failedCall.providerResponded === false ? "No" : "Unknown"),
         factCard("Billing status", presentValue(failedCall.billingDisposition, "Unknown")),
@@ -692,7 +694,7 @@ const javascript = String.raw`
           ["Fit score", presentValue(result.overallFitScore) + " / 100"],
           ["Model confidence", presentValue(result.confidenceScore) + " / 100"],
           ["Factual matches", result.factualMatchCount],
-          ["Requirement gaps", result.requirementGapCount],
+          ["Requirements not evidenced", result.requirementGapCount],
           ["Recorded issues", Array.isArray(result.disagreementCategories) && result.disagreementCategories.length
             ? result.disagreementCategories.map((category) => disagreementLabels[category] ?? "Unknown recorded issue").join(", ")
             : "None"]

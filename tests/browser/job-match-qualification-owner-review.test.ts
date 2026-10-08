@@ -6,6 +6,7 @@ import test, { after, before } from "node:test";
 import { chromium, type Browser } from "playwright";
 
 import { JOB_MATCH_QUALIFICATION_CASES } from "@/evaluation/job-match-qualification-corpus";
+import { fixedSyntheticProviderRecommendation } from "@/tests/fixtures/job-match-qualification-provider-results";
 import { SYNTHETIC_QUALIFICATION_SNAPSHOT } from "@/evaluation/job-match-qualification-synthetic-preview";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import {
@@ -504,7 +505,7 @@ test("the actual synthetic command completes four owner reviews and stops at Goo
 
   await page.getByRole("heading", { name: "Review complete. Google remains blocked." }).waitFor();
   assert.equal(await page.getByText("No provider action is available on this screen.").count(), 1);
-  assert.equal(await page.getByText("gemini-3.8-flash / 3.2").count(), 1);
+  assert.equal(await page.getByText("gemini-3.8-flash / 3.4").count(), 1);
   assert.equal(await page.getByText("4 sequential; retry disabled").count(), 1);
   assert.equal(await page.getByText("290880 micros").count(), 1);
   assert.equal(await page.getByText("Disabled", { exact: true }).count(), 1);
@@ -632,7 +633,7 @@ test("the local screen binds exact consent and pauses four mocked calls for post
     calls += 1;
     return {
       value: browserModelOutput(
-        request.expectedRecommendation,
+        fixedSyntheticProviderRecommendation(request.caseId),
         calls === 1,
         calls === 1 ? { applicant: '"value":"Technical demonstrations"', job: jobWrappedSource } : undefined,
         calls === 2
@@ -748,7 +749,7 @@ test("the local screen binds exact consent and pauses four mocked calls for post
       );
       assert.equal(await review.getByRole("heading", { name: "Important gaps reported by the model" }).count(), 1);
       assert.equal(await review.getByText("Job listing: requirements", { exact: true }).count(), 1);
-      assert.equal(await review.getByText("Missing keywords: STEM", { exact: true }).count(), 1);
+      assert.equal(await review.getByText("Exact terms not found: STEM", { exact: true }).count(), 1);
       assert.equal(await review.getByRole("heading", { name: "Compensation and preference context" }).count(), 1);
       assert.equal(await review.getByText("Applicant salary target", { exact: true }).count(), 1);
       assert.equal(await review.getByText("Job-listed salary", { exact: true }).count(), 1);
@@ -758,7 +759,7 @@ test("the local screen binds exact consent and pauses four mocked calls for post
       assert.equal(await review.getByText(jobWorkArrangement, { exact: true }).count(), 1);
       assert.equal(await review.getByRole("heading", { name: "Limitations and advisory output" }).count(), 1);
       assert.equal(await review.getByRole("heading", { name: "Why this fits" }).count(), 1);
-      assert.equal(await review.getByRole("heading", { name: "What is missing" }).count(), 1);
+      assert.equal(await review.getByRole("heading", { name: "Not evidenced in the submitted resume" }).count(), 1);
       assert.equal(await review.getByRole("heading", { name: "What needs your review" }).count(), 1);
       assert.equal(await review.locator(".advisory-list").getByText("Emphasize the submitted technical demonstration work without adding claims.", { exact: false }).count(), 1);
       assert.equal(await review.locator(".advisory-list").getByText("Connect the submitted demonstration experience to the cited proof-of-concept responsibility while keeping the degree gap explicit.", { exact: false }).count(), 1);
@@ -924,7 +925,7 @@ test("one delayed status poll preserves a pending provider-result review", async
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: browserModelOutput(request.expectedRecommendation),
+          value: browserModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1016,7 +1017,7 @@ test("a successful retry that advances state clears the visible reconnect notice
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: browserModelOutput(request.expectedRecommendation),
+          value: browserModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1095,7 +1096,7 @@ test("execution progress offers an acknowledged stop during a blocked call", asy
         calls += 1;
         await blocked;
         return {
-          value: browserModelOutput(request.expectedRecommendation),
+          value: browserModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1166,7 +1167,7 @@ test("loss of loopback contact during execution reports provider completion and 
       activateTransport: async () => async (request) => {
         await blocked;
         return {
-          value: browserModelOutput(request.expectedRecommendation),
+          value: browserModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1230,7 +1231,7 @@ test("a lost consent acknowledgement is treated as possibly accepted and billabl
         calls += 1;
         await blocked;
         return {
-          value: browserModelOutput(request.expectedRecommendation),
+          value: browserModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1297,7 +1298,7 @@ test("a lost provider-review acknowledgement does not claim the next call was bl
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: browserModelOutput(request.expectedRecommendation),
+          value: browserModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
