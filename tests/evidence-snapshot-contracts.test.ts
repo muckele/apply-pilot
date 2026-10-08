@@ -83,6 +83,84 @@ test("durable contract rejects master-profile promotion, missing attestation, an
   }).success, false);
 });
 
+test("v2 save requires bounded explicit actions for current accepted facts", () => {
+  const request = {
+    ...validRequest,
+    schema: "apply-pilot/evidence-snapshot-save/v2" as const,
+    acceptedFactActions: [
+      { factId: "fact:snapshot-1:0", action: "RETAIN" as const },
+      { factId: "fact:snapshot-1:1", action: "REMOVE" as const },
+      {
+        factId: "fact:snapshot-1:2",
+        action: "REPLACE_OWNER_ATTESTATION" as const,
+        attestedFact: "Corrected synthetic owner fact.",
+        ownerAttested: true as const,
+        reuseScope: "JOB_ONLY" as const,
+        masterProfileOptIn: false as const
+      }
+    ]
+  };
+  assert.deepEqual(evidenceSnapshotSaveBodySchema.parse(request), request);
+  assert.equal(evidenceSnapshotSaveBodySchema.safeParse({
+    ...request,
+    acceptedFactActions: [{ ...request.acceptedFactActions[2], ownerAttested: false }]
+  }).success, false);
+});
+
+test("v2 save bounds the combined facts that retain, replace, and resolve can persist", () => {
+  const action = (index: number) => ({ factId: `fact:retained-${index}`, action: "RETAIN" as const });
+  const decision = (index: number) => ({
+    gapId: `gap:${index}`,
+    kind: "OWNER_ATTESTATION" as const,
+    attestedFact: `Synthetic accepted fact ${index}.`,
+    ownerAttested: true as const,
+    reuseScope: "JOB_ONLY" as const,
+    masterProfileOptIn: false as const
+  });
+  const request = {
+    ...validRequest,
+    schema: "apply-pilot/evidence-snapshot-save/v2" as const,
+    decisions: Array.from({ length: 50 }, (_, index) => decision(index)),
+    acceptedFactActions: Array.from({ length: 50 }, (_, index) => action(index))
+  };
+  assert.equal(evidenceSnapshotSaveBodySchema.safeParse(request).success, true);
+  assert.equal(evidenceSnapshotSaveBodySchema.safeParse({
+    ...request,
+    decisions: Array.from({ length: 51 }, (_, index) => decision(index))
+  }).success, false);
+  assert.equal(evidenceSnapshotSaveBodySchema.safeParse({
+    ...request,
+    decisions: Array.from({ length: 100 }, (_, index) => ({
+      gapId: `gap:${index}`,
+      kind: "UNRESOLVED" as const,
+      reuseScope: "JOB_ONLY" as const,
+      masterProfileOptIn: false as const
+    }))
+  }).success, true);
+});
+
+test("v2 payload projects carried facts independently of positional gap identifiers", () => {
+  const payload = evidenceSnapshotReviewPayloadSchema.parse({
+    schema: "apply-pilot/evidence-snapshot-payload/v2",
+    facts: [{
+      factId: "fact:stable-owner-fact",
+      originGapId: null,
+      fact: "Synthetic owner has business operations experience.",
+      provenance: { kind: "OWNER_ATTESTED", ownerAttested: true },
+      reuseScope: "JOB_ONLY",
+      masterProfileOptIn: false
+    }],
+    unresolvedGapIds: []
+  });
+  const projection = reviewedEvidenceFromSnapshot({
+    id: "snapshot-2",
+    snapshotHash: "e".repeat(64),
+    reviewPayload: payload
+  });
+  assert.equal(projection.facts[0].gapId, "fact:stable-owner-fact");
+  assert.equal(projection.facts[0].fact, "Synthetic owner has business operations experience.");
+});
+
 test("persisted decisions project explicit submitted-source versus owner-attested provenance", () => {
   assert.equal(evidenceSnapshotReviewPayloadSchema.safeParse({
     schema: "apply-pilot/evidence-snapshot-payload/v1",

@@ -1,5 +1,6 @@
 import { JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 import { hasEvidenceNegationCue } from "@/lib/evidence-negation";
+import type { AcceptedEvidenceFact } from "@/lib/jobs/evidence-snapshot-contracts";
 
 export type EvidenceFactSection =
   | "raw_source"
@@ -40,6 +41,7 @@ export type EvidenceCorrectionReview = Readonly<{
   selectedResumeDocumentId: string | null;
   selectedCoverLetterDocumentId: string | null;
   facts: ExtractedEvidenceFact[];
+  acceptedFacts: AcceptedEvidenceFact[];
   gaps: EvidenceReviewGap[];
 }>;
 
@@ -179,6 +181,7 @@ export function buildEvidenceCorrectionReview(input: {
   analysisOutput: unknown;
   selectedResumeDocumentId?: string | null;
   selectedCoverLetterDocumentId?: string | null;
+  acceptedFacts?: AcceptedEvidenceFact[];
 }): EvidenceCorrectionReview {
   const resume = isRecord(input.resume) ? input.resume : {};
   const facts: ExtractedEvidenceFact[] = [];
@@ -203,6 +206,7 @@ export function buildEvidenceCorrectionReview(input: {
     selectedResumeDocumentId: input.selectedResumeDocumentId ?? null,
     selectedCoverLetterDocumentId: input.selectedCoverLetterDocumentId ?? null,
     facts,
+    acceptedFacts: input.acceptedFacts ?? [],
     gaps: readGaps(input.analysisOutput)
   });
 }
@@ -250,6 +254,29 @@ function completeSourceLineRange(source: string, candidate: string): string | nu
     }
   }
   return null;
+}
+
+export function validateRetainedAcceptedFact(
+  review: EvidenceCorrectionReview,
+  fact: AcceptedEvidenceFact
+): AcceptedEvidenceFact {
+  if (fact.reuseScope !== "JOB_ONLY" || fact.masterProfileOptIn !== false) {
+    throw new Error("Reviewed evidence can only be retained for this job.");
+  }
+  if (fact.provenance.kind === "OWNER_ATTESTED") return fact;
+  const provenance = fact.provenance;
+  const source = review.facts.find((candidate) =>
+    candidate.id === provenance.sourceFactId &&
+    candidate.ref === provenance.sourceRef &&
+    candidate.sourceAuthoritative
+  );
+  const currentExcerpt = source
+    ? completeSourceLineRange(source.value, provenance.sourceExcerpt)
+    : null;
+  if (!currentExcerpt || currentExcerpt !== fact.fact) {
+    throw new Error("A retained source-backed fact no longer matches the current submitted resume source.");
+  }
+  return fact;
 }
 
 function normalizeDecision(

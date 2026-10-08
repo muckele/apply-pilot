@@ -17,6 +17,7 @@ import {
   CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1,
   renderCanonicalApplicationDocumentV1
 } from "@/lib/documents/export-renderer";
+import { assertCurrentApplicationRunEvidenceInTransaction } from "@/lib/application-runs/evidence-authority";
 import { prisma } from "@/lib/prisma";
 
 const DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -39,6 +40,7 @@ export type ApplicationRunDocumentExportServiceDependencies = {
   loadVerifiedCurrentAnswerPacketForLockedRunInTransaction?:
     typeof loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
   renderCanonicalApplicationDocumentV1?: typeof renderCanonicalApplicationDocumentV1;
+  assertCurrentApplicationRunEvidenceInTransaction?: typeof assertCurrentApplicationRunEvidenceInTransaction;
 };
 
 type LockedResumeSource = {
@@ -201,6 +203,8 @@ export function createApplicationRunDocumentExportService(
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
   const renderCanonical =
     dependencies.renderCanonicalApplicationDocumentV1 ?? renderCanonicalApplicationDocumentV1;
+  const assertCurrentEvidence = dependencies.assertCurrentApplicationRunEvidenceInTransaction ??
+    assertCurrentApplicationRunEvidenceInTransaction;
 
   async function exportApprovedApplicationRunDocument(input: unknown) {
     const parsed = serviceInputSchema.parse(input);
@@ -218,6 +222,7 @@ export function createApplicationRunDocumentExportService(
       }
       if (run.state !== "READY") throw invalidState();
       if (parsed.expectedStateVersion !== run.stateVersion) throw staleLifecycle();
+      await assertCurrentEvidence(tx, run);
 
       let verified;
       try {

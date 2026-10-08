@@ -444,13 +444,16 @@ class FakeAnswerPacketDatabase {
 function service(
   database: FakeAnswerPacketDatabase,
   env = { APPLICATION_AUTOMATION_ENABLED: "true" },
-  assertTransition?: ApplicationRunAnswerPacketServiceDependencies["assertTransition"]
+  assertTransition?: ApplicationRunAnswerPacketServiceDependencies["assertTransition"],
+  overrides: Partial<ApplicationRunAnswerPacketServiceDependencies> = {}
 ) {
   return createApplicationRunAnswerPacketService({
     prismaClient: database.client as NonNullable<ApplicationRunAnswerPacketServiceDependencies["prismaClient"]>,
     env,
     clock: () => new Date(NOW),
-    assertTransition
+    assertTransition,
+    assertCurrentApplicationRunEvidenceInTransaction: async () => "LEGACY_UNVERSIONED",
+    ...overrides
   });
 }
 
@@ -555,6 +558,23 @@ test("first publication persists inspection 1 and packet 1, transitions READY, a
   ]);
 });
 
+test("stale reviewed-evidence authority blocks answer-packet publication before artifact writes", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  await assert.rejects(
+    service(database, { APPLICATION_AUTOMATION_ENABLED: "true" }, undefined, {
+      assertCurrentApplicationRunEvidenceInTransaction: async () => {
+        throw new PublicApiError("stale reviewed evidence", 409, { code: "RUN_DOCUMENT_EVIDENCE_STALE" });
+      }
+    }).publishFormInspectionAndAnswerPacket(publicationInput()),
+    (error: unknown) => assertPublicErrorCode(error, "RUN_DOCUMENT_EVIDENCE_STALE")
+  );
+  assert.equal(database.state.inspections.length, 0);
+  assert.equal(database.state.packets.length, 0);
+  assert.equal(database.state.packetAnswers.length, 0);
+  assert.equal(database.state.audits.length, 0);
+  assert.equal(database.state.events.length, 0);
+});
+
 test("partial publication stores only unique answers and makes ambiguous manual work visible", async () => {
   const database = new FakeAnswerPacketDatabase();
   const duplicate = field({ question: "Portfolio URL" });
@@ -612,7 +632,8 @@ test("real packet verification lets Fill acquire only the reviewed unique field 
     prismaClient: database.client as never,
     env: { APPLICATION_AUTOMATION_ENABLED: "true" },
     attemptIdGenerator: () => "550e8400-e29b-41d4-a716-446655440000",
-    assertTransition: () => undefined
+    assertTransition: () => undefined,
+    assertCurrentApplicationRunEvidenceInTransaction: async () => "LEGACY_UNVERSIONED"
   });
   const result = await fill.acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion });
   assert.equal(result.eligibleFields.length, 1);
@@ -636,7 +657,8 @@ test("real packet verification consumes no Fill attempt for an entirely ambiguou
     prismaClient: database.client as never,
     env: { APPLICATION_AUTOMATION_ENABLED: "true" },
     attemptIdGenerator: () => "550e8400-e29b-41d4-a716-446655440000",
-    assertTransition: () => undefined
+    assertTransition: () => undefined,
+    assertCurrentApplicationRunEvidenceInTransaction: async () => "LEGACY_UNVERSIONED"
   });
   await assert.rejects(fill.acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion }),
     (error: unknown) => assertPublicErrorCode(error, "FILL_NO_ELIGIBLE_FIELDS"));

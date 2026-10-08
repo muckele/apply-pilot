@@ -9,6 +9,7 @@ import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionO
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import {
+  acceptedEvidenceFactsFromSnapshot,
   CURRENT_EVIDENCE_SNAPSHOT_SELECT,
   isEvidenceBindingCurrent
 } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -202,7 +203,10 @@ async function getJobDetail(id: string) {
             analysisPromptVersion: reviewAnalysis?.promptVersion ?? null,
             analysisOutput: reviewAnalysis?.output,
             selectedResumeDocumentId: application?.resumeVersionId,
-            selectedCoverLetterDocumentId: application?.coverLetterVersionId
+            selectedCoverLetterDocumentId: application?.coverLetterVersionId,
+            acceptedFacts: context.effectiveEvidenceSnapshotId && job.currentEvidenceSnapshot
+              ? acceptedEvidenceFactsFromSnapshot(job.currentEvidenceSnapshot)
+              : []
           })
         : null
     };

@@ -7,11 +7,15 @@ import { PublicApiError } from "@/lib/api-errors";
 import {
   buildEvidenceCorrectionReview,
   normalizeEvidenceCorrectionDecisions,
+  validateRetainedAcceptedFact,
   type EvidenceCorrectionDecision
 } from "@/lib/jobs/evidence-correction-review";
 import {
+  acceptedEvidenceFactsFromSnapshot,
   evidenceSnapshotReviewPayloadSchema,
   resolveCurrentReviewedEvidence,
+  type AcceptedEvidenceFact,
+  type AcceptedFactActionInput,
   type EvidenceSnapshotReviewPayload,
   type EvidenceSnapshotSaveInput
 } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -43,6 +47,75 @@ function evidenceError(message: string, status: number, code: string, details: R
 
 function requestHash(jobId: string, input: EvidenceSnapshotSaveInput) {
   return sha256({ jobId, input });
+}
+
+function factIdentity(fact: Pick<AcceptedEvidenceFact, "fact" | "provenance">) {
+  return sha256({ fact: fact.fact, provenance: fact.provenance });
+}
+
+function newFactId(fact: Pick<AcceptedEvidenceFact, "fact" | "provenance">) {
+  return `fact:${factIdentity(fact)}`;
+}
+
+function normalizeAcceptedFactActions(
+  input: EvidenceSnapshotSaveInput,
+  acceptedFacts: readonly AcceptedEvidenceFact[]
+): AcceptedFactActionInput[] {
+  if (input.schema === "apply-pilot/evidence-snapshot-save/v1") {
+    return acceptedFacts.map((fact) => ({ factId: fact.factId, action: "RETAIN" as const }));
+  }
+  const actions = input.acceptedFactActions;
+  if (
+    actions.length !== acceptedFacts.length ||
+    actions.some((action, index) => action.factId !== acceptedFacts[index]?.factId)
+  ) {
+    throw evidenceError(
+      "Submit exactly one ordered retain, remove, or replace action for every accepted fact.",
+      422,
+      "EVIDENCE_REVIEW_INVALID"
+    );
+  }
+  return actions;
+}
+
+function effectiveAcceptedFacts(
+  review: ReturnType<typeof buildEvidenceCorrectionReview>,
+  acceptedFacts: readonly AcceptedEvidenceFact[],
+  actions: readonly AcceptedFactActionInput[],
+  decisions: ReturnType<typeof normalizeEvidenceCorrectionDecisions>
+): AcceptedEvidenceFact[] {
+  const retained = actions.flatMap((action, index): AcceptedEvidenceFact[] => {
+    const prior = acceptedFacts[index];
+    if (!prior || action.factId !== prior.factId || action.action === "REMOVE") return [];
+    if (action.action === "RETAIN") return [validateRetainedAcceptedFact(review, prior)];
+    const replacement = {
+      factId: "",
+      originGapId: prior.originGapId,
+      fact: action.attestedFact.trim(),
+      provenance: { kind: "OWNER_ATTESTED" as const, ownerAttested: true as const },
+      reuseScope: "JOB_ONLY" as const,
+      masterProfileOptIn: false as const
+    };
+    return [{ ...replacement, factId: newFactId(replacement) }];
+  });
+  const resolved = decisions.flatMap((decision): AcceptedEvidenceFact[] => {
+    if (decision.status !== "RESOLVED" || decision.fact === null || decision.provenance.kind === "NONE") return [];
+    const candidate = {
+      factId: "",
+      originGapId: decision.gapId,
+      fact: decision.fact,
+      provenance: decision.provenance,
+      reuseScope: "JOB_ONLY" as const,
+      masterProfileOptIn: false as const
+    };
+    return [{ ...candidate, factId: newFactId(candidate) }];
+  });
+  const unique = new Map<string, AcceptedEvidenceFact>();
+  for (const fact of [...retained, ...resolved]) {
+    const identity = factIdentity(fact);
+    if (!unique.has(identity)) unique.set(identity, fact);
+  }
+  return [...unique.values()];
 }
 
 function responseFor(snapshot: {
@@ -227,6 +300,9 @@ export async function saveEvidenceSnapshot(
           "EVIDENCE_ANALYSIS_STALE");
       }
 
+      const acceptedFacts = evidenceContext.effectiveEvidenceSnapshotId && job.currentEvidenceSnapshot
+        ? acceptedEvidenceFactsFromSnapshot(job.currentEvidenceSnapshot)
+        : [];
       const review = buildEvidenceCorrectionReview({
         jobId,
         resumeId: resume.id,
@@ -235,7 +311,8 @@ export async function saveEvidenceSnapshot(
         analysisId: analysis.id,
         analysisOutput: analysis.output,
         selectedResumeDocumentId: application?.resumeVersionId ?? null,
-        selectedCoverLetterDocumentId: application?.coverLetterVersionId ?? null
+        selectedCoverLetterDocumentId: application?.coverLetterVersionId ?? null,
+        acceptedFacts
       });
       let decisions;
       try {
@@ -250,10 +327,33 @@ export async function saveEvidenceSnapshot(
           "EVIDENCE_REVIEW_INVALID"
         );
       }
-      const payload: EvidenceSnapshotReviewPayload = evidenceSnapshotReviewPayloadSchema.parse({
-        schema: "apply-pilot/evidence-snapshot-payload/v1",
-        decisions
-      });
+      const acceptedFactActions = normalizeAcceptedFactActions(input, acceptedFacts);
+      let effectiveFacts: AcceptedEvidenceFact[];
+      try {
+        effectiveFacts = effectiveAcceptedFacts(review, acceptedFacts, acceptedFactActions, decisions);
+      } catch (error) {
+        if (error instanceof PublicApiError) throw error;
+        throw evidenceError(
+          error instanceof Error ? error.message : "The retained evidence review was invalid.",
+          422,
+          "EVIDENCE_REVIEW_INVALID"
+        );
+      }
+      let payload: EvidenceSnapshotReviewPayload;
+      try {
+        payload = evidenceSnapshotReviewPayloadSchema.parse({
+          schema: "apply-pilot/evidence-snapshot-payload/v2",
+          facts: effectiveFacts,
+          unresolvedGapIds: decisions.flatMap((decision) =>
+            decision.status === "UNRESOLVED" ? [decision.gapId] : [])
+        });
+      } catch (error) {
+        throw evidenceError(
+          error instanceof Error ? error.message : "The accepted evidence exceeds the durable review bounds.",
+          422,
+          "EVIDENCE_REVIEW_INVALID"
+        );
+      }
       const sourceProjectionHash = sha256(review.facts);
       const gapProjectionHash = sha256(review.gaps);
       const snapshotHash = sha256({

@@ -473,6 +473,7 @@ function serviceFor(state: FakeState, overrides: Record<string, unknown> = {}) {
     attemptIdGenerator: () => ATTEMPT_ID,
     assertTransition: () => undefined,
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async () => state.verified,
+    assertCurrentApplicationRunEvidenceInTransaction: async () => "LEGACY_UNVERSIONED",
     ...overrides
   });
 }
@@ -744,6 +745,25 @@ test("acquisition policy and host gates fail closed without packet verification 
 });
 
 test("verifier/current-review failures translate to the closed Fill taxonomy without writes", async () => {
+  {
+    const state = createFakeState();
+    let verifierCalls = 0;
+    await assert.rejects(
+      serviceFor(state, {
+        assertCurrentApplicationRunEvidenceInTransaction: async () => {
+          throw new PublicApiError("raw evidence detail", 409, { code: "RUN_DOCUMENT_EVIDENCE_STALE" });
+        },
+        loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async () => {
+          verifierCalls += 1;
+          return state.verified;
+        }
+      }).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
+      (error) => assertFillError(error, "FILL_STALE")
+    );
+    assert.equal(verifierCalls, 0);
+    assert.equal(state.writes.length, 0);
+  }
+
   for (const scenario of [
     { label: "stale verifier", error: new PublicApiError("raw stale", 409, { code: "RUN_INSPECTION_STALE" }), code: "FILL_STALE" },
     { label: "target-stale verifier", error: new PublicApiError("raw target", 409, { code: "RUN_TARGET_STALE" }), code: "FILL_STALE" },
@@ -827,10 +847,17 @@ test("central transition authority is mandatory before DB time or mutation", asy
 
 test("a consumed attempt is a permanent fence and cannot replay proposal material", async () => {
   const state = createFakeState({ run: createRun({ state: "FILLING", fillAttemptId: ATTEMPT_ID, fillLeaseExpiresAt: DB_NOW }) });
+  let evidenceChecks = 0;
   await assert.rejects(
-    serviceFor(state).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
+    serviceFor(state, {
+      assertCurrentApplicationRunEvidenceInTransaction: async () => {
+        evidenceChecks += 1;
+        throw new PublicApiError("stale evidence", 409, { code: "RUN_DOCUMENT_EVIDENCE_STALE" });
+      }
+    }).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
     (error) => assertFillError(error, "FILL_ALREADY_IN_PROGRESS")
   );
+  assert.equal(evidenceChecks, 0, "stale evidence must not bypass the permanent consumed-attempt fence");
   assert.equal(state.writes.length, 0);
   assert.equal(state.operations.includes("clock"), false);
 });

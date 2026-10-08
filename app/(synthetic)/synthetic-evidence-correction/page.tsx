@@ -72,7 +72,15 @@ export default function SyntheticEvidenceCorrectionPage() {
     analysisPromptVersion: "3.4",
     analysisOutput: syntheticAnalysis,
     selectedResumeDocumentId: "synthetic-resume-version-1",
-    selectedCoverLetterDocumentId: "synthetic-cover-letter-1"
+    selectedCoverLetterDocumentId: "synthetic-cover-letter-1",
+    acceptedFacts: [{
+      factId: "fact:synthetic-current-owner-fact",
+      originGapId: "gap:prior",
+      fact: "Synthetic owner has current job-specific business operations experience.",
+      provenance: { kind: "OWNER_ATTESTED", ownerAttested: true },
+      reuseScope: "JOB_ONLY",
+      masterProfileOptIn: false
+    }]
   });
 
   return (

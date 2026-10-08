@@ -23,7 +23,15 @@ const sourceCorrectionInputSchema = z.object({
   sourceExcerpt: boundedFact,
   correctedFact: boundedFact,
   ...jobOnlyReuse
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.correctedFact !== value.sourceExcerpt) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "A source-backed fact must match the complete cited source excerpt exactly.",
+      path: ["correctedFact"]
+    });
+  }
+});
 
 const ownerAttestationInputSchema = z.object({
   gapId: opaqueId,
@@ -33,14 +41,13 @@ const ownerAttestationInputSchema = z.object({
   ...jobOnlyReuse
 }).strict();
 
-export const evidenceSnapshotDecisionInputSchema = z.discriminatedUnion("kind", [
+export const evidenceSnapshotDecisionInputSchema = z.union([
   unresolvedInputSchema,
   sourceCorrectionInputSchema,
   ownerAttestationInputSchema
 ]);
 
-export const evidenceSnapshotSaveBodySchema = z.object({
-  schema: z.literal("apply-pilot/evidence-snapshot-save/v1"),
+const saveBase = {
   requestId: z.string().min(8).max(128).regex(/^[A-Za-z0-9:_-]+$/u),
   resumeId: opaqueId,
   resumeUpdatedAt: z.string().datetime({ offset: true }),
@@ -51,16 +58,38 @@ export const evidenceSnapshotSaveBodySchema = z.object({
     promptVersion: z.literal(JOB_MATCH_PROMPT_VERSION)
   }).strict(),
   decisions: z.array(evidenceSnapshotDecisionInputSchema).max(100)
-}).strict().superRefine((value, context) => {
-  value.decisions.forEach((decision, index) => {
-    if (decision.kind === "SOURCE_CORRECTION" && decision.correctedFact !== decision.sourceExcerpt) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "A source-backed fact must match the complete cited source excerpt exactly.",
-        path: ["decisions", index, "correctedFact"]
-      });
-    }
-  });
+} as const;
+
+const acceptedFactActionSchema = z.discriminatedUnion("action", [
+  z.object({ factId: opaqueId, action: z.literal("RETAIN") }).strict(),
+  z.object({ factId: opaqueId, action: z.literal("REMOVE") }).strict(),
+  z.object({
+    factId: opaqueId,
+    action: z.literal("REPLACE_OWNER_ATTESTATION"),
+    attestedFact: boundedFact,
+    ownerAttested: z.literal(true),
+    ...jobOnlyReuse
+  }).strict()
+]);
+
+export const evidenceSnapshotSaveBodySchema = z.discriminatedUnion("schema", [
+  z.object({ schema: z.literal("apply-pilot/evidence-snapshot-save/v1"), ...saveBase }).strict(),
+  z.object({
+    schema: z.literal("apply-pilot/evidence-snapshot-save/v2"),
+    ...saveBase,
+    acceptedFactActions: z.array(acceptedFactActionSchema).max(100)
+  }).strict()
+]).superRefine((value, context) => {
+  if (value.schema !== "apply-pilot/evidence-snapshot-save/v2") return;
+  const retainedOrReplaced = value.acceptedFactActions.filter((action) => action.action !== "REMOVE").length;
+  const newlyResolved = value.decisions.filter((decision) => decision.kind !== "UNRESOLVED").length;
+  if (retainedOrReplaced + newlyResolved > 100) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "At most 100 accepted evidence facts can be persisted in one review.",
+      path: ["acceptedFactActions"]
+    });
+  }
 });
 
 const persistedBase = {
@@ -106,7 +135,7 @@ const persistedUnresolvedDecisionSchema = z.object({
   provenance: z.object({ kind: z.literal("NONE") }).strict()
 }).strict();
 
-export const evidenceSnapshotReviewPayloadSchema = z.object({
+const evidenceSnapshotReviewPayloadV1Schema = z.object({
   schema: z.literal("apply-pilot/evidence-snapshot-payload/v1"),
   decisions: z.array(z.union([
     persistedSourceDecisionSchema,
@@ -114,6 +143,46 @@ export const evidenceSnapshotReviewPayloadSchema = z.object({
     persistedUnresolvedDecisionSchema
   ])).max(100)
 }).strict();
+
+const persistedSourceFactSchema = z.object({
+  factId: opaqueId,
+  originGapId: opaqueId.nullable(),
+  fact: boundedFact,
+  provenance: z.object({
+    kind: z.literal("EXISTING_SOURCE"),
+    sourceFactId: z.string().trim().min(1).max(512),
+    sourceRef: z.string().trim().min(1).max(512),
+    sourceExcerpt: boundedFact
+  }).strict(),
+  ...jobOnlyReuse
+}).strict().superRefine((value, context) => {
+  if (value.fact !== value.provenance.sourceExcerpt) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "A persisted source-backed fact must preserve its complete cited source excerpt.",
+      path: ["fact"]
+    });
+  }
+});
+
+const persistedAttestedFactSchema = z.object({
+  factId: opaqueId,
+  originGapId: opaqueId.nullable(),
+  fact: boundedFact,
+  provenance: z.object({ kind: z.literal("OWNER_ATTESTED"), ownerAttested: z.literal(true) }).strict(),
+  ...jobOnlyReuse
+}).strict();
+
+const evidenceSnapshotReviewPayloadV2Schema = z.object({
+  schema: z.literal("apply-pilot/evidence-snapshot-payload/v2"),
+  facts: z.array(z.union([persistedSourceFactSchema, persistedAttestedFactSchema])).max(100),
+  unresolvedGapIds: z.array(opaqueId).max(100)
+}).strict();
+
+export const evidenceSnapshotReviewPayloadSchema = z.discriminatedUnion("schema", [
+  evidenceSnapshotReviewPayloadV1Schema,
+  evidenceSnapshotReviewPayloadV2Schema
+]);
 
 export const evidenceSnapshotSaveResponseSchema = z.object({
   schema: z.literal("apply-pilot/evidence-snapshot-save-response/v1"),
@@ -135,6 +204,7 @@ export const evidenceSnapshotSaveResponseSchema = z.object({
 
 export type EvidenceSnapshotSaveInput = z.infer<typeof evidenceSnapshotSaveBodySchema>;
 export type EvidenceSnapshotDecisionInput = z.infer<typeof evidenceSnapshotDecisionInputSchema>;
+export type AcceptedFactActionInput = z.infer<typeof acceptedFactActionSchema>;
 export type EvidenceSnapshotReviewPayload = z.infer<typeof evidenceSnapshotReviewPayloadSchema>;
 export type EvidenceSnapshotSaveResponse = z.infer<typeof evidenceSnapshotSaveResponseSchema>;
 
@@ -149,6 +219,17 @@ export type JobMatchReviewedEvidence = Readonly<{
     sourceRef: string | null;
   }>>;
   unresolvedGapIds: readonly string[];
+}>;
+
+export type AcceptedEvidenceFact = Readonly<{
+  factId: string;
+  originGapId: string | null;
+  fact: string;
+  provenance:
+    | Readonly<{ kind: "EXISTING_SOURCE"; sourceFactId: string; sourceRef: string; sourceExcerpt: string }>
+    | Readonly<{ kind: "OWNER_ATTESTED"; ownerAttested: true }>;
+  reuseScope: "JOB_ONLY";
+  masterProfileOptIn: false;
 }>;
 
 export const CURRENT_EVIDENCE_SNAPSHOT_SELECT = Object.freeze({
@@ -218,21 +299,39 @@ export function reviewedEvidenceFromSnapshot(snapshot: {
   reviewPayload: unknown;
 }): JobMatchReviewedEvidence {
   const payload = evidenceSnapshotReviewPayloadSchema.parse(snapshot.reviewPayload);
+  const acceptedFacts = acceptedEvidenceFactsFromSnapshot({ ...snapshot, reviewPayload: payload });
   return Object.freeze({
     schema: "apply-pilot/job-match-reviewed-evidence/v1" as const,
     snapshotId: snapshot.id,
     snapshotHash: snapshot.snapshotHash,
-    facts: payload.decisions.flatMap((decision) => decision.status === "RESOLVED" ? [{
-      gapId: decision.gapId,
-      fact: decision.provenance.kind === "EXISTING_SOURCE"
-        ? decision.provenance.sourceExcerpt
-        : decision.fact,
-      provenance: decision.provenance.kind === "EXISTING_SOURCE"
+    facts: acceptedFacts.map((fact) => ({
+      gapId: fact.originGapId ?? fact.factId,
+      fact: fact.provenance.kind === "EXISTING_SOURCE"
+        ? fact.provenance.sourceExcerpt
+        : fact.fact,
+      provenance: fact.provenance.kind === "EXISTING_SOURCE"
         ? "SUBMITTED_RESUME" as const
         : "OWNER_ATTESTED" as const,
-      sourceRef: decision.provenance.kind === "EXISTING_SOURCE" ? decision.provenance.sourceRef : null
-    }] : []),
-    unresolvedGapIds: payload.decisions.flatMap((decision) =>
-      decision.status === "UNRESOLVED" ? [decision.gapId] : [])
+      sourceRef: fact.provenance.kind === "EXISTING_SOURCE" ? fact.provenance.sourceRef : null
+    })),
+    unresolvedGapIds: payload.schema === "apply-pilot/evidence-snapshot-payload/v1"
+      ? payload.decisions.flatMap((decision) => decision.status === "UNRESOLVED" ? [decision.gapId] : [])
+      : payload.unresolvedGapIds
   });
+}
+
+export function acceptedEvidenceFactsFromSnapshot(snapshot: {
+  id: string;
+  reviewPayload: unknown;
+}): AcceptedEvidenceFact[] {
+  const payload = evidenceSnapshotReviewPayloadSchema.parse(snapshot.reviewPayload);
+  if (payload.schema === "apply-pilot/evidence-snapshot-payload/v2") return payload.facts;
+  return payload.decisions.flatMap((decision, index) => decision.status === "RESOLVED" ? [{
+    factId: `fact:${snapshot.id}:${index}`,
+    originGapId: decision.gapId,
+    fact: decision.provenance.kind === "EXISTING_SOURCE" ? decision.provenance.sourceExcerpt : decision.fact,
+    provenance: decision.provenance,
+    reuseScope: "JOB_ONLY" as const,
+    masterProfileOptIn: false as const
+  }] : []);
 }

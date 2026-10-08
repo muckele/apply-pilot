@@ -367,8 +367,10 @@ test("UI interaction blocks incomplete provenance, saves an exact bounded reques
       assert.equal(String(input), "/api/jobs/job-1/evidence-snapshots");
       const body = JSON.parse(String(init?.body));
       assert.deepEqual(Object.keys(body).sort(), [
-        "decisions", "requestId", "resumeId", "resumeUpdatedAt", "reviewedAnalysis", "schema"
+        "acceptedFactActions", "decisions", "requestId", "resumeId", "resumeUpdatedAt", "reviewedAnalysis", "schema"
       ]);
+      assert.equal(body.schema, "apply-pilot/evidence-snapshot-save/v2");
+      assert.deepEqual(body.acceptedFactActions, []);
       assert.match(body.requestId, /^[a-f0-9-]{36}$/);
       assert.equal(body.decisions[0].kind, "UNRESOLVED");
       return new Response(JSON.stringify({

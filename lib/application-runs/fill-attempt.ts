@@ -9,6 +9,7 @@ import {
   parseCompatibleApplicationAnswerProposal,
   type ApplicationAnswerProposal
 } from "@/lib/application-runs/answer-packet-domain";
+import { assertCurrentApplicationRunEvidenceInTransaction } from "@/lib/application-runs/evidence-authority";
 import {
   loadVerifiedCurrentAnswerPacketForLockedRunInTransaction,
   type ApplicationRunAnswerPacketTransaction,
@@ -122,6 +123,7 @@ export type ApplicationRunFillAttemptServiceDependencies = {
   assertTransition?: typeof assertRunTransition;
   loadVerifiedCurrentAnswerPacketForLockedRunInTransaction?:
     typeof loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
+  assertCurrentApplicationRunEvidenceInTransaction?: typeof assertCurrentApplicationRunEvidenceInTransaction;
 };
 
 type FillPolicy = {
@@ -627,6 +629,8 @@ export function createApplicationRunFillAttemptService(
   const loadVerifiedCurrentPacket =
     dependencies.loadVerifiedCurrentAnswerPacketForLockedRunInTransaction ??
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
+  const assertCurrentEvidence = dependencies.assertCurrentApplicationRunEvidenceInTransaction ??
+    assertCurrentApplicationRunEvidenceInTransaction;
 
   async function acquireFillAttempt(input: unknown) {
     try {
@@ -638,6 +642,14 @@ export function createApplicationRunFillAttemptService(
         const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
         if (!policyAllowsFill(policy, env, run)) throw policyDenied();
         assertAcquisitionRunFence(run, parsed.expectedStateVersion);
+        try {
+          await assertCurrentEvidence(tx, run);
+        } catch (error) {
+          if (error instanceof PublicApiError && error.details?.code === "RUN_DOCUMENT_EVIDENCE_STALE") {
+            throw fillStale();
+          }
+          throw error;
+        }
 
         let verified: VerifiedCurrentAnswerPacket | null;
         try {

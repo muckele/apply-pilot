@@ -43,8 +43,13 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
   await page.route("**/api/jobs/synthetic-job-1/evidence-snapshots", async (route) => {
     const body = route.request().postDataJSON();
     assert.deepEqual(Object.keys(body).sort(), [
-      "decisions", "requestId", "resumeId", "resumeUpdatedAt", "reviewedAnalysis", "schema"
+      "acceptedFactActions", "decisions", "requestId", "resumeId", "resumeUpdatedAt", "reviewedAnalysis", "schema"
     ]);
+    assert.equal(body.schema, "apply-pilot/evidence-snapshot-save/v2");
+    assert.deepEqual(body.acceptedFactActions, [{
+      factId: "fact:synthetic-current-owner-fact",
+      action: "RETAIN"
+    }]);
     assert.equal(JSON.stringify(body).includes("SYNTHETIC CANDIDATE"), false);
     await route.fulfill({
       status: 201,
@@ -101,6 +106,9 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
   assert.doesNotMatch(bodyText, /apply-pilot\/evidence-correction-review|sourceAuthoritative|\{\s*"schema"/i);
   assert.match(bodyText, /durable review/i);
   assert.match(bodyText, /500 candidates checked; 12 additional candidates omitted from this bounded correction view/i);
+  assert.match(bodyText, /Current accepted job-only facts/i);
+  assert.match(bodyText, /Synthetic owner has current job-specific business operations experience/i);
+  assert.equal(await page.getByLabel("Current fact action").inputValue(), "RETAIN");
 
   const outcome = page.getByLabel("Review outcome");
   await outcome.selectOption("SOURCE_CORRECTION");
@@ -113,7 +121,9 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
 
   await outcome.selectOption("OWNER_ATTESTATION");
   assert.equal(await page.getByText(/saved for this job only/i).isVisible(), true);
-  await page.getByLabel("Owner-attested fact").fill("Synthetic owner-confirmed customer discovery evidence.");
+  await page
+    .getByRole("textbox", { name: "Owner-attested fact", exact: true })
+    .fill("Synthetic owner-confirmed customer discovery evidence.");
   await page.getByLabel(/I attest that this fact is accurate/).check();
   await page.getByRole("button", { name: "Save reviewed evidence" }).click();
   await page.getByText(/Saved reviewed snapshot [a-f0-9]{64}/).waitFor();
@@ -121,7 +131,7 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
   await page.getByRole("button", { name: "Reassess fit with saved evidence" }).click();
   await page.getByText(/Reassessment saved with the reviewed evidence/i).waitFor();
 
-  await page.getByLabel("Owner-attested fact").fill("Changed synthetic owner-confirmed evidence.");
+  await page.getByLabel("Current fact action").selectOption("REMOVE");
   assert.equal(await page.getByText(/Saved reviewed snapshot [a-f0-9]{64}/).count(), 0);
   await page.getByText(/Review changed.*Save a new reviewed snapshot/).waitFor();
 

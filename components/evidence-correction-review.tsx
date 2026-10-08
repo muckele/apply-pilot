@@ -10,6 +10,7 @@ import {
 } from "@/lib/jobs/evidence-correction-review";
 import {
   evidenceSnapshotSaveResponseSchema,
+  type AcceptedFactActionInput,
   type EvidenceSnapshotSaveResponse
 } from "@/lib/jobs/evidence-snapshot-contracts";
 
@@ -29,8 +30,17 @@ const emptyDraft: Draft = {
   ownerAttested: false
 };
 
+type AcceptedDraft = {
+  action: "RETAIN" | "REMOVE" | "REPLACE_OWNER_ATTESTATION";
+  fact: string;
+  ownerAttested: boolean;
+};
+
+const emptyAcceptedDraft: AcceptedDraft = { action: "RETAIN", fact: "", ownerAttested: false };
+
 export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectionReviewModel }) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [acceptedDrafts, setAcceptedDrafts] = useState<Record<string, AcceptedDraft>>({});
   const [result, setResult] = useState<EvidenceSnapshotSaveResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [snapshotInvalidated, setSnapshotInvalidated] = useState(false);
@@ -39,10 +49,25 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
   const reviewRevision = useRef(0);
   const requestId = useRef<string | null>(null);
   const draftFor = (gapId: string) => drafts[gapId] ?? emptyDraft;
+  const acceptedDraftFor = (factId: string) => acceptedDrafts[factId] ?? emptyAcceptedDraft;
   const update = (gapId: string, patch: Partial<Draft>) => {
     reviewRevision.current += 1;
     requestId.current = null;
     setDrafts((current) => ({ ...current, [gapId]: { ...(current[gapId] ?? emptyDraft), ...patch } }));
+    setError(null);
+    setReassessmentSaved(false);
+    if (result) {
+      setResult(null);
+      setSnapshotInvalidated(true);
+    }
+  };
+  const updateAccepted = (factId: string, patch: Partial<AcceptedDraft>) => {
+    reviewRevision.current += 1;
+    requestId.current = null;
+    setAcceptedDrafts((current) => ({
+      ...current,
+      [factId]: { ...(current[factId] ?? emptyAcceptedDraft), ...patch }
+    }));
     setError(null);
     setReassessmentSaved(false);
     if (result) {
@@ -79,6 +104,23 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
         };
         return { gapId: gap.id, kind: "UNRESOLVED", ...reuse };
       });
+      const acceptedFactActions: AcceptedFactActionInput[] = review.acceptedFacts.map((fact) => {
+        const draft = acceptedDraftFor(fact.factId);
+        if (draft.action === "REPLACE_OWNER_ATTESTATION") {
+          if (!draft.fact.trim() || !draft.ownerAttested) {
+            throw new Error("A replacement requires an explicit owner attestation and fact.");
+          }
+          return {
+            factId: fact.factId,
+            action: draft.action,
+            attestedFact: draft.fact,
+            ownerAttested: true,
+            reuseScope: "JOB_ONLY",
+            masterProfileOptIn: false
+          };
+        }
+        return { factId: fact.factId, action: draft.action };
+      });
       normalizeEvidenceCorrectionDecisions(review, decisions);
       if (
         !review.analysisId || !review.analysisInputHash ||
@@ -91,7 +133,7 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          schema: "apply-pilot/evidence-snapshot-save/v1",
+          schema: "apply-pilot/evidence-snapshot-save/v2",
           requestId: requestId.current,
           resumeId: review.resumeId,
           resumeUpdatedAt: review.resumeUpdatedAt,
@@ -101,7 +143,8 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
             model: review.analysisModel,
             promptVersion: review.analysisPromptVersion
           },
-          decisions
+          decisions,
+          acceptedFactActions
         })
       });
       const json: unknown = await response.json().catch(() => null);
@@ -182,6 +225,54 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
           ))}
         </div>
       </details>
+
+      {review.acceptedFacts.length ? (
+        <div className="space-y-3">
+          <div>
+            <h4 className="text-sm font-semibold text-slate-950">Current accepted job-only facts</h4>
+            <p className="mt-1 text-xs leading-5 text-slate-600">
+              Each current fact is retained unless you explicitly remove or replace it. These facts are never promoted to the master profile.
+            </p>
+          </div>
+          {review.acceptedFacts.map((fact) => {
+            const draft = acceptedDraftFor(fact.factId);
+            return (
+              <fieldset key={fact.factId} className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <legend className="px-1 text-xs font-semibold uppercase text-slate-600">
+                  {fact.provenance.kind === "EXISTING_SOURCE" ? "Submitted-resume evidence" : "Owner-attested evidence"}
+                </legend>
+                <p className="whitespace-pre-wrap text-sm leading-6 text-slate-800">{fact.fact}</p>
+                <label className="block text-xs font-semibold text-slate-700">
+                  Current fact action
+                  <select
+                    className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm"
+                    value={draft.action}
+                    onChange={(event) => updateAccepted(fact.factId, {
+                      action: event.target.value as AcceptedDraft["action"]
+                    })}
+                  >
+                    <option value="RETAIN">Retain current fact</option>
+                    <option value="REMOVE">Remove current fact</option>
+                    <option value="REPLACE_OWNER_ATTESTATION">Replace with owner-attested fact</option>
+                  </select>
+                </label>
+                {draft.action === "REPLACE_OWNER_ATTESTATION" ? (
+                  <>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Replacement owner-attested fact
+                      <textarea className="mt-1 w-full rounded-md border border-slate-300 bg-white p-2 text-sm" value={draft.fact} onChange={(event) => updateAccepted(fact.factId, { fact: event.target.value })} />
+                    </label>
+                    <label className="flex items-start gap-2 text-xs leading-5 text-slate-700">
+                      <input type="checkbox" checked={draft.ownerAttested} onChange={(event) => updateAccepted(fact.factId, { ownerAttested: event.target.checked })} />
+                      I attest that this replacement is accurate even though it is not present in the current resume source.
+                    </label>
+                  </>
+                ) : null}
+              </fieldset>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="space-y-4">
         <div>

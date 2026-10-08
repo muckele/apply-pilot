@@ -14,19 +14,22 @@ It does not rewrite the master résumé, make an attested fact globally reusable
 
 ## Current correction contract
 
-The review surface displays `apply-pilot/reviewed-evidence-snapshot/v1`; the authenticated save route accepts the smaller bounded `apply-pilot/evidence-snapshot-save/v1` request and persists the server-reconstructed authority:
+The review surface displays `apply-pilot/reviewed-evidence-snapshot/v1`; the authenticated save route now emits the bounded `apply-pilot/evidence-snapshot-save/v2` request and persists the server-reconstructed `apply-pilot/evidence-snapshot-payload/v2` authority. The decoder still accepts historical v1 requests and immutable v1 payloads; a v1 save retains every current accepted fact, while v2 requires one ordered retain, remove, or owner-attested replacement action for every current accepted fact.
+
+The persisted authority contains:
 
 - job ID, source résumé ID, and source résumé `updatedAt`;
 - the ordered extracted-fact projection, including raw-source fallback and typed summary, grouped skills, achievements, work, projects, education, and certifications;
 - current disputed requirement gaps and their exact job references;
-- one decision per gap: unresolved, existing-source correction, or owner-attested addition;
+- one decision per current gap: unresolved, existing-source correction, or owner-attested addition;
+- the complete effective set of current accepted job-only facts, with stable fact IDs independent of positional gap IDs;
 - provenance, reuse scope, and explicit master-profile opt-in state;
 - privacy-safe invalidation IDs and counts for the current assessment and selected documents;
 - a review timestamp and SHA-256 hash over canonical JSON, excluding the hash field itself.
 
 Typed projections remain visible for parser review, but only raw résumé text and per-record `sourceText` are source-authoritative citation targets. A source correction must select one or more complete contiguous server-owned source lines, and the source-backed fact must equal that complete selection. The server derives the persisted line range from its authoritative source rather than trusting a browser substring. Substring extraction is rejected so a correction cannot strip negation or other semantic context. An owner-attested addition is a different provenance class and requires an explicit attestation.
 
-The durable design intentionally stores less than the browser preview: it stores the decisions and the minimum exact excerpts needed to explain them, plus hashes of the server-reconstructed source and gap projections. It does not duplicate the complete raw résumé or the complete displayed fact catalog.
+The durable design intentionally stores less than the browser preview: payload v2 stores effective accepted facts, unresolved gap IDs, and the minimum exact provenance needed to explain them, plus hashes of the server-reconstructed source and gap projections. It does not duplicate the complete raw résumé or the complete displayed fact catalog. Retained source-backed facts are revalidated against the current authoritative résumé source; owner attestations remain job-scoped and are never promoted to the master profile.
 
 ## Existing storage audit and reuse decision
 
@@ -62,7 +65,7 @@ The smallest sound first persistence package is **one new immutable table, four 
 | `snapshotHash` | `String` | Canonical identity for exact replay/deduplication | SHA-256 only |
 | `sourceProjectionHash` | `String` | Proves which ordered server-reconstructed fact projection was reviewed without storing the full résumé again | SHA-256 only |
 | `gapProjectionHash` | `String` | Proves which ordered server-reconstructed disputed-gap projection was reviewed | SHA-256 only |
-| `reviewPayload` | `Json` | Retains ordered gap decisions, provenance, reuse scope, exact cited excerpts for source corrections, and attested text | Minimum reviewed excerpts and decisions; no complete raw résumé |
+| `reviewPayload` | `Json` | Retains schema-versioned effective facts, unresolved gaps, provenance, reuse scope, exact cited excerpts for source corrections, and attested text | Minimum reviewed excerpts and decisions; no complete raw résumé |
 | `createdAt` | `DateTime @default(now())` | Server-authoritative review-save/audit time | Timestamp |
 
 Required constraints and indexes:
@@ -155,10 +158,12 @@ The browser-built fact list, gap list, hashes, provenance markers, and `sourceAu
 6. require the submitted résumé ID/`updatedAt`, analysis ID, JOB_MATCH input hash, model, and prompt version to remain current;
 7. reconstruct the ordered authoritative facts and disputed gaps on the server;
 8. revalidate every source correction and attestation against that reconstruction;
-9. reject `MASTER_PROFILE` scope in the first persistence version;
-10. compute the projection hashes and canonical snapshot hash on the server;
-11. insert the immutable snapshot, increment the generation, and update the job pointer in one transaction;
-12. optionally append a bounded audit event that contains IDs/counts, not raw résumé text.
+9. for v2, require one ordered retain, remove, or replacement action for every current accepted fact; for legacy v1, decode omission as retain-all;
+10. revalidate every retained source-backed fact against the current server-owned source and merge by stable fact identity, never by positional gap ID;
+11. reject `MASTER_PROFILE` scope in the first persistence version;
+12. compute the projection hashes and canonical snapshot hash on the server;
+13. insert the immutable snapshot, increment the generation, and update the job pointer in one transaction;
+14. optionally append a bounded audit event that contains IDs/counts, not raw résumé text.
 
 The endpoint must never persist a browser-supplied hash as canonical authority or accept a browser-designated typed projection as source authority. The normalized `requestHash` is used only to establish byte-independent request equality for retries; it cannot establish source truth or currentness.
 
@@ -182,6 +187,8 @@ Two different requests racing for the same job cannot both believe they are curr
 A retry of an older successful request is read-only even if its reviewed analysis or résumé fence is now historical. It returns the original snapshot and its derived current/historical state; it never promotes that snapshot or rewinds the current pointer.
 
 Generation and reassessment operations must capture the current pointer and monotonic generation under their own transaction/fence, bind their new row to that exact state, and recheck before commit. If either changes during work, they fail stale rather than publish an artifact against the wrong evidence. A master-résumé source change invalidates the reviewed pointer; a fresh null-bound JOB_MATCH at a nonzero generation is exposed only as a rebase candidate for another owner review, not as permission to reuse deleted or stale corrections.
+
+Prepared-run answer-packet publication, Fill acquisition, and approved document export also lock and re-read the current job pointer, source résumé revision, snapshot, and selected document bindings. After the job lock, dependent-row shared locks use `NOWAIT`: if concurrent snapshot/source deletion already owns a dependent row while waiting to clear the job pointer, the operation rolls back as privacy-safe stale authority instead of completing a circular wait. Pointer replacement serializes behind an in-flight export; deletion, source replacement, or a binding mismatch fails closed before a new Fill attempt or export. A run that already consumed its single Fill attempt remains permanently consumed even if its evidence later becomes stale. Generation-zero legacy runs remain readable; once a job has evidence history, a null or stale pointer cannot regain authority.
 
 ## Rollback and failure behavior
 

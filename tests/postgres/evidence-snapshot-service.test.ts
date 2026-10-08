@@ -8,6 +8,7 @@ import { JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-ve
 import type { MatchInput } from "@/lib/ai/job-match";
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  acceptedEvidenceFactsFromSnapshot,
   type EvidenceSnapshotSaveInput,
   reviewedEvidenceFromSnapshot
 } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -24,6 +25,244 @@ import {
 } from "@/tests/postgres/postgres-test-harness";
 
 const requirement = "Bachelor's degree in business or equivalent experience";
+
+test("PR35 independent reproduction: a later review must retain an already resolved job-only attestation", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "independent-carry-forward");
+  const fact = "Synthetic owner has business operations experience.";
+  try {
+    const firstRequest = sourceRequest(fixture, `independent-first-${randomUUID()}`);
+    firstRequest.decisions = [{ gapId: "gap:0", kind: "OWNER_ATTESTATION", attestedFact: fact,
+      ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false }];
+    const first = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, firstRequest);
+    const runner = createJobMatchRunner({ prismaClient: client, score: async (input) => {
+      assert.equal(input.reviewedEvidence?.facts[0]?.fact, fact);
+      return reassessmentResult(input);
+    } });
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const analysis = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: first.snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    const second = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, {
+      ...sourceRequest(fixture, `independent-second-${randomUUID()}`),
+      reviewedAnalysis: { id: analysis.id, inputHash: analysis.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION }, decisions: []
+    });
+    const snapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: second.snapshot.id } });
+    assert.ok(reviewedEvidenceFromSnapshot(snapshot).facts.some((item) => item.fact === fact),
+      "Saving the no-gap reassessment silently removed the previously reviewed job-only fact");
+  } finally {
+    await client.user.delete({ where: { id: fixture.user.id } });
+    await client.$disconnect();
+  }
+});
+
+test("v2 review explicitly removes a current job-only fact without reviving it by gap position", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "explicit-remove");
+  const fact = "Synthetic owner has business operations experience.";
+  try {
+    const firstRequest = sourceRequest(fixture, `remove-first-${randomUUID()}`);
+    firstRequest.decisions = [{ gapId: "gap:0", kind: "OWNER_ATTESTATION", attestedFact: fact,
+      ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false }];
+    const first = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, firstRequest);
+    const firstSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: first.snapshot.id } });
+    const accepted = acceptedEvidenceFactsFromSnapshot(firstSnapshot);
+    assert.equal(accepted.length, 1);
+    const runner = createJobMatchRunner({ prismaClient: client, score: async (input) => reassessmentResult(input) });
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const analysis = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: first.snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    const second = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, {
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId: `remove-second-${randomUUID()}`,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: analysis.id, inputHash: analysis.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [],
+      acceptedFactActions: [{ factId: accepted[0].factId, action: "REMOVE" }]
+    });
+    const secondSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: second.snapshot.id } });
+    assert.deepEqual(reviewedEvidenceFromSnapshot(secondSnapshot).facts, []);
+  } finally {
+    await client.user.delete({ where: { id: fixture.user.id } });
+    await client.$disconnect();
+  }
+});
+
+test("v2 review persists explicit source retain and owner-attested replacement", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "explicit-retain-replace");
+  try {
+    const first = await saveEvidenceSnapshot(
+      fixture.user.id,
+      fixture.job.id,
+      sourceRequest(fixture, `retain-first-${randomUUID()}`)
+    );
+    const firstSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: first.snapshot.id } });
+    const firstAccepted = acceptedEvidenceFactsFromSnapshot(firstSnapshot);
+    assert.equal(firstAccepted[0]?.provenance.kind, "EXISTING_SOURCE");
+    const runner = createJobMatchRunner({ prismaClient: client, score: async (input) => reassessmentResult(input) });
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const firstReassessment = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: first.snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    const retained = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, {
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId: `retain-second-${randomUUID()}`,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: firstReassessment.id, inputHash: firstReassessment.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [],
+      acceptedFactActions: [{ factId: firstAccepted[0]!.factId, action: "RETAIN" }]
+    });
+    const retainedSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: retained.snapshot.id } });
+    assert.deepEqual(acceptedEvidenceFactsFromSnapshot(retainedSnapshot), firstAccepted);
+
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const secondReassessment = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: retained.snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    const replacementFact = "Synthetic owner confirms equivalent business operations experience.";
+    const replaced = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, {
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId: `replace-third-${randomUUID()}`,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: secondReassessment.id, inputHash: secondReassessment.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [],
+      acceptedFactActions: [{
+        factId: firstAccepted[0]!.factId,
+        action: "REPLACE_OWNER_ATTESTATION",
+        attestedFact: replacementFact,
+        ownerAttested: true,
+        reuseScope: "JOB_ONLY",
+        masterProfileOptIn: false
+      }]
+    });
+    const replacedSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: replaced.snapshot.id } });
+    assert.deepEqual(reviewedEvidenceFromSnapshot(replacedSnapshot).facts, [{
+      gapId: "gap:0",
+      fact: replacementFact,
+      provenance: "OWNER_ATTESTED",
+      sourceRef: null
+    }]);
+  } finally {
+    await client.user.delete({ where: { id: fixture.user.id } });
+    await client.$disconnect();
+  }
+});
+
+test("v2 retain rejects source provenance that does not match the current submitted source", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "stale-retained-source");
+  try {
+    const factId = "fact:stale-source-provenance";
+    const snapshot = await client.evidenceSnapshot.create({ data: {
+      userId: fixture.user.id,
+      jobPostingId: fixture.job.id,
+      resumeId: fixture.resume.id,
+      reviewedAnalysisId: fixture.analysis.id,
+      requestId: `stale-source-${randomUUID()}`,
+      requestHash: "a".repeat(64),
+      sourceResumeUpdatedAt: fixture.resume.updatedAt,
+      snapshotHash: "b".repeat(64),
+      sourceProjectionHash: "c".repeat(64),
+      gapProjectionHash: "d".repeat(64),
+      reviewPayload: {
+        schema: "apply-pilot/evidence-snapshot-payload/v2",
+        facts: [{
+          factId,
+          originGapId: "gap:0",
+          fact: "Synthetic source line that is not present.",
+          provenance: {
+            kind: "EXISTING_SOURCE",
+            sourceFactId: "fact:resume.rawText",
+            sourceRef: "resume.rawText",
+            sourceExcerpt: "Synthetic source line that is not present."
+          },
+          reuseScope: "JOB_ONLY",
+          masterProfileOptIn: false
+        }],
+        unresolvedGapIds: []
+      }
+    } });
+    await client.jobPosting.update({ where: { id: fixture.job.id }, data: {
+      currentEvidenceSnapshotId: snapshot.id,
+      evidenceSnapshotGeneration: { increment: 1 }
+    } });
+    const runner = createJobMatchRunner({ prismaClient: client, score: async (input) => reassessmentResult(input) });
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const reassessment = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    await assert.rejects(saveEvidenceSnapshot(fixture.user.id, fixture.job.id, {
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId: `stale-retain-${randomUUID()}`,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: reassessment.id, inputHash: reassessment.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [],
+      acceptedFactActions: [{ factId, action: "RETAIN" }]
+    }), (error: unknown) => errorCode(error) === "EVIDENCE_REVIEW_INVALID");
+  } finally {
+    await client.user.delete({ where: { id: fixture.user.id } });
+    await client.$disconnect();
+  }
+});
+
+test("v2 review rejects a fact ID copied from another job", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "cross-job-fact-target");
+  const foreign = await createFixture(client, "cross-job-fact-source");
+  try {
+    const current = await saveEvidenceSnapshot(
+      fixture.user.id,
+      fixture.job.id,
+      sourceRequest(fixture, `cross-job-current-${randomUUID()}`)
+    );
+    const foreignRequest = sourceRequest(foreign, `cross-job-foreign-${randomUUID()}`);
+    foreignRequest.decisions = [{
+      gapId: "gap:0",
+      kind: "OWNER_ATTESTATION",
+      attestedFact: "Distinct synthetic evidence accepted only for the foreign job.",
+      ownerAttested: true,
+      reuseScope: "JOB_ONLY",
+      masterProfileOptIn: false
+    }];
+    const foreignSaved = await saveEvidenceSnapshot(foreign.user.id, foreign.job.id, foreignRequest);
+    const foreignSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: foreignSaved.snapshot.id } });
+    const foreignFactId = acceptedEvidenceFactsFromSnapshot(foreignSnapshot)[0]!.factId;
+    const runner = createJobMatchRunner({ prismaClient: client, score: async (input) => reassessmentResult(input) });
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const reassessment = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: current.snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    await assert.rejects(saveEvidenceSnapshot(fixture.user.id, fixture.job.id, {
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId: `cross-job-attempt-${randomUUID()}`,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: reassessment.id, inputHash: reassessment.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [],
+      acceptedFactActions: [{ factId: foreignFactId, action: "RETAIN" }]
+    }), (error: unknown) => errorCode(error) === "EVIDENCE_REVIEW_INVALID");
+  } finally {
+    await client.user.deleteMany({ where: { id: { in: [fixture.user.id, foreign.user.id] } } });
+    await client.$disconnect();
+  }
+});
 
 async function guardedDatabaseUrl() {
   const config = validatePostgresTestEnvironment(process.env);
