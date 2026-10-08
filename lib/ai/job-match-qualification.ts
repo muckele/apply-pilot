@@ -7,6 +7,7 @@ import {
   JOB_MATCH_MODEL,
   JOB_MATCH_PROMPT_VERSION,
   JOB_MATCH_THINKING_LEVEL,
+  JobMatchOutputValidationError,
   getJobMatchEvidenceReferences,
   type JobMatchModelOutput,
   type JobMatchOutput,
@@ -203,6 +204,15 @@ export type QualificationReviewCase = (input: {
   matchInput: MatchInput;
   normalizedOutput: JobMatchOutput;
 }) => Promise<{ disagreementCategories: QualificationDisagreementCategory[] }>;
+
+export type QualificationCompletedCallMetrics = Readonly<{
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  estimatedCostMicros: number | null;
+  billingKnown: boolean;
+  providerCompleted: boolean;
+}>;
 
 export type QualificationTransportRequest = {
   caseId: string;
@@ -795,12 +805,14 @@ export async function runJobMatchQualification({
   consent,
   transport,
   reviewCase,
+  onProviderCallCompleted,
   now = new Date()
 }: {
   preparation: QualificationPreparation;
   consent: QualificationExecutionConsent;
   transport: QualificationTransport;
   reviewCase: QualificationReviewCase;
+  onProviderCallCompleted?: (metrics: QualificationCompletedCallMetrics) => void;
   now?: Date;
 }) {
   assertQualificationExecutionPreflight(preparation, consent, now);
@@ -815,6 +827,7 @@ export async function runJobMatchQualification({
     }
     let failureCode = "TRANSPORT_FAILED";
     let response: QualificationTransportResponse | null = null;
+    let completedCallRecorded = false;
     try {
       const systemPrompt = buildJobMatchSystemPrompt(prepared.input);
       const responseJsonSchema = buildJobMatchResponseJsonSchema(prepared.input);
@@ -890,6 +903,15 @@ export async function runJobMatchQualification({
         cachedInputTokens: response.usage.cachedInputTokens,
         estimatedCostMicros
       };
+      onProviderCallCompleted?.({
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        cachedInputTokens: response.usage.cachedInputTokens,
+        estimatedCostMicros,
+        billingKnown: true,
+        providerCompleted: true
+      });
+      completedCallRecorded = true;
       failureCode = "TRANSIENT_HUMAN_REVIEW_FAILED";
       const review = await reviewCase({
         index: index + 1,
@@ -913,12 +935,29 @@ export async function runJobMatchQualification({
         error,
         now
       });
+      if (!completedCallRecorded
+        && (failedCall.providerResponded === true || failedCall.billingDisposition === "not_charged")) {
+        onProviderCallCompleted?.({
+          inputTokens: failedCall.inputTokens,
+          outputTokens: failedCall.outputTokens,
+          cachedInputTokens: failedCall.cachedInputTokens,
+          estimatedCostMicros: failedCall.estimatedCostMicros,
+          billingKnown: failedCall.estimatedCostMicros !== null,
+          providerCompleted: failedCall.providerResponded === true
+        });
+      }
       throw new QualificationRunStoppedError(index + 1, {
         status: "stopped",
         manifestHash: preparation.safeManifest.manifestHash,
         completedCaseCount: results.length,
         failedCaseIndex: index + 1,
         failureCode,
+        validationStage: error instanceof JobMatchOutputValidationError
+          ? error.validationStage
+          : null,
+        failureFieldPath: error instanceof JobMatchOutputValidationError
+          ? error.fieldPath
+          : null,
         noRetryAttempted: true,
         totalKnownEstimatedCostMicros: totalEstimatedCostMicros + (failedCall.estimatedCostMicros ?? 0),
         failedCall,

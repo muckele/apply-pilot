@@ -132,6 +132,18 @@ export type MatchInput = {
   } | null;
 };
 
+export class JobMatchOutputValidationError extends Error {
+  readonly validationStage: "schema" | "semantic";
+  readonly fieldPath: string | null;
+
+  constructor(validationStage: "schema" | "semantic", fieldPath: string | null, message?: string) {
+    super(message ?? "JOB_MATCH output failed " + validationStage + " validation.");
+    this.name = "JobMatchOutputValidationError";
+    this.validationStage = validationStage;
+    this.fieldPath = fieldPath;
+  }
+}
+
 const scoreSchema = z.number().min(0).max(100).transform((value) => Math.round(value));
 const recommendationSchema = z.preprocess(
   (value) => (typeof value === "string" ? value.toLowerCase() : value),
@@ -400,6 +412,88 @@ function evidenceText(value: unknown) {
   return JSON.stringify(value);
 }
 
+const sourceContentKeys = ["text", "value", "content", "excerpt", "sourceText"] as const;
+const sourceMetadataKeys = new Set([
+  "$schema", "schema", "start", "end", "localstart", "localend",
+  "startindex", "endindex", "startoffset", "endoffset"
+]);
+
+function sourceKey(value: string) {
+  return value.toLocaleLowerCase().replace(/[^a-z$]/g, "");
+}
+
+function stripLocalSourceEnvelope(value: string) {
+  const match = value.match(
+    /^\s*(?:(?:<<<|\[\[|---)\s*)?LOCAL[\s_-]+START(?:\s*(?:>>>|\]\]|---))?\s*([\s\S]*?)\s*(?:(?:<<<|\[\[|---)\s*)?LOCAL[\s_-]+END(?:\s*(?:>>>|\]\]|---))?\s*$/iu
+  );
+  return match?.[1]?.trim() || value.trim();
+}
+
+function readableSourceLeaves(value: unknown, depth = 0): string[] {
+  if (depth > 5 || value === null || value === undefined) return [];
+  if (typeof value === "number" || typeof value === "boolean") return [String(value)];
+  if (typeof value === "string") {
+    const text = stripLocalSourceEnvelope(value);
+    if (!text) return [];
+    if (text.startsWith("{") || text.startsWith("[") || text.startsWith('"')) {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed !== text) {
+          const parsedLeaves = readableSourceLeaves(parsed, depth + 1);
+          if (parsedLeaves.length) return parsedLeaves;
+        }
+      } catch {
+        // This is ordinary source text, not a complete JSON envelope.
+      }
+    }
+    return [text];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => readableSourceLeaves(entry, depth + 1));
+  }
+  if (typeof value !== "object") return [];
+
+  const record = value as Record<string, unknown>;
+  for (const key of sourceContentKeys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+    const preferred = readableSourceLeaves(record[key], depth + 1);
+    if (preferred.length) return preferred;
+  }
+
+  return Object.entries(record).flatMap(([key, entry]) => {
+    const normalizedKey = sourceKey(key);
+    if (sourceMetadataKeys.has(normalizedKey)) return [];
+    return readableSourceLeaves(entry, depth + 1);
+  });
+}
+
+function readableEvidenceExcerpt(value: unknown) {
+  const leaves = uniqueStrings(readableSourceLeaves(value));
+  return leaves.join(" · ");
+}
+
+export function jobMatchSourceDisplayText(value: unknown) {
+  return readableEvidenceExcerpt(value);
+}
+
+function hasSourceMetadataSyntax(value: string) {
+  return /["'](?:\$?schema|local|local[_-]?(?:start|end)|(?:start|end)(?:index|offset)?)["']\s*:/iu.test(value)
+    || /["'](?:text|value|content|excerpt|sourceText)["']\s*:/iu.test(value)
+    || /LOCAL[\s_-]+(?:START|END)/iu.test(value);
+}
+
+function citationForDisplay(
+  citation: JobMatchEvidenceCitation,
+  resolver: (ref: string) => ResolvedEvidence
+): JobMatchEvidenceCitation {
+  const excerpt = jobMatchSourceDisplayText(citation.excerpt);
+  if (excerpt && !hasSourceMetadataSyntax(excerpt)) return { ...citation, excerpt };
+  const resolved = resolver(citation.ref);
+  const fallback = resolved.found ? jobMatchSourceDisplayText(resolved.value) : "";
+  if (fallback && !hasSourceMetadataSyntax(fallback)) return { ...citation, excerpt: fallback };
+  return excerpt ? { ...citation, excerpt } : citation;
+}
+
 function comparable(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
@@ -527,13 +621,26 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
     const supportedKeywords = uniqueStrings(match.supportedKeywords);
     return {
       ...match,
+      applicantEvidence: match.applicantEvidence.map((citation) =>
+        citationForDisplay(citation, (ref) => resolveApplicantEvidence(input, ref))),
+      jobEvidence: match.jobEvidence.map((citation) =>
+        citationForDisplay(citation, (ref) => resolveJobEvidence(input, ref))),
       supportedKeywords,
       claim: `Submitted applicant evidence matches job evidence for ${supportedKeywords.join(", ")}.`
+    };
+  });
+  const requirementGaps = output.requirementGaps.map((gap) => {
+    const jobRequirement = citationForDisplay(gap.jobRequirement, (ref) => resolveJobEvidence(input, ref));
+    return {
+      ...gap,
+      requirement: jobRequirement.excerpt,
+      jobRequirement
     };
   });
   return {
     ...output,
     factualMatches,
+    requirementGaps,
     compensationScore: compensation.score,
     compensationAssessment: compensation,
     confidenceAssessment: {
@@ -542,8 +649,8 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
       basis: output.confidenceBasis
     },
     whyGoodMatch: factualMatches.map((match) => match.claim),
-    concerns: output.requirementGaps.map((gap) => gap.requirement),
-    missingKeywords: uniqueStrings(output.requirementGaps.flatMap((gap) => gap.missingKeywords)),
+    concerns: requirementGaps.map((gap) => gap.requirement),
+    missingKeywords: uniqueStrings(requirementGaps.flatMap((gap) => gap.missingKeywords)),
     supportedKeywords: uniqueStrings(factualMatches.flatMap((match) => match.supportedKeywords)),
     keywordsToEmphasize: uniqueStrings(output.advice.keywordsToEmphasize),
     suggestedResumeAngle: output.advice.resumeAngle,
@@ -554,9 +661,25 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
 export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unknown) {
   const parsed = jobMatchModelOutputSchema.safeParse(value);
   if (!parsed.success) {
-    throw new Error("jobMatchPrompt returned JSON that did not match the expected schema.");
+    const path = parsed.error.issues[0]?.path
+      .filter((segment): segment is string | number => typeof segment === "string" || typeof segment === "number")
+      .map(String)
+      .join(".") || null;
+    throw new JobMatchOutputValidationError(
+      "schema",
+      path,
+      "jobMatchPrompt returned JSON that did not match the expected schema."
+    );
   }
-  return { modelOutput: parsed.data, normalized: normalizeJobMatchOutput(input, parsed.data) };
+  try {
+    return { modelOutput: parsed.data, normalized: normalizeJobMatchOutput(input, parsed.data) };
+  } catch (error) {
+    throw new JobMatchOutputValidationError(
+      "semantic",
+      null,
+      error instanceof Error ? error.message : undefined
+    );
+  }
 }
 
 function usageCost(usage: GeminiUsage) {

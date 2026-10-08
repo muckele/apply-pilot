@@ -11,10 +11,11 @@ const css = String.raw`
 :root{color-scheme:light;--canvas:#f3f8f5;--surface:#fff;--raised:#f9fcfa;--text:#17261f;--copy:#32473d;--muted:#5d7067;--accent:#146a46;--mint:#38c979;--border:#cee0d6;--strong:#7ab897;--warn:#76510c;--danger:#9a312c;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 *{box-sizing:border-box}body{margin:0;color:var(--text);background:radial-gradient(circle at 82% 0%,rgba(126,224,167,.13),transparent 30rem),var(--canvas);line-height:1.55}.skip{position:fixed;left:1rem;top:1rem;z-index:5;transform:translateY(-180%);border-radius:.5rem;padding:.75rem 1rem;background:var(--mint);color:#03110b;font-weight:750}.skip:focus{transform:none}.masthead{border-bottom:1px solid var(--border);background:rgba(255,255,255,.92)}.masthead-inner,main{width:min(1180px,calc(100% - 2rem));margin:0 auto}.masthead-inner{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0}.brand{display:grid;gap:.1rem}.brand strong{font-size:1rem;letter-spacing:-.02em}.brand span{color:var(--muted);font-size:.78rem}.session-badge,.badge{border:1px solid var(--strong);border-radius:999px;padding:.35rem .65rem;background:#edf9f2;color:var(--accent);font-size:.72rem;font-weight:750}.session-badge{text-transform:uppercase;letter-spacing:.06em}main{padding:2rem 0 3rem}.hero{display:grid;gap:.6rem;margin-bottom:1.25rem}.eyebrow,.evidence-label,.section-kicker{margin:0;color:var(--accent);font-size:.72rem;font-weight:800;letter-spacing:.07em;text-transform:uppercase}h1,h2,h3,h4,p{margin-top:0}h1{margin-bottom:0;font-size:clamp(1.8rem,4vw,2.5rem);line-height:1.12;letter-spacing:-.04em}.lede{max-width:58rem;margin:0;color:var(--copy)}.notice,.synthetic-banner,.document-boundary{margin:1rem 0;border:1px solid #dfbd6b;border-radius:.7rem;padding:.9rem 1rem;background:#fff9e9;color:var(--warn);font-size:.88rem}.synthetic-banner{margin:0 0 1rem;border-color:#79b7d4;background:#eef8fc;color:#194e68}.synthetic-banner strong,.document-boundary strong{display:block;margin-bottom:.2rem}.progress{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem}.step{border:1px solid var(--border);border-radius:999px;padding:.35rem .6rem;background:var(--surface);color:var(--muted);font-size:.75rem;font-weight:700}.step.current{border-color:var(--strong);background:#edf9f2;color:var(--accent)}.panel{border:1px solid var(--border);border-radius:.85rem;background:var(--surface);box-shadow:0 18px 50px rgba(31,82,59,.08)}.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;border-bottom:1px solid var(--border);padding:1.1rem 1.25rem}.panel-head h2{margin:0;font-size:1.15rem}.panel-head p{margin:.25rem 0 0;color:var(--muted);font-size:.82rem}.badge{white-space:nowrap}.job-overview{margin:0 1rem 1rem;padding:1rem}.section-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.8rem}.section-heading h3{margin:0;font-size:1.05rem}.source-link{color:var(--accent);font-size:.82rem;font-weight:750}.fact-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem;margin-bottom:1rem}.fact{border:1px solid var(--border);border-radius:.6rem;padding:.7rem;background:var(--raised)}.fact span{display:block;color:var(--muted);font-size:.7rem;font-weight:750;text-transform:uppercase;letter-spacing:.04em}.fact strong{display:block;margin-top:.2rem;font-size:.85rem;overflow-wrap:anywhere}.responsibilities{margin:0;padding-left:1.2rem;color:var(--copy);font-size:.86rem}.responsibilities li+li{margin-top:.35rem}.tech-list{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.85rem}.chip{border-radius:999px;padding:.25rem .55rem;background:#edf4f0;color:var(--copy);font-size:.74rem}.review-grid{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(19rem,.92fr);gap:1rem;padding:0 1rem 1rem}.column{min-width:0}.review-grid>.column:last-child{position:sticky;top:1rem;align-self:start}.column>h3{margin-bottom:.65rem;font-size:.95rem}.evidence-list,.resume-section{display:grid;gap:.55rem}.resume-preview{border:1px solid var(--border);border-radius:.75rem;padding:.9rem;background:#fdfefd}.resume-preview>h3{margin-bottom:.1rem}.resume-caption{margin:0 0 .9rem;color:var(--accent);font-size:.75rem;font-weight:750}.resume-section+.resume-section{margin-top:1rem}.resume-section h4{margin:0;font-size:.8rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}.evidence{min-width:0;border-left:3px solid var(--strong);border-radius:.25rem;padding:.15rem 0 .15rem .7rem}.evidence-title{margin:.15rem 0 0;color:var(--text);font-size:.88rem;font-weight:750;overflow-wrap:anywhere}.evidence-details{margin:.35rem 0 0;padding-left:1.1rem;color:var(--copy);font-size:.79rem}.evidence-details li+li{margin-top:.18rem}.requirement{margin:0 0 .8rem;border:1px solid var(--border);border-radius:.7rem;padding:.9rem}.requirement legend{max-width:100%;padding:0 .35rem;color:var(--accent);font-size:.75rem;font-weight:750}.requirement-text{margin-bottom:.5rem;color:var(--copy);font-size:.9rem}.field{display:grid;gap:.35rem;margin-top:.65rem}.field label,.field-label{color:var(--copy);font-size:.78rem;font-weight:750}select,textarea{width:100%;min-height:44px;border:1px solid var(--border);border-radius:.5rem;padding:.6rem .7rem;color:var(--text);background:#fff;font:inherit}select[multiple]{min-height:8.5rem}textarea{min-height:7rem;resize:vertical}select:focus,textarea:focus,button:focus-visible,input:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.hint{margin:.25rem 0 0;color:var(--muted);font-size:.72rem}.supporting-evidence[hidden]{display:none}.open-gaps{margin:0 1rem 1rem;padding:1rem;box-shadow:none}.open-gaps h3{font-size:.88rem}.open-gaps ul{margin:0;padding-left:1.2rem;color:var(--copy);font-size:.82rem}.decision{border-top:1px solid var(--border);padding:1rem}.preference-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.75rem}.confirmation{display:flex;align-items:flex-start;gap:.6rem;margin:1rem 0;color:var(--copy);font-size:.82rem}.confirmation input{width:1.1rem;height:1.1rem;margin-top:.15rem;accent-color:var(--accent)}.actions{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.75rem;margin-top:1rem}.button{min-height:44px;border:1px solid var(--strong);border-radius:.55rem;padding:.65rem 1rem;font:inherit;font-size:.85rem;font-weight:750;cursor:pointer}.button-primary{border-color:var(--mint);background:linear-gradient(145deg,#46d485,#2cc675);color:#03110b}.button-secondary{background:#fff;color:var(--copy)}.button-danger{border-color:#d9aaa7;background:#fff;color:var(--danger)}.button:disabled{cursor:not-allowed;opacity:.55}.error{min-height:1.5rem;margin:.75rem 0 0;color:var(--danger);font-size:.82rem;font-weight:750}.consent-stop{margin:1rem;border:1px solid var(--strong);border-radius:.65rem;padding:1rem;background:#edf9f2}.consent-stop strong{display:block;margin-bottom:.35rem;color:var(--accent)}.technical-details{margin:0 1rem 1rem;border:1px solid var(--border);border-radius:.65rem;background:var(--raised)}.technical-details summary{cursor:pointer;padding:.8rem 1rem;color:var(--accent);font-weight:750}.manifest{display:grid;gap:.2rem;margin:0;padding:0 1rem 1rem}.manifest-row{display:grid;grid-template-columns:13rem minmax(0,1fr);gap:.75rem;border-top:1px solid var(--border);padding:.55rem 0}.manifest-row dt{color:var(--muted);font-size:.78rem;font-weight:700}.manifest-row dd{min-width:0;margin:0;overflow-wrap:anywhere;color:var(--copy);font-size:.82rem}.status{position:fixed;left:-9999px}.loading{padding:2rem;color:var(--muted)}.caution-list{display:grid;gap:.5rem;margin-top:1rem;border-top:1px solid var(--border);padding-top:1rem}.caution-list h3{margin:0;color:var(--warn);font-size:.85rem}.caution-list .evidence{border-color:#dfbd6b}.preference-evidence{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem;margin-bottom:.75rem}
 .source-reference{display:grid;justify-items:end;gap:.15rem;max-width:17rem;text-align:right}.source-reference span{color:var(--muted);font-size:.7rem}.raw-source{margin:0 0 1rem;border:1px solid var(--border);border-radius:.55rem;background:var(--raised)}.raw-source summary{cursor:pointer;padding:.65rem .75rem;color:var(--accent);font-size:.8rem;font-weight:750}.raw-source-lines{border-top:1px solid var(--border);padding:.6rem .75rem}.raw-source-lines p{margin:0;color:var(--copy);font-size:.78rem}.raw-source-lines p+p{margin-top:.3rem}.evidence-choices{display:grid;gap:.6rem;max-height:23rem;overflow:auto;border:1px solid var(--border);border-radius:.55rem;padding:.65rem;background:var(--raised)}.evidence-choice-group{display:grid;gap:.25rem;margin:0;border:0;padding:0}.evidence-choice-group legend{padding:0;color:var(--muted);font-size:.7rem;font-weight:800;letter-spacing:.05em;text-transform:uppercase}.evidence-choice{display:flex;align-items:flex-start;gap:.5rem;border-radius:.4rem;padding:.35rem .4rem;background:#fff;color:var(--copy);font-size:.78rem;cursor:pointer}.evidence-choice:hover{background:#edf9f2}.evidence-choice input{flex:0 0 auto;width:1rem;height:1rem;margin:.15rem 0 0;accent-color:var(--accent)}
-.fit-summary,.questions,.confirmed-gaps,.review-details{margin:0 1rem 1rem}.fit-summary,.questions,.confirmed-gaps{border:1px solid var(--border);border-radius:.75rem;padding:1rem;background:var(--raised)}.fit-summary h3,.questions h3,.confirmed-gaps h3{margin-bottom:.3rem}.summary-counts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.65rem;margin:.85rem 0}.summary-count{border:1px solid var(--border);border-radius:.55rem;padding:.65rem;background:#fff}.summary-count dt{color:var(--muted);font-size:.72rem;font-weight:750}.summary-count dd{margin:.1rem 0 0;font-size:1.25rem;font-weight:800}.summary-count.supported dd{color:var(--accent)}.summary-count.gap dd{color:var(--danger)}.section-copy{color:var(--copy);font-size:.86rem}.clarification-card{margin:.8rem 0 0;border:1px solid var(--border);border-radius:.65rem;padding:.9rem;background:#fff}.clarification-card legend{padding:0 .35rem;color:var(--accent);font-weight:800}.clarification-question{margin-bottom:.35rem;font-weight:700}.why{margin:.2rem 0;color:var(--muted);font-size:.78rem}.related-requirements{margin:.65rem 0;border-left:3px solid var(--border);padding-left:.65rem}.related-requirements summary{cursor:pointer;color:var(--copy);font-size:.78rem;font-weight:750}.related-requirements ul{margin:.4rem 0 0;padding-left:1.1rem;color:var(--copy);font-size:.78rem}.answer-choices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem;margin-top:.75rem}.answer-choice{display:flex;align-items:flex-start;gap:.45rem;border:1px solid var(--border);border-radius:.5rem;padding:.55rem;background:var(--raised);font-size:.78rem;cursor:pointer}.answer-choice:has(input:checked){border-color:var(--strong);background:#edf9f2}.answer-choice input{flex:0 0 auto;margin:.15rem 0 0;accent-color:var(--accent)}.clarification-context textarea{min-height:5rem}.review-details{border:1px solid var(--border);border-radius:.65rem;background:#fff}.review-details>summary{cursor:pointer;padding:.8rem 1rem;color:var(--accent);font-weight:800}.mapped-list,.all-requirements-list,.source-details>.evidence-list{border-top:1px solid var(--border);padding:1rem}.mapped-requirement+.mapped-requirement{margin-top:1rem}.mapped-requirement h4,.gap-card h4{margin-bottom:.2rem}.mapped-evidence{display:grid;gap:.45rem;margin-top:.55rem}.all-requirements-list{display:grid;gap:.7rem;margin:0;list-style-position:inside}.requirement-row{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:.65rem;align-items:start}.requirement-row p{margin:.2rem 0 0;color:var(--muted);font-size:.76rem}.requirement-labels{display:grid;gap:.3rem}.status-label,.materiality-label{border-radius:999px;padding:.25rem .5rem;text-align:center;text-transform:capitalize;font-size:.68rem;font-weight:800;background:#edf4f0;color:var(--copy)}.status-label.supported{background:#e7f7ee;color:var(--accent)}.status-label.confirmed_gap{background:#fff0ef;color:var(--danger)}.status-label.unknown{background:#fff8e5;color:var(--warn)}.materiality-label.must_have{background:#f5ebff;color:#62358c}.materiality-label.preferred{background:#edf4ff;color:#315a8a}.document-approval-unavailable{display:grid;gap:.15rem;margin:.6rem 0 1rem;border:1px solid #dfbd6b;border-radius:.55rem;padding:.75rem;background:#fff9e9;color:var(--warn);font-size:.8rem}.execution-copy{margin:1rem;color:var(--copy)}.execution-copy pre{max-height:28rem;overflow:auto;border:1px solid var(--border);border-radius:.55rem;padding:.75rem;background:var(--raised);white-space:pre-wrap;overflow-wrap:anywhere;font-size:.74rem}.consent-checks{display:grid;gap:.5rem;margin:1rem}.consent-checks .confirmation{margin:0}.result-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.65rem}.result-grid .fact{min-width:0}
+.fit-summary,.questions,.confirmed-gaps,.review-details{margin:0 1rem 1rem}.fit-summary,.questions,.confirmed-gaps{border:1px solid var(--border);border-radius:.75rem;padding:1rem;background:var(--raised)}.fit-summary h3,.questions h3,.confirmed-gaps h3{margin-bottom:.3rem}.summary-counts{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.65rem;margin:.85rem 0}.summary-count{border:1px solid var(--border);border-radius:.55rem;padding:.65rem;background:#fff}.summary-count dt{color:var(--muted);font-size:.72rem;font-weight:750}.summary-count dd{margin:.1rem 0 0;font-size:1.25rem;font-weight:800}.summary-count.supported dd{color:var(--accent)}.summary-count.gap dd{color:var(--danger)}.section-copy{color:var(--copy);font-size:.86rem}.clarification-card{margin:.8rem 0 0;border:1px solid var(--border);border-radius:.65rem;padding:.9rem;background:#fff}.clarification-card legend{padding:0 .35rem;color:var(--accent);font-weight:800}.clarification-question{margin-bottom:.35rem;font-weight:700}.why{margin:.2rem 0;color:var(--muted);font-size:.78rem}.related-requirements{margin:.65rem 0;border-left:3px solid var(--border);padding-left:.65rem}.related-requirements summary{cursor:pointer;color:var(--copy);font-size:.78rem;font-weight:750}.related-requirements ul{margin:.4rem 0 0;padding-left:1.1rem;color:var(--copy);font-size:.78rem}.answer-choices{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.5rem;margin-top:.75rem}.answer-choice{display:flex;align-items:flex-start;gap:.45rem;border:1px solid var(--border);border-radius:.5rem;padding:.55rem;background:var(--raised);font-size:.78rem;cursor:pointer}.answer-choice:has(input:checked){border-color:var(--strong);background:#edf9f2}.answer-choice input{flex:0 0 auto;margin:.15rem 0 0;accent-color:var(--accent)}.clarification-context textarea{min-height:5rem}.review-details{border:1px solid var(--border);border-radius:.65rem;background:#fff}.review-details>summary{cursor:pointer;padding:.8rem 1rem;color:var(--accent);font-weight:800}.mapped-list,.all-requirements-list,.source-details>.evidence-list{border-top:1px solid var(--border);padding:1rem}.mapped-requirement+.mapped-requirement{margin-top:1rem}.mapped-requirement h4,.gap-card h4{margin-bottom:.2rem}.mapped-evidence{display:grid;gap:.45rem;margin-top:.55rem}.all-requirements-list{display:grid;gap:.7rem;margin:0;list-style-position:inside}.requirement-row{display:grid;grid-template-columns:10rem minmax(0,1fr);gap:.65rem;align-items:start}.requirement-row p{margin:.2rem 0 0;color:var(--muted);font-size:.76rem}.requirement-labels{display:grid;gap:.3rem}.status-label,.materiality-label{border-radius:999px;padding:.25rem .5rem;text-align:center;text-transform:capitalize;font-size:.68rem;font-weight:800;background:#edf4f0;color:var(--copy)}.status-label.supported{background:#e7f7ee;color:var(--accent)}.status-label.confirmed_gap{background:#fff0ef;color:var(--danger)}.status-label.unknown{background:#fff8e5;color:var(--warn)}.materiality-label.must_have{background:#f5ebff;color:#62358c}.materiality-label.preferred{background:#edf4ff;color:#315a8a}.document-approval-unavailable{display:grid;gap:.15rem;margin:.6rem 0 1rem;border:1px solid #dfbd6b;border-radius:.55rem;padding:.75rem;background:#fff9e9;color:var(--warn);font-size:.8rem}.execution-copy{margin:1rem;color:var(--copy)}.consent-checks{display:grid;gap:.5rem;margin:1rem}.consent-checks .confirmation{margin:0}.result-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.65rem}.result-grid .fact{min-width:0;overflow-wrap:anywhere}.result-grid .fact span{text-transform:none;letter-spacing:0;font-size:.76rem}.readable-result{display:grid;gap:1rem;margin-top:1rem}.readable-section{border:1px solid var(--border);border-radius:.75rem;padding:1rem;background:var(--raised)}.readable-section>h3{margin-bottom:.25rem;color:var(--text)}.readable-section>h4{margin:.8rem 0 .35rem;font-size:.86rem;color:var(--accent)}.readable-section .section-copy{margin-bottom:.7rem}.result-card{border:1px solid var(--border);border-radius:.65rem;padding:.85rem;background:#fff}.result-card+.result-card{margin-top:.65rem}.result-card h4{margin:0 0 .35rem;color:var(--text);font-size:.92rem}.citation-columns,.context-grid,.safe-report-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem}.citation-group{min-width:0;border-left:3px solid var(--strong);padding-left:.65rem}.citation-group h5{margin:0 0 .35rem;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.04em}.citation-list{display:grid;gap:.45rem;margin:0;padding:0;list-style:none}.citation-list li{min-width:0;color:var(--copy);font-size:.8rem;overflow-wrap:anywhere}.source-provenance{display:block;margin-top:.1rem;color:var(--muted);font-size:.7rem}.keyword-line{margin:.45rem 0 0;color:var(--copy);font-size:.78rem}.empty-result{margin:0;border:1px dashed var(--border);border-radius:.55rem;padding:.75rem;color:var(--muted);background:#fff;font-size:.82rem}.context-grid .fact{min-width:0}.advisory-list{margin:.4rem 0 0;padding-left:1.2rem;color:var(--copy);font-size:.84rem}.advisory-list li+li{margin-top:.35rem}.review-choice-copy{display:grid;gap:.1rem}.review-choice-copy strong{color:var(--text)}.review-choice-copy span{color:var(--muted);font-size:.76rem}.safe-report-grid{margin-top:.75rem}.safe-result{display:grid;gap:.3rem}.safe-result dl{display:grid;grid-template-columns:1fr auto;gap:.25rem .7rem;margin:0}.safe-result dt{color:var(--muted);font-size:.76rem}.safe-result dd{margin:0;font-size:.78rem;font-weight:750;text-align:right}
 @media(max-width:900px){.review-grid{grid-template-columns:1fr}.review-grid>.column:last-child{position:static}.fact-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.preference-grid,.preference-evidence{grid-template-columns:1fr}.panel-head,.section-heading{display:grid}.source-reference{justify-items:start;text-align:left}.badge{justify-self:start}.manifest-row{grid-template-columns:1fr;gap:.15rem}}
-@media(max-width:760px){.summary-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.answer-choices{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:520px){.masthead-inner,main{width:min(100% - 1rem,1180px)}main{padding-top:1rem}.review-grid,.decision,.open-gaps,.job-overview,.fit-summary,.questions,.confirmed-gaps,.review-details{padding:.75rem;margin-left:.5rem;margin-right:.5rem}.review-details{padding:0}.panel-head{padding:.85rem}.fact-grid,.summary-counts,.answer-choices{grid-template-columns:1fr}.requirement-row{grid-template-columns:1fr}.status-label{justify-self:start}.actions{display:grid}.button{width:100%}}
+@media(max-width:760px){.summary-counts{grid-template-columns:repeat(2,minmax(0,1fr))}.answer-choices{grid-template-columns:repeat(2,minmax(0,1fr))}.citation-columns,.context-grid,.safe-report-grid{grid-template-columns:1fr}}
+@media(max-width:520px){.masthead-inner,main{width:min(100% - 1rem,1180px)}main{padding-top:1rem}.review-grid,.decision,.open-gaps,.job-overview,.fit-summary,.questions,.confirmed-gaps,.review-details{padding:.75rem;margin-left:.5rem;margin-right:.5rem}.review-details{padding:0}.panel-head{padding:.85rem}.badge{white-space:normal;overflow-wrap:anywhere}.fact-grid,.summary-counts,.answer-choices{grid-template-columns:1fr}.execution-copy{margin:.5rem}.result-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}.result-grid [data-result-metric="recommendation"]{grid-column:1/-1}.result-grid .fact{padding:.6rem}.readable-result{gap:.65rem;margin-top:.75rem}.readable-section{padding:.75rem}.result-card{padding:.7rem}.requirement-row{grid-template-columns:1fr}.status-label{justify-self:start}.actions{display:grid}.button{width:100%}}
+@media(max-width:340px){.result-grid{grid-template-columns:1fr}.result-grid [data-result-metric="recommendation"]{grid-column:auto}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 `;
 
@@ -32,10 +33,24 @@ const javascript = String.raw`
     executionReview: body.dataset.executionReviewPath,
     cancel: body.dataset.cancelPath
   };
+  const disagreementLabels = Object.freeze({
+    recommendation: "Recommendation is wrong",
+    missing_material_gap: "A material gap is missing",
+    unsupported_positive_match: "A positive match lacks support",
+    compensation: "Compensation assessment is wrong",
+    preference: "Preference assessment is wrong",
+    advice_claim: "Advice overstates the evidence",
+    other_review_required: "Another issue needs review"
+  });
   let sessionEnded = false;
   let pollTimer;
+  let consecutivePollFailures = 0;
+  let suspendedControls = [];
   let renderedPhase = "";
   let renderedCaseIndex = -1;
+  let renderedCaptureFailureNotice = "";
+
+  const cancellationUrl = (trigger) => paths.cancel + "?trigger=" + encodeURIComponent(trigger);
 
   const element = (tag, options = {}) => {
     const node = document.createElement(tag);
@@ -74,6 +89,19 @@ const javascript = String.raw`
     return progress;
   };
 
+  const renderExecutionTracker = (current, count, reviewing = false) => {
+    const progress = element("div", { className: "progress", attrs: { "aria-label": "Provider execution progress" } });
+    for (let index = 0; index < count; index += 1) {
+      const completed = index < current - (reviewing ? 1 : 0);
+      const active = reviewing ? index === current - 1 : index === current;
+      progress.append(element("span", {
+        className: "step " + (active ? "current" : ""),
+        text: "Provider job " + (index + 1) + (completed ? " completed" : active ? (reviewing ? " awaiting your review" : " in progress") : " waiting")
+      }));
+    }
+    return progress;
+  };
+
   const evidenceCard = (item) => {
     const article = element("article", { className: "evidence" });
     article.append(element("p", { className: "evidence-label", text: item.label }));
@@ -84,6 +112,47 @@ const javascript = String.raw`
       article.append(details);
     }
     return article;
+  };
+
+  const presentValue = (value, fallback = "Not provided") => {
+    if (Array.isArray(value)) return value.length ? value.join(", ") : fallback;
+    if (value === null || value === undefined || value === "") return fallback;
+    return String(value);
+  };
+
+  const moneyRange = (minimum, maximum) => {
+    const money = (value) => new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0
+    }).format(value);
+    if (typeof minimum === "number" && typeof maximum === "number") return money(minimum) + "–" + money(maximum);
+    if (typeof minimum === "number") return money(minimum) + "+";
+    if (typeof maximum === "number") return "Up to " + money(maximum);
+    return "Not provided";
+  };
+
+  const citationGroup = (title, citations) => {
+    const group = element("section", { className: "citation-group" });
+    group.append(element("h5", { text: title }));
+    const list = element("ul", { className: "citation-list" });
+    citations.forEach((citation) => {
+      const item = element("li", { attrs: { "data-source-ref": citation.ref } });
+      item.append(
+        element("span", { text: citation.excerpt }),
+        element("span", { className: "source-provenance", text: citation.sourceOriginLabel })
+      );
+      list.append(item);
+    });
+    if (!citations.length) list.append(element("li", { text: "No citation was supplied." }));
+    group.append(list);
+    return group;
+  };
+
+  const factCard = (label, value) => {
+    const fact = element("div", { className: "fact" });
+    fact.append(element("span", { text: label }), element("strong", { text: presentValue(value) }));
+    return fact;
   };
 
   const renderEvidenceSection = (title, items) => {
@@ -167,9 +236,38 @@ const javascript = String.raw`
 
   const clearRenderedEvidence = (message, copy = "Local review ended. This tab cleared its rendered applicant evidence.") => {
     if (pollTimer) clearTimeout(pollTimer);
+    document.getElementById("connection-notice").hidden = true;
     document.getElementById("memory-notice").textContent = "The local evidence view is closed. This page does not retain a persistent copy.";
     app.replaceChildren(element("section", { className: "panel loading", text: copy }));
     live.textContent = message;
+  };
+
+  const suspendInteractiveControls = () => {
+    suspendedControls = [...app.querySelectorAll("button:not([data-session-cancel]),input,select,textarea")]
+      .map((control) => [control, control.disabled]);
+    for (const [control] of suspendedControls) control.disabled = true;
+    document.getElementById("connection-notice").hidden = false;
+  };
+
+  const restoreInteractiveControls = () => {
+    for (const [control, wasDisabled] of suspendedControls) {
+      if (control.isConnected) control.disabled = wasDisabled;
+    }
+    suspendedControls = [];
+    document.getElementById("connection-notice").hidden = true;
+  };
+
+  const isTransientStateFailure = (error) =>
+    error instanceof TypeError || error?.name === "AbortError";
+
+  const fetchStateWithTransientRetry = async () => {
+    try {
+      return await fetchState();
+    } catch (error) {
+      if (!isTransientStateFailure(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return fetchState();
+    }
   };
 
   const cancelSession = async () => {
@@ -180,9 +278,16 @@ const javascript = String.raw`
     sessionEnded = true;
     if (pollTimer) clearTimeout(pollTimer);
     try {
-      const response = await fetch(paths.cancel, { method: "POST", keepalive: true });
+      const response = await fetch(cancellationUrl("owner_cancel"), { method: "POST", keepalive: true });
       if (!response.ok) throw new Error("Cancellation was not acknowledged");
-      clearRenderedEvidence("Local review ended.");
+      clearRenderedEvidence(
+        providerOutcomeUncertain
+          ? "Execution stopped. Started or completed calls may be billable; check the terminal receipt."
+          : "Local review ended.",
+        providerOutcomeUncertain
+          ? "The server acknowledged the stop and no later call can start. A request already started may still have completed and may be billable; use the terminal receipt for the final call and cost status."
+          : "Local review ended. This tab cleared its rendered applicant evidence."
+      );
     } catch {
       clearRenderedEvidence(
         providerOutcomeUncertain
@@ -199,7 +304,7 @@ const javascript = String.raw`
     sessionEnded = true;
     let cancellationAcknowledged = false;
     try {
-      const response = await fetch(paths.cancel, { method: "POST", keepalive: true });
+      const response = await fetch(cancellationUrl("action_acknowledgement_lost"), { method: "POST", keepalive: true });
       cancellationAcknowledged = response.ok;
     } catch {
       // The terminal timeout or process exit remains the fallback.
@@ -220,14 +325,15 @@ const javascript = String.raw`
   const refreshAfterAcceptedMutation = async ({ nextPhase, providerOutcomeUncertain }) => {
     renderedPhase = nextPhase;
     try {
-      await load(true);
+      const state = await fetchStateWithTransientRetry();
+      applyLoadedState(state, true);
       window.scrollTo({ top: 0, behavior: "auto" });
       return true;
     } catch {
       sessionEnded = true;
       let cancellationAcknowledged = false;
       try {
-        const response = await fetch(paths.cancel, { method: "POST", keepalive: true });
+        const response = await fetch(cancellationUrl("status_poll_failure"), { method: "POST", keepalive: true });
         cancellationAcknowledged = response.ok;
       } catch {
         // The terminal timeout or process exit remains the fallback.
@@ -340,7 +446,7 @@ const javascript = String.raw`
       section.append(consent);
     }
     const actions = element("div", { className: "actions decision" });
-    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button" } });
+    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button", "data-session-cancel": "" } });
     end.addEventListener("click", () => { void cancelSession(); });
     actions.append(element("span", { className: "hint", text: "Ending the process requires a future recapture; hashes can verify equality but cannot restore memory." }), end);
     section.append(actions);
@@ -352,9 +458,10 @@ const javascript = String.raw`
     const section = element("section", { className: "panel loading", attrs: { "data-phase": state.phase } });
     section.append(element("h2", { text: state.phase === "execution_starting" ? "Activating the consented transport." : "Running one consented call." }));
     section.append(element("p", { text: "Calls completed or in flight: " + state.providerCallCount + " of " + state.caseCount + ". Calls are sequential and never retried." }));
-    section.append(element("p", { className: "hint", text: "Closing or navigating away stops progression. An in-flight network request may finish, but it cannot start a duplicate or later case." }));
+    section.append(renderExecutionTracker(Math.min(Math.max(state.providerCallCount - 1, 0), state.caseCount - 1), state.caseCount));
+    section.append(element("p", { className: "hint", text: "Each provider request has a 180-second deadline. Closing or navigating away stops progression. An in-flight request may finish, but it cannot start a duplicate or later case." }));
     const actions = element("div", { className: "actions" });
-    const stop = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button" } });
+    const stop = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     stop.addEventListener("click", () => { void cancelSession(); });
     actions.append(stop);
     section.append(actions);
@@ -371,50 +478,114 @@ const javascript = String.raw`
     copy.append(element("h2", { text: "Review the model result for " + pending.safeLabel }));
     copy.append(element("p", { text: "Result " + pending.index + " of " + state.caseCount + " · the next call stays blocked until this review is recorded" }));
     head.append(copy, element("span", { className: "badge", text: "Provider calls: " + state.providerCallCount }));
-    form.append(head, renderProgress(pending.index - 1, state.caseCount));
+    form.append(head, renderExecutionTracker(pending.index, state.caseCount, true));
     const summary = element("section", { className: "execution-copy" });
     summary.append(element("h3", { text: "Normalized provider result" }));
     const facts = element("div", { className: "result-grid" });
-    for (const [label, value] of [
-      ["Recommendation", output.recommendation],
-      ["Overall fit", output.overallFitScore],
-      ["Uncalibrated confidence", output.confidenceScore]
+    for (const [id, label, value] of [
+      ["recommendation", "Model recommendation", output.recommendation],
+      ["fit-score", "Fit score", output.overallFitScore + " / 100"],
+      ["model-confidence", "Model confidence", output.confidenceScore + " / 100"]
     ]) {
-      const fact = element("div", { className: "fact" });
+      const fact = element("div", { className: "fact", attrs: { "data-result-metric": id } });
       fact.append(element("span", { text: label }), element("strong", { text: String(value) }));
       facts.append(fact);
     }
-    summary.append(facts, element("p", { text: output.confidenceAssessment.basis }));
-    const details = element("details", { className: "review-details" });
-    details.append(element("summary", { text: "Inspect complete normalized result and exact source input" }));
-    const pre = element("pre", { text: JSON.stringify({
-      normalizedResult: output,
-      exactSourceInput: pending.matchInput
-    }, null, 2) });
-    const detailBody = element("div", { className: "execution-copy" });
-    detailBody.append(element("p", { className: "hint", text: "This is the captured source résumé/profile and frozen job input—not a tailored résumé or cover letter preview." }), pre);
-    details.append(detailBody);
-    summary.append(details);
+    summary.append(facts, element("p", { className: "hint", text: "Scores are model estimates, not hiring probabilities. Verify the cited evidence and gaps." }));
+
+    const readable = element("div", { className: "readable-result" });
+
+    const whyFits = element("section", { className: "readable-section" });
+    whyFits.append(element("h3", { text: "Why this fits" }));
+    whyFits.append(element("p", { className: "section-copy", text: "Only matches backed by both submitted applicant evidence and the frozen job are shown here." }));
+    whyFits.append(element("h4", { text: "Source-backed factual matches" }));
+    if (!output.factualMatches.length) {
+      whyFits.append(element("p", { className: "empty-result", text: "The model reported no source-backed factual matches for this job." }));
+    }
+    output.factualMatches.forEach((match) => {
+      const card = element("article", { className: "result-card" });
+      card.append(element("h4", { text: match.claim }));
+      if (match.supportedKeywords.length) {
+        card.append(element("p", { className: "keyword-line", text: "Supported keywords: " + match.supportedKeywords.join(", ") }));
+      }
+      card.append(element("h4", { text: "Evidence used" }));
+      const citations = element("div", { className: "citation-columns" });
+      citations.append(citationGroup("Applicant source", match.applicantEvidence), citationGroup("Job source", match.jobEvidence));
+      card.append(citations);
+      whyFits.append(card);
+    });
+    readable.append(whyFits);
+
+    const missing = element("section", { className: "readable-section" });
+    missing.append(element("h3", { text: "What is missing" }));
+    missing.append(element("p", { className: "section-copy", text: "These are requirements the model said were not supported by the submitted applicant evidence. Confirm each against the cited source." }));
+    missing.append(element("h4", { text: "Important gaps reported by the model" }));
+    if (!output.requirementGaps.length) {
+      missing.append(element("p", { className: "empty-result", text: "The model reported no requirement gaps. That does not prove every requirement is satisfied." }));
+    }
+    output.requirementGaps.forEach((gap) => {
+      const card = element("article", { className: "result-card" });
+      card.append(element("h4", { text: gap.requirement }));
+      card.append(citationGroup("Job requirement cited", [gap.jobRequirement]));
+      card.append(element("p", { className: "keyword-line", text: "Missing keywords: " + (gap.missingKeywords.length ? gap.missingKeywords.join(", ") : "None listed") }));
+      missing.append(card);
+    });
+    readable.append(missing);
+
+    const context = element("section", { className: "readable-section" });
+    context.append(element("h3", { text: "Compensation and preference context" }));
+    context.append(element("p", { className: "section-copy", text: "These values may affect personal fit, but they are not evidence that the applicant meets a job qualification." }));
+    const contextGrid = element("div", { className: "context-grid" });
+    contextGrid.append(
+      factCard("Applicant salary target", moneyRange(pending.matchInput.profile?.salaryTargetMin, pending.matchInput.profile?.salaryTargetMax)),
+      factCard("Job-listed salary", moneyRange(pending.matchInput.job.salaryMin, pending.matchInput.job.salaryMax)),
+      factCard("Applicant preferred locations", pending.displayContext.applicantPreferredLocations),
+      factCard("Job location", pending.displayContext.jobLocation),
+      factCard("Applicant work preference", pending.displayContext.applicantWorkPreference),
+      factCard("Job work arrangement", pending.displayContext.jobWorkArrangement),
+      factCard("Model compensation score", output.compensationAssessment.score === null ? "Not scored" : output.compensationAssessment.score),
+      factCard("Why compensation was scored this way", output.compensationAssessment.reason.replaceAll("_", " "))
+    );
+    context.append(contextGrid);
+    readable.append(context);
+
+    const limitations = element("section", { className: "readable-section" });
+    limitations.append(element("h3", { text: "What needs your review" }));
+    limitations.append(element("p", { className: "section-copy", text: "Check whether the recommendation follows from the displayed evidence and gaps. The confidence value is the model's own uncalibrated estimate, not a hiring probability." }));
+    limitations.append(element("h4", { text: "Limitations and advisory output" }));
+    const advisory = element("ul", { className: "advisory-list" });
+    advisory.append(element("li", { text: "Confidence basis: " + presentValue(output.confidenceAssessment.basis) }));
+    advisory.append(element("li", { text: "Keywords suggested for emphasis: " + presentValue(output.keywordsToEmphasize, "None") }));
+    advisory.append(element("li", { text: "Suggested résumé angle (advice only; no document was generated): " + presentValue(output.suggestedResumeAngle) }));
+    advisory.append(element("li", { text: "Suggested cover-letter angle (advice only; no document was generated): " + presentValue(output.suggestedCoverLetterAngle) }));
+    advisory.append(element("li", { text: "Other concerns: " + presentValue(output.concerns, "None reported") }));
+    limitations.append(advisory);
+    readable.append(limitations);
+
+    summary.append(readable);
     form.append(summary);
     const categories = element("fieldset", { className: "questions" });
-    categories.append(element("legend", { text: "Observed disagreement categories" }));
-    for (const [value, label] of [
-      ["recommendation", "Recommendation"],
-      ["missing_material_gap", "Missing material gap"],
-      ["unsupported_positive_match", "Unsupported positive match"],
-      ["compensation", "Compensation"],
-      ["preference", "Preference"],
-      ["advice_claim", "Advice claim"],
-      ["other_review_required", "Other review required"]
+    categories.append(element("legend", { text: "Mark any model mistake (optional)" }));
+    categories.append(element("p", { className: "section-copy", text: "Leave every box unchecked if the result is acceptable. These boxes record mistakes; they do not approve the recommendation." }));
+    for (const [value, label, description] of [
+      ["recommendation", disagreementLabels.recommendation, "The recommendation band seems wrong for the displayed evidence and gaps."],
+      ["missing_material_gap", disagreementLabels.missing_material_gap, "An important requirement is absent from the model's gap list."],
+      ["unsupported_positive_match", disagreementLabels.unsupported_positive_match, "A claimed match is not supported by both cited applicant and job evidence."],
+      ["compensation", disagreementLabels.compensation, "The salary values or compensation conclusion are incorrect."],
+      ["preference", disagreementLabels.preference, "The location or work-arrangement interpretation is incorrect."],
+      ["advice_claim", disagreementLabels.advice_claim, "The résumé or cover-letter advice adds or exaggerates a claim."],
+      ["other_review_required", disagreementLabels.other_review_required, "A different result error should be recorded for follow-up."]
     ]) {
       const choice = element("label", { className: "confirmation" });
-      choice.append(element("input", { attrs: { type: "checkbox", value } }), element("span", { text: label }));
+      const choiceCopy = element("span", { className: "review-choice-copy" });
+      choiceCopy.append(element("strong", { text: label }), element("span", { text: description }));
+      choice.append(element("input", { attrs: { type: "checkbox", value } }), choiceCopy);
       categories.append(choice);
     }
     form.append(categories);
     const error = element("p", { className: "error", attrs: { role: "alert" } });
     const actions = element("div", { className: "actions decision" });
-    const cancel = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button" } });
+    const cancel = element("button", { className: "button button-danger", text: "Stop and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     cancel.addEventListener("click", () => { void cancelSession(); });
     const submit = element("button", { className: "button button-primary", text: "Record result review and continue", attrs: { type: "submit" } });
     actions.append(cancel, submit);
@@ -457,10 +628,84 @@ const javascript = String.raw`
     head.append(copy, element("span", { className: "badge", text: "Provider calls: " + state.providerCallCount }));
     section.append(head);
     const report = element("div", { className: "execution-copy" });
-    report.append(element("h3", { text: "Safe final report" }), element("pre", { text: JSON.stringify(state.safeReport, null, 2) }));
+    const safeReport = state.safeReport && typeof state.safeReport === "object" ? state.safeReport : {};
+    report.append(element("h3", { text: "Safe final report" }));
+    report.append(element("p", { className: "section-copy", text: state.phase === "execution_complete"
+      ? "All four bounded calls and their owner reviews completed. This report contains only retained safe metadata, not model prose or private source inputs."
+      : "The run stopped before all four reviews completed. No retry was attempted; use the failure summary below to understand where it stopped." }));
+    const reportFacts = element("div", { className: "result-grid" });
+    const knownCostMicros = typeof safeReport.totalEstimatedCostMicros === "number"
+      ? safeReport.totalEstimatedCostMicros
+      : safeReport.totalKnownEstimatedCostMicros;
+    reportFacts.append(
+      factCard("Status", presentValue(safeReport.status, state.phase === "execution_complete" ? "completed" : "stopped")),
+      factCard("Cases completed", presentValue(safeReport.completedCaseCount, 0) + " of " + state.caseCount),
+      factCard("Known estimated cost", typeof knownCostMicros === "number"
+        ? "$" + (knownCostMicros / 1000000).toFixed(6)
+        : "Not available")
+    );
+    report.append(reportFacts);
+    if (safeReport.failureCode) {
+      const stopped = element("section", { className: "readable-section" });
+      stopped.append(element("h3", { text: "Why execution stopped" }));
+      const failureMeanings = {
+        CREDENTIAL_ACTIVATION_FAILED: "The provider credential could not be activated, so no provider request started.",
+        INTERNAL_EXECUTION_FAILED: "The local bounded execution stopped because of an internal error.",
+        TRANSPORT_FAILED: "The provider request did not return a usable response.",
+        PROVIDER_RESPONSE_REJECTED: "The provider response did not finish normally.",
+        RESPONSE_BODY_LIMIT_EXCEEDED: "The provider response exceeded the approved response-size bound.",
+        REQUEST_TIME_LIMIT_EXCEEDED: "The provider request exceeded the approved time bound.",
+        TOKEN_LIMIT_EXCEEDED: "The provider reported token use outside the approved bound.",
+        COST_LIMIT_EXCEEDED: "The estimated provider cost exceeded the per-call bound.",
+        MODEL_OUTPUT_VALIDATION_FAILED: "The returned model data failed contract or evidence validation before owner review.",
+        TRANSIENT_HUMAN_REVIEW_FAILED: "The transient owner result review could not be completed."
+      };
+      stopped.append(element("p", { text: "Case " + presentValue(safeReport.failedCaseIndex, "unknown") + " stopped. " + (failureMeanings[safeReport.failureCode] ?? "The run stopped at a protected execution boundary.") + " No automatic retry was attempted." }));
+      const failedCall = safeReport.failedCall && typeof safeReport.failedCall === "object" ? safeReport.failedCall : {};
+      const failureFacts = element("div", { className: "context-grid" });
+      failureFacts.append(
+        factCard("Failure code", safeReport.failureCode),
+        factCard("Validation stage", safeReport.validationStage ?? "Not applicable"),
+        factCard("Validation field", safeReport.failureFieldPath ?? "Not available"),
+        factCard("Provider responded", failedCall.providerResponded === true ? "Yes" : failedCall.providerResponded === false ? "No" : "Unknown"),
+        factCard("Billing status", presentValue(failedCall.billingDisposition, "Unknown")),
+        factCard("HTTP status", failedCall.httpStatus ?? "Not available"),
+        factCard("Provider error code", failedCall.providerCode ?? "Not available")
+      );
+      stopped.append(failureFacts);
+      report.append(stopped);
+    }
+    const resultList = Array.isArray(safeReport.results) ? safeReport.results : [];
+    if (resultList.length) {
+      const results = element("section", { className: "readable-section" });
+      results.append(element("h3", { text: "Reviewed result summary" }));
+      results.append(element("p", { className: "section-copy", text: "Each card is retained metadata from a completed provider result and owner review. Scores are model estimates, not hiring probabilities." }));
+      const grid = element("div", { className: "safe-report-grid" });
+      resultList.forEach((result) => {
+        const card = element("article", { className: "result-card safe-result" });
+        card.append(element("h4", { text: presentValue(result.safeLabel, "Reviewed job") }));
+        const values = element("dl");
+        for (const [label, value] of [
+          ["Model recommendation", result.modelRecommendation],
+          ["Reviewed recommendation", result.reviewedRecommendation],
+          ["Recommendation agreement", result.humanBandAgreement === true ? "Matches reviewed expectation" : "Differs from reviewed expectation"],
+          ["Fit score", presentValue(result.overallFitScore) + " / 100"],
+          ["Model confidence", presentValue(result.confidenceScore) + " / 100"],
+          ["Factual matches", result.factualMatchCount],
+          ["Requirement gaps", result.requirementGapCount],
+          ["Recorded issues", Array.isArray(result.disagreementCategories) && result.disagreementCategories.length
+            ? result.disagreementCategories.map((category) => disagreementLabels[category] ?? "Unknown recorded issue").join(", ")
+            : "None"]
+        ]) values.append(element("dt", { text: label }), element("dd", { text: presentValue(value, "None") }));
+        card.append(values);
+        grid.append(card);
+      });
+      results.append(grid);
+      report.append(results);
+    }
     section.append(report);
     const actions = element("div", { className: "actions decision" });
-    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button" } });
+    const end = element("button", { className: "button button-danger", text: "End local session", attrs: { type: "button", "data-session-cancel": "" } });
     end.addEventListener("click", () => { void cancelSession(); });
     actions.append(element("span", { className: "hint", text: "Ending the session releases the remaining safe in-process report." }), end);
     section.append(actions);
@@ -521,6 +766,9 @@ const javascript = String.raw`
         );
         choices.append(choice);
       });
+      if (!reviewCase.applicantEvidence.length) {
+        choices.append(element("p", { className: "empty-result", text: "No submitted applicant evidence is available for this requirement." }));
+      }
       evidence.append(choices, element("p", { className: "hint", text: "Do not select a source merely because it shares a keyword." }));
       fieldset.append(evidence);
 
@@ -557,12 +805,15 @@ const javascript = String.raw`
       fieldset.append(questionToggle, questionFields);
       requirementColumn.append(fieldset);
     });
+    if (!reviewCase.allRequirements.length) {
+      requirementColumn.append(element("p", { className: "empty-result", text: "No structured requirements were captured, so there is no evidence guide to author for this case." }));
+    }
     guideRequirements.append(requirementColumn, evidenceColumn);
     form.append(guideRequirements);
 
     const error = element("p", { className: "error", attrs: { role: "alert" } });
     const actions = element("div", { className: "actions decision" });
-    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button" } });
+    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     cancel.addEventListener("click", () => { void cancelSession(); });
     const submit = element("button", { className: "button button-primary", text: "Bind guide to this exact case", attrs: { type: "submit" } });
     actions.append(cancel, submit);
@@ -644,7 +895,7 @@ const javascript = String.raw`
     const copy = element("div");
     copy.append(element("h2", { text: reviewCase.safeLabel }));
     copy.append(element("p", { text: "Case " + (state.currentCaseIndex + 1) + " of " + state.caseCount + " · compare the captured posting with the submitted source evidence" }));
-    head.append(copy, element("span", { className: "badge", text: "Proposed: " + reviewCase.proposedRecommendation }));
+    head.append(copy, element("span", { className: "badge", text: "Frozen benchmark expectation: " + reviewCase.proposedRecommendation }));
     form.append(head, renderProgress(state.currentCaseIndex, state.caseCount));
     form.append(renderJobContext(reviewCase));
 
@@ -699,12 +950,15 @@ const javascript = String.raw`
         choices.append(choice);
       }
       const context = element("div", { className: "field clarification-context" });
-      context.append(element("label", { text: "Optional explanation", attrs: { for: "clarification-context-" + index } }));
+      context.append(element("label", { text: "Explanation (required for Yes)", attrs: { for: "clarification-context-" + index } }));
       const textarea = element("textarea", { attrs: { id: "clarification-context-" + index, maxlength: "2000", rows: "3", placeholder: "Add only truthful, job-relevant context." } });
       context.append(textarea, element("p", { className: "hint", text: "Required only for Yes. This answer is tagged USER_ATTESTATION for this job review and is not résumé history." }));
       card.append(choices, context);
       questions.append(card);
     });
+    if (!reviewCase.clarificationGroups.length) {
+      questions.append(element("p", { className: "empty-result", text: "No decision-changing clarification questions were identified for this case." }));
+    }
     form.append(questions);
 
     const evidenceDetails = element("details", { className: "review-details supported-details" });
@@ -719,6 +973,9 @@ const javascript = String.raw`
       card.append(evidence);
       supportedList.append(card);
     });
+    if (!reviewCase.supportedRequirements.length) {
+      supportedList.append(element("p", { className: "empty-result", text: "No requirements are currently mapped to direct applicant evidence." }));
+    }
     evidenceDetails.append(supportedList);
     form.append(evidenceDetails);
 
@@ -762,6 +1019,9 @@ const javascript = String.raw`
       row.append(labels, copy);
       allList.append(row);
     });
+    if (!reviewCase.allRequirements.length) {
+      allList.append(element("li", { className: "empty-result", text: "No structured requirements were captured for this job." }));
+    }
     all.append(allList);
     form.append(all);
 
@@ -790,6 +1050,9 @@ const javascript = String.raw`
     decision.append(documents);
     const preferenceEvidence = element("div", { className: "preference-evidence", attrs: { "aria-label": "Job preference evidence" } });
     reviewCase.preferenceContext.forEach((item) => preferenceEvidence.append(evidenceCard(item)));
+    if (!reviewCase.preferenceContext.length) {
+      preferenceEvidence.append(element("p", { className: "empty-result", text: "No applicant preference context is available for this case." }));
+    }
     decision.append(preferenceEvidence);
     const preferenceGrid = element("div", { className: "preference-grid" });
     const preferenceOptions = [
@@ -819,7 +1082,7 @@ const javascript = String.raw`
     decision.append(confirmation);
     const error = element("p", { className: "error", attrs: { role: "alert" } });
     const actions = element("div", { className: "actions" });
-    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button" } });
+    const cancel = element("button", { className: "button button-secondary", text: "Cancel and release memory", attrs: { type: "button", "data-session-cancel": "" } });
     cancel.addEventListener("click", () => { void cancelSession(); });
     const submit = element("button", { className: "button button-primary", text: "Record review and continue", attrs: { type: "submit" } });
     actions.append(cancel, submit);
@@ -886,12 +1149,19 @@ const javascript = String.raw`
   };
 
   const applyState = (state) => {
+    document.getElementById("connection-notice").hidden = true;
     renderedPhase = state.phase;
     renderedCaseIndex = state.currentCaseIndex ?? -1;
+    renderedCaptureFailureNotice = state.captureFailureNotice ?? "";
     document.getElementById("synthetic-banner").hidden = state.syntheticPreview !== true;
     document.getElementById("memory-notice").textContent = state.memoryNotice ?? "Waiting for the exact local capture.";
     if (state.phase === "awaiting_capture") {
-      app.replaceChildren(element("section", { className: "panel loading", text: "Waiting for the approved one-shot capture. No applicant input has been admitted yet; this page will advance automatically after an exact hash match." }));
+      const waiting = element("section", { className: "panel loading" });
+      waiting.append(element("h2", { text: state.captureFailureNotice ? "Capture was not accepted." : "Waiting for the approved one-shot capture." }));
+      waiting.append(element("p", { text: state.captureFailureNotice
+        ? state.captureFailureNotice
+        : "No applicant input has been admitted yet; this page will advance automatically after an exact checkpoint match." }));
+      app.replaceChildren(waiting);
       return;
     }
     if (state.phase === "awaiting_separate_google_consent") renderFinal(state);
@@ -907,17 +1177,27 @@ const javascript = String.raw`
     const deadline = setTimeout(() => controller.abort(), 1500);
     try {
       const response = await fetch(paths.state, { cache: "no-store", signal: controller.signal });
-      if (!response.ok) throw new Error("State unavailable");
-      return response.json();
+      if (!response.ok) throw new Error("Invalid local state response");
+      let state;
+      try {
+        state = await response.json();
+      } catch {
+        throw new Error("Invalid local state response");
+      }
+      if (!state || typeof state !== "object" || typeof state.phase !== "string") {
+        throw new Error("Invalid local state response");
+      }
+      return state;
     } finally {
       clearTimeout(deadline);
     }
   }
 
-  async function load(focusHeading = false) {
-    if (pollTimer) clearTimeout(pollTimer);
-    const state = await fetchState();
+  function applyLoadedState(state, focusHeading = false) {
     applyState(state);
+    document.getElementById("connection-notice").hidden = true;
+    suspendedControls = [];
+    consecutivePollFailures = 0;
     if (focusHeading) {
       const heading = app.querySelector("h2");
       if (heading) {
@@ -928,25 +1208,59 @@ const javascript = String.raw`
     schedulePoll();
   }
 
+  async function load(focusHeading = false) {
+    if (pollTimer) clearTimeout(pollTimer);
+    const state = await fetchState();
+    applyLoadedState(state, focusHeading);
+  }
+
+  const failClosedAfterStateLoss = () => {
+    sessionEnded = true;
+    navigator.sendBeacon(cancellationUrl("status_poll_failure"));
+    const providerMayHaveActed = renderedPhase === "execution_starting"
+      || renderedPhase === "executing"
+      || renderedPhase === "reviewing_provider_result";
+    clearRenderedEvidence(
+      providerMayHaveActed
+        ? "Contact was lost during execution; provider completion and billing are uncertain."
+        : "Contact with the local review process was lost before execution.",
+      providerMayHaveActed
+        ? "This tab cleared its rendered evidence and sent cancellation best-effort. A started request may have completed and may be billable; no later call can start after cancellation is acknowledged. Stop the terminal process now if acknowledgement is unavailable."
+        : "This tab cleared its rendered applicant evidence after losing contact with the loopback server. No consented provider execution had started. Cancellation was sent best-effort; stop the terminal process now or rely on its timeout fallback."
+    );
+  };
+
   async function poll() {
+    let state;
     try {
-      const state = await fetchState();
-      if (state.phase !== renderedPhase || (state.currentCaseIndex ?? -1) !== renderedCaseIndex) applyState(state);
+      state = await fetchState();
+    } catch (error) {
+      const retryable = isTransientStateFailure(error);
+      if (retryable && consecutivePollFailures === 0) {
+        consecutivePollFailures = 1;
+        suspendInteractiveControls();
+        live.textContent = "Local status was briefly unavailable. Retrying before ending the review.";
+        pollTimer = setTimeout(() => { void poll(); }, 250);
+        return;
+      }
+      failClosedAfterStateLoss();
+      return;
+    }
+    try {
+      const recovered = consecutivePollFailures > 0;
+      const stateChanged = state.phase !== renderedPhase
+        || (state.currentCaseIndex ?? -1) !== renderedCaseIndex
+        || (state.captureFailureNotice ?? "") !== renderedCaptureFailureNotice;
+      if (stateChanged) {
+        applyState(state);
+        suspendedControls = [];
+      } else if (recovered) {
+        restoreInteractiveControls();
+      }
+      consecutivePollFailures = 0;
       schedulePoll();
     } catch {
-      sessionEnded = true;
-      navigator.sendBeacon(paths.cancel, "state_contact_lost");
-      const providerMayHaveActed = renderedPhase === "execution_starting"
-        || renderedPhase === "executing"
-        || renderedPhase === "reviewing_provider_result";
-      clearRenderedEvidence(
-        providerMayHaveActed
-          ? "Contact was lost during execution; provider completion and billing are uncertain."
-          : "Contact with the local review process was lost before execution.",
-        providerMayHaveActed
-          ? "This tab cleared its rendered evidence and sent cancellation best-effort. A started request may have completed and may be billable; no later call can start after cancellation is acknowledged. Stop the terminal process now if acknowledgement is unavailable."
-          : "This tab cleared its rendered applicant evidence after losing contact with the loopback server. No consented provider execution had started. Cancellation was sent best-effort; stop the terminal process now or rely on its timeout fallback."
-      );
+      failClosedAfterStateLoss();
     }
   }
 
@@ -954,7 +1268,7 @@ const javascript = String.raw`
     if (sessionEnded) return;
     sessionEnded = true;
     if (pollTimer) clearTimeout(pollTimer);
-    navigator.sendBeacon(paths.cancel, "navigation_loss");
+    navigator.sendBeacon(cancellationUrl("pagehide"));
     clearRenderedEvidence("Navigation ended the local review.");
   }, { once: true });
 
@@ -985,7 +1299,7 @@ function html({
 <a class="skip" href="#app">Skip to review</a>
 <header class="masthead"><div class="masthead-inner"><div class="brand"><strong>Apply Pilot</strong><span>Private qualification review</span></div><span class="session-badge">Local · memory only</span></div></header>
 <main><aside id="synthetic-banner" class="synthetic-banner" hidden><strong>Synthetic preview</strong><span>Every applicant detail on this screen is a public test fixture. Do not treat it as a real person or an application packet.</span></aside><section class="hero" aria-labelledby="page-title"><p class="eyebrow">Owner evidence review</p><h1 id="page-title">Resolve only the qualifications that could change the decision.</h1><p class="lede">Applicant evidence moves only between the local loopback server and this tab. The app does not persist it. Provider access remains unavailable until a separately displayed, exact-manifest consent is explicitly approved.</p></section>
-<p id="memory-notice" class="notice">Loading the memory boundary…</p><p id="status" class="status" role="status" aria-live="polite"></p><div id="app" class="loading">Loading local review…</div></main>
+<p id="memory-notice" class="notice">Loading the memory boundary…</p><p id="connection-notice" class="notice" role="status" hidden>Local status is briefly unavailable. Controls are paused while this page retries once.</p><p id="status" class="status" role="status" aria-live="polite"></p><div id="app" class="loading">Loading local review…</div></main>
 <script src="/review.js" defer></script></body></html>`;
 }
 

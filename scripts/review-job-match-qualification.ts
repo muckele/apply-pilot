@@ -120,13 +120,12 @@ async function main() {
       }
     }
     const outcome = await workflow.closed;
-    process.stdout.write(`${JSON.stringify({ status: "local_review_closed", reason: outcome.reason })}\n`);
+    process.stdout.write(`${JSON.stringify({ status: "local_review_closed", ...outcome })}\n`);
   } catch {
     const outcome = await workflow.closed;
     process.stderr.write(`${JSON.stringify({
       status: "local_review_closed_before_consent_gate",
-      reason: outcome.reason,
-      providerCallCount: 0
+      ...outcome
     })}\n`);
     process.exitCode = outcome.reason === "navigation_or_owner_cancel" ? 0 : 1;
   } finally {

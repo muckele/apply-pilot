@@ -7,7 +7,8 @@ import {
   JOB_MATCH_MODEL,
   JOB_MATCH_PROMPT_VERSION,
   type JobMatchModelOutput,
-  type MatchInput
+  type MatchInput,
+  validateAndNormalizeJobMatchOutput
 } from "@/lib/ai/job-match";
 import {
   buildApplicantQualificationSnapshot,
@@ -151,6 +152,63 @@ test("the applicant bridge selects the exact production projection and excludes 
   assert.equal(snapshot.masterResumeId, "resume-private-1");
   assert.equal(snapshot.parsedAt, "2026-10-05T04:39:07.750Z");
   assert.doesNotMatch(JSON.stringify(snapshot), /must-not-cross@example\.test|filePath|workAuthorizationNotes|dealBreakers/);
+});
+
+test("validated source citations render meaningful content instead of embedded local schema envelopes", () => {
+  const applicantSource = JSON.stringify({
+    schema: "local-source/v1",
+    local: { start: 0, end: 24 },
+    value: "Technical demonstrations"
+  });
+  const jobSource = [
+    "<<< LOCAL START >>>",
+    JSON.stringify({
+      schema: "job-source/v1",
+      start: 12,
+      end: 43,
+      text: "proof-of-concept demonstrations"
+    }),
+    "<<< LOCAL END >>>"
+  ].join("\n");
+  const requirementSource = JSON.stringify({
+    schema: "job-requirement/v1",
+    localStart: 44,
+    localEnd: 68,
+    content: "Bachelor's degree in STEM"
+  });
+  const input: MatchInput = {
+    job: {
+      title: "Synthetic solutions role",
+      company: "Example Systems",
+      description: "Build source-backed demonstrations.",
+      detectedTechStack: [jobSource],
+      requirements: [requirementSource]
+    },
+    resume: { skills: [applicantSource] }
+  };
+  const output: JobMatchModelOutput = {
+    ...validModelOutput("apply now"),
+    factualMatches: [{
+      applicantEvidence: [{ ref: "resume.skills[0]", excerpt: '"value":"Technical demonstrations"' }],
+      jobEvidence: [{ ref: "job.detectedTechStack[0]", excerpt: jobSource }],
+      supportedKeywords: ["demonstrations"]
+    }],
+    requirementGaps: [{
+      requirement: requirementSource,
+      jobRequirement: { ref: "job.requirements[0]", excerpt: requirementSource },
+      missingKeywords: ["STEM"]
+    }]
+  };
+
+  const normalized = validateAndNormalizeJobMatchOutput(input, output).normalized;
+  assert.equal(normalized.factualMatches[0].applicantEvidence[0].excerpt, "Technical demonstrations");
+  assert.equal(normalized.factualMatches[0].jobEvidence[0].excerpt, "proof-of-concept demonstrations");
+  assert.equal(normalized.requirementGaps[0].requirement, "Bachelor's degree in STEM");
+  assert.equal(normalized.requirementGaps[0].jobRequirement.excerpt, "Bachelor's degree in STEM");
+  assert.doesNotMatch(
+    JSON.stringify({ matches: normalized.factualMatches, gaps: normalized.requirementGaps }),
+    /local.source|LOCAL START|LOCAL END|localStart|localEnd|\"schema\"|\"start\"|\"end\"/i
+  );
 });
 
 test("preparation pins four immutable public cases and production-identical request hashes", () => {
@@ -462,10 +520,14 @@ test("a paid invalid model response retains safe billing metadata without raw ou
     assert.ok(error instanceof QualificationRunStoppedError);
     const safe = error.safeReport as {
       failureCode: string;
+      validationStage: string | null;
+      failureFieldPath: string | null;
       totalKnownEstimatedCostMicros: number;
       failedCall: Record<string, unknown>;
     };
     assert.equal(safe.failureCode, "MODEL_OUTPUT_VALIDATION_FAILED");
+    assert.equal(safe.validationStage, "schema");
+    assert.equal(safe.failureFieldPath, "contractVersion");
     assert.equal(safe.failedCall.billingDisposition, "known");
     assert.equal(safe.failedCall.requestId, "request-safe-123");
     assert.equal(safe.failedCall.inputTokens, 1_000);
@@ -473,6 +535,47 @@ test("a paid invalid model response retains safe billing metadata without raw ou
     assert.equal(safe.failedCall.responseBytes, 321);
     assert.ok(safe.totalKnownEstimatedCostMicros > 0);
     assert.doesNotMatch(JSON.stringify(safe), /PRIVATE INVALID MODEL OUTPUT|rawPrivateModelText/);
+    return true;
+  });
+
+  await assert.rejects(runJobMatchQualification({
+    preparation,
+    consent: approvedConsent(preparation.safeManifest.manifestHash),
+    transport: async (request) => {
+      const semanticInvalid = validModelOutput(request.expectedRecommendation);
+      semanticInvalid.factualMatches = [{
+        applicantEvidence: [{ ref: "resume.skills[999]", excerpt: "PRIVATE INVALID CITATION" }],
+        jobEvidence: [{ ref: "job.title", excerpt: request.payload.job.title }],
+        supportedKeywords: ["PRIVATE"]
+      }];
+      return {
+        value: semanticInvalid,
+        finishReason: "STOP",
+        responseBytes: 321,
+        elapsedMs: 45,
+        requestId: "request-safe-semantic",
+        usage: {
+          inputTokens: 1_000,
+          outputTokens: 500,
+          cachedInputTokens: 0,
+          visibleOutputTokens: 300,
+          thinkingTokens: 200
+        }
+      };
+    },
+    reviewCase: noDisagreements,
+    now: new Date("2026-10-05T17:00:00Z")
+  }), (error: unknown) => {
+    assert.ok(error instanceof QualificationRunStoppedError);
+    const safe = error.safeReport as {
+      failureCode: string;
+      validationStage: string | null;
+      failureFieldPath: string | null;
+    };
+    assert.equal(safe.failureCode, "MODEL_OUTPUT_VALIDATION_FAILED");
+    assert.equal(safe.validationStage, "semantic");
+    assert.equal(safe.failureFieldPath, null);
+    assert.doesNotMatch(JSON.stringify(safe), /PRIVATE INVALID CITATION|resume\.skills\[999\]/);
     return true;
   });
 });
