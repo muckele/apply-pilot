@@ -25,10 +25,47 @@ import {
   buildQualificationOwnerReviewView,
   createQualificationReviewGuide,
   createQualificationReviewArtifact,
+  qualificationSourceOriginLabel,
   startJobMatchQualificationOwnerReview
 } from "@/lib/ai/job-match-qualification-owner-review";
 
 const now = new Date("2026-10-05T17:00:00.000Z");
+
+test("provider evidence labels name every supported source section without machine paths or indexes", () => {
+  const expected = new Map<string, string>([
+    ["resume.summary", "Your résumé: summary"],
+    ["resume.rawText", "Your résumé: submitted text"],
+    ["resume.skills[3]", "Your résumé: skills"],
+    ["resume.achievements[8]", "Your résumé: achievements"],
+    ["resume.workHistory[2]", "Your résumé: work experience"],
+    ["resume.projects[6]", "Your résumé: projects"],
+    ["resume.education[4]", "Your résumé: education"],
+    ["resume.certifications[5]", "Your résumé: certifications"],
+    ["job.title", "Job listing: title"],
+    ["job.company", "Job listing: company"],
+    ["job.location", "Job listing: location"],
+    ["job.remoteStatus", "Job listing: work arrangement"],
+    ["job.salaryMin", "Job listing: compensation"],
+    ["job.salaryMax", "Job listing: compensation"],
+    ["job.description", "Job listing: description"],
+    ["job.requirements[9]", "Job listing: requirements"],
+    ["job.preferredQualifications[7]", "Job listing: preferred qualifications"],
+    ["job.detectedTechStack[3]", "Job listing: technologies"],
+    ["resume.unrecognized[1]", "Your résumé: cited source"],
+    ["job.unrecognized[1]", "Job listing: cited source"],
+    ["job.skills[0]", "Job listing: cited source"],
+    ["job.education[0]", "Job listing: cited source"],
+    ["resume.requirements[0]", "Your résumé: cited source"],
+    ["resume.detectedTechStack[0]", "Your résumé: cited source"],
+    ["profile.unrecognized[1]", "Submitted applicant source"],
+    ["unexpected", "Submitted source"]
+  ]);
+
+  for (const [ref, label] of expected) {
+    assert.equal(qualificationSourceOriginLabel(ref), label, ref);
+    assert.doesNotMatch(label, /\[|\]|\d|schema|field|path|index|wrapper/i, ref);
+  }
+});
 
 function draftPreparation() {
   return buildQualificationPreparation(

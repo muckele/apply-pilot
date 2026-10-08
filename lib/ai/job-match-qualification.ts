@@ -7,6 +7,7 @@ import {
   JOB_MATCH_MODEL,
   JOB_MATCH_PROMPT_VERSION,
   JOB_MATCH_THINKING_LEVEL,
+  JobMatchOutputValidationError,
   getJobMatchEvidenceReferences,
   type JobMatchModelOutput,
   type JobMatchOutput,
@@ -951,6 +952,12 @@ export async function runJobMatchQualification({
         completedCaseCount: results.length,
         failedCaseIndex: index + 1,
         failureCode,
+        validationStage: error instanceof JobMatchOutputValidationError
+          ? error.validationStage
+          : null,
+        failureFieldPath: error instanceof JobMatchOutputValidationError
+          ? error.fieldPath
+          : null,
         noRetryAttempted: true,
         totalKnownEstimatedCostMicros: totalEstimatedCostMicros + (failedCall.estimatedCostMicros ?? 0),
         failedCall,

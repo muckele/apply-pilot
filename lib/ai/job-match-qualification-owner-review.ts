@@ -2,7 +2,12 @@ import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 
 import { hashAiInput } from "@/lib/ai/input-hash";
-import { getJobMatchEvidenceReferences, type MatchInput } from "@/lib/ai/job-match";
+import {
+  getJobMatchEvidenceReferences,
+  jobMatchSourceDisplayText,
+  type JobMatchOutput,
+  type MatchInput
+} from "@/lib/ai/job-match";
 import {
   buildApplicantQualificationSnapshot,
   buildQualificationPreparation,
@@ -123,7 +128,8 @@ function recordValue(value: unknown): Record<string, unknown> | null {
 }
 
 function textValue(value: unknown) {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+  if (typeof value !== "string" || !value.trim()) return null;
+  return jobMatchSourceDisplayText(value) || null;
 }
 
 function textValues(value: unknown) {
@@ -137,11 +143,77 @@ function unique(values: readonly (string | null | undefined)[]) {
 }
 
 function readableLeaves(value: unknown): string[] {
-  if (typeof value === "string" && value.trim()) return [value.trim()];
+  if (typeof value === "string" && value.trim()) {
+    const display = jobMatchSourceDisplayText(value);
+    return display ? [display] : [];
+  }
   if (typeof value === "number" || typeof value === "boolean") return [String(value)];
   if (Array.isArray(value)) return unique(value.flatMap(readableLeaves));
   const record = recordValue(value);
   return record ? unique(Object.values(record).flatMap(readableLeaves)) : [];
+}
+
+function providerReviewDisplayContext(input: MatchInput) {
+  return {
+    applicantPreferredLocations: readableLeaves(input.profile?.preferredLocations),
+    jobLocation: textValue(input.job.location),
+    applicantWorkPreference: textValue(input.profile?.remotePreference),
+    jobWorkArrangement: textValue(input.job.remoteStatus)
+  };
+}
+
+const exactSourceOriginLabels: Readonly<Record<string, string>> = Object.freeze({
+  "resume.summary": "Your résumé: summary",
+  "resume.rawText": "Your résumé: submitted text",
+  "job.title": "Job listing: title",
+  "job.company": "Job listing: company",
+  "job.location": "Job listing: location",
+  "job.remoteStatus": "Job listing: work arrangement",
+  "job.salaryMin": "Job listing: compensation",
+  "job.salaryMax": "Job listing: compensation",
+  "job.description": "Job listing: description"
+});
+
+const indexedSourceOriginLabels: Readonly<Record<string, string>> = Object.freeze({
+  "resume.skills": "Your résumé: skills",
+  "resume.achievements": "Your résumé: achievements",
+  "resume.workHistory": "Your résumé: work experience",
+  "resume.projects": "Your résumé: projects",
+  "resume.education": "Your résumé: education",
+  "resume.certifications": "Your résumé: certifications",
+  "job.requirements": "Job listing: requirements",
+  "job.preferredQualifications": "Job listing: preferred qualifications",
+  "job.detectedTechStack": "Job listing: technologies"
+});
+
+export function qualificationSourceOriginLabel(ref: string) {
+  const exact = exactSourceOriginLabels[ref];
+  if (exact) return exact;
+  const indexed = ref.match(/^((?:resume|job)\.[A-Za-z]+)\[\d+\]$/u);
+  if (indexed && indexedSourceOriginLabels[indexed[1]]) return indexedSourceOriginLabels[indexed[1]];
+  if (ref.startsWith("resume.")) return "Your résumé: cited source";
+  if (ref.startsWith("job.")) return "Job listing: cited source";
+  if (ref.startsWith("profile.")) return "Submitted applicant source";
+  return "Submitted source";
+}
+
+function providerReviewOutputForDisplay(output: JobMatchOutput) {
+  const citation = <T extends { ref: string }>(value: T) => ({
+    ...value,
+    sourceOriginLabel: qualificationSourceOriginLabel(value.ref)
+  });
+  return {
+    ...output,
+    factualMatches: output.factualMatches.map((match) => ({
+      ...match,
+      applicantEvidence: match.applicantEvidence.map(citation),
+      jobEvidence: match.jobEvidence.map(citation)
+    })),
+    requirementGaps: output.requirementGaps.map((gap) => ({
+      ...gap,
+      jobRequirement: citation(gap.jobRequirement)
+    }))
+  };
 }
 
 function money(value: number) {
@@ -368,13 +440,15 @@ export function buildQualificationOwnerReviewView(
         proposedRecommendation: prepared.expectedRecommendation,
         expectedBand: prepared.expectedBand,
         jobContext: {
-          title: prepared.input.job.title,
-          company: prepared.input.job.company,
-          location: prepared.input.job.location?.trim() || "Not listed",
-          workArrangement: prepared.input.job.remoteStatus?.trim() || "Not listed",
+          title: textValue(prepared.input.job.title) ?? "Not listed",
+          company: textValue(prepared.input.job.company) ?? "Not listed",
+          location: textValue(prepared.input.job.location) ?? "Not listed",
+          workArrangement: textValue(prepared.input.job.remoteStatus) ?? "Not listed",
           compensation: salaryRange(prepared.input.job.salaryMin, prepared.input.job.salaryMax),
-          responsibilities: prepared.input.job.description.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean),
-          technologies: [...(prepared.input.job.detectedTechStack ?? [])],
+          responsibilities: (textValue(prepared.input.job.description) ?? "").split(/\r?\n/u).map((line) => line.trim()).filter(Boolean),
+          technologies: (prepared.input.job.detectedTechStack ?? [])
+            .map((technology) => textValue(technology))
+            .filter((technology): technology is string => technology !== null),
           sourceUrl,
           capturedAt,
           capturedAtLabel: displayDate(capturedAt)
@@ -620,6 +694,7 @@ export async function startJobMatchQualificationOwnerReview({
   let executionSession: ReturnType<typeof createQualificationExecutionSession> | null = null;
   const repeatableSubmissionAdmission = createRepeatableSubmissionAdmission();
   let currentCaseIndex = 0;
+  let captureFailureNotice: string | null = null;
   let phase: "awaiting_capture" | "capturing" | "authoring_evidence_guides" | "reviewing" | "awaiting_separate_google_consent" | "closed" = "awaiting_capture";
   let closed = false;
   const activePrivateBodyRequests = new Set<IncomingMessage>();
@@ -731,13 +806,17 @@ export async function startJobMatchQualificationOwnerReview({
           }
           const payload = JSON.parse(raw) as { master?: unknown; profile?: unknown };
           admitSnapshot(buildApplicantQualificationSnapshot(payload.master, payload.profile));
+          captureFailureNotice = null;
           sendJson(response, 200, {
             status: "checkpoint_matched_review_ready",
             reviewUrl: `${origin}/review/${reviewToken}`,
             manifestHash: preparation?.safeManifest.manifestHash
           }, cors);
         } catch (error) {
-          if (!closed && phase === "capturing") phase = "awaiting_capture";
+          if (!closed && phase === "capturing") {
+            phase = "awaiting_capture";
+            captureFailureNotice = "The one-shot capture was rejected because it did not match the approved checkpoint or required format. Re-run the approved capture from the same signed-in origin; no applicant data was retained.";
+          }
           throw error;
         } finally {
           activePrivateBodyRequests.delete(request);
@@ -774,6 +853,15 @@ export async function startJobMatchQualificationOwnerReview({
           || currentPhase === "execution_stopped"
         )) {
           const executionView = executionSession?.view();
+          const providerResultReview = executionView?.providerResultReview
+            ? {
+                ...executionView.providerResultReview,
+                normalizedOutput: providerReviewOutputForDisplay(
+                  executionView.providerResultReview.normalizedOutput
+                ),
+                displayContext: providerReviewDisplayContext(executionView.providerResultReview.matchInput)
+              }
+            : null;
           sendJson(response, 200, {
             phase: currentPhase,
             memoryNotice: executionSession?.hasPrivateInput()
@@ -789,13 +877,16 @@ export async function startJobMatchQualificationOwnerReview({
             currentCaseIndex: executionView?.providerResultReview
               ? executionView.providerResultReview.index - 1
               : finalSafeManifest.caseCount,
-            providerResultReview: executionView?.providerResultReview ?? null,
+            providerResultReview,
             safeReport: executionView?.safeReport ?? null
           });
           return;
         }
         if (!preparation || phase === "awaiting_capture") {
-          sendJson(response, 200, { phase: "awaiting_capture" });
+          sendJson(response, 200, {
+            phase: "awaiting_capture",
+            captureFailureNotice
+          });
           return;
         }
         const viewGuides = phase === "authoring_evidence_guides"
