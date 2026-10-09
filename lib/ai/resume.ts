@@ -1284,7 +1284,7 @@ export function buildResumeParseGeminiProviderV9JsonSchema(
   ) as Record<string, unknown>;
 }
 
-const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
+export const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
   professionalSummary: z.string(),
   skillsSection: z.array(z.string()),
   bulletRewrites: z.array(

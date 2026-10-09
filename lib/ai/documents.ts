@@ -17,7 +17,7 @@ const applicationDocumentCitationSchema = z.object({
   excerpt: z.string().min(1)
 }).strict();
 
-const coverLetterSchema = z.object({
+export const coverLetterSchema = z.object({
   title: z.string(),
   coverLetter: z.string(),
   angle: z.string(),

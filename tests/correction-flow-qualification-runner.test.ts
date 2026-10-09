@@ -458,6 +458,40 @@ test("a hung provider step times out, aborts its signal, and still runs cleanup"
   assert.equal(receipt.cleanupStatus, "completed");
 });
 
+test("an aborted provider operation settles before cleanup begins", async () => {
+  const value = manifest();
+  const events: string[] = [];
+  const driver = successfulDriver(events);
+  driver.initialMatch = async (signal) => {
+    events.push("initial_match");
+    await new Promise<never>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        setImmediate(() => {
+          events.push("provider_settled");
+          reject(signal.reason);
+        });
+      }, { once: true });
+    });
+    throw new Error("unreachable");
+  };
+  driver.cleanup = async () => {
+    assert.equal(events.at(-1), "provider_settled");
+    events.push("cleanup");
+  };
+
+  const receipt = await runCorrectionFlowQualification({
+    manifest: value,
+    consent: consentFor(value),
+    driver,
+    stepTimeoutMs: 10
+  });
+
+  assert.deepEqual(events, ["initial_match", "provider_settled", "cleanup"]);
+  assert.equal(receipt.status, "stopped");
+  assert.equal(receipt.failureCode, "STEP_TIMEOUT");
+  assert.equal(receipt.cleanupStatus, "completed");
+});
+
 test("worktree status recognizes tracked, staged, and untracked changes", () => {
   assert.equal(hasDirtyCorrectionFlowQualificationWorktree(""), false);
   assert.equal(hasDirtyCorrectionFlowQualificationWorktree(" M package.json\n"), true);
@@ -474,6 +508,10 @@ test("the documented prepare command fails closed for a dirty checkout and unkno
     packageJson.scripts["correction-flow:qualify:prepare"],
     "node --import tsx scripts/prepare-correction-flow-qualification.ts"
   );
+  assert.equal(
+    packageJson.scripts["correction-flow:adapter:offline"],
+    "node --import tsx scripts/execute-correction-flow-provider-adapter-offline.ts"
+  );
   const headResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
   assert.equal(headResult.status, 0);
   const repoHead = headResult.stdout.trim();
@@ -486,6 +524,13 @@ test("the documented prepare command fails closed for a dirty checkout and unkno
     assert.notEqual(dirty.status, 0);
     assert.match(dirty.stderr, /clean working tree/i);
     assert.equal(dirty.stdout.includes("prepared_not_executed"), false);
+
+    const dirtyAdapter = spawnSync("npm", [
+      "run", "correction-flow:adapter:offline", "--", `--expected-head=${repoHead}`
+    ], { cwd: root, encoding: "utf8" });
+    assert.notEqual(dirtyAdapter.status, 0);
+    assert.match(dirtyAdapter.stderr, /clean working tree/i);
+    assert.equal(dirtyAdapter.stdout.includes("offline_adapter_ready"), false);
 
     const unknown = spawnSync(process.execPath, [
       "--import", "tsx", "scripts/prepare-correction-flow-qualification.ts", "--unexpected=true"

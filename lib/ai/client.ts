@@ -267,7 +267,7 @@ function applicationDocumentMaximumCost(model: string, feature: GuardedApplicati
   });
 }
 
-function assertConservativeOpenAiWireBound(
+export function assertConservativeOpenAiWireBound(
   feature: GuardedApplicationDocumentFeature,
   maxInputTokens: number,
   requestBody: unknown

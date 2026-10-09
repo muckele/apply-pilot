@@ -188,6 +188,7 @@ type GeminiJsonProviderInput = GeminiJsonRequestInput & {
   apiKey: string;
   model: string;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
   timeoutMs?: number;
   maxResponseBytes?: number;
 };
@@ -283,6 +284,7 @@ export async function callGeminiJsonProvider({
   apiKey,
   model,
   fetchImpl = fetch,
+  signal,
   timeoutMs = 180_000,
   maxResponseBytes = 1_000_000,
   ...requestInput
@@ -306,7 +308,9 @@ export async function callGeminiJsonProvider({
         "x-goog-api-key": apiKey
       },
       body: requestBody,
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs)
     });
   } catch {
     throw new GeminiProviderError("Gemini request outcome is uncertain.", {

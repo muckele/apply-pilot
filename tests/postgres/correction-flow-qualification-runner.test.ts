@@ -15,14 +15,19 @@ import {
   SYNTHETIC_CORRECTION_FLOW_REQUIREMENT
 } from "@/evaluation/correction-flow-qualification-fixture";
 import {
+  SYNTHETIC_CORRECTION_FLOW_DUMMY_CREDENTIALS,
+  createSyntheticCorrectionFlowProviderFetches
+} from "@/evaluation/correction-flow-provider-stub";
+import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
+import { createCorrectionFlowProviderAdapter } from "@/lib/ai/correction-flow-provider-adapter";
+import {
   buildCorrectionFlowQualificationManifest,
   correctionFlowQualificationConsent,
   runCorrectionFlowQualification,
   type CorrectionFlowProviderCallMetrics
 } from "@/lib/ai/correction-flow-qualification";
-import { hashAiInput } from "@/lib/ai/input-hash";
 import { JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
-import { validateAndNormalizeJobMatchOutput, type MatchInput } from "@/lib/ai/job-match";
+import type { MatchInput } from "@/lib/ai/job-match";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { saveEvidenceSnapshot } from "@/lib/jobs/evidence-snapshots";
@@ -31,8 +36,6 @@ import {
   createTailoredResumeRouteHandler
 } from "@/lib/jobs/application-document-generation-routes";
 import { readApplicationDocumentEvidence } from "@/lib/jobs/application-document-evidence";
-import { currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
-import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import { createJobMatchRunner } from "@/lib/jobs";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 import {
@@ -55,7 +58,12 @@ test("offline qualification runner composes correction, reassessment, both docum
   let resumeVersionId = "";
   let coverDocumentId = "";
   let currentSnapshotId = "";
+  let activeProviderSignal: AbortSignal | null = null;
   const scoredInputs: MatchInput[] = [];
+  const providerCallMetrics = new Map<
+    CorrectionFlowProviderCallMetrics["stage"],
+    CorrectionFlowProviderCallMetrics
+  >();
 
   const manifest = buildCorrectionFlowQualificationManifest({
     exactHead,
@@ -79,6 +87,32 @@ test("offline qualification runner composes correction, reassessment, both docum
     cleanupRequired: true,
     approvedAt: "2026-10-09T02:05:00.000Z"
   });
+  const providerAdapter = createCorrectionFlowProviderAdapter({
+    manifest,
+    consent,
+    fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
+    credentials: SYNTHETIC_CORRECTION_FLOW_DUMMY_CREDENTIALS,
+    fetches: createSyntheticCorrectionFlowProviderFetches()
+  });
+
+  const requireProviderSignal = () => {
+    if (!activeProviderSignal) throw new Error("Provider signal was not bound to the qualification step.");
+    return activeProviderSignal;
+  };
+  const withProviderSignal = async <T>(signal: AbortSignal, invoke: () => Promise<T>) => {
+    if (activeProviderSignal) throw new Error("Concurrent correction-flow provider calls are not allowed.");
+    activeProviderSignal = signal;
+    try {
+      return await invoke();
+    } finally {
+      activeProviderSignal = null;
+    }
+  };
+  const completedMetrics = (stage: CorrectionFlowProviderCallMetrics["stage"]) => {
+    const value = providerCallMetrics.get(stage);
+    if (!value) throw new Error(`Missing provider metrics for ${stage}.`);
+    return value;
+  };
 
   try {
     await client.user.create({
@@ -147,7 +181,11 @@ test("offline qualification runner composes correction, reassessment, both docum
 
     const score = async (input: MatchInput) => {
       scoredInputs.push(input);
-      return scoredInputs.length === 1 ? initialGapMatch(input) : correctedMatch(input);
+      assert.deepEqual(input.resume, structuredClone(SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume));
+      const stage = scoredInputs.length === 1 ? "initial_match" : "updated_match";
+      const call = await providerAdapter.scoreMatch(stage, input, requireProviderSignal());
+      providerCallMetrics.set(stage, call.metrics);
+      return call.result;
     };
     const runner = createJobMatchRunner({ prismaClient: client, score });
     const resumePost = createTailoredResumeRouteHandler({
@@ -157,23 +195,12 @@ test("offline qualification runner composes correction, reassessment, both docum
       readApplicationDocumentEvidence,
       tailorResume: (async (payload: unknown) => {
         assertDocumentPayload(payload);
-        return {
-          professionalSummary: `${SYNTHETIC_CORRECTION_FLOW_DEGREE}. ${SYNTHETIC_CORRECTION_FLOW_FACT}`,
-          skillsSection: ["Service delivery", "TypeScript", "PostgreSQL"],
-          bulletRewrites: [],
-          rolesOrProjectsToEmphasize: ["Service Operations Lead"],
-          unsupportedKeywords: [],
-          formattingWarnings: [],
-          resumeText: `SYNTHETIC TAILORED RESUME\n${SYNTHETIC_CORRECTION_FLOW_DEGREE}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`,
-          claimEvidence: [{
-            claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-            citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
-          }],
-          model: "gpt-4o-mini",
-          promptVersion: "3",
-          inputHash: hashAiInput("resumeTailorPrompt", "3", payload),
-          usage: stubDocumentUsage("RESUME_TAILOR", payload)
-        };
+        const call = await providerAdapter.tailorResume(
+          payload as ApplicationDocumentPayload,
+          requireProviderSignal()
+        );
+        providerCallMetrics.set("tailored_resume", call.metrics);
+        return call.result;
       }) as never,
       writeAuditLog: async () => undefined
     });
@@ -184,19 +211,12 @@ test("offline qualification runner composes correction, reassessment, both docum
       readApplicationDocumentEvidence,
       draftCoverLetter: (async (payload: unknown) => {
         assertDocumentPayload(payload);
-        return {
-          title: "Synthetic Employer Service Operations Director cover letter",
-          coverLetter: `Dear Synthetic Employer,\n\n${SYNTHETIC_CORRECTION_FLOW_DEGREE}. ${SYNTHETIC_CORRECTION_FLOW_FACT}\n\nSincerely,\nTaylor Boundary`,
-          angle: "Use only current reviewed evidence.",
-          claimsUsed: [{
-            claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-            citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
-          }],
-          model: "gpt-4o-mini",
-          promptVersion: "3",
-          inputHash: hashAiInput("coverLetterPrompt", "3", payload),
-          usage: stubDocumentUsage("COVER_LETTER", payload)
-        };
+        const call = await providerAdapter.draftCoverLetter(
+          payload as ApplicationDocumentPayload,
+          requireProviderSignal()
+        );
+        providerCallMetrics.set("cover_letter", call.metrics);
+        return call.result;
       }) as never,
       writeAuditLog: async () => undefined
     });
@@ -205,9 +225,10 @@ test("offline qualification runner composes correction, reassessment, both docum
       manifest,
       consent,
       driver: {
-        async initialMatch() {
-          await runner(userId, jobId, { force: true, highCostConfirmed: true });
-          return providerMetrics("initial_match", "google-gemini-developer-api", JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION);
+        async initialMatch(signal) {
+          await withProviderSignal(signal, () =>
+            runner(userId, jobId, { force: true, highCostConfirmed: true }));
+          return completedMetrics("initial_match");
         },
         async applyPredeterminedCorrection() {
           const analysis = await client.aIAnalysis.findFirstOrThrow({
@@ -252,32 +273,35 @@ test("offline qualification runner composes correction, reassessment, both docum
           });
           currentSnapshotId = saved.snapshot.id;
         },
-        async updatedMatch() {
-          await runner(userId, jobId, { force: true, highCostConfirmed: true });
+        async updatedMatch(signal) {
+          await withProviderSignal(signal, () =>
+            runner(userId, jobId, { force: true, highCostConfirmed: true }));
           assert.deepEqual(scoredInputs.at(-1)?.reviewedEvidence?.facts.map((fact) => fact.fact), [
             SYNTHETIC_CORRECTION_FLOW_FACT
           ]);
-          return providerMetrics("updated_match", "google-gemini-developer-api", JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION);
+          return completedMetrics("updated_match");
         },
-        async generateResume() {
-          const response = await resumePost(confirmedRequest("tailored-resume"), {
-            params: Promise.resolve({ id: jobId })
-          });
+        async generateResume(signal) {
+          const response = await withProviderSignal(signal, () =>
+            resumePost(confirmedRequest("tailored-resume"), {
+              params: Promise.resolve({ id: jobId })
+            }));
           assert.equal(response.status, 200);
           const body = await response.json();
           assert.equal(body.version.evidenceSnapshotId, currentSnapshotId);
           resumeVersionId = body.version.id;
-          return providerMetrics("tailored_resume", "openai-api", "gpt-4o-mini", "3");
+          return completedMetrics("tailored_resume");
         },
-        async generateCoverLetter() {
-          const response = await coverPost(confirmedRequest("cover-letter"), {
-            params: Promise.resolve({ id: jobId })
-          });
+        async generateCoverLetter(signal) {
+          const response = await withProviderSignal(signal, () =>
+            coverPost(confirmedRequest("cover-letter"), {
+              params: Promise.resolve({ id: jobId })
+            }));
           assert.equal(response.status, 200);
           const body = await response.json();
           assert.equal(body.document.evidenceSnapshotId, currentSnapshotId);
           coverDocumentId = body.document.id;
-          return providerMetrics("cover_letter", "openai-api", "gpt-4o-mini", "3");
+          return completedMetrics("cover_letter");
         },
         async verifyExports() {
           const handlers = createDocumentExportRouteHandlers({
@@ -303,7 +327,7 @@ test("offline qualification runner composes correction, reassessment, both docum
           const resumeText = await extractResumeDocxText(Buffer.from(await resumeResponse.arrayBuffer()));
           const coverText = await extractResumeDocxText(Buffer.from(await coverResponse.arrayBuffer()));
           for (const content of [resumeVersion.fullText, resumeText, coverDocument.content, coverText]) {
-            assert.match(content, new RegExp(SYNTHETIC_CORRECTION_FLOW_DEGREE, "u"));
+            assert.match(content, new RegExp(SYNTHETIC_CORRECTION_FLOW_FACT, "u"));
           }
           return {
             resume: exportChecks(resumeVersion.fullText, resumeText, resumeVersion.evidenceSnapshotId, currentSnapshotId),
@@ -316,7 +340,7 @@ test("offline qualification runner composes correction, reassessment, both docum
       }
     });
 
-    assert.equal(receipt.status, "passed");
+    assert.equal(receipt.status, "passed", JSON.stringify(receipt));
     assert.equal(receipt.providerCallsStarted, 4);
     assert.equal(receipt.providerCallsCompleted, 4);
     assert.equal(receipt.knownEstimatedCostMicros, 616);
@@ -328,115 +352,6 @@ test("offline qualification runner composes correction, reassessment, both docum
     await client.$disconnect();
   }
 });
-
-function initialGapMatch(input: MatchInput) {
-  return normalizedMatch(input, {
-    factualMatches: [],
-    requirementGaps: [{
-      requirement: SYNTHETIC_CORRECTION_FLOW_REQUIREMENT,
-      jobRequirement: { ref: "job.requirements[0]", excerpt: SYNTHETIC_CORRECTION_FLOW_REQUIREMENT },
-      missingKeywords: ["Quenby"]
-    }],
-    recommendation: "consider"
-  });
-}
-
-function correctedMatch(input: MatchInput) {
-  assert.match(JSON.stringify(input.reviewedEvidence), new RegExp(SYNTHETIC_CORRECTION_FLOW_FACT, "u"));
-  return normalizedMatch(input, {
-    factualMatches: [],
-    requirementGaps: [],
-    recommendation: "apply now"
-  });
-}
-
-function normalizedMatch(input: MatchInput, overrides: {
-  factualMatches: [];
-  requirementGaps: Array<{
-    requirement: string;
-    jobRequirement: { ref: string; excerpt: string };
-    missingKeywords: string[];
-  }>;
-  recommendation: "apply now" | "consider";
-}) {
-  const normalized = validateAndNormalizeJobMatchOutput(input, {
-    contractVersion: "3",
-    overallFitScore: overrides.recommendation === "apply now" ? 90 : 55,
-    resumeKeywordScore: 70,
-    skillsMatchScore: 70,
-    experienceMatchScore: 70,
-    careerGoalScore: 80,
-    locationWorkStyleScore: 90,
-    compensationScore: null,
-    confidenceScore: 80,
-    confidenceBasis: "Synthetic qualification fixture.",
-    factualMatches: overrides.factualMatches,
-    requirementGaps: overrides.requirementGaps,
-    advice: {
-      keywordsToEmphasize: [],
-      resumeAngle: "Use current reviewed evidence.",
-      coverLetterAngle: "Use current reviewed evidence."
-    },
-    recommendation: overrides.recommendation
-  }).normalized;
-  const inputHash = currentJobMatchInputHash(input);
-  return {
-    ...normalized,
-    model: JOB_MATCH_MODEL,
-    promptVersion: JOB_MATCH_PROMPT_VERSION,
-    inputHash,
-    usage: {
-      provider: "gemini" as const,
-      model: JOB_MATCH_MODEL,
-      promptVersion: JOB_MATCH_PROMPT_VERSION,
-      requestHash: inputHash,
-      inputTokens: 100,
-      outputTokens: 50,
-      cachedInputTokens: 0,
-      estimatedCostMicros: 0,
-      mocked: true
-    }
-  };
-}
-
-function providerMetrics(
-  stage: CorrectionFlowProviderCallMetrics["stage"],
-  provider: CorrectionFlowProviderCallMetrics["provider"],
-  model: string,
-  promptVersion: string
-): CorrectionFlowProviderCallMetrics {
-  const inputTokens = 100;
-  const outputTokens = 50;
-  const cachedInputTokens = 0;
-  return {
-    stage,
-    provider,
-    model,
-    promptVersion,
-    inputTokens,
-    outputTokens,
-    cachedInputTokens,
-    estimatedCostMicros: estimateAiCostMicros({ model, inputTokens, outputTokens, cachedInputTokens }),
-    billingStatus: "known",
-    providerCompleted: true,
-    mocked: true
-  };
-}
-
-function stubDocumentUsage(feature: "RESUME_TAILOR" | "COVER_LETTER", payload: unknown) {
-  const promptName = feature === "RESUME_TAILOR" ? "resumeTailorPrompt" : "coverLetterPrompt";
-  return {
-    provider: "openai" as const,
-    model: "gpt-4o-mini",
-    promptVersion: "3",
-    requestHash: hashAiInput(promptName, "3", payload),
-    inputTokens: 100,
-    outputTokens: 50,
-    cachedInputTokens: 0,
-    estimatedCostMicros: 0,
-    mocked: true
-  };
-}
 
 function assertDocumentPayload(payload: unknown) {
   const serialized = JSON.stringify(payload);

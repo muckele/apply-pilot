@@ -35,6 +35,34 @@ const dataCategories = Object.freeze([
   "synthetic_job_only_reviewed_evidence"
 ] as const);
 
+function canonicalQualificationValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalQualificationValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([, child]) => child !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, child]) => [key, canonicalQualificationValue(child)]));
+}
+
+export function correctionFlowProjectionHash(
+  projection: "Job" | "Resume" | "Profile" | "PredeterminedCorrection",
+  value: unknown
+) {
+  return hashAiInput(
+    `correctionFlow${projection}Projection`,
+    "1",
+    canonicalQualificationValue(value)
+  );
+}
+
+export function correctionFlowManifestEnvelopeHash(value: unknown) {
+  return hashAiInput(
+    "correctionFlowQualificationManifestEnvelope",
+    "1",
+    canonicalQualificationValue(value)
+  );
+}
+
 function callPlan() {
   const jobMatchMaximum = estimateAiCostMicros({
     model: JOB_MATCH_MODEL,
@@ -156,10 +184,10 @@ export function buildCorrectionFlowQualificationManifest({
     dataCategories,
     fixture: Object.freeze({
       safeLabel: fixture.safeLabel.trim(),
-      jobProjectionHash: hashAiInput("correctionFlowJobProjection", "1", fixture.job),
-      resumeProjectionHash: hashAiInput("correctionFlowResumeProjection", "1", fixture.resume),
-      profileProjectionHash: hashAiInput("correctionFlowProfileProjection", "1", fixture.profile),
-      correctionHash: hashAiInput("correctionFlowPredeterminedCorrection", "1", fixture.predeterminedCorrection)
+      jobProjectionHash: correctionFlowProjectionHash("Job", fixture.job),
+      resumeProjectionHash: correctionFlowProjectionHash("Resume", fixture.resume),
+      profileProjectionHash: correctionFlowProjectionHash("Profile", fixture.profile),
+      correctionHash: correctionFlowProjectionHash("PredeterminedCorrection", fixture.predeterminedCorrection)
     })
   });
   return Object.freeze({
@@ -246,11 +274,12 @@ export type CorrectionFlowQualificationReceipt = Readonly<{
   noRetryAttempted: true;
   failureStage: CorrectionFlowFailureStage | null;
   failureCode: string | null;
+  failureFieldPath: string | null;
   cleanupStatus: "completed" | "failed";
   exportVerification: CorrectionFlowExportVerification | null;
 }>;
 
-function assertConsent(
+export function assertCorrectionFlowQualificationConsent(
   manifest: CorrectionFlowQualificationManifest,
   value: unknown
 ): CorrectionFlowQualificationConsent {
@@ -283,6 +312,15 @@ function safeFailureCode(error: unknown, signal: AbortSignal) {
   return typeof code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(code)
     ? code
     : "STEP_FAILED";
+}
+
+function safeFailureFieldPath(error: unknown) {
+  const fieldPath = error && typeof error === "object" && "fieldPath" in error
+    ? (error as { fieldPath?: unknown }).fieldPath
+    : null;
+  return typeof fieldPath === "string" && /^(?:job|resume|profile|reviewedEvidence)(?:\.[A-Za-z0-9_[\].-]+)?$/u.test(fieldPath)
+    ? fieldPath
+    : null;
 }
 
 function assertCallMetrics(
@@ -368,7 +406,7 @@ export async function runCorrectionFlowQualification({
   signal?: AbortSignal;
   stepTimeoutMs?: number;
 }): Promise<CorrectionFlowQualificationReceipt> {
-  assertConsent(manifest, consentValue);
+  assertCorrectionFlowQualificationConsent(manifest, consentValue);
   if (!Number.isSafeInteger(stepTimeoutMs) || stepTimeoutMs < 1 || stepTimeoutMs > manifest.stepTimeoutMs) {
     throw new Error("Correction-flow qualification step timeout is invalid.");
   }
@@ -376,6 +414,7 @@ export async function runCorrectionFlowQualification({
   let status: "passed" | "stopped" = "stopped";
   let failureStage: CorrectionFlowFailureStage | null = null;
   let failureCode: string | null = null;
+  let failureFieldPath: string | null = null;
   let providerCallsStarted = 0;
   let providerCallsCompleted = 0;
   let knownInputTokens = 0;
@@ -442,8 +481,16 @@ export async function runCorrectionFlowQualification({
       if (stepSignal.aborted) reject(stepSignal.reason);
       else stepSignal.addEventListener("abort", () => reject(stepSignal.reason), { once: true });
     });
+    const operation = Promise.resolve().then(() => invoke(stepSignal));
     try {
-      return await Promise.race([invoke(stepSignal), aborted]);
+      return await Promise.race([operation, aborted]);
+    } catch (error) {
+      if (stepSignal.aborted) {
+        // Provider SDK requests receive this same signal. Do not let database
+        // cleanup race a request that is still unwinding after cancellation.
+        await operation.catch(() => undefined);
+      }
+      throw error;
     } finally {
       clearTimeout(timeout);
     }
@@ -521,6 +568,7 @@ export async function runCorrectionFlowQualification({
   } catch (error) {
     status = "stopped";
     failureCode = safeFailureCode(error, signal);
+    failureFieldPath = safeFailureFieldPath(error);
   } finally {
     try {
       await boundedStep(driver.cleanup, false);
@@ -551,6 +599,7 @@ export async function runCorrectionFlowQualification({
     noRetryAttempted: true,
     failureStage,
     failureCode,
+    failureFieldPath,
     cleanupStatus,
     exportVerification
   });
