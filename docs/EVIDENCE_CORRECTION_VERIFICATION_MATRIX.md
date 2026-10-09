@@ -27,8 +27,17 @@ This matrix bounds what the coordinated correction proves. It complements the ta
 | Desktop/mobile correction UI | Current accepted facts and explicit actions render without overflow; save/reassess/stale-draft flow works at desktop, 390 px, and 320 px | Tested in real Chromium with mocked save/reassessment responses; this proves layout and client behavior, not the linked persistence journey |
 | DOCX/PDF output integrity | Synthetic application documents survive canonical DOCX round-trip and PDF rendering tests | Tested locally as structural/text integrity; no visual document approval or durable selection authority is implied |
 | Durable exact-document approval | No production `ApplicationDocumentApproval` authority exists | Deliberately deferred; existing selection, packet answer approval, and currentness fences must not be described as durable document approval |
+| Correction-flow provider qualification envelope | One frozen synthetic applicant drives initial match → predetermined job-only correction → updated match → tailored résumé → cover letter → both DOCX exports through the production composition points with provider stubs | Guarded PostgreSQL proof is complete. The prepare-only command requires a clean exact head and emits the complete hash-only manifest: four-call order, provider/model/prompt identities, input hashes/categories, 180-second step bound, and 166,740-micro conservative reservation while starting zero calls. No credential-bearing live adapter is included or authorized |
 | Four-job real qualification runner | Existing runner measures model qualification behavior | Not evidence-correction coverage: it does not exercise persisted corrections. Running another eight paid calls requires separate owner scope and consent |
 
 ## Release interpretation
 
 Green rows prove only the bounded synthetic and local database behaviors named above. Component tests, the mocked Chromium flow, and the composed PostgreSQL journey are distinct evidence layers; together they do not constitute an authenticated intended-runtime or live-employer proof. They do not authorize a production migration, real provider call, live employer form, document approval claim, merge, or deployment. Independent read-only review and exact-head CI are additional quality gates, not production-release authority.
+
+The correction-flow envelope can be inspected without reading credentials or starting a provider request:
+
+```sh
+npm run correction-flow:qualify:prepare -- --expected-head=<full-reviewed-git-sha>
+```
+
+The command fails closed unless the current checkout exactly matches that SHA with no tracked, staged, or untracked changes. It emits the complete safe manifest needed to reconstruct and review its identity, but no raw fixture content. It does not accept consent, open a database, read a provider key, or expose an execution action. A later live run would require a separately reviewed, secure credential-activation adapter that proves abort settlement before cleanup, plus new per-provider/per-call exact-input consent for Google and OpenAI data sharing, the four calls, no retries, and the displayed conservative reservation.

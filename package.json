@@ -14,6 +14,7 @@
     "application-browser": "tsx scripts/application-browser-companion.ts",
     "job-match:qualify:prepare": "tsx scripts/prepare-job-match-qualification.ts",
     "job-match:qualify:review": "tsx scripts/review-job-match-qualification.ts",
+    "correction-flow:qualify:prepare": "node --import tsx scripts/prepare-correction-flow-qualification.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:browser": "node --import tsx --test --test-concurrency=1 tests/browser/*.test.ts",
     "test:postgres": "tsx scripts/run-postgres-tests.ts",
