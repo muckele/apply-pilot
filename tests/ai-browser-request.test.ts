@@ -86,7 +86,7 @@ test("resume parsing confirmation names the data recipient and retries once with
   assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");
 });
 
-test("application packet confirmation names OpenAI, projected private data, call purpose, and retries once", async (t) => {
+test("application packet confirmation names Gemini, projected private data, call purpose, and retries once", async (t) => {
   const requests: RequestInit[] = [];
   let confirmation = "";
   stub(t, globalThis, "window", { confirm: (message: string) => { confirmation = message; return true; } });
@@ -96,11 +96,11 @@ test("application packet confirmation names OpenAI, projected private data, call
       ? new Response(JSON.stringify({
           error: "Confirm application packet data and cost.",
           code: "AI_COST_CONFIRMATION_REQUIRED",
-          maximumCostMicros: 12_000,
-          provider: "openai",
+          maximumCostMicros: 64_500,
+          provider: "gemini",
           dataType: "application_packet",
           feature: "RESUME_TAILOR",
-          model: "gpt-4o-mini",
+          model: "gemini-3.8-flash",
           promptVersion: "3"
         }), { status: 428, headers: { "content-type": "application/json" } })
       : new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -111,13 +111,13 @@ test("application packet confirmation names OpenAI, projected private data, call
   });
 
   assert.equal(response.status, 200);
-  assert.match(confirmation, /OpenAI/);
+  assert.match(confirmation, /Google Gemini/);
   assert.match(confirmation, /job, resume, and profile/i);
   assert.match(confirmation, /tailored resume/i);
-  assert.match(confirmation, /gpt-4o-mini/);
+  assert.match(confirmation, /gemini-3\.8-flash/);
   assert.match(confirmation, /prompt\/cache version 3/i);
   assert.match(confirmation, /no automatic retry/i);
-  assert.match(confirmation, /\$0\.012(?:\D|$)/);
+  assert.match(confirmation, /\$0\.0645(?:\D|$)/);
   assert.equal(requests.length, 2);
   assert.equal(new Headers(requests[1].headers).get("x-ai-data-confirmed"), "true");
   assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");

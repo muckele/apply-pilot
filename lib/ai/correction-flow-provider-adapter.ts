@@ -1,6 +1,3 @@
-import OpenAI from "openai";
-import { zodResponseFormat } from "openai/helpers/zod";
-
 import type { CorrectionFlowQualificationFixture } from "@/lib/ai/correction-flow-qualification";
 import {
   assertCorrectionFlowQualificationConsent,
@@ -17,9 +14,12 @@ import {
   validateTailoredResumeClaims,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
-import { assertConservativeOpenAiWireBound } from "@/lib/ai/client";
-import { coverLetterSchema } from "@/lib/ai/documents";
-import { callGeminiJsonProvider, GeminiProviderError } from "@/lib/ai/gemini";
+import {
+  APPLICATION_DOCUMENT_THINKING_LEVEL
+} from "@/lib/ai/application-document-version";
+import { assertConservativeApplicationDocumentWireBound } from "@/lib/ai/client";
+import { COVER_LETTER_GEMINI_JSON_SCHEMA, coverLetterSchema } from "@/lib/ai/documents";
+import { buildGeminiJsonRequest, callGeminiJsonProvider, GeminiProviderError } from "@/lib/ai/gemini";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import {
   buildJobMatchResponseJsonSchema,
@@ -34,7 +34,11 @@ import {
 } from "@/lib/ai/job-match-version";
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
-import { tailoredResumeSchema, type TailoredResumeOutput } from "@/lib/ai/resume";
+import {
+  TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+  tailoredResumeSchema,
+  type TailoredResumeOutput
+} from "@/lib/ai/resume";
 import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 
@@ -42,15 +46,13 @@ type ProviderFetch = typeof fetch;
 
 export type CorrectionFlowProviderFetches = Readonly<{
   gemini?: ProviderFetch;
-  openai?: ProviderFetch;
 }>;
 
 export type CorrectionFlowProviderCredentials = Readonly<{
   geminiApiKey: string;
-  openAiApiKey: string;
 }>;
 
-type OpenAiUsage = Readonly<{
+type ProviderUsage = Readonly<{
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
@@ -71,7 +73,7 @@ export class CorrectionFlowProviderAdapterError extends Error {
   constructor(code: string, message: string, options: {
     billingStatus?: "known" | "not_charged" | "uncertain";
     providerCompleted?: boolean;
-    usage?: OpenAiUsage | null;
+    usage?: ProviderUsage | null;
     estimatedCostMicros?: number | null;
     fieldPath?: string | null;
   } = {}) {
@@ -97,31 +99,10 @@ function nonemptyCredential(value: string, provider: string) {
   return value.trim();
 }
 
-function definiteOpenAiRejection(error: unknown) {
-  if (!error || typeof error !== "object" || !("status" in error)) return false;
-  return [400, 401, 403, 404, 409, 413, 422, 429].includes(Number((error as { status?: unknown }).status));
-}
-
-function safeOpenAiFailure(error: unknown): CorrectionFlowProviderAdapterError {
-  if (error instanceof CorrectionFlowProviderAdapterError) return error;
-  if (definiteOpenAiRejection(error)) {
-    return new CorrectionFlowProviderAdapterError(
-      "OPENAI_PROVIDER_FAILED",
-      "OpenAI rejected the bounded qualification request.",
-      { billingStatus: "not_charged", providerCompleted: true }
-    );
-  }
-  return new CorrectionFlowProviderAdapterError(
-    "OPENAI_PROVIDER_FAILED",
-    "OpenAI qualification request outcome is uncertain.",
-    { billingStatus: "uncertain" }
-  );
-}
-
 function metrics(
   manifest: CorrectionFlowQualificationManifest,
   stage: CorrectionFlowProviderStage,
-  usage: OpenAiUsage
+  usage: ProviderUsage
 ): CorrectionFlowProviderCallMetrics {
   const plan = manifest.calls.find((entry) => entry.stage === stage);
   if (!plan) throw adapterError("PROVIDER_STAGE_NOT_APPROVED", "Provider stage is absent from the manifest.");
@@ -148,21 +129,6 @@ function metrics(
     billingStatus: "known",
     providerCompleted: true,
     mocked: manifest.providerMode === "offline_stubbed"
-  };
-}
-
-function openAiUsage(response: Awaited<ReturnType<OpenAI["chat"]["completions"]["create"]>>) {
-  if (!("usage" in response) || !response.usage) {
-    throw new CorrectionFlowProviderAdapterError(
-      "OPENAI_USAGE_MISSING",
-      "OpenAI returned no qualification usage metadata.",
-      { billingStatus: "uncertain", providerCompleted: true }
-    );
-  }
-  return {
-    inputTokens: response.usage.prompt_tokens,
-    outputTokens: response.usage.completion_tokens,
-    cachedInputTokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0
   };
 }
 
@@ -227,27 +193,20 @@ export function createCorrectionFlowProviderAdapter({
 }) {
   assertCorrectionFlowQualificationConsent(manifest, consent);
   if (manifest.providerMode === "offline_stubbed" &&
-    (typeof fetches.gemini !== "function" || typeof fetches.openai !== "function")) {
+    typeof fetches.gemini !== "function") {
     throw adapterError(
       "OFFLINE_TRANSPORT_REQUIRED",
-      "Offline qualification requires both explicit stub transports."
+      "Offline qualification requires an explicit Gemini stub transport."
     );
   }
   if (manifest.providerMode === "live_synthetic" &&
-    (fetches.gemini !== undefined || fetches.openai !== undefined)) {
+    fetches.gemini !== undefined) {
     throw adapterError(
       "LIVE_TRANSPORT_OVERRIDE_FORBIDDEN",
       "Live qualification requires the supported provider transports."
     );
   }
   const geminiApiKey = nonemptyCredential(credentials.geminiApiKey, "Gemini");
-  const openAiApiKey = nonemptyCredential(credentials.openAiApiKey, "OpenAI");
-  const openai = new OpenAI({
-    apiKey: openAiApiKey,
-    maxRetries: 0,
-    timeout: manifest.stepTimeoutMs,
-    fetch: fetches.openai
-  });
   const started: CorrectionFlowProviderStage[] = [];
   const completed: CorrectionFlowProviderStage[] = [];
   let stopped = false;
@@ -413,13 +372,14 @@ export function createCorrectionFlowProviderAdapter({
     }
   }
 
-  async function openAiDocument<T>({
+  async function geminiDocument<T>({
     stage,
     feature,
     promptName,
     systemPrompt,
     payload,
     schema,
+    responseJsonSchema,
     validate,
     signal
   }: {
@@ -429,59 +389,52 @@ export function createCorrectionFlowProviderAdapter({
     systemPrompt: string;
     payload: ApplicationDocumentPayload;
     schema: typeof tailoredResumeSchema | typeof coverLetterSchema;
+    responseJsonSchema: Record<string, unknown>;
     validate(value: unknown): T;
     signal: AbortSignal;
   }) {
     begin(stage, payload);
     try {
-      const { policy } = assertAiInputWithinLimits(feature, systemPrompt, payload);
+      const { policy } = assertAiInputWithinLimits(feature, systemPrompt, {
+        payload,
+        responseJsonSchema
+      });
       const plan = manifest.calls.find((entry) => entry.stage === stage);
       if (!plan) throw adapterError("PROVIDER_STAGE_NOT_APPROVED", "Provider stage is absent from the manifest.");
-      const requestBody = {
+      const requestBody = buildGeminiJsonRequest({
+        systemPrompt,
+        payload,
+        responseJsonSchema,
+        maxOutputTokens: policy.maxOutputTokens,
+        thinkingLevel: APPLICATION_DOCUMENT_THINKING_LEVEL
+      });
+      assertConservativeApplicationDocumentWireBound(feature, policy.maxInputTokens, requestBody);
+      const response = await callGeminiJsonProvider({
+        apiKey: geminiApiKey,
         model: plan.model,
-        temperature: 0.2,
-        max_tokens: policy.maxOutputTokens,
-        response_format: zodResponseFormat(schema, promptName),
-        messages: [
-          { role: "system" as const, content: systemPrompt },
-          { role: "user" as const, content: JSON.stringify(payload) }
-        ]
-      };
-      assertConservativeOpenAiWireBound(feature, policy.maxInputTokens, requestBody);
-      const response = await openai.chat.completions.create(requestBody, {
-        maxRetries: 0,
-        timeout: manifest.stepTimeoutMs,
+        systemPrompt,
+        payload,
+        responseJsonSchema,
+        maxOutputTokens: policy.maxOutputTokens,
+        thinkingLevel: APPLICATION_DOCUMENT_THINKING_LEVEL,
+        timeoutMs: manifest.stepTimeoutMs,
+        maxResponseBytes: 1_000_000,
+        fetchImpl: fetches.gemini,
         signal
       });
-      const usage = openAiUsage(response);
+      const usage = {
+        inputTokens: response.usage.inputTokens,
+        outputTokens: response.usage.outputTokens,
+        cachedInputTokens: response.usage.cachedInputTokens
+      };
       const callMetrics = metrics(manifest, stage, usage);
-      const choice = response.choices[0];
-      if (choice?.finish_reason !== "stop" || !choice.message.content) {
-        throw new CorrectionFlowProviderAdapterError(
-          "PROVIDER_OUTPUT_INVALID",
-          "OpenAI returned an incomplete bounded qualification output.",
-          { billingStatus: "known", providerCompleted: true, usage,
-            estimatedCostMicros: callMetrics.estimatedCostMicros }
-        );
-      }
-      let value: unknown;
-      try {
-        value = JSON.parse(choice.message.content);
-      } catch {
-        throw new CorrectionFlowProviderAdapterError(
-          "PROVIDER_OUTPUT_INVALID",
-          "OpenAI returned invalid qualification JSON.",
-          { billingStatus: "known", providerCompleted: true, usage,
-            estimatedCostMicros: callMetrics.estimatedCostMicros }
-        );
-      }
       let result: T;
       try {
-        result = validate(schema.parse(value));
+        result = validate(schema.parse(response.value));
       } catch {
         throw new CorrectionFlowProviderAdapterError(
           "PROVIDER_OUTPUT_INVALID",
-          "OpenAI returned an unsupported qualification document.",
+          "Gemini returned an unsupported qualification document.",
           { billingStatus: "known", providerCompleted: true, usage,
             estimatedCostMicros: callMetrics.estimatedCostMicros }
         );
@@ -495,7 +448,7 @@ export function createCorrectionFlowProviderAdapter({
           promptVersion: plan.promptVersion,
           inputHash,
           usage: {
-            provider: "openai" as const,
+            provider: "gemini" as const,
             model: plan.model,
             promptVersion: plan.promptVersion,
             requestHash: inputHash,
@@ -514,32 +467,55 @@ export function createCorrectionFlowProviderAdapter({
     } catch (error) {
       stopped = true;
       inFlight = null;
-      throw safeOpenAiFailure(error);
+      if (error instanceof CorrectionFlowProviderAdapterError) throw error;
+      if (error instanceof GeminiProviderError) {
+        const usage = error.usage ? {
+          inputTokens: error.usage.inputTokens,
+          outputTokens: error.usage.outputTokens,
+          cachedInputTokens: error.usage.cachedInputTokens
+        } : null;
+        throw new CorrectionFlowProviderAdapterError(
+          "GEMINI_PROVIDER_FAILED",
+          "Gemini qualification request did not complete safely.",
+          {
+            billingStatus: error.billingDisposition,
+            providerCompleted: error.providerResponded,
+            usage,
+            estimatedCostMicros: usage ? estimateAiCostMicros({
+              model: manifest.calls.find((entry) => entry.stage === stage)!.model,
+              ...usage
+            }) : null
+          }
+        );
+      }
+      throw adapterError("GEMINI_PROVIDER_FAILED", "Gemini qualification request did not complete safely.");
     }
   }
 
   return Object.freeze({
     scoreMatch,
     tailorResume(payload: ApplicationDocumentPayload, signal: AbortSignal) {
-      return openAiDocument<TailoredResumeOutput>({
+      return geminiDocument<TailoredResumeOutput>({
         stage: "tailored_resume",
         feature: "RESUME_TAILOR",
         promptName: "resumeTailorPrompt",
         systemPrompt: resumeTailorPrompt,
         payload,
         schema: tailoredResumeSchema,
+        responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA,
         validate: (value) => validateTailoredResumeClaims(payload, value as TailoredResumeOutput),
         signal
       });
     },
     draftCoverLetter(payload: ApplicationDocumentPayload, signal: AbortSignal) {
-      return openAiDocument<CoverLetterOutput>({
+      return geminiDocument<CoverLetterOutput>({
         stage: "cover_letter",
         feature: "COVER_LETTER",
         promptName: "coverLetterPrompt",
         systemPrompt: coverLetterPrompt,
         payload,
         schema: coverLetterSchema,
+        responseJsonSchema: COVER_LETTER_GEMINI_JSON_SCHEMA,
         validate: (value) => validateCoverLetterClaims(payload, value as CoverLetterOutput),
         signal
       });

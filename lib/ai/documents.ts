@@ -6,6 +6,7 @@ import { interviewFeedbackPrompt } from "@/prompts/interviewFeedbackPrompt";
 import { interviewPrepPrompt } from "@/prompts/interviewPrepPrompt";
 import { generateJson } from "@/lib/ai/client";
 import type { AiInvocationOptions } from "@/lib/ai/client";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import {
   validateCoverLetterClaims,
   type ApplicationDocumentClaimEvidence,
@@ -26,6 +27,35 @@ export const coverLetterSchema = z.object({
     citations: z.array(applicationDocumentCitationSchema).min(1)
   }).strict())
 }).strict();
+
+const strictStringObject = (properties: Record<string, unknown>, required: string[]) => ({
+  type: "object",
+  additionalProperties: false,
+  properties,
+  required
+});
+
+const applicationDocumentCitationJsonSchema = strictStringObject({
+  ref: { type: "string" },
+  excerpt: { type: "string" }
+}, ["ref", "excerpt"]);
+
+export const COVER_LETTER_GEMINI_JSON_SCHEMA = strictStringObject({
+  title: { type: "string" },
+  coverLetter: { type: "string" },
+  angle: { type: "string" },
+  claimsUsed: {
+    type: "array",
+    items: strictStringObject({
+      claim: { type: "string" },
+      citations: {
+        type: "array",
+        minItems: 1,
+        items: applicationDocumentCitationJsonSchema
+      }
+    }, ["claim", "citations"])
+  }
+}, ["title", "coverLetter", "angle", "claimsUsed"]);
 
 const emailReplySchema = z.object({
   summary: z.string(),
@@ -80,7 +110,13 @@ export async function draftCoverLetter(
     payload,
     fallback,
     schema: coverLetterSchema,
-    context: userId ? { userId, feature: "COVER_LETTER", promptVersion: "3", ...options } : undefined,
+    responseJsonSchema: COVER_LETTER_GEMINI_JSON_SCHEMA,
+    context: userId ? {
+      userId,
+      feature: "COVER_LETTER",
+      promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
+      ...options
+    } : undefined,
     validate: (value) => validateCoverLetterClaims(payload, value)
   });
 

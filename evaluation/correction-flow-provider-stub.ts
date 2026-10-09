@@ -13,8 +13,7 @@ import type { MatchInput } from "@/lib/ai/job-match";
 
 export const SYNTHETIC_CORRECTION_FLOW_DUMMY_CREDENTIALS: CorrectionFlowProviderCredentials =
   Object.freeze({
-    geminiApiKey: "offline-dummy-gemini-key",
-    openAiApiKey: "offline-dummy-openai-key"
+    geminiApiKey: "offline-dummy-gemini-key"
   });
 
 export function syntheticCorrectionFlowMatchInput(reviewed: boolean): MatchInput {
@@ -117,41 +116,19 @@ export function syntheticCoverLetterOutput() {
   };
 }
 
-function providerResponse(value: unknown, provider: "gemini" | "openai") {
-  if (provider === "gemini") {
-    return new Response(JSON.stringify({
-      candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
-      usageMetadata: {
-        promptTokenCount: 100,
-        cachedContentTokenCount: 0,
-        candidatesTokenCount: 50,
-        thoughtsTokenCount: 0,
-        totalTokenCount: 150
-      }
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json", "x-request-id": "safe-gemini-id" }
-    });
-  }
+function providerResponse(value: unknown) {
   return new Response(JSON.stringify({
-    id: "safe-openai-id",
-    object: "chat.completion",
-    created: 1,
-    model: "gpt-4o-mini",
-    choices: [{
-      index: 0,
-      finish_reason: "stop",
-      message: { role: "assistant", content: JSON.stringify(value) }
-    }],
-    usage: {
-      prompt_tokens: 100,
-      completion_tokens: 50,
-      total_tokens: 150,
-      prompt_tokens_details: { cached_tokens: 0 }
+    candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
+    usageMetadata: {
+      promptTokenCount: 100,
+      cachedContentTokenCount: 0,
+      candidatesTokenCount: 50,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 150
     }
   }), {
     status: 200,
-    headers: { "content-type": "application/json", "x-request-id": "safe-openai-id" }
+    headers: { "content-type": "application/json", "x-request-id": "safe-gemini-id" }
   });
 }
 
@@ -161,23 +138,21 @@ export function createSyntheticCorrectionFlowProviderFetches({
   onRequest?: (stage: CorrectionFlowProviderStage, body: unknown) => void;
 } = {}): CorrectionFlowProviderFetches {
   let geminiCall = 0;
-  let openAiCall = 0;
   return {
     gemini: async (_input, init) => {
-      const stage = geminiCall === 0 ? "initial_match" : "updated_match";
+      const stages = ["initial_match", "updated_match", "tailored_resume", "cover_letter"] as const;
+      const outputs = [
+        syntheticInitialMatchOutput(),
+        syntheticUpdatedMatchOutput(),
+        syntheticTailoredResumeOutput(),
+        syntheticCoverLetterOutput()
+      ] as const;
+      const stage = stages[geminiCall];
+      const output = outputs[geminiCall];
+      if (!stage || !output) throw new Error("Unexpected synthetic Gemini call.");
       onRequest?.(stage, JSON.parse(String(init?.body)));
-      const output = geminiCall++ === 0
-        ? syntheticInitialMatchOutput()
-        : syntheticUpdatedMatchOutput();
-      return providerResponse(output, "gemini");
-    },
-    openai: async (_input, init) => {
-      const stage = openAiCall === 0 ? "tailored_resume" : "cover_letter";
-      onRequest?.(stage, JSON.parse(String(init?.body)));
-      const output = openAiCall++ === 0
-        ? syntheticTailoredResumeOutput()
-        : syntheticCoverLetterOutput();
-      return providerResponse(output, "openai");
+      geminiCall += 1;
+      return providerResponse(output);
     }
   };
 }

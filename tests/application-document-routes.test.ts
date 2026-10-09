@@ -28,11 +28,9 @@ function setEnv(t: TestContext) {
   const changes: Record<string, string> = {
     AI_ENABLED: "true",
     AI_MOCK_MODE: "false",
-    AI_PROVIDER: "openai",
+    AI_PROVIDER: "gemini",
     AI_PROVIDER_OVERRIDES: "",
-    OPENAI_API_KEY: "synthetic-never-log",
-    OPENAI_MOCK_MODE: "false",
-    OPENAI_MODEL: "gpt-4o-mini",
+    GEMINI_API_KEY: "synthetic-never-log",
     AUTH_SECRET: "synthetic-route-secret-without-session",
     ALLOW_DEMO_USER: "true",
     NODE_ENV: "test"
@@ -42,6 +40,19 @@ function setEnv(t: TestContext) {
     t.after(() => { if (prior === undefined) delete process.env[name]; else process.env[name] = prior; });
     process.env[name] = value;
   }
+}
+
+function geminiResponse(value: unknown, outputTokens: number) {
+  return new Response(JSON.stringify({
+    candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
+    usageMetadata: {
+      promptTokenCount: 100,
+      cachedContentTokenCount: 0,
+      candidatesTokenCount: outputTokens,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 100 + outputTokens
+    }
+  }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
 async function invokeRoute(path: string, handler: () => Promise<Response>) {
@@ -196,11 +207,9 @@ function installLedger(t: TestContext, prisma: Awaited<ReturnType<typeof setup>>
 
 test("both application-document routes require the private-data consent contract before any provider call or write", async (t) => {
   const prisma = await setup(t);
-  const { getOpenAIClient } = await import("@/lib/ai/client");
-  const client = getOpenAIClient()!;
   let providerCalls = 0;
   let writes = 0;
-  stub(t, client.chat.completions, "create", async () => { providerCalls += 1; throw new Error("must not call"); });
+  stub(t, globalThis, "fetch", async () => { providerCalls += 1; throw new Error("must not call"); });
   stub(t, prisma.resumeVersion, "create", async () => { writes += 1; return {}; });
   stub(t, prisma.generatedDocument, "create", async () => { writes += 1; return {}; });
   stub(t, prisma.aIAnalysis, "create", async () => { writes += 1; return {}; });
@@ -219,8 +228,8 @@ test("both application-document routes require the private-data consent contract
     assert.equal(response.status, 428);
     const body = await response.json();
     assert.equal(body.dataType, "application_packet");
-    assert.equal(body.provider, "openai");
-    assert.equal(body.model, "gpt-4o-mini");
+    assert.equal(body.provider, "gemini");
+    assert.equal(body.model, "gemini-3.8-flash");
     assert.equal(body.promptVersion, "3");
   }
   assert.equal(providerCalls, 0);
@@ -230,8 +239,6 @@ test("both application-document routes require the private-data consent contract
 test("a supported stubbed résumé result is persisted only after v3 evidence validation", async (t) => {
   const prisma = await setup(t);
   const ledger = installLedger(t, prisma);
-  const { getOpenAIClient } = await import("@/lib/ai/client");
-  const client = getOpenAIClient()!;
   const output = {
     professionalSummary: "Built reliable TypeScript services.",
     skillsSection: ["TypeScript"],
@@ -259,12 +266,9 @@ test("a supported stubbed résumé result is persisted only after v3 evidence va
   let providerCalls = 0;
   let versionData: Record<string, unknown> | null = null;
   let analysisData: Record<string, unknown> | null = null;
-  stub(t, client.chat.completions, "create", async () => {
+  stub(t, globalThis, "fetch", async () => {
     providerCalls += 1;
-    return {
-      choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }],
-      usage: { prompt_tokens: 100, completion_tokens: 200, prompt_tokens_details: { cached_tokens: 0 } }
-    };
+    return geminiResponse(output, 200);
   });
   stub(t, prisma.resumeVersion, "create", async ({ data }: { data: Record<string, unknown> }) => {
     versionData = data;
@@ -299,13 +303,8 @@ test("a supported stubbed résumé result is persisted only after v3 evidence va
 test("an unsupported stubbed cover-letter claim is billed as failed and never persisted or cached", async (t) => {
   const prisma = await setup(t);
   const ledger = installLedger(t, prisma);
-  const { getOpenAIClient } = await import("@/lib/ai/client");
-  const client = getOpenAIClient()!;
   let writes = 0;
-  stub(t, client.chat.completions, "create", async () => ({
-    choices: [{
-      finish_reason: "stop",
-      message: { content: JSON.stringify({
+  stub(t, globalThis, "fetch", async () => geminiResponse({
         title: "Example Co cover letter",
         coverLetter: "Dear Example Co,\n\nI led a Kubernetes migration for 14 engineers.\n\nSincerely,\nSynthetic Applicant",
         angle: "Invented synthetic claim that must be rejected.",
@@ -313,10 +312,7 @@ test("an unsupported stubbed cover-letter claim is billed as failed and never pe
           claim: "I led a Kubernetes migration for 14 engineers.",
           citations: [{ ref: "resume.skills[0]", excerpt: "TypeScript" }]
         }]
-      }) }
-    }],
-    usage: { prompt_tokens: 100, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 0 } }
-  }));
+      }, 80));
   stub(t, prisma.generatedDocument, "create", async () => { writes += 1; return {}; });
   stub(t, prisma.aIAnalysis, "create", async () => { writes += 1; return {}; });
   stub(t, prisma.auditLog, "create", async () => { writes += 1; return {}; });
@@ -334,7 +330,7 @@ test("an unsupported stubbed cover-letter claim is billed as failed and never pe
   assert.equal(body.code, "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM");
   assert.equal(body.fieldPath, "claimsUsed[0].claim");
   assert.equal(body.billingStatus, "known");
-  assert.equal(body.actualCostMicros, 63);
+  assert.equal(body.actualCostMicros, 375);
   assert.doesNotMatch(JSON.stringify(body), /14 engineers/);
   assert.equal(writes, 0);
   assert.equal(ledger.reconciliations[0].status, "FAILED");

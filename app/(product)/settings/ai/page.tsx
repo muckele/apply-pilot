@@ -23,10 +23,6 @@ export default async function AiSettingsPage() {
       take: 20
     })
   ]);
-  const pricingConfigured = Boolean(
-    process.env.OPENAI_INPUT_COST_PER_1M_USD && process.env.OPENAI_OUTPUT_COST_PER_1M_USD
-  );
-
   return (
     <>
       <PageHeader
@@ -42,12 +38,15 @@ export default async function AiSettingsPage() {
         <MetricCard
           label="Estimated cost"
           value={formatCost(usage.estimatedCostMicros)}
-          detail={pricingConfigured ? `$${(settings.monthlyBudgetCents / 100).toFixed(2)} monthly limit` : "Add pricing env vars to enforce a dollar limit"}
+          detail={`$${(settings.monthlyBudgetCents / 100).toFixed(2)} monthly limit; guarded models use the server price registry`}
         />
       </div>
 
       <Panel className="mt-6">
-        <PanelHeader title="Limits and model" description="A zero per-sync limit disables automatic AI analysis without disabling manual actions." />
+        <PanelHeader
+          title="Limits and model"
+          description="A zero per-sync limit disables automatic AI analysis without disabling manual actions. Model overrides apply only to configurable features; JOB_MATCH and application-document generation stay pinned."
+        />
         <AiSettingsPanel
           initialSettings={{
             monthlyBudgetCents: settings.monthlyBudgetCents,

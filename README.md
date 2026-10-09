@@ -71,8 +71,10 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
-- `OPENAI_API_KEY`: optional OpenAI API key. When omitted, supported workflows use deterministic local fallback output.
-- `OPENAI_MODEL`: default model for structured JSON generations.
+- `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini`, and `false` respectively for live Gemini flows.
+- `GEMINI_API_KEY`: Gemini API key for resume parsing, JOB_MATCH, tailored résumés, and cover letters. Guarded paid document generation fails closed when Gemini is unavailable; it does not fall back to another provider.
+- `OPENAI_API_KEY`: optional OpenAI API key for legacy AI surfaces that have not yet moved to Gemini, including application planning and interview/email helpers.
+- `OPENAI_MODEL`: default model for remaining legacy OpenAI structured JSON generations.
 - `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
 - `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
 - `OPENAI_INPUT_COST_PER_1M_USD`, `OPENAI_OUTPUT_COST_PER_1M_USD`, and `OPENAI_CACHED_INPUT_COST_PER_1M_USD`: optional current pricing used to estimate spend and enforce per-user monthly budgets.
@@ -144,7 +146,7 @@ npm run dev -- -H 127.0.0.1 -p 3000
 
 If Neon gives you both pooled and direct connection strings, use the pooled string for `DATABASE_URL` and the direct/non-pooled string for `DIRECT_URL`. Prisma uses `DIRECT_URL` for migrations and `DATABASE_URL` for normal app runtime.
 
-## OpenAI Setup
+## AI Provider Setup
 
 The app uses structured JSON prompts in `/prompts`:
 
@@ -155,9 +157,9 @@ The app uses structured JSON prompts in `/prompts`:
 - `interviewPrepPrompt`
 - `interviewFeedbackPrompt`
 
-Set `OPENAI_API_KEY` and `OPENAI_MOCK_MODE=false` to call the API. Without a key, the MVP remains usable with deterministic local fallback output in both development and production; it does not make billable OpenAI requests.
+Set `GEMINI_API_KEY`, `AI_ENABLED=true`, and `AI_MOCK_MODE=false` for resume parsing, JOB_MATCH, tailored résumé, and cover-letter calls. JOB_MATCH is pinned to Gemini 3.8 Flash with MEDIUM thinking; tailored résumé and cover-letter calls are pinned to Gemini 3.8 Flash with LOW thinking and do not automatically fall back to another provider or model. Remaining legacy OpenAI surfaces require `OPENAI_API_KEY`; those dependencies are separate from the application-document routes.
 
-AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and an estimated cost when pricing variables are configured, including failed responses that report token usage. Users can choose a server-allowlisted model override, cap AI analyses per discovery sync, disable discovery-time AI, and set a monthly budget at `/settings/ai`. The budget blocks later calls after tracked usage reaches the limit, so configure cost estimates conservatively for the most expensive allowed model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
+AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and available cost metadata, including failed responses that report usage. Guarded paid calls use the compiled, expiring model-price registry; remaining legacy OpenAI calls use the optional pricing environment variables. Users can cap discovery-time AI and set a monthly budget at `/settings/ai`. Model overrides apply only to eligible configurable features; pinned JOB_MATCH and application-document models ignore them. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
 
 ## Google Sign-In Setup
 

@@ -231,27 +231,24 @@ export async function runCorrectionFlowLiveLauncher(
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   let geminiApiKey = "";
-  let openAiApiKey = "";
   try {
     geminiApiKey = await dependencies.readSecret("Existing Gemini API key (input hidden): ");
-    openAiApiKey = await dependencies.readSecret("Existing OpenAI API key (input hidden): ");
     const receipt = await dependencies.execute({
       databaseUrl: database.databaseUrl,
       manifest,
       consent,
-      credentials: { geminiApiKey, openAiApiKey },
+      credentials: { geminiApiKey },
       fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
       signal: controller.signal
     });
     const serialized = JSON.stringify({ status: receipt.status, receipt }, null, 2);
-    if (serialized.includes(geminiApiKey) || serialized.includes(openAiApiKey)) {
+    if (serialized.includes(geminiApiKey)) {
       throw new Error("Qualification receipt contained a credential and was not emitted.");
     }
     dependencies.write(serialized);
     return receipt.status === "passed" && receipt.cleanupStatus === "completed" ? 0 : 1;
   } finally {
     geminiApiKey = "";
-    openAiApiKey = "";
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
   }

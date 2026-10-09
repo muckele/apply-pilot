@@ -12,7 +12,6 @@ import {
 
 const exactHead = "9".repeat(40);
 const geminiKey = "synthetic-gemini-secret-never-log";
-const openAiKey = "synthetic-openai-secret-never-log";
 const localDatabaseUrl = "postgresql://postgres:postgres@127.0.0.1:55432/apply_pilot_commit5_test";
 
 test("the live launcher binds one displayed manifest before masked keys and executes it unchanged", async () => {
@@ -48,8 +47,9 @@ test("the live launcher binds one displayed manifest before masked keys and exec
       },
       async readSecret(prompt) {
         assert.equal(events.includes("consent"), true);
-        events.push(prompt.includes("Gemini") ? "gemini" : "openai");
-        return prompt.includes("Gemini") ? geminiKey : openAiKey;
+        assert.match(prompt, /Gemini/u);
+        events.push("gemini");
+        return geminiKey;
       },
       async execute(input) {
         events.push("execute");
@@ -57,7 +57,6 @@ test("the live launcher binds one displayed manifest before masked keys and exec
         assert.equal(input.consent.manifestHash, displayedManifestHash);
         assert.equal(input.consent.existingCredentialUseApproved, true);
         assert.equal(input.credentials.geminiApiKey, geminiKey);
-        assert.equal(input.credentials.openAiApiKey, openAiKey);
         assert.equal(input.databaseUrl, localDatabaseUrl);
         assert.deepEqual(input.fixture, SYNTHETIC_CORRECTION_FLOW_FIXTURE);
         return passedReceipt(displayedManifestHash);
@@ -66,10 +65,10 @@ test("the live launcher binds one displayed manifest before masked keys and exec
   );
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(events, ["runtime", "database", "manifest", "consent", "gemini", "openai", "execute"]);
+  assert.deepEqual(events, ["runtime", "database", "manifest", "consent", "gemini", "execute"]);
   const serialized = writes.join("\n");
   assert.match(serialized, /"status": "passed"/u);
-  assert.doesNotMatch(serialized, new RegExp(`${geminiKey}|${openAiKey}`, "u"));
+  assert.doesNotMatch(serialized, new RegExp(geminiKey, "u"));
 });
 
 test("the live launcher reads no credentials and starts no execution when manifest consent mismatches", async () => {
@@ -172,18 +171,18 @@ test("the live command accepts no provider credential through arguments, environ
 
 function passedReceipt(manifestHash: string): CorrectionFlowQualificationReceipt {
   return {
-    contractVersion: "1",
+    contractVersion: "2",
     status: "passed",
     manifestHash,
     exactHead,
     providerMode: "live_synthetic",
-    conservativeReservationMicros: 166_740,
+    conservativeReservationMicros: 257_565,
     providerCallsStarted: 4,
     providerCallsCompleted: 4,
     knownInputTokens: 400,
     knownOutputTokens: 200,
     knownCachedInputTokens: 0,
-    knownEstimatedCostMicros: 616,
+    knownEstimatedCostMicros: 1_052,
     unknownBillingCallCount: 0,
     noRetryAttempted: true,
     failureStage: null,

@@ -18,7 +18,7 @@ import type { MatchInput } from "@/lib/ai/job-match";
 
 const exactHead = "8d850d0dcf9a141cf41363cc09cb2cde24c8317c";
 const dummyGeminiKey = "dummy-gemini-key-never-send";
-const dummyOpenAiKey = "dummy-openai-key-never-send";
+const credentials = { geminiApiKey: dummyGeminiKey };
 
 function manifest() {
   return buildCorrectionFlowQualificationManifest({
@@ -143,43 +143,34 @@ function documentPayload() {
   return { job: input.job, resume: input.resume, profile: input.profile, reviewedEvidence: input.reviewedEvidence };
 }
 
-function jsonResponse(value: unknown, provider: "gemini" | "openai") {
-  if (provider === "gemini") {
-    return new Response(JSON.stringify({
-      candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
-      usageMetadata: {
-        promptTokenCount: 100,
-        cachedContentTokenCount: 0,
-        candidatesTokenCount: 50,
-        thoughtsTokenCount: 0,
-        totalTokenCount: 150
-      }
-    }), { status: 200, headers: { "content-type": "application/json", "x-request-id": "safe-gemini-id" } });
-  }
+function jsonResponse(value: unknown) {
   return new Response(JSON.stringify({
-    id: "safe-openai-id",
-    object: "chat.completion",
-    created: 1,
-    model: "gpt-4o-mini",
-    choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify(value) } }],
-    usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150,
-      prompt_tokens_details: { cached_tokens: 0 } }
-  }), { status: 200, headers: { "content-type": "application/json", "x-request-id": "safe-openai-id" } });
+    candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
+    usageMetadata: {
+      promptTokenCount: 100,
+      cachedContentTokenCount: 0,
+      candidatesTokenCount: 50,
+      thoughtsTokenCount: 0,
+      totalTokenCount: 150
+    }
+  }), { status: 200, headers: { "content-type": "application/json", "x-request-id": "safe-gemini-id" } });
 }
 
-function stubFetches(capturedBodies: unknown[]): CorrectionFlowProviderFetches {
+function stubFetches(
+  capturedBodies: unknown[],
+  capturedUrls: string[] = [],
+  capturedHeaders: Headers[] = []
+): CorrectionFlowProviderFetches {
   let geminiCall = 0;
-  let openAiCall = 0;
   return {
-    gemini: async (_input, init) => {
+    gemini: async (input, init) => {
+      capturedUrls.push(String(input));
+      capturedHeaders.push(new Headers(init?.headers));
       capturedBodies.push(JSON.parse(String(init?.body)));
-      const output = geminiCall++ === 0 ? initialMatchOutput() : updatedMatchOutput();
-      return jsonResponse(output, "gemini");
-    },
-    openai: async (_input, init) => {
-      capturedBodies.push(JSON.parse(String(init?.body)));
-      const output = openAiCall++ === 0 ? resumeOutput() : coverOutput();
-      return jsonResponse(output, "openai");
+      const outputs = [initialMatchOutput(), updatedMatchOutput(), resumeOutput(), coverOutput()];
+      const output = outputs[geminiCall++];
+      if (!output) throw new Error("Unexpected Gemini call.");
+      return jsonResponse(output);
     }
   };
 }
@@ -187,12 +178,14 @@ function stubFetches(capturedBodies: unknown[]): CorrectionFlowProviderFetches {
 test("the manifest-bound adapter executes exactly four ordered SDK requests with zero retries", async () => {
   const value = manifest();
   const capturedBodies: unknown[] = [];
+  const capturedUrls: string[] = [];
+  const capturedHeaders: Headers[] = [];
   const adapter = createCorrectionFlowProviderAdapter({
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
-    fetches: stubFetches(capturedBodies)
+    credentials,
+    fetches: stubFetches(capturedBodies, capturedUrls, capturedHeaders)
   });
   const signal = new AbortController().signal;
 
@@ -209,9 +202,31 @@ test("the manifest-bound adapter executes exactly four ordered SDK requests with
     "initial_match", "updated_match", "tailored_resume", "cover_letter"
   ]);
   assert.equal(capturedBodies.length, 4);
+  assert.deepEqual(capturedUrls, Array(4).fill(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent"
+  ));
+  assert.equal(capturedHeaders.length, 4);
+  for (const headers of capturedHeaders) {
+    assert.equal(headers.get("x-goog-api-key"), dummyGeminiKey);
+    assert.equal(headers.has("authorization"), false);
+  }
+  assert.deepEqual(capturedBodies.map((body) => {
+    const generation = (body as { generationConfig: Record<string, unknown> }).generationConfig;
+    return [generation.maxOutputTokens, generation.thinkingConfig];
+  }), [
+    [8_192, { thinkingLevel: "MEDIUM" }],
+    [8_192, { thinkingLevel: "MEDIUM" }],
+    [6_000, { thinkingLevel: "LOW" }],
+    [1_500, { thinkingLevel: "LOW" }]
+  ]);
+  for (const body of capturedBodies) {
+    const generation = (body as { generationConfig: Record<string, unknown> }).generationConfig;
+    assert.equal(generation.responseMimeType, "application/json");
+    assert.ok(generation.responseJsonSchema);
+  }
   const serialized = JSON.stringify(capturedBodies);
   assert.doesNotMatch(serialized, /expectedRecommendation|expectedBand|reviewedRecommendation|disagreementCategories/u);
-  assert.doesNotMatch(serialized, new RegExp(`${dummyGeminiKey}|${dummyOpenAiKey}`, "u"));
+  assert.doesNotMatch(serialized, new RegExp(dummyGeminiKey, "u"));
   await assert.rejects(
     adapter.draftCoverLetter(documentPayload(), signal),
     (error: unknown) => (error as { code?: unknown }).code === "PROVIDER_CALL_LIMIT_REACHED"
@@ -228,7 +243,7 @@ test("the adapter rejects substituted fixture data before a provider request", a
       consent: consentFor(value),
       fixture: { ...SYNTHETIC_CORRECTION_FLOW_FIXTURE, job: { ...SYNTHETIC_CORRECTION_FLOW_FIXTURE.job,
         company: "Substituted Employer" } },
-      credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+      credentials,
       fetches: stubFetches(capturedBodies)
     }),
     (error: unknown) => (error as { code?: unknown }).code === "MANIFEST_FIXTURE_MISMATCH"
@@ -236,14 +251,14 @@ test("the adapter rejects substituted fixture data before a provider request", a
   assert.equal(capturedBodies.length, 0);
 });
 
-test("offline mode requires both explicit stub transports", () => {
+test("offline mode requires an explicit Gemini stub transport", () => {
   const value = manifest();
   assert.throws(
     () => createCorrectionFlowProviderAdapter({
       manifest: value,
       consent: consentFor(value),
       fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-      credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+      credentials,
       fetches: {}
     }),
     (error: unknown) => (error as { code?: unknown }).code === "OFFLINE_TRANSPORT_REQUIRED"
@@ -262,7 +277,7 @@ test("live mode rejects injected transports that could be mislabeled as real", (
       manifest: value,
       consent: consentFor(value),
       fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-      credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+      credentials,
       fetches: stubFetches([])
     }),
     (error: unknown) => (error as { code?: unknown }).code === "LIVE_TRANSPORT_OVERRIDE_FORBIDDEN"
@@ -280,7 +295,7 @@ test("the adapter rejects a tampered manifest even when its stored hash is uncha
       manifest: tampered,
       consent: consentFor(value),
       fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-      credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+      credentials,
       fetches: stubFetches([])
     }),
     (error: unknown) => (error as { code?: unknown }).code === "MANIFEST_FIXTURE_MISMATCH"
@@ -294,7 +309,7 @@ test("the adapter rejects an out-of-order stage before a provider request", asyn
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+    credentials,
     fetches: stubFetches(capturedBodies)
   });
 
@@ -312,7 +327,7 @@ test("the adapter rejects unapproved reviewed evidence before a provider request
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+    credentials,
     fetches: stubFetches(capturedBodies)
   });
   const input = matchInput(false);
@@ -345,7 +360,7 @@ test("the adapter rejects hidden reviewed-evidence properties before serializati
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+    credentials,
     fetches: stubFetches(capturedBodies)
   });
   const signal = new AbortController().signal;
@@ -384,7 +399,7 @@ test("the adapter rejects a concurrent next stage without starting another reque
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+    credentials,
     fetches: {
       gemini: async () => {
         geminiRequests += 1;
@@ -392,8 +407,7 @@ test("the adapter rejects a concurrent next stage without starting another reque
         return new Promise<Response>((resolve) => {
           gate.release = resolve;
         });
-      },
-      openai: stubFetches([]).openai
+      }
     }
   });
   const signal = new AbortController().signal;
@@ -406,27 +420,30 @@ test("the adapter rejects a concurrent next stage without starting another reque
   );
   assert.equal(geminiRequests, 1);
   assert.ok(gate.release);
-  gate.release(jsonResponse(initialMatchOutput(), "gemini"));
+  gate.release(jsonResponse(initialMatchOutput()));
   await first;
   assert.equal(adapter.completedStages().length, 1);
 });
 
-test("provider diagnostics never expose explicit credentials and OpenAI performs no retry", async () => {
+test("provider diagnostics never expose explicit credentials and Gemini performs no retry", async () => {
   const value = manifest();
-  let openAiCalls = 0;
-  const fetches = { ...stubFetches([]) };
-  fetches.openai = async () => {
-    openAiCalls += 1;
-    return new Response(JSON.stringify({ error: { message: `${dummyOpenAiKey}: do not expose` } }), {
+  let geminiCalls = 0;
+  const outputs = [initialMatchOutput(), updatedMatchOutput()];
+  const fetches: CorrectionFlowProviderFetches = {
+    gemini: async () => {
+      const output = outputs[geminiCalls++];
+      if (output) return jsonResponse(output);
+      return new Response(JSON.stringify({ error: { message: `${dummyGeminiKey}: do not expose` } }), {
       status: 500,
       headers: { "content-type": "application/json" }
-    });
+      });
+    }
   };
   const adapter = createCorrectionFlowProviderAdapter({
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+    credentials,
     fetches
   });
   const signal = new AbortController().signal;
@@ -440,10 +457,10 @@ test("provider diagnostics never expose explicit credentials and OpenAI performs
     failure = error;
   }
   assert.ok(failure);
-  assert.equal(openAiCalls, 1);
-  assert.equal((failure as { code?: unknown }).code, "OPENAI_PROVIDER_FAILED");
-  assert.doesNotMatch(String((failure as Error).message), new RegExp(dummyOpenAiKey, "u"));
-  assert.doesNotMatch(JSON.stringify(failure), new RegExp(dummyOpenAiKey, "u"));
+  assert.equal(geminiCalls, 3);
+  assert.equal((failure as { code?: unknown }).code, "GEMINI_PROVIDER_FAILED");
+  assert.doesNotMatch(String((failure as Error).message), new RegExp(dummyGeminiKey, "u"));
+  assert.doesNotMatch(JSON.stringify(failure), new RegExp(dummyGeminiKey, "u"));
 });
 
 test("a cancelled Gemini transport settles before the adapter rejects", async () => {
@@ -453,7 +470,7 @@ test("a cancelled Gemini transport settles before the adapter rejects", async ()
     manifest: value,
     consent: consentFor(value),
     fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
-    credentials: { geminiApiKey: dummyGeminiKey, openAiApiKey: dummyOpenAiKey },
+    credentials,
     fetches: {
       gemini: async (_input, init) => new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal;
@@ -464,8 +481,7 @@ test("a cancelled Gemini transport settles before the adapter rejects", async ()
         });
         if (signal.aborted) settle();
         else signal.addEventListener("abort", settle, { once: true });
-      }),
-      openai: stubFetches([]).openai
+      })
     }
   });
   const controller = new AbortController();

@@ -54,6 +54,7 @@ import {
   assembleParsedResumeV9FromRecords
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import { prisma } from "@/lib/prisma";
 import {
   validateTailoredResumeClaims,
@@ -1306,6 +1307,62 @@ export const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef,
     }).strict()).min(1)
   }).strict())
 }).strict();
+
+const tailoredResumeStringArray = { type: "array", items: { type: "string" } } as const;
+const tailoredResumeCitationJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { ref: { type: "string" }, excerpt: { type: "string" } },
+  required: ["ref", "excerpt"]
+} as const;
+
+export const TAILORED_RESUME_GEMINI_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    professionalSummary: { type: "string" },
+    skillsSection: tailoredResumeStringArray,
+    bulletRewrites: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          original: { type: "string" },
+          rewrite: { type: "string" },
+          reason: { type: "string" }
+        },
+        required: ["original", "rewrite", "reason"]
+      }
+    },
+    rolesOrProjectsToEmphasize: tailoredResumeStringArray,
+    unsupportedKeywords: tailoredResumeStringArray,
+    formattingWarnings: tailoredResumeStringArray,
+    resumeText: { type: "string" },
+    claimEvidence: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          claim: { type: "string" },
+          citations: { type: "array", minItems: 1, items: tailoredResumeCitationJsonSchema }
+        },
+        required: ["claim", "citations"]
+      }
+    }
+  },
+  required: [
+    "professionalSummary",
+    "skillsSection",
+    "bulletRewrites",
+    "rolesOrProjectsToEmphasize",
+    "unsupportedKeywords",
+    "formattingWarnings",
+    "resumeText",
+    "claimEvidence"
+  ]
+} as const;
 
 function assertSourceSupported(source: string, value: string | null, path: string) {
   if (value === null || value === "") return;
@@ -4247,7 +4304,13 @@ export async function tailorResume(
     systemPrompt: resumeTailorPrompt,
     payload,
     schema: tailoredResumeSchema,
-    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "3", ...options } : undefined,
+    responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+    context: userId ? {
+      userId,
+      feature: "RESUME_TAILOR",
+      promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
+      ...options
+    } : undefined,
     validate: (value) => validateTailoredResumeClaims(payload as Parameters<typeof validateTailoredResumeClaims>[0], value)
   });
 

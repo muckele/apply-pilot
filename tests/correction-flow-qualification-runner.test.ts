@@ -45,7 +45,7 @@ function consentFor(value: ReturnType<typeof manifest>) {
     exactHead: value.exactHead,
     providerMode: value.providerMode,
     approvedCallCount: 4,
-    approvedConservativeReservationMicros: 166_740,
+    approvedConservativeReservationMicros: value.conservativeReservationMicros,
     approvedStepTimeoutMs: 180_000,
     syntheticApplicantDataSharingApproved: true,
     existingCredentialUseApproved: value.providerMode === "live_synthetic",
@@ -140,13 +140,13 @@ test("the synthetic correction manifest pins four calls and exposes hashes and c
 
   assert.equal(value.exactHead, exactHead);
   assert.equal(value.callCount, 4);
-  assert.equal(value.conservativeReservationMicros, 166_740);
+  assert.equal(value.conservativeReservationMicros, 257_565);
   assert.equal(value.stepTimeoutMs, 180_000);
   assert.deepEqual(value.calls.map((entry) => [entry.stage, entry.provider, entry.model, entry.maximumCostMicros]), [
     ["initial_match", "google-gemini-developer-api", "gemini-3.8-flash", 72_720],
     ["updated_match", "google-gemini-developer-api", "gemini-3.8-flash", 72_720],
-    ["tailored_resume", "openai-api", "gpt-4o-mini", 12_000],
-    ["cover_letter", "openai-api", "gpt-4o-mini", 9_300]
+    ["tailored_resume", "google-gemini-developer-api", "gemini-3.8-flash", 64_500],
+    ["cover_letter", "google-gemini-developer-api", "gemini-3.8-flash", 47_625]
   ]);
   assert.deepEqual(value.dataCategories, [
     "synthetic_job_projection",
@@ -197,8 +197,8 @@ test("the runner performs the fixed sequence once, verifies exports, cleans up, 
   assert.equal(receipt.providerCallsStarted, 4);
   assert.equal(receipt.providerCallsCompleted, 4);
   assert.equal(receipt.noRetryAttempted, true);
-  assert.equal(receipt.knownEstimatedCostMicros, 616);
-  assert.equal(receipt.conservativeReservationMicros, 166_740);
+  assert.equal(receipt.knownEstimatedCostMicros, 1_052);
+  assert.equal(receipt.conservativeReservationMicros, 257_565);
   assert.equal(receipt.cleanupStatus, "completed");
   assert.equal(receipt.exportVerification?.resume.correctionPresent, true);
   assert.equal(receipt.exportVerification?.coverLetter.correctionPresent, true);

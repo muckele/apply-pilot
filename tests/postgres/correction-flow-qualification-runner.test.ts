@@ -62,7 +62,7 @@ test("offline qualification runner composes correction, reassessment, both docum
     assert.equal(receipt.status, "passed", JSON.stringify(receipt));
     assert.equal(receipt.providerCallsStarted, 4);
     assert.equal(receipt.providerCallsCompleted, 4);
-    assert.equal(receipt.knownEstimatedCostMicros, 616);
+    assert.equal(receipt.knownEstimatedCostMicros, 1_052);
     assert.equal(receipt.cleanupStatus, "completed");
     assert.equal(await syntheticUserCount(client), 0);
     assert.doesNotMatch(JSON.stringify(receipt), /Taylor Boundary|Quenby|Business Administration/u);

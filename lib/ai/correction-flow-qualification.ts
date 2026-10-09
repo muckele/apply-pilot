@@ -1,15 +1,18 @@
 import { z } from "zod";
 
 import { hashAiInput } from "@/lib/ai/input-hash";
+import {
+  APPLICATION_DOCUMENT_MODEL,
+  APPLICATION_DOCUMENT_PROMPT_VERSION
+} from "@/lib/ai/application-document-version";
 import { JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
 
-export const CORRECTION_FLOW_QUALIFICATION_CONTRACT_VERSION = "1" as const;
+export const CORRECTION_FLOW_QUALIFICATION_CONTRACT_VERSION = "2" as const;
 export const CORRECTION_FLOW_QUALIFICATION_MAX_CALLS = 4 as const;
 export const CORRECTION_FLOW_QUALIFICATION_STEP_TIMEOUT_MS = 180_000 as const;
-export const CORRECTION_FLOW_OPENAI_MODEL = "gpt-4o-mini" as const;
-export const CORRECTION_FLOW_DOCUMENT_PROMPT_VERSION = "3" as const;
+export const CORRECTION_FLOW_DOCUMENT_PROMPT_VERSION = APPLICATION_DOCUMENT_PROMPT_VERSION;
 
 const providerModeSchema = z.enum(["offline_stubbed", "live_synthetic"]);
 const providerStageSchema = z.enum([
@@ -58,7 +61,7 @@ export function correctionFlowProjectionHash(
 export function correctionFlowManifestEnvelopeHash(value: unknown) {
   return hashAiInput(
     "correctionFlowQualificationManifestEnvelope",
-    "1",
+    CORRECTION_FLOW_QUALIFICATION_CONTRACT_VERSION,
     canonicalQualificationValue(value)
   );
 }
@@ -70,12 +73,12 @@ function callPlan() {
     outputTokens: AI_FEATURE_POLICIES.JOB_MATCH.maxOutputTokens
   });
   const resumeMaximum = estimateAiCostMicros({
-    model: CORRECTION_FLOW_OPENAI_MODEL,
+    model: APPLICATION_DOCUMENT_MODEL,
     inputTokens: AI_FEATURE_POLICIES.RESUME_TAILOR.maxInputTokens,
     outputTokens: AI_FEATURE_POLICIES.RESUME_TAILOR.maxOutputTokens
   });
   const coverMaximum = estimateAiCostMicros({
-    model: CORRECTION_FLOW_OPENAI_MODEL,
+    model: APPLICATION_DOCUMENT_MODEL,
     inputTokens: AI_FEATURE_POLICIES.COVER_LETTER.maxInputTokens,
     outputTokens: AI_FEATURE_POLICIES.COVER_LETTER.maxOutputTokens
   });
@@ -100,8 +103,8 @@ function callPlan() {
     }),
     Object.freeze({
       stage: "tailored_resume" as const,
-      provider: "openai-api" as const,
-      model: CORRECTION_FLOW_OPENAI_MODEL,
+      provider: "google-gemini-developer-api" as const,
+      model: APPLICATION_DOCUMENT_MODEL,
       promptVersion: CORRECTION_FLOW_DOCUMENT_PROMPT_VERSION,
       maximumInputTokens: AI_FEATURE_POLICIES.RESUME_TAILOR.maxInputTokens,
       maximumOutputTokens: AI_FEATURE_POLICIES.RESUME_TAILOR.maxOutputTokens,
@@ -109,8 +112,8 @@ function callPlan() {
     }),
     Object.freeze({
       stage: "cover_letter" as const,
-      provider: "openai-api" as const,
-      model: CORRECTION_FLOW_OPENAI_MODEL,
+      provider: "google-gemini-developer-api" as const,
+      model: APPLICATION_DOCUMENT_MODEL,
       promptVersion: CORRECTION_FLOW_DOCUMENT_PROMPT_VERSION,
       maximumInputTokens: AI_FEATURE_POLICIES.COVER_LETTER.maxInputTokens,
       maximumOutputTokens: AI_FEATURE_POLICIES.COVER_LETTER.maxOutputTokens,
@@ -192,7 +195,11 @@ export function buildCorrectionFlowQualificationManifest({
   });
   return Object.freeze({
     ...core,
-    manifestHash: hashAiInput("correctionFlowQualificationManifest", "1", core)
+    manifestHash: hashAiInput(
+      "correctionFlowQualificationManifest",
+      CORRECTION_FLOW_QUALIFICATION_CONTRACT_VERSION,
+      core
+    )
   });
 }
 
@@ -217,7 +224,7 @@ export type CorrectionFlowQualificationConsent = z.infer<typeof correctionFlowQu
 
 const providerCallMetricsSchema = z.object({
   stage: providerStageSchema,
-  provider: z.enum(["google-gemini-developer-api", "openai-api"]),
+  provider: z.literal("google-gemini-developer-api"),
   model: z.string().min(1).max(120),
   promptVersion: z.string().min(1).max(40),
   inputTokens: z.number().int().nonnegative().nullable(),
