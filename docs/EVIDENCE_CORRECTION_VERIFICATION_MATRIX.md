@@ -40,7 +40,7 @@ The correction-flow envelope can be inspected without reading credentials or sta
 npm run correction-flow:qualify:prepare -- --expected-head=<full-reviewed-git-sha>
 ```
 
-The command fails closed unless the current checkout exactly matches that SHA with no tracked, staged, or untracked changes. It emits the complete safe manifest needed to reconstruct and review its identity, but no raw fixture content. It does not accept consent, open a database, read a provider key, or expose an execution action. A later live run would still require a separately approved secure credential-activation handoff plus owner consent to the exact manifest covering Google and OpenAI data sharing, the four calls, no retries, and the displayed conservative reservation.
+The command fails closed unless the current checkout exactly matches that SHA with no tracked, staged, or untracked changes. It emits the complete safe manifest needed to inspect the envelope, but no raw fixture content. It does not accept consent, open a database, read a provider key, or start execution. Because the timestamp is part of the manifest, this review-only command creates a new hash on every invocation; the live launcher below instead displays and consumes one immutable manifest in the same process.
 
 The same clean-head gate can execute the four-call adapter entirely offline:
 
@@ -48,4 +48,20 @@ The same clean-head gate can execute the four-call adapter entirely offline:
 npm run correction-flow:adapter:offline -- --expected-head=<full-reviewed-git-sha>
 ```
 
-This command creates one manifest-bound authorization covering the exact two Gemini and two OpenAI stages, uses only compiled dummy credentials and local stub transports, and emits hashes plus usage metadata rather than prompts, provider bodies, or credentials. The production-capable adapter accepts credentials explicitly in memory and defaults to the supported provider transports, but no live activation command reads environment credentials. A later paid run still requires an owner-selected secure credential source, an exact reviewed head/manifest, owner approval of that one bounded manifest, and a separate activation callback; it does not require four redundant confirmation prompts.
+This command creates one manifest-bound authorization covering the exact two Gemini and two OpenAI stages, uses only compiled dummy credentials and local stub transports, and emits hashes plus usage metadata rather than prompts, provider bodies, or credentials. It exercises the adapter only.
+
+The complete durable flow can be run offline against the guarded disposable local PostgreSQL database:
+
+```sh
+npm run correction-flow:qualify:offline -- --expected-head=<full-reviewed-git-sha>
+```
+
+`COMMIT5_POSTGRES_TEST` must be `1`, and `DATABASE_URL`, `DIRECT_URL`, and `TEST_DATABASE_URL` must be identical localhost URLs for the exact `apply_pilot_commit5_test` database on PostgreSQL 16. The command uses dummy credentials and stub transports but composes the production job-match runner, evidence-snapshot save, both production document route handlers, DOCX export handlers, verification, and mandatory synthetic-user cleanup. It never resets or migrates the database.
+
+After exact-head review and separate owner approval of the displayed envelope, the local interactive live command is:
+
+```sh
+npm run correction-flow:qualify:live -- --expected-head=<full-reviewed-git-sha>
+```
+
+The live command performs the same clean-head and guarded-database checks before displaying one immutable manifest. Consent is given by typing that exact manifest hash. Only after a match does it request the existing Gemini and OpenAI keys through separate echo-disabled `/dev/tty` prompts; keys are not accepted through arguments, repository files, or environment variables. The four calls are serialized with zero retries. Provider cancellation settles before cleanup, cleanup runs in `finally`, and a cleanup failure produces a stopped receipt rather than success. The emitted receipt contains only bounded status, usage, cost, failure-path, and content-hash fields.
