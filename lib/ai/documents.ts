@@ -1,11 +1,9 @@
 import { z } from "zod";
 
 import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
-import { emailReplyPrompt } from "@/prompts/emailReplyPrompt";
-import { interviewFeedbackPrompt } from "@/prompts/interviewFeedbackPrompt";
-import { interviewPrepPrompt } from "@/prompts/interviewPrepPrompt";
 import { generateJson } from "@/lib/ai/client";
 import type { AiInvocationOptions } from "@/lib/ai/client";
+import { deferredAiFeatureError } from "@/lib/ai/deferred-features";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import {
   validateCoverLetterClaims,
@@ -57,39 +55,6 @@ export const COVER_LETTER_GEMINI_JSON_SCHEMA = strictStringObject({
   }
 }, ["title", "coverLetter", "angle", "claimsUsed"]);
 
-const emailReplySchema = z.object({
-  summary: z.string(),
-  requestedAction: z.string(),
-  deadline: z.union([z.string(), z.null()]),
-  draftResponse: z.string(),
-  suggestedFollowUpTask: z.string()
-});
-
-const interviewPrepSchema = z.object({
-  prepBrief: z.string(),
-  likelyQuestions: z.array(z.string()),
-  starStories: z.array(
-    z.object({
-      theme: z.string(),
-      situation: z.string(),
-      task: z.string(),
-      action: z.string(),
-      result: z.string()
-    })
-  ),
-  questionsToAsk: z.array(z.string()),
-  risksToPrepareFor: z.array(z.string())
-});
-
-const interviewFeedbackSchema = z.object({
-  summary: z.string(),
-  questionsAsked: z.array(z.string()),
-  strongMoments: z.array(z.string()),
-  weakAnswers: z.array(z.string()),
-  betterAnswers: z.array(z.string()),
-  thankYouEmailDraft: z.string()
-});
-
 export async function draftCoverLetter(
   payload: ApplicationDocumentPayload,
   userId?: string,
@@ -134,81 +99,19 @@ export async function draftEmailReply(payload: {
   tone: string;
   job?: unknown;
 }, userId?: string) {
-  const generated = await generateJson({
-    promptName: "emailReplyPrompt",
-    systemPrompt: emailReplyPrompt,
-    payload,
-    schema: emailReplySchema,
-    context: userId ? { userId, feature: "EMAIL_REPLY", promptVersion: "2" } : undefined
-  });
-
-  return {
-    ...generated.data,
-    model: generated.meta.model,
-    promptVersion: generated.meta.promptVersion,
-    inputHash: generated.meta.requestHash,
-    usage: generated.meta
-  };
+  void payload;
+  void userId;
+  throw deferredAiFeatureError("EMAIL_REPLY");
 }
 
 export async function generateInterviewPrep(payload: unknown, userId?: string) {
-  const fallback = {
-    prepBrief: "Review the job description and your own evidence before the interview. Prepare specific examples you can verify.",
-    likelyQuestions: [
-      "What interests you about this role?",
-      "Which of your documented experiences best match the role requirements?",
-      "What questions do you have about the team's work?"
-    ],
-    starStories: [],
-    questionsToAsk: [
-      "What does success look like in the first 90 days?",
-      "What are the main priorities for this role?"
-    ],
-    risksToPrepareFor: ["Review your evidence for each requirement and avoid unsupported claims."]
-  };
-
-  const generated = await generateJson({
-    promptName: "interviewPrepPrompt",
-    systemPrompt: interviewPrepPrompt,
-    payload,
-    fallback,
-    schema: interviewPrepSchema,
-    context: userId ? { userId, feature: "INTERVIEW_PREP", promptVersion: "2" } : undefined
-  });
-
-  return {
-    ...generated.data,
-    model: generated.meta.model,
-    promptVersion: generated.meta.promptVersion,
-    inputHash: generated.meta.requestHash,
-    usage: generated.meta
-  };
+  void payload;
+  void userId;
+  throw deferredAiFeatureError("INTERVIEW_PREP");
 }
 
 export async function generateInterviewFeedback(payload: unknown, userId?: string) {
-  const fallback = {
-    summary: "Detailed AI feedback is unavailable in local mode. Review your interview notes before drawing conclusions.",
-    questionsAsked: [],
-    strongMoments: [],
-    weakAnswers: [],
-    betterAnswers: [],
-    thankYouEmailDraft: "Hi,\n\nThank you for taking the time to speak with me. I appreciated learning more about the role and the team.\n\nBest,\n[Your name]"
-  };
-
-  const generated = await generateJson({
-    promptName: "interviewFeedbackPrompt",
-    systemPrompt: interviewFeedbackPrompt,
-    payload,
-    fallback,
-    schema: interviewFeedbackSchema,
-    context: userId ? { userId, feature: "INTERVIEW_FEEDBACK", promptVersion: "2" } : undefined
-  });
-
-  return {
-    ...generated.data,
-    model: generated.meta.model,
-    promptVersion: generated.meta.promptVersion,
-    inputHash: generated.meta.requestHash,
-    usage: generated.meta
-  };
+  void payload;
+  void userId;
+  throw deferredAiFeatureError("INTERVIEW_FEEDBACK");
 }

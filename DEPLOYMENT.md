@@ -19,7 +19,7 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `AUTH_ALLOWED_EMAILS`
 - `ALLOW_DEMO_USER=false`
 - `AI_ENABLED=true`, `AI_PROVIDER=gemini`, `AI_MOCK_MODE=false`, and `GEMINI_API_KEY` for live resume parsing, JOB_MATCH, tailored résumé, and cover-letter generation. These guarded flows fail closed when Gemini is unavailable; they do not fall back to OpenAI or another model.
-- `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_MOCK_MODE=false` only for remaining legacy OpenAI features such as application planning and interview/email helpers.
+- `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_MOCK_MODE=false` only if explicit legacy resume-parser compatibility is required. Application planning is local rule-based, and AI email/interview generation is deferred for this MVP.
 - Keep the compiled provider pricing registry current. Guarded paid calls fail closed after a model's registered pricing expires.
 - `GMAIL_REDIRECT_URI`
 - `GMAIL_SCOPES`

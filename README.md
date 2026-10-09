@@ -14,7 +14,7 @@ Apply Pilot is a private, AI-assisted job discovery and controlled application w
 - Manual job import with deduplication
 - Automated job discovery from compliant APIs, licensed aggregators, ATS feeds, RSS feeds, and permitted company career pages
 - Greenhouse, Lever, Ashby, Remotive, Adzuna, TheirStack, SerpApi Google Jobs, USAJOBS, RSS, Workable, and generic company-careers provider layer
-- AI job matching, resume tailoring, cover letter drafting, email reply drafting, interview prep, and interview feedback prompt contracts
+- Gemini job matching, resume tailoring, and cover-letter drafting, plus ordinary interview scheduling and local rule-based application planning
 - Dashboard, jobs, job detail, applications, resumes, profile settings, integrations, interviews, and tasks pages
 - Configurable job-source settings page with source CRUD, test, manual sync, sync status, and sync errors
 - Gmail OAuth connect/search/disconnect route scaffolding using readonly access
@@ -73,8 +73,8 @@ Open `http://localhost:3000/dashboard`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
 - `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini`, and `false` respectively for live Gemini flows.
 - `GEMINI_API_KEY`: Gemini API key for resume parsing, JOB_MATCH, tailored résumés, and cover letters. Guarded paid document generation fails closed when Gemini is unavailable; it does not fall back to another provider.
-- `OPENAI_API_KEY`: optional OpenAI API key for legacy AI surfaces that have not yet moved to Gemini, including application planning and interview/email helpers.
-- `OPENAI_MODEL`: default model for remaining legacy OpenAI structured JSON generations.
+- `OPENAI_API_KEY`: optional only for explicit legacy resume-parser compatibility. Application planning is local rule-based, and AI email/interview generation is deferred for this MVP.
+- `OPENAI_MODEL`: default model for explicit legacy OpenAI resume-parser compatibility.
 - `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
 - `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
 - `OPENAI_INPUT_COST_PER_1M_USD`, `OPENAI_OUTPUT_COST_PER_1M_USD`, and `OPENAI_CACHED_INPUT_COST_PER_1M_USD`: optional current pricing used to estimate spend and enforce per-user monthly budgets.
@@ -148,18 +148,17 @@ If Neon gives you both pooled and direct connection strings, use the pooled stri
 
 ## AI Provider Setup
 
-The app uses structured JSON prompts in `/prompts`:
+The active paid structured-output flows use these prompts in `/prompts`:
 
 - `jobMatchPrompt`
 - `resumeTailorPrompt`
 - `coverLetterPrompt`
-- `emailReplyPrompt`
-- `interviewPrepPrompt`
-- `interviewFeedbackPrompt`
 
-Set `GEMINI_API_KEY`, `AI_ENABLED=true`, and `AI_MOCK_MODE=false` for resume parsing, JOB_MATCH, tailored résumé, and cover-letter calls. JOB_MATCH is pinned to Gemini 3.8 Flash with MEDIUM thinking; tailored résumé and cover-letter calls are pinned to Gemini 3.8 Flash with LOW thinking and do not automatically fall back to another provider or model. Remaining legacy OpenAI surfaces require `OPENAI_API_KEY`; those dependencies are separate from the application-document routes.
+`applicationPlanPrompt` remains part of the bounded local planning contract but does not call a provider. Historical email/interview prompt files do not activate the server-disabled MVP features.
 
-AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and available cost metadata, including failed responses that report usage. Guarded paid calls use the compiled, expiring model-price registry; remaining legacy OpenAI calls use the optional pricing environment variables. Users can cap discovery-time AI and set a monthly budget at `/settings/ai`. Model overrides apply only to eligible configurable features; pinned JOB_MATCH and application-document models ignore them. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
+Set `GEMINI_API_KEY`, `AI_ENABLED=true`, and `AI_MOCK_MODE=false` for resume parsing, JOB_MATCH, tailored résumé, and cover-letter calls. JOB_MATCH is pinned to Gemini 3.8 Flash with MEDIUM thinking; tailored résumé and cover-letter calls are pinned to Gemini 3.8 Flash with LOW thinking and do not automatically fall back to another provider or model. Application planning is deterministic and local for this MVP. AI email drafting, interview preparation, and interview feedback are server-disabled and return explicit deferred status instead of fabricated fallback output.
+
+AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and available cost metadata, including failed responses that report usage. Guarded paid calls use the compiled, expiring model-price registry; explicit legacy OpenAI resume-parser compatibility uses the optional pricing environment variables. Users can cap discovery-time AI and set a monthly budget at `/settings/ai`. Model overrides apply only to eligible configurable features; pinned JOB_MATCH and application-document models ignore them. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
 
 ## Google Sign-In Setup
 
