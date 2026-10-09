@@ -41,6 +41,7 @@ import {
 } from "@/lib/ai/resume";
 import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
+import { PublicApiError } from "@/lib/api-errors";
 
 type ProviderFetch = typeof fetch;
 
@@ -92,6 +93,48 @@ export class CorrectionFlowProviderAdapterError extends Error {
 
 function adapterError(code: string, message: string, fieldPath: string | null = null) {
   return new CorrectionFlowProviderAdapterError(code, message, { fieldPath });
+}
+
+function outputFieldPath(path: readonly PropertyKey[]) {
+  let value = "output";
+  for (const part of path) {
+    if (typeof part === "number" && Number.isSafeInteger(part) && part >= 0) {
+      value += `[${part}]`;
+    } else if (typeof part === "string" && /^[A-Za-z][A-Za-z0-9_-]*$/u.test(part)) {
+      value += `.${part}`;
+    } else {
+      return null;
+    }
+  }
+  return value.length <= 240 ? value : null;
+}
+
+function validatorOutputFieldPath(sourcePath: string) {
+  if (!/^[A-Za-z][A-Za-z0-9_-]*(?:(?:\.[A-Za-z][A-Za-z0-9_-]*)|(?:\[\d+\]))*$/u.test(sourcePath)) {
+    return null;
+  }
+  const parts: PropertyKey[] = [];
+  for (const part of sourcePath.match(/[A-Za-z][A-Za-z0-9_-]*|\[\d+\]/gu) ?? []) {
+    parts.push(part.startsWith("[") ? Number(part.slice(1, -1)) : part);
+  }
+  return outputFieldPath(parts);
+}
+
+function claimValidationFailure(error: unknown) {
+  if (!(error instanceof PublicApiError)) return {
+    code: "PROVIDER_DOCUMENT_CLAIM_INVALID",
+    fieldPath: null
+  };
+  const code = error.details?.code;
+  const sourcePath = error.details?.fieldPath;
+  return {
+    code: typeof code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(code)
+      ? code
+      : "PROVIDER_DOCUMENT_CLAIM_INVALID",
+    fieldPath: typeof sourcePath === "string"
+      ? validatorOutputFieldPath(sourcePath)
+      : null
+  };
 }
 
 function nonemptyCredential(value: string, provider: string) {
@@ -428,15 +471,26 @@ export function createCorrectionFlowProviderAdapter({
         cachedInputTokens: response.usage.cachedInputTokens
       };
       const callMetrics = metrics(manifest, stage, usage);
+      const parsed = schema.safeParse(response.value);
+      if (!parsed.success) {
+        const fieldPath = outputFieldPath(parsed.error.issues[0]?.path ?? []);
+        throw new CorrectionFlowProviderAdapterError(
+          "PROVIDER_DOCUMENT_SCHEMA_INVALID",
+          "Gemini returned a qualification document with an unsupported shape.",
+          { billingStatus: "known", providerCompleted: true, usage,
+            estimatedCostMicros: callMetrics.estimatedCostMicros, fieldPath }
+        );
+      }
       let result: T;
       try {
-        result = validate(schema.parse(response.value));
-      } catch {
+        result = validate(parsed.data);
+      } catch (error) {
+        const failure = claimValidationFailure(error);
         throw new CorrectionFlowProviderAdapterError(
-          "PROVIDER_OUTPUT_INVALID",
-          "Gemini returned an unsupported qualification document.",
+          failure.code,
+          "Gemini returned a qualification document that failed factual validation.",
           { billingStatus: "known", providerCompleted: true, usage,
-            estimatedCostMicros: callMetrics.estimatedCostMicros }
+            estimatedCostMicros: callMetrics.estimatedCostMicros, fieldPath: failure.fieldPath }
         );
       }
       finish(stage);

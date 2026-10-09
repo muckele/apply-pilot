@@ -15,11 +15,50 @@ import {
 } from "@/lib/ai/correction-flow-qualification";
 import {
   assertPostgresTestMajorVersion,
+  PostgresTestSafetyError,
   validatePostgresTestEnvironment,
   verifyLivePostgresTestDatabase,
   type PostgresTestEnvironment,
   type ValidatedPostgresTestConfig
 } from "@/tests/postgres/postgres-test-harness";
+
+const preconsentFailureCodes = new Set([
+  "LIVE_ARGUMENT_INVALID",
+  "LIVE_RUNTIME_UNAVAILABLE",
+  "LIVE_GIT_PREFLIGHT_FAILED",
+  "LIVE_HEAD_MISMATCH",
+  "LIVE_WORKTREE_DIRTY",
+  "POSTGRES_TEST_GUARD_REJECTED",
+  "LIVE_DATABASE_PREFLIGHT_FAILED",
+  "MANIFEST_CONSENT_INPUT_FAILED",
+  "MANIFEST_CONSENT_MISMATCH"
+]);
+
+class CorrectionFlowLivePreconsentError extends Error {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "CorrectionFlowLivePreconsentError";
+    this.code = code;
+  }
+}
+
+function preconsentError(code: string, message: string) {
+  return new CorrectionFlowLivePreconsentError(code, message);
+}
+
+export function correctionFlowLivePreconsentDiagnostic(error: unknown) {
+  const code = error instanceof CorrectionFlowLivePreconsentError ? error.code : null;
+  return typeof code === "string" && preconsentFailureCodes.has(code)
+    ? {
+        status: "stopped_before_provider" as const,
+        failureStage: "preconsent_preflight" as const,
+        failureCode: code,
+        providerCallsStarted: 0
+      }
+    : null;
+}
 
 type SafeDatabaseIdentity = Readonly<{
   databaseUrl: string;
@@ -49,13 +88,14 @@ type LiveLauncherDependencies = Readonly<{
 
 function expectedHeadArgument(arguments_: readonly string[]) {
   if (arguments_.length !== 1 || !arguments_[0]?.startsWith("--expected-head=")) {
-    throw new Error(
+    throw preconsentError(
+      "LIVE_ARGUMENT_INVALID",
       "Usage: npm run correction-flow:qualify:live -- --expected-head=<full-git-sha>"
     );
   }
   const expectedHead = arguments_[0].slice("--expected-head=".length).trim();
   if (!/^[a-f0-9]{40}$/u.test(expectedHead)) {
-    throw new Error("The expected qualification head must be a full Git SHA.");
+    throw preconsentError("LIVE_ARGUMENT_INVALID", "The expected qualification head must be a full Git SHA.");
   }
   return expectedHead;
 }
@@ -85,7 +125,10 @@ function assertLocalInteractiveRuntime() {
   ].some((value) => Boolean(value));
   if (process.env.NODE_ENV === "production" || hosted ||
     !process.stdin.isTTY || !process.stderr.isTTY) {
-    throw new Error("Live correction-flow qualification requires a local interactive terminal.");
+    throw preconsentError(
+      "LIVE_RUNTIME_UNAVAILABLE",
+      "Live correction-flow qualification requires a local interactive terminal."
+    );
   }
 }
 
@@ -98,14 +141,21 @@ function gitOutput(args: string[]) {
 }
 
 async function verifyDatabase(): Promise<SafeDatabaseIdentity> {
-  const config = assertCorrectionFlowLiveDatabaseEnvironment(process.env);
-  const live = await verifyLivePostgresTestDatabase(config);
-  assertPostgresTestMajorVersion(live);
-  return {
-    databaseUrl: config.url,
-    databaseName: live.databaseName,
-    serverMajorVersion: live.serverMajorVersion
-  };
+  try {
+    const config = assertCorrectionFlowLiveDatabaseEnvironment(process.env);
+    const live = await verifyLivePostgresTestDatabase(config);
+    assertPostgresTestMajorVersion(live);
+    return {
+      databaseUrl: config.url,
+      databaseName: live.databaseName,
+      serverMajorVersion: live.serverMajorVersion
+    };
+  } catch (error) {
+    if (error instanceof PostgresTestSafetyError) {
+      throw preconsentError("POSTGRES_TEST_GUARD_REJECTED", "The guarded local PostgreSQL preflight was rejected.");
+    }
+    throw preconsentError("LIVE_DATABASE_PREFLIGHT_FAILED", "The disposable local PostgreSQL preflight failed.");
+  }
 }
 
 async function readTty(prompt: string, hidden: boolean) {
@@ -168,17 +218,23 @@ export async function runCorrectionFlowLiveLauncher(
 ) {
   dependencies.assertLocalInteractiveRuntime();
   const expectedHead = expectedHeadArgument(arguments_);
-  const exactHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
-  if (exactHead !== expectedHead) {
-    throw new Error("The current Git head does not match the approved qualification head.");
+  let exactHead: string;
+  let worktreeStatus: string;
+  try {
+    exactHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
+    worktreeStatus = dependencies.gitOutput([
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ]);
+  } catch {
+    throw preconsentError("LIVE_GIT_PREFLIGHT_FAILED", "The qualification Git preflight failed.");
   }
-  const worktreeStatus = dependencies.gitOutput([
-    "status",
-    "--porcelain=v1",
-    "--untracked-files=all"
-  ]);
+  if (exactHead !== expectedHead) {
+    throw preconsentError("LIVE_HEAD_MISMATCH", "The current Git head does not match the approved qualification head.");
+  }
   if (hasDirtyCorrectionFlowQualificationWorktree(worktreeStatus)) {
-    throw new Error("Live correction-flow qualification requires a clean working tree.");
+    throw preconsentError("LIVE_WORKTREE_DIRTY", "Live correction-flow qualification requires a clean working tree.");
   }
 
   const database = await dependencies.verifyDatabase();
@@ -200,12 +256,23 @@ export async function runCorrectionFlowLiveLauncher(
     safeManifest: manifest
   }, null, 2));
 
-  const approval = await dependencies.readVisible(
-    "Type the exact manifest hash to approve the displayed data sharing, existing-key use, " +
-      "four calls, and conservative cost reservation: "
-  );
+  let approval: string;
+  try {
+    approval = await dependencies.readVisible(
+      "Type the exact manifest hash to approve the displayed data sharing, existing-key use, " +
+        "four calls, and conservative cost reservation: "
+    );
+  } catch {
+    throw preconsentError(
+      "MANIFEST_CONSENT_INPUT_FAILED",
+      "Manifest consent input could not be read; no credential was requested and no provider call started."
+    );
+  }
   if (approval !== manifest.manifestHash) {
-    throw new Error("Manifest consent did not match; no credential was requested and no provider call started.");
+    throw preconsentError(
+      "MANIFEST_CONSENT_MISMATCH",
+      "Manifest consent did not match; no credential was requested and no provider call started."
+    );
   }
   const consent = correctionFlowQualificationConsent.parse({
     manifestHash: manifest.manifestHash,
@@ -257,9 +324,11 @@ export async function runCorrectionFlowLiveLauncher(
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runCorrectionFlowLiveLauncher(process.argv.slice(2)).then((exitCode) => {
     process.exitCode = exitCode;
-  }).catch(() => {
-    process.stderr.write(
-      "Live correction-flow qualification stopped before a privacy-safe receipt was produced.\n"
+  }).catch((error) => {
+    const diagnostic = correctionFlowLivePreconsentDiagnostic(error);
+    process.stderr.write(diagnostic
+      ? `${JSON.stringify(diagnostic, null, 2)}\n`
+      : "Live correction-flow qualification stopped before a privacy-safe receipt was produced.\n"
     );
     process.exitCode = 1;
   });

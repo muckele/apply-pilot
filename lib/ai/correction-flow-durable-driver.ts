@@ -69,6 +69,10 @@ export async function runDurableCorrectionFlowQualification({
     CorrectionFlowProviderCallMetrics["stage"],
     CorrectionFlowProviderCallMetrics
   >();
+  const providerCallFailures = new Map<
+    Extract<CorrectionFlowProviderCallMetrics["stage"], "tailored_resume" | "cover_letter">,
+    unknown
+  >();
   const providerAdapter = createCorrectionFlowProviderAdapter({
     manifest,
     consent,
@@ -183,12 +187,17 @@ export async function runDurableCorrectionFlowQualification({
       readApplicationDocumentEvidence,
       tailorResume: (async (payload: unknown) => {
         assertDocumentPayload(payload);
-        const call = await providerAdapter.tailorResume(
-          payload as ApplicationDocumentPayload,
-          requireProviderSignal()
-        );
-        providerCallMetrics.set("tailored_resume", call.metrics);
-        return call.result;
+        try {
+          const call = await providerAdapter.tailorResume(
+            payload as ApplicationDocumentPayload,
+            requireProviderSignal()
+          );
+          providerCallMetrics.set("tailored_resume", call.metrics);
+          return call.result;
+        } catch (error) {
+          providerCallFailures.set("tailored_resume", error);
+          throw error;
+        }
       }) as never,
       writeAuditLog: async () => undefined
     });
@@ -199,12 +208,17 @@ export async function runDurableCorrectionFlowQualification({
       readApplicationDocumentEvidence,
       draftCoverLetter: (async (payload: unknown) => {
         assertDocumentPayload(payload);
-        const call = await providerAdapter.draftCoverLetter(
-          payload as ApplicationDocumentPayload,
-          requireProviderSignal()
-        );
-        providerCallMetrics.set("cover_letter", call.metrics);
-        return call.result;
+        try {
+          const call = await providerAdapter.draftCoverLetter(
+            payload as ApplicationDocumentPayload,
+            requireProviderSignal()
+          );
+          providerCallMetrics.set("cover_letter", call.metrics);
+          return call.result;
+        } catch (error) {
+          providerCallFailures.set("cover_letter", error);
+          throw error;
+        }
       }) as never,
       writeAuditLog: async () => undefined
     });
@@ -278,7 +292,11 @@ export async function runDurableCorrectionFlowQualification({
             resumePost(confirmedRequest("tailored-resume"), {
               params: Promise.resolve({ id: jobId })
             }));
-          if (response.status !== 200) throw new Error("Tailored resume route did not succeed.");
+          if (response.status !== 200) {
+            const failure = providerCallFailures.get("tailored_resume");
+            if (failure) throw failure;
+            throw new Error("Tailored resume route did not succeed.");
+          }
           const body = await response.json();
           if (body.version.evidenceSnapshotId !== currentSnapshotId) {
             throw new Error("Tailored resume was not bound to current evidence.");
@@ -291,7 +309,11 @@ export async function runDurableCorrectionFlowQualification({
             coverPost(confirmedRequest("cover-letter"), {
               params: Promise.resolve({ id: jobId })
             }));
-          if (response.status !== 200) throw new Error("Cover letter route did not succeed.");
+          if (response.status !== 200) {
+            const failure = providerCallFailures.get("cover_letter");
+            if (failure) throw failure;
+            throw new Error("Cover letter route did not succeed.");
+          }
           const body = await response.json();
           if (body.document.evidenceSnapshotId !== currentSnapshotId) {
             throw new Error("Cover letter was not bound to current evidence.");

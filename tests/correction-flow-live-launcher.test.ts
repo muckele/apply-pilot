@@ -9,6 +9,7 @@ import {
   assertCorrectionFlowLiveDatabaseEnvironment,
   runCorrectionFlowLiveLauncher
 } from "@/scripts/run-correction-flow-qualification-live";
+import * as liveLauncherModule from "@/scripts/run-correction-flow-qualification-live";
 
 const exactHead = "9".repeat(40);
 const geminiKey = "synthetic-gemini-secret-never-log";
@@ -97,9 +98,126 @@ test("the live launcher reads no credentials and starts no execution when manife
         throw new Error("must not execute");
       }
     }),
-    /consent did not match/iu
+    (error: unknown) => {
+      const diagnostic = liveLauncherModule.correctionFlowLivePreconsentDiagnostic(error);
+      return (error as { code?: unknown }).code === "MANIFEST_CONSENT_MISMATCH" &&
+        /consent did not match/iu.test((error as Error).message) &&
+        diagnostic?.failureCode === "MANIFEST_CONSENT_MISMATCH" &&
+        diagnostic.providerCallsStarted === 0;
+    }
   );
   assert.equal(secretReads, 0);
+  assert.equal(executions, 0);
+});
+
+test("the live launcher bounds visible consent input failures before credentials or execution", async () => {
+  const privateSentinel = "private-visible-input-failure-must-not-appear";
+  let secretReads = 0;
+  let executions = 0;
+  await assert.rejects(
+    runCorrectionFlowLiveLauncher([`--expected-head=${exactHead}`], {
+      assertLocalInteractiveRuntime() {},
+      gitOutput(args) {
+        return args[0] === "rev-parse" ? exactHead : "";
+      },
+      now: () => new Date("2026-10-09T18:00:00.000Z"),
+      async verifyDatabase() {
+        return { databaseUrl: localDatabaseUrl, databaseName: "apply_pilot_commit5_test", serverMajorVersion: 16 };
+      },
+      write() {},
+      async readVisible() {
+        throw new Error(privateSentinel);
+      },
+      async readSecret() {
+        secretReads += 1;
+        return geminiKey;
+      },
+      async execute() {
+        executions += 1;
+        throw new Error("must not execute");
+      }
+    }),
+    (error: unknown) => {
+      const diagnostic = liveLauncherModule.correctionFlowLivePreconsentDiagnostic(error);
+      return diagnostic?.failureCode === "MANIFEST_CONSENT_INPUT_FAILED" &&
+        diagnostic.providerCallsStarted === 0 &&
+        !JSON.stringify(diagnostic).includes(privateSentinel);
+    }
+  );
+  assert.equal(secretReads, 0);
+  assert.equal(executions, 0);
+});
+
+test("the live launcher does not misclassify execution failures as zero-call preconsent failures", async () => {
+  const privateSentinel = "private-execution-failure-must-not-appear";
+  let displayedManifestHash = "";
+  await assert.rejects(
+    runCorrectionFlowLiveLauncher([`--expected-head=${exactHead}`], {
+      assertLocalInteractiveRuntime() {},
+      gitOutput(args) {
+        return args[0] === "rev-parse" ? exactHead : "";
+      },
+      now: () => new Date("2026-10-09T18:00:00.000Z"),
+      async verifyDatabase() {
+        return { databaseUrl: localDatabaseUrl, databaseName: "apply_pilot_commit5_test", serverMajorVersion: 16 };
+      },
+      write(value) {
+        if (value.includes('"status": "awaiting_manifest_consent"')) {
+          displayedManifestHash = JSON.parse(value).safeManifest.manifestHash;
+        }
+      },
+      async readVisible() {
+        return displayedManifestHash;
+      },
+      async readSecret() {
+        return geminiKey;
+      },
+      async execute() {
+        throw Object.assign(new Error(privateSentinel), { code: "MANIFEST_CONSENT_INPUT_FAILED" });
+      }
+    }),
+    (error: unknown) => {
+      assert.equal(liveLauncherModule.correctionFlowLivePreconsentDiagnostic(error), null);
+      return (error as Error).message === privateSentinel;
+    }
+  );
+});
+
+test("the live launcher does not misclassify secret-input failures as zero-call preconsent failures", async () => {
+  const privateSentinel = "private-secret-input-failure-must-not-appear";
+  let displayedManifestHash = "";
+  let executions = 0;
+  await assert.rejects(
+    runCorrectionFlowLiveLauncher([`--expected-head=${exactHead}`], {
+      assertLocalInteractiveRuntime() {},
+      gitOutput(args) {
+        return args[0] === "rev-parse" ? exactHead : "";
+      },
+      now: () => new Date("2026-10-09T18:00:00.000Z"),
+      async verifyDatabase() {
+        return { databaseUrl: localDatabaseUrl, databaseName: "apply_pilot_commit5_test", serverMajorVersion: 16 };
+      },
+      write(value) {
+        if (value.includes('"status": "awaiting_manifest_consent"')) {
+          displayedManifestHash = JSON.parse(value).safeManifest.manifestHash;
+        }
+      },
+      async readVisible() {
+        return displayedManifestHash;
+      },
+      async readSecret() {
+        throw Object.assign(new Error(privateSentinel), { code: "MANIFEST_CONSENT_INPUT_FAILED" });
+      },
+      async execute() {
+        executions += 1;
+        throw new Error("must not execute");
+      }
+    }),
+    (error: unknown) => {
+      assert.equal(liveLauncherModule.correctionFlowLivePreconsentDiagnostic(error), null);
+      return (error as Error).message === privateSentinel;
+    }
+  );
   assert.equal(executions, 0);
 });
 
@@ -161,12 +279,25 @@ test("the live command accepts no provider credential through arguments, environ
 
   assert.equal(
     packageJson.scripts["correction-flow:qualify:live"],
-    "node --import tsx scripts/run-correction-flow-qualification-live.ts"
+    "COMMIT5_POSTGRES_TEST=1 node --import tsx scripts/run-correction-flow-qualification-live.ts"
   );
   assert.doesNotMatch(script, /GEMINI_API_KEY|OPENAI_API_KEY|--api-key/u);
   assert.doesNotMatch(script, /["']\.env/u);
   assert.match(script, /\/dev\/tty/u);
   assert.match(script, /\["-echo"\]/u);
+});
+
+test("the executable formats pre-consent failures as bounded zero-call diagnostics", () => {
+  const candidate = liveLauncherModule as typeof liveLauncherModule & {
+    correctionFlowLivePreconsentDiagnostic?: (error: unknown) => unknown;
+  };
+  assert.equal(typeof candidate.correctionFlowLivePreconsentDiagnostic, "function");
+  const privateSentinel = "private-terminal-input-must-not-appear";
+  const unbranded = Object.assign(new Error(privateSentinel), {
+    code: "POSTGRES_TEST_GUARD_REJECTED"
+  });
+  assert.equal(candidate.correctionFlowLivePreconsentDiagnostic?.(unbranded), null);
+  assert.equal(candidate.correctionFlowLivePreconsentDiagnostic?.(new Error(privateSentinel)), null);
 });
 
 function passedReceipt(manifestHash: string): CorrectionFlowQualificationReceipt {

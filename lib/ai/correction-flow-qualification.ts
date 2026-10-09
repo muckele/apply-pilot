@@ -325,7 +325,8 @@ function safeFailureFieldPath(error: unknown) {
   const fieldPath = error && typeof error === "object" && "fieldPath" in error
     ? (error as { fieldPath?: unknown }).fieldPath
     : null;
-  return typeof fieldPath === "string" && /^(?:job|resume|profile|reviewedEvidence)(?:\.[A-Za-z0-9_[\].-]+)?$/u.test(fieldPath)
+  return typeof fieldPath === "string" && fieldPath.length <= 240 &&
+    /^(?:job|resume|profile|reviewedEvidence|output)(?:(?:\.[A-Za-z][A-Za-z0-9_-]*)|(?:\[\d+\]))*$/u.test(fieldPath)
     ? fieldPath
     : null;
 }
@@ -523,6 +524,7 @@ export async function runCorrectionFlowQualification({
       rawMetrics = await boundedStep(invoke);
     } catch (error) {
       const failure = error && typeof error === "object" ? error as Record<string, unknown> : {};
+      if (failure.providerCompleted === true) providerCallsCompleted += 1;
       const knownUsage = coherentKnownUsage(failure, plan);
       if (knownUsage) recordKnownUsage(knownUsage);
       else if (failure.billingStatus !== "not_charged") unknownBillingCallCount += 1;

@@ -267,6 +267,41 @@ test("a billed invalid provider response retains only safe known usage and cost"
   assert.doesNotMatch(JSON.stringify(receipt), new RegExp(privateSentinel, "u"));
 });
 
+test("a completed invalid document response retains completed-call accounting and a safe output path", async () => {
+  const value = manifest();
+  const events: string[] = [];
+  const driver = successfulDriver(events);
+  const billed = metrics("initial_match");
+  driver.initialMatch = async () => {
+    events.push("initial_match");
+    throw Object.assign(new Error(`${privateSentinel}: private invalid document detail`), {
+      code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
+      fieldPath: "output.claimEvidence[0].claim",
+      billingStatus: "known",
+      providerCompleted: true,
+      inputTokens: billed.inputTokens,
+      outputTokens: billed.outputTokens,
+      cachedInputTokens: billed.cachedInputTokens,
+      estimatedCostMicros: billed.estimatedCostMicros
+    });
+  };
+
+  const receipt = await runCorrectionFlowQualification({
+    manifest: value,
+    consent: consentFor(value),
+    driver
+  });
+
+  assert.equal(receipt.status, "stopped");
+  assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM");
+  assert.equal(receipt.failureFieldPath, "output.claimEvidence[0].claim");
+  assert.equal(receipt.providerCallsStarted, 1);
+  assert.equal(receipt.providerCallsCompleted, 1);
+  assert.equal(receipt.knownEstimatedCostMicros, 263);
+  assert.equal(receipt.unknownBillingCallCount, 0);
+  assert.doesNotMatch(JSON.stringify(receipt), new RegExp(privateSentinel, "u"));
+});
+
 test("cancellation during a provider step stops the sequence and cleans up", async () => {
   const value = manifest();
   const events: string[] = [];

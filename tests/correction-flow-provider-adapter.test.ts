@@ -159,7 +159,8 @@ function jsonResponse(value: unknown) {
 function stubFetches(
   capturedBodies: unknown[],
   capturedUrls: string[] = [],
-  capturedHeaders: Headers[] = []
+  capturedHeaders: Headers[] = [],
+  outputs: readonly unknown[] = [initialMatchOutput(), updatedMatchOutput(), resumeOutput(), coverOutput()]
 ): CorrectionFlowProviderFetches {
   let geminiCall = 0;
   return {
@@ -167,7 +168,6 @@ function stubFetches(
       capturedUrls.push(String(input));
       capturedHeaders.push(new Headers(init?.headers));
       capturedBodies.push(JSON.parse(String(init?.body)));
-      const outputs = [initialMatchOutput(), updatedMatchOutput(), resumeOutput(), coverOutput()];
       const output = outputs[geminiCall++];
       if (!output) throw new Error("Unexpected Gemini call.");
       return jsonResponse(output);
@@ -232,6 +232,74 @@ test("the manifest-bound adapter executes exactly four ordered SDK requests with
     (error: unknown) => (error as { code?: unknown }).code === "PROVIDER_CALL_LIMIT_REACHED"
   );
   assert.equal(capturedBodies.length, 4);
+});
+
+test("document schema failures retain a safe output path and known provider usage", async () => {
+  const value = manifest();
+  const invalidResume = { ...resumeOutput(), professionalSummary: null };
+  const adapter = createCorrectionFlowProviderAdapter({
+    manifest: value,
+    consent: consentFor(value),
+    fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
+    credentials,
+    fetches: stubFetches([], [], [], [initialMatchOutput(), updatedMatchOutput(), invalidResume])
+  });
+  const signal = new AbortController().signal;
+  await adapter.scoreMatch("initial_match", matchInput(false), signal);
+  await adapter.scoreMatch("updated_match", matchInput(true), signal);
+
+  await assert.rejects(
+    adapter.tailorResume(documentPayload(), signal),
+    (error: unknown) => {
+      const failure = error as Record<string, unknown>;
+      return failure.code === "PROVIDER_DOCUMENT_SCHEMA_INVALID" &&
+        failure.fieldPath === "output.professionalSummary" &&
+        failure.billingStatus === "known" &&
+        failure.providerCompleted === true &&
+        failure.inputTokens === 100 &&
+        failure.outputTokens === 50 &&
+        failure.cachedInputTokens === 0 &&
+        failure.estimatedCostMicros === 263;
+    }
+  );
+});
+
+test("document claim failures retain their safe validator code and output path", async () => {
+  const value = manifest();
+  const unsupportedClaim = "Synthetic owner led an unsupported lunar logistics program.";
+  const invalidResume = {
+    ...resumeOutput(),
+    professionalSummary: unsupportedClaim,
+    resumeText: unsupportedClaim,
+    claimEvidence: [{
+      claim: unsupportedClaim,
+      citations: [{
+        ref: "resume.summary",
+        excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary
+      }]
+    }]
+  };
+  const adapter = createCorrectionFlowProviderAdapter({
+    manifest: value,
+    consent: consentFor(value),
+    fixture: SYNTHETIC_CORRECTION_FLOW_FIXTURE,
+    credentials,
+    fetches: stubFetches([], [], [], [initialMatchOutput(), updatedMatchOutput(), invalidResume])
+  });
+  const signal = new AbortController().signal;
+  await adapter.scoreMatch("initial_match", matchInput(false), signal);
+  await adapter.scoreMatch("updated_match", matchInput(true), signal);
+
+  await assert.rejects(
+    adapter.tailorResume(documentPayload(), signal),
+    (error: unknown) => {
+      const failure = error as Record<string, unknown>;
+      return failure.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM" &&
+        failure.fieldPath === "output.claimEvidence[0].claim" &&
+        failure.billingStatus === "known" &&
+        failure.providerCompleted === true;
+    }
+  );
 });
 
 test("the adapter rejects substituted fixture data before a provider request", async () => {
