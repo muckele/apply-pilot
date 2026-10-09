@@ -14,6 +14,7 @@ import {
   createCorrectionFlowProviderAdapter,
   type CorrectionFlowProviderFetches
 } from "@/lib/ai/correction-flow-provider-adapter";
+import { getApplicationDocumentEvidenceReferences } from "@/lib/ai/application-document-claims";
 import type { MatchInput } from "@/lib/ai/job-match";
 
 const exactHead = "8d850d0dcf9a141cf41363cc09cb2cde24c8317c";
@@ -223,6 +224,37 @@ test("the manifest-bound adapter executes exactly four ordered SDK requests with
     const generation = (body as { generationConfig: Record<string, unknown> }).generationConfig;
     assert.equal(generation.responseMimeType, "application/json");
     assert.ok(generation.responseJsonSchema);
+  }
+  const references = getApplicationDocumentEvidenceReferences(documentPayload());
+  const resumeBody = capturedBodies[2] as {
+    systemInstruction: { parts: Array<{ text: string }> };
+    generationConfig: { responseJsonSchema: {
+      properties: { claimEvidence: { items: { properties: {
+        citations: { items: { properties: { ref: { enum: string[] } } } };
+      } } } };
+    } };
+  };
+  const coverBody = capturedBodies[3] as {
+    systemInstruction: { parts: Array<{ text: string }> };
+    generationConfig: { responseJsonSchema: {
+      properties: { claimsUsed: { items: { properties: {
+        citations: { items: { properties: { ref: { enum: string[] } } } };
+      } } } };
+    } };
+  };
+  assert.deepEqual(
+    resumeBody.generationConfig.responseJsonSchema.properties.claimEvidence
+      .items.properties.citations.items.properties.ref.enum,
+    references.all
+  );
+  assert.deepEqual(
+    coverBody.generationConfig.responseJsonSchema.properties.claimsUsed
+      .items.properties.citations.items.properties.ref.enum,
+    references.all
+  );
+  for (const body of [resumeBody, coverBody]) {
+    assert.match(body.systemInstruction.parts[0]?.text ?? "", /exact strings only/u);
+    assert.match(body.systemInstruction.parts[0]?.text ?? "", /Never append child paths/u);
   }
   const serialized = JSON.stringify(capturedBodies);
   assert.doesNotMatch(serialized, /expectedRecommendation|expectedBand|reviewedRecommendation|disagreementCategories/u);

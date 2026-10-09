@@ -22,10 +22,10 @@ import { hashAiInput } from "@/lib/ai/input-hash";
 import { assertAiInputWithinLimits, AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
-  TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+  buildTailoredResumeGeminiJsonSchema,
+  buildTailoredResumeSystemPrompt,
   tailoredResumeSchema
 } from "@/lib/ai/resume";
-import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 
 export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_CONTRACT_VERSION = "1" as const;
 export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_STEP_TIMEOUT_MS = 180_000 as const;
@@ -89,14 +89,16 @@ function diagnosticCall() {
 }
 
 function productionRequestBody(payload: ApplicationDocumentPayload) {
-  const { policy } = assertAiInputWithinLimits("RESUME_TAILOR", resumeTailorPrompt, {
+  const systemPrompt = buildTailoredResumeSystemPrompt(payload);
+  const responseJsonSchema = buildTailoredResumeGeminiJsonSchema(payload);
+  const { policy } = assertAiInputWithinLimits("RESUME_TAILOR", systemPrompt, {
     payload,
-    responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA
+    responseJsonSchema
   });
   const body = buildGeminiJsonRequest({
-    systemPrompt: resumeTailorPrompt,
+    systemPrompt,
     payload,
-    responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+    responseJsonSchema,
     maxOutputTokens: policy.maxOutputTokens,
     thinkingLevel: APPLICATION_DOCUMENT_THINKING_LEVEL
   });
@@ -153,7 +155,11 @@ export function buildCorrectionFlowResumeDiagnosticManifest({
     conservativeReservationMicros: call.maximumCostMicros,
     payloadHash,
     reviewedEvidenceHash,
-    schemaHash: hashAiInput("correctionFlowResumeDiagnosticSchema", "1", TAILORED_RESUME_GEMINI_JSON_SCHEMA),
+    schemaHash: hashAiInput(
+      "correctionFlowResumeDiagnosticSchema",
+      "1",
+      buildTailoredResumeGeminiJsonSchema(payload)
+    ),
     wireRequestHash: hashAiInput("correctionFlowProviderWire", "1", productionRequestBody(payload))
   });
   return Object.freeze({
@@ -323,12 +329,14 @@ export function createCorrectionFlowResumeDiagnosticRunner({
       const initial = { ...baseReceipt(manifest), providerCallsStarted: 1 };
       let usage: GeminiUsage | null = null;
       try {
+        const systemPrompt = buildTailoredResumeSystemPrompt(payload);
+        const responseJsonSchema = buildTailoredResumeGeminiJsonSchema(payload);
         const response = await callGeminiJsonProvider({
           apiKey,
           model: APPLICATION_DOCUMENT_MODEL,
-          systemPrompt: resumeTailorPrompt,
+          systemPrompt,
           payload,
-          responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+          responseJsonSchema,
           maxOutputTokens: AI_FEATURE_POLICIES.RESUME_TAILOR.maxOutputTokens,
           thinkingLevel: APPLICATION_DOCUMENT_THINKING_LEVEL,
           timeoutMs: manifest.stepTimeoutMs,

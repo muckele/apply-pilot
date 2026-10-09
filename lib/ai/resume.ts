@@ -57,8 +57,11 @@ import { PublicApiError } from "@/lib/api-errors";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import { prisma } from "@/lib/prisma";
 import {
+  buildApplicationDocumentCitationJsonSchema,
+  buildApplicationDocumentSystemPrompt,
   validateTailoredResumeClaims,
-  type ApplicationDocumentClaimEvidence
+  type ApplicationDocumentClaimEvidence,
+  type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
@@ -1309,60 +1312,64 @@ export const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef,
 }).strict();
 
 const tailoredResumeStringArray = { type: "array", items: { type: "string" } } as const;
-const tailoredResumeCitationJsonSchema = {
-  type: "object",
-  additionalProperties: false,
-  properties: { ref: { type: "string" }, excerpt: { type: "string" } },
-  required: ["ref", "excerpt"]
-} as const;
+export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
+  return buildApplicationDocumentSystemPrompt(resumeTailorPrompt, payload);
+}
 
-export const TAILORED_RESUME_GEMINI_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    professionalSummary: { type: "string" },
-    skillsSection: tailoredResumeStringArray,
-    bulletRewrites: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          original: { type: "string" },
-          rewrite: { type: "string" },
-          reason: { type: "string" }
-        },
-        required: ["original", "rewrite", "reason"]
-      }
-    },
-    rolesOrProjectsToEmphasize: tailoredResumeStringArray,
-    unsupportedKeywords: tailoredResumeStringArray,
-    formattingWarnings: tailoredResumeStringArray,
-    resumeText: { type: "string" },
-    claimEvidence: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          claim: { type: "string" },
-          citations: { type: "array", minItems: 1, items: tailoredResumeCitationJsonSchema }
-        },
-        required: ["claim", "citations"]
-      }
+export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {
+  const claimEvidence: Record<string, unknown> = {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        claim: { type: "string" },
+        citations: {
+          type: "array",
+          minItems: 1,
+          items: buildApplicationDocumentCitationJsonSchema(payload)
+        }
+      },
+      required: ["claim", "citations"]
     }
-  },
-  required: [
-    "professionalSummary",
-    "skillsSection",
-    "bulletRewrites",
-    "rolesOrProjectsToEmphasize",
-    "unsupportedKeywords",
-    "formattingWarnings",
-    "resumeText",
-    "claimEvidence"
-  ]
-} as const;
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      professionalSummary: { type: "string" },
+      skillsSection: tailoredResumeStringArray,
+      bulletRewrites: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            original: { type: "string" },
+            rewrite: { type: "string" },
+            reason: { type: "string" }
+          },
+          required: ["original", "rewrite", "reason"]
+        }
+      },
+      rolesOrProjectsToEmphasize: tailoredResumeStringArray,
+      unsupportedKeywords: tailoredResumeStringArray,
+      formattingWarnings: tailoredResumeStringArray,
+      resumeText: { type: "string" },
+      claimEvidence
+    },
+    required: [
+      "professionalSummary",
+      "skillsSection",
+      "bulletRewrites",
+      "rolesOrProjectsToEmphasize",
+      "unsupportedKeywords",
+      "formattingWarnings",
+      "resumeText",
+      "claimEvidence"
+    ]
+  };
+}
 
 function assertSourceSupported(source: string, value: string | null, path: string) {
   if (value === null || value === "") return;
@@ -4299,19 +4306,20 @@ export async function tailorResume(
   userId?: string,
   options: AiInvocationOptions = {}
 ) {
+  const applicationPayload = payload as ApplicationDocumentPayload;
   const generated = await generateJson<TailoredResumeOutput>({
     promptName: "resumeTailorPrompt",
-    systemPrompt: resumeTailorPrompt,
+    systemPrompt: buildTailoredResumeSystemPrompt(applicationPayload),
     payload,
     schema: tailoredResumeSchema,
-    responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+    responseJsonSchema: buildTailoredResumeGeminiJsonSchema(applicationPayload),
     context: userId ? {
       userId,
       feature: "RESUME_TAILOR",
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     } : undefined,
-    validate: (value) => validateTailoredResumeClaims(payload as Parameters<typeof validateTailoredResumeClaims>[0], value)
+    validate: (value) => validateTailoredResumeClaims(applicationPayload, value)
   });
 
   return {

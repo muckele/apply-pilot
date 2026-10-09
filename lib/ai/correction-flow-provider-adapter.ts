@@ -18,7 +18,11 @@ import {
   APPLICATION_DOCUMENT_THINKING_LEVEL
 } from "@/lib/ai/application-document-version";
 import { assertConservativeApplicationDocumentWireBound } from "@/lib/ai/client";
-import { COVER_LETTER_GEMINI_JSON_SCHEMA, coverLetterSchema } from "@/lib/ai/documents";
+import {
+  buildCoverLetterGeminiJsonSchema,
+  buildCoverLetterSystemPrompt,
+  coverLetterSchema
+} from "@/lib/ai/documents";
 import { buildGeminiJsonRequest, callGeminiJsonProvider, GeminiProviderError } from "@/lib/ai/gemini";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import {
@@ -35,12 +39,11 @@ import {
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
-  TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+  buildTailoredResumeGeminiJsonSchema,
+  buildTailoredResumeSystemPrompt,
   tailoredResumeSchema,
   type TailoredResumeOutput
 } from "@/lib/ai/resume";
-import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
-import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 import { PublicApiError } from "@/lib/api-errors";
 
 type ProviderFetch = typeof fetch;
@@ -553,10 +556,10 @@ export function createCorrectionFlowProviderAdapter({
         stage: "tailored_resume",
         feature: "RESUME_TAILOR",
         promptName: "resumeTailorPrompt",
-        systemPrompt: resumeTailorPrompt,
+        systemPrompt: buildTailoredResumeSystemPrompt(payload),
         payload,
         schema: tailoredResumeSchema,
-        responseJsonSchema: TAILORED_RESUME_GEMINI_JSON_SCHEMA,
+        responseJsonSchema: buildTailoredResumeGeminiJsonSchema(payload),
         validate: (value) => validateTailoredResumeClaims(payload, value as TailoredResumeOutput),
         signal
       });
@@ -566,10 +569,10 @@ export function createCorrectionFlowProviderAdapter({
         stage: "cover_letter",
         feature: "COVER_LETTER",
         promptName: "coverLetterPrompt",
-        systemPrompt: coverLetterPrompt,
+        systemPrompt: buildCoverLetterSystemPrompt(payload),
         payload,
         schema: coverLetterSchema,
-        responseJsonSchema: COVER_LETTER_GEMINI_JSON_SCHEMA,
+        responseJsonSchema: buildCoverLetterGeminiJsonSchema(payload),
         validate: (value) => validateCoverLetterClaims(payload, value as CoverLetterOutput),
         signal
       });

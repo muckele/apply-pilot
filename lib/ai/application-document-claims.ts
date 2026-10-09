@@ -49,6 +49,83 @@ function present(value: unknown) {
   return typeof value === "string" ? value.trim().length > 0 : value !== null && value !== undefined;
 }
 
+function exactReferences(
+  root: "job" | "resume" | "profile",
+  record: Record<string, unknown> | null | undefined,
+  fields: readonly string[]
+) {
+  return fields.flatMap((field) => present(record?.[field]) ? [`${root}.${field}`] : []);
+}
+
+function indexedReferences(
+  root: "job" | "resume" | "profile",
+  record: Record<string, unknown> | null | undefined,
+  fields: readonly string[]
+) {
+  return fields.flatMap((field) => {
+    const values = record?.[field];
+    return Array.isArray(values)
+      ? values.flatMap((value, index) => present(value) ? [`${root}.${field}[${index}]`] : [])
+      : [];
+  });
+}
+
+export function getApplicationDocumentEvidenceReferences(payload: ApplicationDocumentPayload) {
+  const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
+    ? payload.reviewedEvidence.facts.flatMap((value, index) =>
+        value && typeof value === "object" && !Array.isArray(value) && present(value.fact)
+          ? [`reviewedEvidence.facts[${index}].fact`]
+          : [])
+    : [];
+  const applicant = [
+    ...exactReferences("resume", payload.resume, exactReferenceFields.resume),
+    ...indexedReferences("resume", payload.resume, indexedReferenceFields.resume),
+    ...indexedReferences("profile", payload.profile, ["skillsToEmphasize"]),
+    ...reviewedFacts
+  ];
+  const job = [
+    ...exactReferences("job", payload.job, exactReferenceFields.job),
+    ...indexedReferences("job", payload.job, indexedReferenceFields.job)
+  ];
+  return Object.freeze({
+    applicant: Object.freeze(applicant),
+    job: Object.freeze(job),
+    all: Object.freeze([...applicant, ...job])
+  });
+}
+
+export function buildApplicationDocumentSystemPrompt(
+  basePrompt: string,
+  payload: ApplicationDocumentPayload
+) {
+  const references = getApplicationDocumentEvidenceReferences(payload);
+  return `${basePrompt.trim()}\n\n` +
+    `Allowed applicant evidence references (exact strings only): ${JSON.stringify(references.applicant)}\n` +
+    `Allowed contextual job references (exact strings only): ${JSON.stringify(references.job)}\n` +
+    "Use only listed references. Never append child paths to a listed reference. " +
+    "Every generated applicant claim must cite at least one listed applicant evidence reference; " +
+    "a contextual job reference cannot support an applicant claim by itself. " +
+    "If the applicant allowlist is empty, return no generated applicant claims.";
+}
+
+export function buildApplicationDocumentCitationJsonSchema(payload: ApplicationDocumentPayload) {
+  const references = getApplicationDocumentEvidenceReferences(payload);
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      ref: {
+        type: "string",
+        enum: references.all.length
+          ? [...references.all]
+          : ["__NO_SUBMITTED_APPLICATION_DOCUMENT_REFERENCE__"]
+      },
+      excerpt: { type: "string" }
+    },
+    required: ["ref", "excerpt"]
+  } as const;
+}
+
 function resolveReference(payload: ApplicationDocumentPayload, ref: string) {
   const reviewedFact = ref.match(/^reviewedEvidence\.facts\[(\d+)\]\.fact$/u);
   if (reviewedFact && Array.isArray(payload.reviewedEvidence?.facts)) {

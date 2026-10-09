@@ -6,6 +6,8 @@ import type { AiInvocationOptions } from "@/lib/ai/client";
 import { deferredAiFeatureError } from "@/lib/ai/deferred-features";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import {
+  buildApplicationDocumentCitationJsonSchema,
+  buildApplicationDocumentSystemPrompt,
   validateCoverLetterClaims,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
@@ -33,27 +35,28 @@ const strictStringObject = (properties: Record<string, unknown>, required: strin
   required
 });
 
-const applicationDocumentCitationJsonSchema = strictStringObject({
-  ref: { type: "string" },
-  excerpt: { type: "string" }
-}, ["ref", "excerpt"]);
+export function buildCoverLetterSystemPrompt(payload: ApplicationDocumentPayload) {
+  return buildApplicationDocumentSystemPrompt(coverLetterPrompt, payload);
+}
 
-export const COVER_LETTER_GEMINI_JSON_SCHEMA = strictStringObject({
-  title: { type: "string" },
-  coverLetter: { type: "string" },
-  angle: { type: "string" },
-  claimsUsed: {
-    type: "array",
-    items: strictStringObject({
-      claim: { type: "string" },
-      citations: {
-        type: "array",
-        minItems: 1,
-        items: applicationDocumentCitationJsonSchema
-      }
-    }, ["claim", "citations"])
-  }
-}, ["title", "coverLetter", "angle", "claimsUsed"]);
+export function buildCoverLetterGeminiJsonSchema(payload: ApplicationDocumentPayload) {
+  return strictStringObject({
+    title: { type: "string" },
+    coverLetter: { type: "string" },
+    angle: { type: "string" },
+    claimsUsed: {
+      type: "array",
+      items: strictStringObject({
+        claim: { type: "string" },
+        citations: {
+          type: "array",
+          minItems: 1,
+          items: buildApplicationDocumentCitationJsonSchema(payload)
+        }
+      }, ["claim", "citations"])
+    }
+  }, ["title", "coverLetter", "angle", "claimsUsed"]);
+}
 
 export async function draftCoverLetter(
   payload: ApplicationDocumentPayload,
@@ -68,14 +71,16 @@ export async function draftCoverLetter(
     angle: "Generic draft requiring applicant personalization and review before use.",
     claimsUsed: [] as ApplicationDocumentClaimEvidence[]
   };
+  const systemPrompt = buildCoverLetterSystemPrompt(payload);
+  const responseJsonSchema = buildCoverLetterGeminiJsonSchema(payload);
 
   const generated = await generateJson({
     promptName: "coverLetterPrompt",
-    systemPrompt: coverLetterPrompt,
+    systemPrompt,
     payload,
     fallback,
     schema: coverLetterSchema,
-    responseJsonSchema: COVER_LETTER_GEMINI_JSON_SCHEMA,
+    responseJsonSchema,
     context: userId ? {
       userId,
       feature: "COVER_LETTER",
