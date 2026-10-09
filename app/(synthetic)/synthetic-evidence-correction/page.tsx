@@ -1,7 +1,10 @@
 import { notFound } from "next/navigation";
 
+import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
 import { EvidenceCorrectionReview } from "@/components/evidence-correction-review";
+import { JobDocumentWorkspace } from "@/components/job-document-workspace";
 import { JobMatchOmissionNotice } from "@/components/job-match-omission-notice";
+import { Panel, PanelHeader } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 
 export const dynamic = "force-dynamic";
@@ -57,6 +60,38 @@ const syntheticAnalysis = {
   }]
 };
 
+const generatedResume = {
+  id: "synthetic-resume-version-1",
+  title: "Synthetic Employer - Service Operations Director tailored resume",
+  fullText: [
+    "EDUCATION",
+    "Bachelor of Arts in Business Administration",
+    "ACHIEVEMENTS",
+    "Synthetic owner confirms leading cross-functional service portfolio reviews."
+  ].join("\n"),
+  summary: "Bachelor of Arts in Business Administration",
+  atsCompatibility: null,
+  jobFitScore: null,
+  evidenceCurrent: false,
+  createdAt: "2026-10-08T15:35:00.000Z"
+};
+
+const generatedCoverLetter = {
+  id: "synthetic-cover-letter-1",
+  title: "Synthetic Employer Service Operations Director cover letter",
+  content: [
+    "Dear Synthetic Employer Hiring Team,",
+    "",
+    "Bachelor of Arts in Business Administration",
+    "Synthetic owner confirms leading cross-functional service portfolio reviews.",
+    "",
+    "Sincerely,",
+    "Synthetic Candidate"
+  ].join("\n"),
+  evidenceCurrent: false,
+  createdAt: "2026-10-08T15:35:00.000Z"
+};
+
 export default function SyntheticEvidenceCorrectionPage() {
   if (process.env.NODE_ENV === "production" || process.env.APPLY_PILOT_SYNTHETIC_EVIDENCE_PREVIEW !== "true") {
     notFound();
@@ -82,14 +117,58 @@ export default function SyntheticEvidenceCorrectionPage() {
       masterProfileOptIn: false
     }]
   });
+  const showGeneratedDocuments = process.env.APPLY_PILOT_SYNTHETIC_GENERATED_DOCUMENTS_PREVIEW === "true";
 
   return (
     <main className="mx-auto min-h-screen max-w-5xl p-3 sm:p-6" data-synthetic-evidence-correction>
       <div className="mb-3">
         <JobMatchOmissionNotice evaluatedCandidateCount={500} omittedCandidateCount={12} viewLabel="correction view" />
       </div>
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-soft">
-        <EvidenceCorrectionReview review={review} />
+      <div className={showGeneratedDocuments ? "grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]" : ""}>
+        <section className="min-w-0 space-y-6">
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-soft">
+            <EvidenceCorrectionReview review={review} />
+          </div>
+          {showGeneratedDocuments ? (
+            <>
+              <Panel>
+                <PanelHeader title="Apply packet builder" description="Synthetic generated-document containment fixture." />
+                <ApplyPacketBuilder
+                  job={{
+                    id: "synthetic-job-1",
+                    title: "Service Operations Director",
+                    company: "Synthetic Employer",
+                    applyUrl: "https://example.test/synthetic-apply",
+                    fitScore: 90,
+                    recommendation: "apply now",
+                    keyReason: "Use only reviewed synthetic evidence.",
+                    hasFitAnalysis: true
+                  }}
+                  resumeVersions={[generatedResume]}
+                  coverLetters={[generatedCoverLetter]}
+                  application={null}
+                />
+              </Panel>
+              <Panel>
+                <PanelHeader title="Generated documents" description="Synthetic stale-document preview and controls." />
+                <div data-synthetic-generated-documents>
+                  <JobDocumentWorkspace
+                    resumeVersions={[generatedResume]}
+                    coverLetters={[generatedCoverLetter]}
+                  />
+                </div>
+              </Panel>
+            </>
+          ) : null}
+        </section>
+        {showGeneratedDocuments ? (
+          <aside className="min-w-0 space-y-6">
+            <Panel>
+              <PanelHeader title="Synthetic sidebar" />
+              <p className="p-5 text-sm leading-6 text-slate-700">Preserved alongside generated documents.</p>
+            </Panel>
+          </aside>
+        ) : null}
       </div>
     </main>
   );

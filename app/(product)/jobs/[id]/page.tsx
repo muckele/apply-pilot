@@ -244,7 +244,7 @@ export default async function JobDetailPage({ params }: Props) {
       />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]">
-        <section className="space-y-6">
+        <section className="min-w-0 space-y-6">
           {evidenceReview ? (
             <Panel>
               <PanelHeader
@@ -425,7 +425,7 @@ export default async function JobDetailPage({ params }: Props) {
           </Panel>
         </section>
 
-        <aside className="space-y-6">
+        <aside className="min-w-0 space-y-6">
           <Panel>
             <PanelHeader title="Cover letter angle" />
             <p className="p-5 text-sm leading-6 text-slate-700">{job.suggestedCoverLetterAngle}</p>

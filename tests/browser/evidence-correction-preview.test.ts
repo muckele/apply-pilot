@@ -16,6 +16,7 @@ before(async () => {
     environment: {
       ...process.env,
       APPLY_PILOT_SYNTHETIC_EVIDENCE_PREVIEW: "true",
+      APPLY_PILOT_SYNTHETIC_GENERATED_DOCUMENTS_PREVIEW: "true",
       ALLOW_DEMO_USER: "true",
       AUTH_SECRET: "synthetic-evidence-browser-test-secret"
     },
@@ -135,15 +136,47 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
   assert.equal(await page.getByText(/Saved reviewed snapshot [a-f0-9]{64}/).count(), 0);
   await page.getByText(/Review changed.*Save a new reviewed snapshot/).waitFor();
 
-  for (const width of [390, 320]) {
+  for (const width of [320, 375, 390]) {
     await page.setViewportSize({ width, height: 844 });
     const dimensions = await page.evaluate(() => ({
       clientWidth: document.documentElement.clientWidth,
-      scrollWidth: document.documentElement.scrollWidth
+      scrollWidth: document.documentElement.scrollWidth,
+      htmlOverflowX: getComputedStyle(document.documentElement).overflowX,
+      bodyOverflowX: getComputedStyle(document.body).overflowX
     }));
+    assert.notEqual(dimensions.htmlOverflowX, "hidden", `${width}px must not hide document overflow`);
+    assert.notEqual(dimensions.bodyOverflowX, "hidden", `${width}px must not hide document overflow`);
     assert.ok(dimensions.scrollWidth <= dimensions.clientWidth, `${width}px: ${JSON.stringify(dimensions)}`);
     assert.equal(await page.getByText(/saved for this job only/i).isVisible(), true);
     assert.equal(await page.getByText(/Review changed.*Save a new reviewed snapshot/).isVisible(), true);
+    const documents = page.locator("[data-synthetic-generated-documents]");
+    assert.equal(await documents.getByText("Bachelor of Arts in Business Administration", { exact: true }).isVisible(), true);
+    assert.match(await documents.locator("textarea").nth(0).inputValue(), /cross-functional service portfolio reviews/u);
+    assert.match(await documents.locator("textarea").nth(1).inputValue(), /Dear Synthetic Employer Hiring Team/u);
+    const controls = await documents.locator("select, textarea, button").evaluateAll((elements) => elements
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, right: rect.right, width: rect.width };
+      }));
+    assert.ok(controls.length >= 10, `${width}px rendered ${controls.length} generated-document controls`);
+    assert.ok(
+      controls.every((control) => control.left >= -1 && control.right <= width + 1),
+      `${width}px controls exceed the viewport: ${JSON.stringify(controls)}`
+    );
+    const firstSelector = documents.locator("select").first();
+    await firstSelector.focus();
+    assert.equal(await firstSelector.evaluate((element) => document.activeElement === element), true);
+    if (process.env.SYNTHETIC_EVIDENCE_SCREENSHOT_DIR) {
+      await page.screenshot({
+        path: path.join(process.env.SYNTHETIC_EVIDENCE_SCREENSHOT_DIR, `evidence-generated-documents-${width}.png`),
+        fullPage: true,
+        caret: "initial"
+      });
+    }
   }
 
   const screenshotDir = process.env.SYNTHETIC_EVIDENCE_SCREENSHOT_DIR;
