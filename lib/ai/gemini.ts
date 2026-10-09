@@ -231,6 +231,7 @@ async function readBoundedResponseText(response: Response, maxResponseBytes: num
         await reader.cancel().catch(() => undefined);
         throw new GeminiProviderError("Gemini response exceeded the configured body limit.", {
           providerResponded: true,
+          httpStatus: response.status,
           requestId: responseRequestId(response)
         });
       }
@@ -343,6 +344,7 @@ export async function callGeminiJsonProvider({
     if (error instanceof GeminiProviderError) throw error;
     throw new GeminiProviderError("Gemini returned an invalid response envelope.", {
       providerResponded: true,
+      httpStatus: response.status,
       requestId: responseRequestId(response)
     });
   }
@@ -356,7 +358,7 @@ export async function callGeminiJsonProvider({
         providerResponded: error.providerResponded,
         usage: error.usage,
         billingDisposition: error.billingDisposition,
-        httpStatus: error.httpStatus,
+        httpStatus: response.status,
         providerCode: error.providerCode,
         requestId: responseRequestId(response)
       });
@@ -367,7 +369,7 @@ export async function callGeminiJsonProvider({
   if (candidate?.finishReason !== "STOP") {
     throw new GeminiProviderError(
       `Gemini did not complete the structured response (finish reason: ${String(candidate?.finishReason ?? "missing")}).`,
-      { providerResponded: true, usage, requestId: responseRequestId(response) }
+      { providerResponded: true, usage, httpStatus: response.status, requestId: responseRequestId(response) }
     );
   }
   const text = candidate.content?.parts
@@ -378,6 +380,7 @@ export async function callGeminiJsonProvider({
     throw new GeminiProviderError("Gemini returned an empty structured response.", {
       providerResponded: true,
       usage,
+      httpStatus: response.status,
       requestId: responseRequestId(response)
     });
   }
@@ -389,6 +392,7 @@ export async function callGeminiJsonProvider({
     throw new GeminiProviderError("Gemini returned invalid structured JSON.", {
       providerResponded: true,
       usage,
+      httpStatus: response.status,
       requestId: responseRequestId(response)
     });
   }

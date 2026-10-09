@@ -18,6 +18,7 @@
     "correction-flow:adapter:offline": "node --import tsx scripts/execute-correction-flow-provider-adapter-offline.ts",
     "correction-flow:qualify:offline": "node --import tsx scripts/execute-correction-flow-qualification-offline.ts",
     "correction-flow:qualify:live": "COMMIT5_POSTGRES_TEST=1 node --import tsx scripts/run-correction-flow-qualification-live.ts",
+    "correction-flow:diagnose-resume:live": "node --import tsx scripts/run-correction-flow-resume-diagnostic-live.ts",
     "test": "node --import tsx --test tests/*.test.ts",
     "test:browser": "node --import tsx --test --test-concurrency=1 tests/browser/*.test.ts",
     "test:postgres": "tsx scripts/run-postgres-tests.ts",
