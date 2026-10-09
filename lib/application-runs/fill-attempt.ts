@@ -21,6 +21,7 @@ import {
   FILL_ERROR_CODES,
   FILL_LEASE_MS,
   FILL_STEP_RESULTS,
+  isValidEvidenceStaleStopPattern,
   projectVerifiedFillCandidates,
   reconcileFillFinalization,
   STOPPED_EARLY_FILL_ERRORS,
@@ -84,6 +85,17 @@ const finalizeInputSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["errorCode"],
       message: "Fill finalization outcome and error must agree."
+    });
+  }
+  if (
+    value.outcome === "STOPPED_EARLY" &&
+    value.errorCode === "FILL_STALE" &&
+    !isValidEvidenceStaleStopPattern(value.steps)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["steps"],
+      message: "Evidence-stale Fill finalization must preserve a safe prefix and untouched tail."
     });
   }
   const stepKeys = value.steps.map((step) => step.stepKey);
@@ -795,11 +807,25 @@ export function createApplicationRunFillAttemptService(
             return { ...status, leaseLive: false, fieldOperationAllowed: false, errorCode: "FILL_INTERNAL" as const };
           }
           const leaseLive = run.fillLeaseExpiresAt.getTime() > databaseNow.getTime();
+          const policyAllowed = policyAllowsFill(policy, env, run);
+          let evidenceCurrent = true;
+          if (leaseLive && policyAllowed) {
+            try {
+              await assertCurrentEvidence(tx, run);
+            } catch (error) {
+              if (error instanceof PublicApiError && error.details?.code === "RUN_DOCUMENT_EVIDENCE_STALE") {
+                evidenceCurrent = false;
+              } else {
+                throw error;
+              }
+            }
+          }
           return {
             ...status,
             leaseLive,
             expiredRecoveryRequired: !leaseLive,
-            fieldOperationAllowed: leaseLive && policyAllowsFill(policy, env, run)
+            fieldOperationAllowed: leaseLive && policyAllowed && evidenceCurrent,
+            errorCode: evidenceCurrent ? null : "FILL_STALE" as const
           };
         }
 

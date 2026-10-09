@@ -36,6 +36,7 @@ export const FILL_ERROR_CODES = [
 
 export const STOPPED_EARLY_FILL_ERRORS = [
   "FILL_POLICY_DENIED",
+  "FILL_STALE",
   "FILL_TARGET_TRUST_LOST",
   "FILL_UNEXPECTED_MUTATION",
   "FILL_WRITE_FAILED",
@@ -253,6 +254,14 @@ function isValidStoppedStepPattern(
   return tailStarted && failedCount <= 1;
 }
 
+export function isValidEvidenceStaleStopPattern(
+  steps: readonly FillFinalizationStepAssertion[]
+): boolean {
+  return steps.some((step) => step.result === "NOT_ATTEMPTED") &&
+    steps.every((step) => step.result !== "FAILED") &&
+    isValidStoppedStepPattern(steps, "FILL_STALE");
+}
+
 export function reconcileFillFinalization(input: {
   fillAttemptId: string;
   persistedSteps: readonly PersistedFillStepIdentity[];
@@ -288,7 +297,9 @@ export function reconcileFillFinalization(input: {
       ? assertion.steps.some(
           (step) => !successfulFillStepResults.has(step.result) || step.errorCode !== null
         )
-      : !isValidStoppedStepPattern(assertion.steps, assertion.errorCode as StoppedEarlyFillError)
+      : assertion.errorCode === "FILL_STALE"
+        ? !isValidEvidenceStaleStopPattern(assertion.steps)
+        : !isValidStoppedStepPattern(assertion.steps, assertion.errorCode as StoppedEarlyFillError)
   ) {
     invalidFillDomain();
   }
@@ -410,6 +421,20 @@ export function deriveTerminalFillAttemptOutcome(input: unknown): TerminalFillAt
         : unavailableOutcome();
     }
 
+    if (input.errorCategory === "FILL_STALE") {
+      if (isRecoveryConsistent(steps)) {
+        return { outcome: "RECOVERED_AFTER_LOSS", errorCode: "FILL_STALE" };
+      }
+      const assertions = steps.map((step) => ({
+        stepKey: step.stepKey,
+        result: step.result,
+        errorCode: step.errorCategory
+      }));
+      return isValidEvidenceStaleStopPattern(assertions)
+        ? { outcome: "STOPPED_EARLY", errorCode: "FILL_STALE" }
+        : unavailableOutcome();
+    }
+
     if (isStoppedEarlyFillError(input.errorCategory)) {
       const assertions = steps.map((step) => ({
         stepKey: step.stepKey,
@@ -418,12 +443,6 @@ export function deriveTerminalFillAttemptOutcome(input: unknown): TerminalFillAt
       }));
       return isValidStoppedStepPattern(assertions, input.errorCategory)
         ? { outcome: "STOPPED_EARLY", errorCode: input.errorCategory }
-        : unavailableOutcome();
-    }
-
-    if (input.errorCategory === "FILL_STALE") {
-      return isRecoveryConsistent(steps)
-        ? { outcome: "RECOVERED_AFTER_LOSS", errorCode: "FILL_STALE" }
         : unavailableOutcome();
     }
 

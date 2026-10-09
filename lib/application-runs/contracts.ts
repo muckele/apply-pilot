@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   FILL_ERROR_CODES,
   FILL_STEP_RESULTS,
+  isValidEvidenceStaleStopPattern,
   STOPPED_EARLY_FILL_ERRORS
 } from "@/lib/application-runs/fill-attempt-domain";
 import {
@@ -129,6 +130,17 @@ export const applicationRunFillAttemptPatchBodySchema = z
         code: z.ZodIssueCode.custom,
         path: ["errorCode"],
         message: "Fill finalization outcome and error must agree."
+      });
+    }
+    if (
+      value.outcome === "STOPPED_EARLY" &&
+      value.errorCode === "FILL_STALE" &&
+      !isValidEvidenceStaleStopPattern(value.steps)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steps"],
+        message: "Evidence-stale Fill finalization must preserve a safe prefix and untouched tail."
       });
     }
 
