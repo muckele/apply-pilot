@@ -242,6 +242,7 @@ export type CorrectionFlowResumeDiagnosticReceipt = Readonly<{
   noFallbackAttempted: true;
   rawOutputRetained: false;
   failureCode: string | null;
+  failureClass: "unsupported_applicant_term" | "source_relation_mismatch" | null;
   failureFieldPath: string | null;
   validatedOutputHash: string | null;
 }>;
@@ -268,6 +269,7 @@ function baseReceipt(manifest: CorrectionFlowResumeDiagnosticManifest): Correcti
     noFallbackAttempted: true,
     rawOutputRetained: false,
     failureCode: null,
+    failureClass: null,
     failureFieldPath: null,
     validatedOutputHash: null
   };
@@ -383,6 +385,11 @@ export function createCorrectionFlowResumeDiagnosticRunner({
             typeof error.details?.code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(error.details.code)
             ? error.details.code
             : "PROVIDER_DOCUMENT_CLAIM_INVALID";
+          const failureClass = error instanceof PublicApiError &&
+            (error.details?.failureClass === "unsupported_applicant_term" ||
+              error.details?.failureClass === "source_relation_mismatch")
+            ? error.details.failureClass
+            : null;
           return {
             ...initial,
             ...usageValues,
@@ -391,6 +398,7 @@ export function createCorrectionFlowResumeDiagnosticRunner({
             finishReason: "STOP",
             jsonParseStatus: "parsed",
             failureCode: code,
+            failureClass,
             failureFieldPath: error instanceof PublicApiError
               ? validatorFieldPath(error.details?.fieldPath)
               : null

@@ -57,6 +57,7 @@ test("the résumé diagnostic launcher binds one displayed call before reading t
         noFallbackAttempted: true,
         rawOutputRetained: false,
         failureCode: null,
+        failureClass: null,
         failureFieldPath: null,
         validatedOutputHash: "a".repeat(64)
       };

@@ -141,7 +141,7 @@ function documentRequest(options: {
     context: {
       userId: "synthetic-user",
       feature,
-      promptVersion: options.promptVersion ?? "4",
+      promptVersion: options.promptVersion ?? "5",
       highCostConfirmed: options.confirmed,
       dataSharingConfirmed: options.confirmed
     }
@@ -161,7 +161,7 @@ test("document generation requires both data and exact-cost confirmation before 
     error.details.dataType === "application_packet" &&
     error.details.provider === "gemini" &&
     error.details.model === "gemini-3.8-flash" &&
-    error.details.promptVersion === "4"
+    error.details.promptVersion === "5"
   );
   assert.equal(geminiCalls, 0);
   assert.equal(ledger.reservations.length, 0);
@@ -247,7 +247,7 @@ test("confirmed resume tailoring reserves its exact cap, sends one capped reques
   assert.equal(generation.responseMimeType, "application/json");
   assert.deepEqual(generation.responseJsonSchema, responseJsonSchema);
   assert.equal(ledger.reservations[0].maximumCostMicros, 64_500);
-  assert.equal(ledger.reservations[0].promptVersion, "4");
+  assert.equal(ledger.reservations[0].promptVersion, "5");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
   assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported" });
@@ -276,7 +276,7 @@ test("cache lookups are isolated by prompt version and validated without dispatc
   let calls = 0;
   installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
-  const result = await documentRequest({ promptVersion: "4" });
+  const result = await documentRequest({ promptVersion: "5" });
 
   assert.equal(result.data.value, "cached-supported");
   assert.equal(calls, 0);
@@ -287,7 +287,7 @@ test("cache lookups are isolated by prompt version and validated without dispatc
   assert.equal(where.provider, "gemini");
   assert.equal(where.model, "gemini-3.8-flash");
   assert.equal(where.promptName, "resumeTailorPrompt");
-  assert.equal(where.promptVersion, "4");
+  assert.equal(where.promptVersion, "5");
   assert.equal(where.requestHash, result.meta.requestHash);
   assert.ok(Array.isArray(where.OR));
 });

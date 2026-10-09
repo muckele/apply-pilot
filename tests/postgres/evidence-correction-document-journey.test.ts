@@ -227,7 +227,7 @@ test("linked synthetic correction journey persists reviewed facts into both gene
       readApplicationDocumentEvidence,
       tailorResume: (async (payload: unknown) => {
         assertFinalDocumentPayload(payload);
-        const promptVersion = "4";
+        const promptVersion = "5";
         return {
           professionalSummary: `${degreeFact}. ${replacementOwnerFact}`,
           skillsSection: ["TypeScript", "PostgreSQL", "Service delivery"],
@@ -255,7 +255,7 @@ test("linked synthetic correction journey persists reviewed facts into both gene
       readApplicationDocumentEvidence,
       draftCoverLetter: (async (payload: unknown) => {
         assertFinalDocumentPayload(payload);
-        const promptVersion = "4";
+        const promptVersion = "5";
         return {
           title: "Synthetic Employer Service Operations Director cover letter",
           coverLetter: `Dear Synthetic Employer,\n\n${degreeFact}. ${replacementOwnerFact}\n\nSincerely,\nTaylor Boundary`,

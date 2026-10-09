@@ -188,6 +188,8 @@ const actionWords = [
 ] as const;
 const actionWordSet = new Set<string>(actionWords);
 const creationActionWords = new Set(["built", "created", "developed", "engineered"]);
+const improvementActionWords = new Set(["improved", "enhanced"]);
+const reductionActionWords = new Set(["reduced", "decreased"]);
 const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
 const actionClauseBoundary = new RegExp(
   `\\s*;\\s*|\\s*,\\s*(?:and|but|while|then)\\s+|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
@@ -228,17 +230,25 @@ function factualTokens(value: string) {
     // same negative fact. Keep this equivalence narrow so tense/status changes
     // (was/am, had/have) remain material everywhere else.
     .replace(/\b(?:do|does)\s+not\s+have\b/g, " not ");
-  return (normalized.match(/[a-z0-9][a-z0-9+#.'-]*%?/g) ?? [])
-    .map((token) => token.replace(/^[.'-]+|[.'-]+$/g, ""))
-    .map((token) => {
+  const tokens = (normalized.match(/[a-z0-9][a-z0-9+#.'-]*%?/g) ?? [])
+    .map((token) => token.replace(/^[.'-]+|[.'-]+$/g, ""));
+  const actionIndex = tokens[0] === "i" ? 1 : 0;
+  return tokens
+    .map((token, index) => {
       if (negationWords.has(token) || /^(?:cannot|can't|don't|doesn't|didn't|haven't|hasn't|hadn't)$/.test(token)) {
         return "__negated__";
       }
-      return creationActionWords.has(token) ? "__creation_action__" : token;
+      if (index !== actionIndex) return token;
+      if (creationActionWords.has(token)) return "__creation_action__";
+      if (improvementActionWords.has(token)) return "__improvement_action__";
+      if (reductionActionWords.has(token)) return "__reduction_action__";
+      return token;
     })
     .filter((token) =>
       token === "__negated__" ||
       token === "__creation_action__" ||
+      token === "__improvement_action__" ||
+      token === "__reduction_action__" ||
       actionWordSet.has(token) ||
       !nonFactualWords.has(token));
 }
@@ -380,6 +390,7 @@ function validateClaimEvidence(
       if (containsWhole(claim, term) && !negatesTerm(claim, term)) {
         throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
           code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
+          failureClass: "unsupported_applicant_term",
           fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
           retryable: false
         });
@@ -391,6 +402,7 @@ function validateClaimEvidence(
     if (!relationPreserved) {
       throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
         code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
+        failureClass: "source_relation_mismatch",
         fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
         retryable: false
       });

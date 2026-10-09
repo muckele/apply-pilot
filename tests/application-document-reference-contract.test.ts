@@ -95,7 +95,7 @@ test("application-document provider contracts publish the exact resolver namespa
   );
 });
 
-test("application-document prompt/cache identity advances for the closed reference contract", async () => {
+test("application-document prompt/cache identity advances for the bounded paraphrase contract", async () => {
   const version = await import("@/lib/ai/application-document-version");
-  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "4");
+  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "5");
 });

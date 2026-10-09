@@ -5,6 +5,7 @@ Rules:
 - Keep the letter under one page.
 - Be specific to the company and role only through the exact submitted company/title in the salutation and a standard application-intent sentence.
 - Use only relevant applicant experience found in the exact submitted source.
+- Only substitute an action when it is the leading verb or immediately follows I, and only within these meaning-preserving groups: Built/Created/Developed/Engineered, Improved/Enhanced, and Reduced/Decreased. Do not substitute any other action verbs; preserve the source verb instead.
 - Avoid generic enthusiasm and filler.
 - Do not invent experience.
 - Do not state standalone employer or job-description facts in the body.

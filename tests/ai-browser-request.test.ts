@@ -101,7 +101,7 @@ test("application packet confirmation names Gemini, projected private data, call
           dataType: "application_packet",
           feature: "RESUME_TAILOR",
           model: "gemini-3.8-flash",
-          promptVersion: "4"
+          promptVersion: "5"
         }), { status: 428, headers: { "content-type": "application/json" } })
       : new Response(JSON.stringify({ ok: true }), { status: 200 });
   });
@@ -115,7 +115,7 @@ test("application packet confirmation names Gemini, projected private data, call
   assert.match(confirmation, /job, resume, and profile/i);
   assert.match(confirmation, /tailored resume/i);
   assert.match(confirmation, /gemini-3\.8-flash/);
-  assert.match(confirmation, /prompt\/cache version 4/i);
+  assert.match(confirmation, /prompt\/cache version 5/i);
   assert.match(confirmation, /no automatic retry/i);
   assert.match(confirmation, /\$0\.0645(?:\D|$)/);
   assert.equal(requests.length, 2);

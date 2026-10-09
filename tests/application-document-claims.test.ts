@@ -113,6 +113,108 @@ test("supported resume rewrites may strengthen only the action verb", async () =
   assert.deepEqual(claims.validateTailoredResumeClaims(payload, strengthened), strengthened);
 });
 
+test("supported resume rewrites accept narrow non-leadership action paraphrases", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  for (const [source, rewrite] of [
+    [
+      "Improved incident workflows using TypeScript and PostgreSQL.",
+      "Enhanced incident workflows using TypeScript and PostgreSQL."
+    ],
+    [
+      "Reduced incident review time by 20%.",
+      "Decreased incident review time by 20%."
+    ],
+    [
+      "Improved incident handoffs.",
+      "I enhanced incident handoffs."
+    ],
+    [
+      "Built a certificate management system.",
+      "Engineered a certificate management system."
+    ],
+    [
+      "Improved credential verification workflows.",
+      "Enhanced credential verification workflows."
+    ]
+  ]) {
+    const paraphrasePayload = structuredClone(payload);
+    paraphrasePayload.resume.rawText = `Synthetic Applicant\n${source}`;
+    const changed = structuredClone(resumeOutput);
+    changed.professionalSummary = rewrite;
+    changed.bulletRewrites = [];
+    changed.rolesOrProjectsToEmphasize = [];
+    changed.skillsSection = [];
+    changed.resumeText = `SUMMARY\n${rewrite}`;
+    changed.claimEvidence = [{
+      claim: rewrite,
+      citations: [{ ref: "resume.rawText", excerpt: source }]
+    }];
+    assert.deepEqual(claims.validateTailoredResumeClaims(paraphrasePayload, changed), changed);
+  }
+});
+
+test("action paraphrase groups cannot rewrite credential names or non-leading terms", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const credentialPayload = structuredClone(payload);
+  credentialPayload.resume.rawText = "Synthetic Applicant\nEarned an Enhanced Driver License.";
+  const changed = structuredClone(resumeOutput);
+  const claim = "Earned an Improved Driver License.";
+  changed.professionalSummary = claim;
+  changed.bulletRewrites = [];
+  changed.rolesOrProjectsToEmphasize = [];
+  changed.skillsSection = [];
+  changed.resumeText = `SUMMARY\n${claim}`;
+  changed.claimEvidence = [{
+    claim,
+    citations: [{
+      ref: "resume.rawText",
+      excerpt: "Earned an Enhanced Driver License."
+    }]
+  }];
+  assert.throws(
+    () => claims.validateTailoredResumeClaims(credentialPayload, changed),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM" &&
+      error.details?.failureClass === "source_relation_mismatch"
+  );
+});
+
+test("unsupported-term and source-relation failures expose distinct privacy-safe classes", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+
+  const unsupportedTerm = structuredClone(resumeOutput);
+  unsupportedTerm.skillsSection.push("Kubernetes");
+  unsupportedTerm.resumeText += "\nKubernetes";
+  unsupportedTerm.claimEvidence.push({
+    claim: "Kubernetes",
+    citations: [{ ref: "resume.skills[0]", excerpt: "TypeScript" }]
+  });
+  assert.throws(
+    () => claims.validateTailoredResumeClaims(payload, unsupportedTerm),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM" &&
+      error.details?.failureClass === "unsupported_applicant_term"
+  );
+
+  const relationMismatch = structuredClone(resumeOutput);
+  relationMismatch.professionalSummary = "Scaled reliable TypeScript services.";
+  relationMismatch.bulletRewrites[0].rewrite = "Scaled reliable TypeScript services.";
+  relationMismatch.resumeText = relationMismatch.resumeText.replaceAll(
+    "Built reliable TypeScript services.",
+    "Scaled reliable TypeScript services."
+  );
+  relationMismatch.claimEvidence[0].claim = "Scaled reliable TypeScript services.";
+  assert.throws(
+    () => claims.validateTailoredResumeClaims(payload, relationMismatch),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM" &&
+      error.details?.failureClass === "source_relation_mismatch"
+  );
+});
+
 test("action verbs cannot fabricate leadership or change supported scope", async () => {
   const claims = await claimsModule();
   assert.ok(claims);
