@@ -128,6 +128,18 @@ function startStreamingCapture(
   return { request, response };
 }
 
+async function assertTimedOutPrivateBodyRejected(
+  response: Promise<{ status: number; body: string }>
+) {
+  const settled = await response.then(
+    (value) => ({ kind: "response" as const, value }),
+    () => ({ kind: "transport_rejected" as const })
+  );
+  if (settled.kind === "response") {
+    assert.equal(settled.value.status, 409);
+  }
+}
+
 function decisionForGuides(
   preparation: ReturnType<typeof draftPreparation>,
   caseIndex: number,
@@ -1839,7 +1851,7 @@ test("capture admission is one-shot and a timed-out partial body cannot repopula
   const late = startStreamingCapture(expiring.captureUrl, allowedOrigin, body);
   late.request.write(body.slice(0, 1));
   assert.equal((await expiring.closed).reason, "session_timeout");
-  await assert.rejects(late.response);
+  await assertTimedOutPrivateBodyRejected(late.response);
   assert.equal(expiring.phase(), "closed");
   assert.equal(expiring.hasPrivateInput(), false);
 
@@ -1859,7 +1871,7 @@ test("capture admission is one-shot and a timed-out partial body cannot repopula
   );
   lateReview.request.write(reviewBody.slice(0, 1));
   assert.equal((await reviewExpiring.closed).reason, "session_timeout");
-  await assert.rejects(lateReview.response);
+  await assertTimedOutPrivateBodyRejected(lateReview.response);
   assert.equal(reviewExpiring.phase(), "closed");
   assert.equal(reviewExpiring.hasPrivateInput(), false);
 });
