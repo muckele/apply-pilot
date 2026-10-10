@@ -68,6 +68,7 @@ import {
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
+import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
@@ -4363,7 +4364,10 @@ export async function tailorResume(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     } : undefined,
-    validate: (value) => validateTailoredResumeClaims(applicationPayload, value)
+    validate: (value) => validateTailoredResumeQuality(
+      applicationPayload,
+      validateTailoredResumeClaims(applicationPayload, value)
+    )
   });
 
   return {

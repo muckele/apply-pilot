@@ -204,7 +204,7 @@ const improvementActionWords = new Set(["improved", "enhanced"]);
 const reductionActionWords = new Set(["reduced", "decreased"]);
 const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
 const actionClauseBoundary = new RegExp(
-  `\\s*;\\s*|\\s*,\\s*(?:and|but|while|then)\\s+|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
+  `\\s*;\\s*|\\s*,\\s*(?:but|while|then)\\s+|\\s*,\\s*and\\s+(?=(?:${actionWords.join("|")})\\b)|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
   "i"
 );
 
@@ -517,6 +517,7 @@ export function getCoverLetterUncitedLines(payload: ApplicationDocumentPayload) 
     ? payload.job.company.trim().replace(/\s+/g, " ")
     : "";
   const values = [
+    "My experience most relevant to this role includes the following.",
     "I am interested in learning more about the role and how I might contribute to your team.",
     "I would welcome the opportunity to discuss the role further.",
     "I would welcome the opportunity to discuss this position further.",
@@ -537,11 +538,21 @@ export function getCoverLetterUncitedLines(payload: ApplicationDocumentPayload) 
     );
   }
   if (company) values.push(`Dear ${company} Hiring Team,`);
+  if (Array.isArray(payload.job?.requirements)) {
+    for (const requirement of payload.job.requirements.slice(0, 3)) {
+      if (typeof requirement !== "string" || !requirement.trim()) continue;
+      const clean = requirement.trim().replace(/[.!?]+$/u, "");
+      values.push(`The role calls for ${clean.slice(0, 1).toLocaleLowerCase()}${clean.slice(1)}.`);
+    }
+  }
   values.push("Dear Hiring Team,", "Sincerely,", "Best,", "Best regards,", "Regards,", "Thank you,");
-  const firstResumeLine = typeof payload.resume?.rawText === "string"
-    ? payload.resume.rawText.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-    : undefined;
-  if (firstResumeLine) values.push(firstResumeLine);
+  if (typeof payload.resume?.rawText === "string") {
+    for (const rawLine of payload.resume.rawText.split(/\r?\n/u)) {
+      const line = rawLine.trim();
+      if (isHeading(line)) break;
+      if (line) values.push(line);
+    }
+  }
   values.push("[Your name]");
   return Object.freeze(values);
 }

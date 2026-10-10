@@ -72,15 +72,15 @@ test("the one-call manifest binds the complete reviewed payload and exact produc
   assert.equal(value.callCount, 1);
   assert.equal(value.call.stage, "tailored_resume");
   assert.equal(value.call.model, "gemini-3.8-flash");
-  assert.equal(value.call.promptVersion, "7");
+  assert.equal(value.call.promptVersion, "8");
   assert.equal(value.call.thinkingLevel, "LOW");
   assert.equal(value.call.maximumInputTokens, 56_000);
   assert.equal(value.call.maximumOutputTokens, 6_000);
   assert.equal(value.conservativeReservationMicros, 64_500);
-  assert.equal(value.payloadHash, "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0");
-  assert.equal(value.reviewedEvidenceHash, "7646bd358e0b45e25d74d1a85c66a7d9ed8bb7eafbd39b833e8a3863c29505ec");
-  assert.equal(value.schemaHash, "42292c5f403c9fb391b286c175997ae9f954a3318830b1d11ed1af904bb0d61d");
-  assert.equal(value.wireRequestHash, "c4aa6225ea4a0e750a9495295754ed1abe4e2b07368abb1a821e54e007f3af56");
+  assert.equal(value.payloadHash, "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae");
+  assert.equal(value.reviewedEvidenceHash, "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708");
+  assert.equal(value.schemaHash, "3717d6f6602baff101fbf10e0de5f959d74cbe15e847a585eadb7f770cdfa573");
+  assert.equal(value.wireRequestHash, "49247fbe57954a9a53b46b0c1a8fd49acaa834ea4e40311b8dda560b5a6b3f26");
 
   for (const mutate of [
     (changed: ReturnType<typeof syntheticCorrectionFlowDocumentPayload>) => {

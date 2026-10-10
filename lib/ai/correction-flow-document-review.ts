@@ -164,6 +164,7 @@ export function createCorrectionFlowDocumentReviewRunner({
         claim = bundle.claim();
         review = await startReview({
           envelope: claim.envelope,
+          context: claim.context,
           documents: claim.documents,
           renderedPdfs: claim.renderedPdfs,
           now,

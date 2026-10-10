@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import { z } from "zod";
 
 import { generateJson, getOpenAIClient } from "@/lib/ai/client";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
@@ -150,7 +151,7 @@ function documentRequest(options: {
     context: {
       userId: "synthetic-user",
       feature,
-      promptVersion: options.promptVersion ?? "7",
+      promptVersion: options.promptVersion ?? APPLICATION_DOCUMENT_PROMPT_VERSION,
       highCostConfirmed: options.confirmed,
       dataSharingConfirmed: options.confirmed
     }
@@ -170,7 +171,7 @@ test("document generation requires both data and exact-cost confirmation before 
     error.details.dataType === "application_packet" &&
     error.details.provider === "gemini" &&
     error.details.model === "gemini-3.8-flash" &&
-    error.details.promptVersion === "7"
+    error.details.promptVersion === APPLICATION_DOCUMENT_PROMPT_VERSION
   );
   assert.equal(geminiCalls, 0);
   assert.equal(ledger.reservations.length, 0);
@@ -256,7 +257,7 @@ test("confirmed resume tailoring reserves its exact cap, sends one capped reques
   assert.equal(generation.responseMimeType, "application/json");
   assert.deepEqual(generation.responseJsonSchema, responseJsonSchema);
   assert.equal(ledger.reservations[0].maximumCostMicros, 64_500);
-  assert.equal(ledger.reservations[0].promptVersion, "7");
+  assert.equal(ledger.reservations[0].promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
   assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported" });
@@ -325,7 +326,7 @@ test("cached assembled output bypasses the incompatible provider-wire schema and
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("current document requests query only the v7 cache identity, not legacy v6", async (t) => {
+test("current document requests query only the v8 cache identity, not legacy versions", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t, null, { value: "cached-current" });
   let calls = 0;
@@ -337,8 +338,8 @@ test("current document requests query only the v7 cache identity, not legacy v6"
   assert.equal(calls, 0);
   assert.equal(ledger.cacheQueries.length, 1);
   const where = ledger.cacheQueries[0].where as Record<string, unknown>;
-  assert.equal(where.promptVersion, "7");
-  assert.notEqual(where.promptVersion, "6");
+  assert.equal(where.promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
+  assert.notEqual(where.promptVersion, "7");
 });
 
 test("oversize document input fails before cache, reservation, or provider dispatch", async (t) => {

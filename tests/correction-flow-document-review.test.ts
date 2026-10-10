@@ -5,7 +5,9 @@ import {
   SYNTHETIC_CORRECTION_FLOW_FIXTURE
 } from "@/evaluation/correction-flow-qualification-fixture";
 import {
-  syntheticCorrectionFlowDocumentPayload
+  syntheticCorrectionFlowDocumentPayload,
+  syntheticCoverLetterOutput,
+  syntheticTailoredResumeOutput
 } from "@/evaluation/correction-flow-provider-stub";
 import {
   buildCorrectionFlowDocumentDiagnosticManifest,
@@ -20,33 +22,8 @@ import { startCorrectionFlowDocumentOwnerReview } from "@/lib/ai/correction-flow
 
 const exactHead = "f".repeat(40);
 const credential = "offline-review-credential-never-log";
-const fixedResumeOutput = Object.freeze({
-  professionalSummary: "Service operations leader building reliable customer workflows.",
-  professionalSummaryFactId: "fact:0000",
-  skillsSection: [],
-  bulletRewrites: [],
-  rolesOrProjectsToEmphasize: [],
-  resumeTextClaims: [{
-    claim: "Synthetic owner confirms current Quenby service certification for enterprise operations.",
-    factId: "fact:0033"
-  }],
-  unsupportedKeywords: [],
-  formattingWarnings: [],
-  resumeText: "Service operations leader building reliable customer workflows.\n" +
-    "Synthetic owner confirms current Quenby service certification for enterprise operations."
-});
-const fixedCoverLetterOutput = Object.freeze({
-  title: "Synthetic Employer Service Operations Director cover letter",
-  coverLetter: "Dear Synthetic Employer Hiring Team,\n\n" +
-    "I am writing to apply for the Service Operations Director position.\n\n" +
-    "Synthetic owner confirms current Quenby service certification for enterprise operations.\n\n" +
-    "Sincerely,\nTaylor Boundary",
-  angle: "Use only current reviewed evidence.",
-  claimsUsed: [{
-    claim: "Synthetic owner confirms current Quenby service certification for enterprise operations.",
-    factId: "fact:0033"
-  }]
-});
+const fixedResumeOutput = syntheticTailoredResumeOutput();
+const fixedCoverLetterOutput = syntheticCoverLetterOutput();
 
 function providerResponse(value: unknown) {
   return new Response(JSON.stringify({

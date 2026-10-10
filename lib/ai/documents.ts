@@ -18,6 +18,7 @@ import {
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
+import { validateCoverLetterQuality } from "@/lib/ai/application-document-quality";
 
 const applicationDocumentCitationSchema = z.object({
   ref: z.string().min(1),
@@ -117,7 +118,10 @@ export async function draftCoverLetter(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     } : undefined,
-    validate: (value) => validateCoverLetterClaims(payload, value)
+    validate: (value) => {
+      const factual = validateCoverLetterClaims(payload, value);
+      return userId ? validateCoverLetterQuality(payload, factual) : factual;
+    }
   });
 
   return {

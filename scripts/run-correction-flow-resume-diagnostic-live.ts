@@ -163,7 +163,7 @@ export async function runCorrectionFlowResumeDiagnosticLiveLauncher(
   let worktreeStatus: string;
   try {
     exactHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
-    worktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+    worktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=normal"]);
   } catch {
     throw preconsentError("LIVE_GIT_PREFLIGHT_FAILED", "The resume diagnostic Git preflight failed.");
   }

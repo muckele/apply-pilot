@@ -9,15 +9,22 @@ import {
   validateTailoredResumeClaims,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
+import {
+  validateCoverLetterQuality,
+  validateTailoredResumeQuality
+} from "@/lib/ai/application-document-quality";
 import { buildCorrectionFlowDocumentReviewEnvelope } from "@/lib/ai/correction-flow-document-review-contract";
+import type { CorrectionFlowDocumentReviewContext } from "@/lib/ai/correction-flow-document-review-page";
 import { coverLetterSchema } from "@/lib/ai/documents";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { tailoredResumeSchema } from "@/lib/ai/resume";
 import {
-  CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1,
-  renderCanonicalApplicationDocumentV1,
-  renderGenericDocument
+  renderCanonicalApplicationDocumentV1
 } from "@/lib/documents/export-renderer";
+import {
+  normalizeApplicationDocumentPdfText,
+  renderCanonicalApplicationDocumentPdfV2
+} from "@/lib/documents/application-document-layout-v2";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -92,8 +99,7 @@ function docxRoundTripComparable(value: string) {
 }
 
 function pdfComparable(value: string) {
-  return comparable(normalizeBulletMarker(value, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/gu, "?"));
+  return comparable(normalizeApplicationDocumentPdfText(normalizeBulletMarker(value, "-")));
 }
 
 function criticalFactsPresent(source: string, extracted: string, pdf: boolean) {
@@ -113,18 +119,7 @@ async function renderAndVerifyArtifact(
 ) {
   const [docxResult, pdfResult] = await Promise.allSettled([
     renderCanonicalApplicationDocumentV1({ artifactType, content }),
-    renderGenericDocument({
-      content,
-      format: "pdf",
-      resumeFormat: {
-        template: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.template,
-        pageSize: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.pageSize,
-        fontFamily: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.fontFamily,
-        accentColor: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.accentColor,
-        fontSize: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.fontSize,
-        lineSpacing: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.lineSpacing
-      }
-    })
+    Promise.resolve(renderCanonicalApplicationDocumentPdfV2({ artifactType, content }))
   ]);
   if (docxResult.status === "rejected" || pdfResult.status === "rejected") {
     if (docxResult.status === "fulfilled") docxResult.value.fill(0);
@@ -233,6 +228,39 @@ type ReviewBinding = Readonly<{
   generationId: string;
 }>;
 
+function strings(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function text(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function buildReviewContext(payload: ApplicationDocumentPayload): CorrectionFlowDocumentReviewContext {
+  const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
+    ? payload.reviewedEvidence.facts.flatMap((value) =>
+        value && typeof value === "object" && !Array.isArray(value) &&
+          typeof (value as { fact?: unknown }).fact === "string"
+          ? [(value as { fact: string }).fact]
+          : [])
+    : [];
+  return Object.freeze({
+    sourceResumeText: text(payload.resume?.rawText),
+    reviewedFacts: Object.freeze(reviewedFacts),
+    targetJob: Object.freeze({
+      title: text(payload.job?.title),
+      company: text(payload.job?.company),
+      location: text(payload.job?.location),
+      description: text(payload.job?.description),
+      requirements: Object.freeze(strings(payload.job?.requirements)),
+      preferredQualifications: Object.freeze(strings(payload.job?.preferredQualifications)),
+      detectedTechStack: Object.freeze(strings(payload.job?.detectedTechStack))
+    })
+  });
+}
+
 export async function buildCorrectionFlowDocumentReviewBundle(input: {
   payload: ApplicationDocumentPayload;
   tailoredResume: unknown;
@@ -249,17 +277,17 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
     throw new Error("Document review evidence hash changed.");
   }
   const facts = buildApplicationDocumentFactCatalog(input.payload);
-  const factCatalogHash = hashAiInput("applicationDocumentFactCatalog", "7", facts);
+  const factCatalogHash = hashAiInput("applicationDocumentFactCatalog", input.binding.promptVersion, facts);
   if (factCatalogHash !== input.binding.factCatalogHash) {
     throw new Error("Document review fact catalog hash changed.");
   }
-  const tailoredResume = validateTailoredResumeClaims(
+  const tailoredResume = validateTailoredResumeQuality(
     input.payload,
-    tailoredResumeSchema.parse(input.tailoredResume)
+    validateTailoredResumeClaims(input.payload, tailoredResumeSchema.parse(input.tailoredResume))
   );
-  const coverLetter = validateCoverLetterClaims(
+  const coverLetter = validateCoverLetterQuality(
     input.payload,
-    coverLetterSchema.parse(input.coverLetter)
+    validateCoverLetterClaims(input.payload, coverLetterSchema.parse(input.coverLetter))
   );
   const tailoredResumeHash = hashAiInput(
     "correctionFlowDocumentDiagnosticResume", "1", tailoredResume
@@ -306,6 +334,7 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
     ]
   });
   type PrivateState = {
+    context: CorrectionFlowDocumentReviewContext;
     documents: readonly [
       { kind: "resume"; title: string; text: string; evidence: typeof tailoredResume.claimEvidence },
       { kind: "cover_letter"; title: string; text: string; evidence: typeof coverLetter.claimsUsed }
@@ -316,6 +345,7 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
     ];
   };
   let state: PrivateState | null = {
+    context: buildReviewContext(input.payload),
     documents: [
       {
         kind: "resume",
@@ -355,6 +385,7 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
         };
         return Object.freeze({
           envelope,
+          get context() { return current().context; },
           get documents() { return current().documents; },
           get renderedPdfs() { return current().renderedPdfs; },
           hasPrivateInput: () => active && state !== null,

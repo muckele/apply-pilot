@@ -242,18 +242,19 @@ test("both application-document routes require the private-data consent contract
     assert.equal(body.dataType, "application_packet");
     assert.equal(body.provider, "gemini");
     assert.equal(body.model, "gemini-3.8-flash");
-    assert.equal(body.promptVersion, "7");
+    assert.equal(body.promptVersion, "8");
   }
   assert.equal(providerCalls, 0);
   assert.equal(writes, 0);
 });
 
-test("a supported stubbed résumé result is persisted only after v7 atomic-fact validation", async (t) => {
+test("a supported stubbed résumé result is persisted only after v8 atomic-fact validation", async (t) => {
   const prisma = await setup(t);
   const ledger = installLedger(t, prisma);
+  const facts = buildApplicationDocumentFactCatalog({ job, resume, profile, reviewedEvidence: { facts: [] } });
   const output = {
-    professionalSummary: "Built reliable TypeScript services.",
-    professionalSummaryFactId: documentFactId("Built reliable TypeScript services."),
+    professionalSummary: resume.summary,
+    professionalSummaryFactId: documentFactId(resume.summary),
     skillsSection: [{ text: "TypeScript", factId: documentFactId("TypeScript") }],
     bulletRewrites: [{
       factId: documentFactId("Built reliable TypeScript services."),
@@ -264,16 +265,10 @@ test("a supported stubbed résumé result is persisted only after v7 atomic-fact
       text: "Platform Engineer",
       factId: documentFactId("Platform Engineer")
     }],
-    resumeTextClaims: [
-      { claim: "Synthetic Applicant", factId: documentFactId("Synthetic Applicant") },
-      {
-        claim: "Example Co | Platform Engineer",
-        factId: documentFactId("Example Co | Platform Engineer")
-      }
-    ],
+    resumeTextClaims: facts.map((fact) => ({ claim: fact.excerpt, factId: fact.factId })),
     unsupportedKeywords: ["Kubernetes"],
     formattingWarnings: [],
-    resumeText: "Synthetic Applicant\nPlatform Engineer\n\nSUMMARY\nBuilt reliable TypeScript services.\n\nSKILLS\nTypeScript\n\nEXPERIENCE\nExample Co | Platform Engineer\n• Built reliable TypeScript services."
+    resumeText: `${resume.rawText}\n\nSUMMARY\n${resume.summary}\n\n${facts.map((fact) => fact.excerpt).join("\n")}`
   };
   let providerCalls = 0;
   let versionData: Record<string, unknown> | null = null;
@@ -307,7 +302,7 @@ test("a supported stubbed résumé result is persisted only after v7 atomic-fact
   assert.equal(persistedVersion.atsCompatibility, null);
   assert.equal(persistedVersion.jobFitScore, null);
   assert.equal(persistedAnalysis.confidence, null);
-  assert.equal(persistedAnalysis.promptVersion, "7");
+  assert.equal(persistedAnalysis.promptVersion, "8");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });

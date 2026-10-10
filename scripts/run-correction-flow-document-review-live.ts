@@ -176,7 +176,7 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
   let worktreeStatus: string;
   try {
     exactHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
-    worktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+    worktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=normal"]);
   } catch {
     throw preconsentError("LIVE_GIT_PREFLIGHT_FAILED", "The document review Git preflight failed.");
   }
@@ -255,7 +255,7 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
     let currentWorktreeStatus: string;
     try {
       currentHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
-      currentWorktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+      currentWorktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=normal"]);
     } catch {
       throw preconsentError(
         "LIVE_GIT_PREFLIGHT_FAILED",

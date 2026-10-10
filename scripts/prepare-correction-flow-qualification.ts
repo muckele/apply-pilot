@@ -34,7 +34,7 @@ function main() {
   if (exactHead !== expectedHead) {
     throw new Error("The current Git head does not match the approved qualification head.");
   }
-  const worktreeStatus = gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+  const worktreeStatus = gitOutput(["status", "--porcelain=v1", "--untracked-files=normal"]);
   if (hasDirtyCorrectionFlowQualificationWorktree(worktreeStatus)) {
     throw new Error("Qualification preparation requires a clean working tree.");
   }

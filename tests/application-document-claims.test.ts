@@ -558,6 +558,22 @@ test("resume text accepts an exact unchanged source line containing multiple act
   assert.deepEqual(claims.validateTailoredResumeClaims(multiActionPayload, changed), changed);
 });
 
+test("resume text preserves ordinary comma-and noun lists as one supported clause", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const listPayload = structuredClone(payload);
+  const sourceLine = "Directed support, engineering, and customer success for 42 accounts.";
+  listPayload.resume.rawText = `Synthetic Applicant\n${sourceLine}`;
+  const changed = structuredClone(resumeOutput);
+  changed.professionalSummary = "";
+  changed.skillsSection = [];
+  changed.bulletRewrites = [];
+  changed.rolesOrProjectsToEmphasize = [];
+  changed.claimEvidence = [];
+  changed.resumeText = `Synthetic Applicant\nEXPERIENCE\n${sourceLine}`;
+  assert.deepEqual(claims.validateTailoredResumeClaims(listPayload, changed), changed);
+});
+
 test("resume text cannot extract an affirmative substring from a negated source line", async () => {
   const claims = await claimsModule();
   assert.ok(claims);

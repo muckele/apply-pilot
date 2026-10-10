@@ -19,7 +19,7 @@ function fixture() {
   const envelope = buildCorrectionFlowDocumentReviewEnvelope({
     manifestHash: hash("1"), exactHead: "a".repeat(40), payloadHash: hash("2"),
     sourceResumeHash: hash("3"), profileHash: hash("4"), jobProjectionHash: hash("5"),
-    reviewedEvidenceHash: hash("6"), factCatalogHash: hash("7"), promptVersion: "7",
+    reviewedEvidenceHash: hash("6"), factCatalogHash: hash("7"), promptVersion: "8",
     model: "gemini-3.8-flash", thinkingLevel: "LOW", generationId: "generation-owner-review",
     documents: [
       { kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: resumePdfHash },
@@ -28,6 +28,19 @@ function fixture() {
   });
   return {
     envelope,
+    context: {
+      sourceResumeText: "Taylor Boundary\nService Operations Lead\nComplete synthetic source resume.",
+      reviewedFacts: ["Holds a current Quenby service certification."],
+      targetJob: {
+        title: "Service Operations Director",
+        company: "Northwind Service Cloud",
+        location: "Remote",
+        description: "Lead enterprise service delivery and operational governance.",
+        requirements: ["Enterprise service delivery", "Incident governance"],
+        preferredQualifications: ["Business education"],
+        detectedTechStack: ["TypeScript", "PostgreSQL"]
+      }
+    },
     documents: [
       {
         kind: "resume" as const,
@@ -106,6 +119,7 @@ test("the loopback review serves only tokenized no-store state, assets, and exac
   const input = fixture();
   const review = await startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
+    context: input.context,
     documents: input.documents,
     renderedPdfs: input.renderedPdfs,
     now: () => new Date("2026-10-10T04:10:00.000Z")
@@ -149,6 +163,7 @@ test("submission requires both delivered exact PDFs, exact origin, and all bound
   const input = fixture();
   const review = await startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
+    context: input.context,
     documents: input.documents,
     renderedPdfs: input.renderedPdfs,
     now: () => new Date("2026-10-10T04:10:00.000Z")
@@ -193,6 +208,7 @@ test("cancellation and timeout close once, reject completion, and clear all held
     const input = fixture();
     const review = await startCorrectionFlowDocumentOwnerReview({
       envelope: input.envelope,
+      context: input.context,
       documents: input.documents,
       renderedPdfs: input.renderedPdfs,
       sessionTimeoutMs: mode === "timeout" ? 20 : 1_000,
@@ -221,6 +237,7 @@ test("a partial submission body is destroyed when the owner closes the review", 
   const input = fixture();
   const review = await startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
+    context: input.context,
     documents: input.documents,
     renderedPdfs: input.renderedPdfs
   });
@@ -256,6 +273,7 @@ test("every pre-listen rejection overwrites both owned PDF buffers", async () =>
     if (mode === "signal") controller.abort();
     const candidate = {
       envelope: input.envelope,
+      context: input.context,
       documents: mode === "order" ? [input.documents[1], input.documents[0]] : input.documents,
       renderedPdfs: input.renderedPdfs,
       sessionTimeoutMs: mode === "timeout" ? 0 : 1_000,
@@ -274,6 +292,7 @@ test("an immediate startup abort settles the listen promise and overwrites both 
   const controller = new AbortController();
   const startup = startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
+    context: input.context,
     documents: input.documents,
     renderedPdfs: input.renderedPdfs,
     signal: controller.signal
@@ -295,6 +314,7 @@ test("session admission rejects and overwrites PDF bytes that do not match the e
   await assert.rejects(async () => {
     const review = await startCorrectionFlowDocumentOwnerReview({
       envelope: input.envelope,
+      context: input.context,
       documents: input.documents,
       renderedPdfs: input.renderedPdfs
     });
@@ -310,6 +330,7 @@ test("a PDF mutated after admission is rejected and every held PDF is overwritte
   const input = fixture();
   const review = await startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
+    context: input.context,
     documents: input.documents,
     renderedPdfs: input.renderedPdfs
   });
@@ -326,6 +347,7 @@ test("concurrent duplicate decisions can record at most one attestation", async 
   const input = fixture();
   const review = await startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
+    context: input.context,
     documents: input.documents,
     renderedPdfs: input.renderedPdfs,
     now: () => new Date("2026-10-10T04:10:00.000Z")

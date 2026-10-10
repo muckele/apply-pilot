@@ -7,6 +7,7 @@ import {
   buildApplicationDocumentFactCatalog
 } from "@/lib/ai/application-document-facts";
 import { buildCorrectionFlowDocumentReviewBundle } from "@/lib/ai/correction-flow-document-review-bundle";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import {
   syntheticCorrectionFlowDocumentPayload,
@@ -32,9 +33,10 @@ function validInput() {
         "correctionFlowResumeDiagnosticReviewedEvidence", "1", payload.reviewedEvidence
       ),
       factCatalogHash: hashAiInput(
-        "applicationDocumentFactCatalog", "7", buildApplicationDocumentFactCatalog(payload)
+        "applicationDocumentFactCatalog", APPLICATION_DOCUMENT_PROMPT_VERSION,
+        buildApplicationDocumentFactCatalog(payload)
       ),
-      promptVersion: "7",
+      promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       model: "gemini-3.8-flash",
       thinkingLevel: "LOW" as const,
       generationId: "generation-bundle"
@@ -58,6 +60,8 @@ test("the one-shot bundle revalidates assembled documents and exact in-memory ex
   assert.doesNotMatch(JSON.stringify(bundle.safe), /professionalSummary|Dear Synthetic|Synthetic owner confirms/u);
 
   const claim = bundle.claim();
+  assert.match(claim.context.sourceResumeText, /Taylor Boundary/u);
+  assert.equal(claim.context.targetJob.company, "Northwind Service Cloud");
   assert.deepEqual(claim.documents.map((document) => document.kind), ["resume", "cover_letter"]);
   assert.match(claim.renderedPdfs[0].bytes.toString("utf8"), /^%PDF-1\.4/u);
   assert.equal(claim.envelope.documents[0].renderedPdfHash, bundle.safe.verification.resume.pdfByteHash);

@@ -16,6 +16,10 @@ import {
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
 import {
+  validateCoverLetterQuality,
+  validateTailoredResumeQuality
+} from "@/lib/ai/application-document-quality";
+import {
   APPLICATION_DOCUMENT_MODEL,
   APPLICATION_DOCUMENT_PROMPT_VERSION,
   APPLICATION_DOCUMENT_THINKING_LEVEL
@@ -58,12 +62,12 @@ export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION = "2" as c
 export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS = 900_000 as const;
 
 const FROZEN_SYNTHETIC_PAYLOAD_HASH =
-  "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0";
+  "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae";
 const FROZEN_SYNTHETIC_REVIEWED_EVIDENCE_HASH =
-  "7646bd358e0b45e25d74d1a85c66a7d9ed8bb7eafbd39b833e8a3863c29505ec";
+  "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708";
 const FROZEN_SYNTHETIC_FACT_CATALOG_HASH =
-  "b26115a41ce6bdfd5c0775bbb10010052cec17ee8de2fe441f3ed2a072e02f15";
-const FROZEN_SYNTHETIC_FACT_COUNT = 37;
+  "c85e2373bf28d2e2098ec1b938fe278c4c64a2261bcc69e5720541012bf70c3e";
+const FROZEN_SYNTHETIC_FACT_COUNT = 70;
 
 const providerModeSchema = z.enum(["offline_stubbed", "live_synthetic"]);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -287,7 +291,11 @@ export function buildCorrectionFlowDocumentDiagnosticManifest({
     payload.reviewedEvidence
   );
   const facts = buildApplicationDocumentFactCatalog(payload);
-  const factCatalogHash = hashAiInput("applicationDocumentFactCatalog", "7", facts);
+  const factCatalogHash = hashAiInput(
+    "applicationDocumentFactCatalog",
+    APPLICATION_DOCUMENT_PROMPT_VERSION,
+    facts
+  );
   if (
     payloadHash !== FROZEN_SYNTHETIC_PAYLOAD_HASH ||
     reviewedEvidenceHash !== FROZEN_SYNTHETIC_REVIEWED_EVIDENCE_HASH ||
@@ -795,7 +803,10 @@ function createCorrectionFlowDocumentRunnerCore({
               payload,
               providerParsed.data as TailoredResumeProviderOutput
             );
-            return validateTailoredResumeClaims(payload, tailoredResumeSchema.parse(assembled));
+            return validateTailoredResumeQuality(
+              payload,
+              validateTailoredResumeClaims(payload, tailoredResumeSchema.parse(assembled))
+            );
           } catch (error) {
             const code = error instanceof PublicApiError &&
               typeof error.details?.code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(error.details.code)
@@ -828,7 +839,10 @@ function createCorrectionFlowDocumentRunnerCore({
             payload,
             providerParsed.data as CoverLetterProviderOutput
           );
-          return validateCoverLetterClaims(payload, coverLetterSchema.parse(assembled));
+          return validateCoverLetterQuality(
+            payload,
+            validateCoverLetterClaims(payload, coverLetterSchema.parse(assembled))
+          );
         } catch (error) {
           const code = error instanceof PublicApiError &&
             typeof error.details?.code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(error.details.code)

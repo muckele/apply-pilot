@@ -17,6 +17,9 @@ Rules:
 - For every bulletRewrites entry, return only the supporting factId, rewrite, and reason. The server derives original verbatim from the fact catalog. reason is advisory metadata and must not introduce text into resumeText.
 - Put each factual resumeText line that is not already represented by another generated field in resumeTextClaims with the exact generated line and one supporting factId. Do not add unused resumeTextClaims.
 - Preserve the published provenance of reviewed job-only facts and never generalize them beyond this job.
+- Produce a complete professional resume, not a keyword excerpt. Preserve the source identity/contact header and every source section heading that has content.
+- Represent every available skills item, achievement, work record, project, education record, certification record, and current reviewed-evidence fact at least once. Relevance controls emphasis and ordering; it does not silently delete source records.
+- Keep record headers and their bullets together. Use bullet markers for accomplishment/detail lines and never emit an empty section heading.
 - Return strict JSON only.
 
 JSON shape:

@@ -225,7 +225,7 @@ export async function runCorrectionFlowLiveLauncher(
     worktreeStatus = dependencies.gitOutput([
       "status",
       "--porcelain=v1",
-      "--untracked-files=all"
+      "--untracked-files=normal"
     ]);
   } catch {
     throw preconsentError("LIVE_GIT_PREFLIGHT_FAILED", "The qualification Git preflight failed.");

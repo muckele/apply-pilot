@@ -7,6 +7,10 @@ import {
   SYNTHETIC_CORRECTION_FLOW_REQUIREMENT
 } from "@/evaluation/correction-flow-qualification-fixture";
 import {
+  syntheticCoverLetterOutput,
+  syntheticTailoredResumeOutput
+} from "@/evaluation/correction-flow-provider-stub";
+import {
   buildCorrectionFlowQualificationManifest,
   correctionFlowQualificationConsent
 } from "@/lib/ai/correction-flow-qualification";
@@ -86,36 +90,11 @@ function updatedMatchOutput() {
 }
 
 function resumeOutput() {
-  const facts = buildApplicationDocumentFactCatalog(documentPayload());
-  const summaryFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary)?.factId;
-  const reviewedFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
-  assert.ok(summaryFactId && reviewedFactId);
-  return {
-    professionalSummary: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
-    professionalSummaryFactId: summaryFactId,
-    skillsSection: [],
-    bulletRewrites: [],
-    rolesOrProjectsToEmphasize: [],
-    resumeTextClaims: [{ claim: SYNTHETIC_CORRECTION_FLOW_FACT, factId: reviewedFactId }],
-    unsupportedKeywords: [],
-    formattingWarnings: [],
-    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`
-  };
+  return syntheticTailoredResumeOutput();
 }
 
 function coverOutput() {
-  const reviewedFactId = buildApplicationDocumentFactCatalog(documentPayload())
-    .find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
-  assert.ok(reviewedFactId);
-  return {
-    title: "Synthetic Employer Service Operations Director cover letter",
-    coverLetter: `Dear Synthetic Employer Hiring Team,\n\nI am writing to apply for the Service Operations Director position.\n\n${SYNTHETIC_CORRECTION_FLOW_FACT}\n\nSincerely,\nTaylor Boundary`,
-    angle: "Use only current reviewed evidence.",
-    claimsUsed: [{
-      claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      factId: reviewedFactId
-    }]
-  };
+  return syntheticCoverLetterOutput();
 }
 
 function matchInput(reviewed: boolean): MatchInput {

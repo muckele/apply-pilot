@@ -33,7 +33,7 @@ function envelope() {
     jobProjectionHash: hash("5"),
     reviewedEvidenceHash: hash("6"),
     factCatalogHash: hash("7"),
-    promptVersion: "7",
+    promptVersion: "8",
     model: "gemini-3.8-flash",
     thinkingLevel: "LOW",
     generationId: "generation-review-page",
@@ -47,6 +47,19 @@ function envelope() {
 test("the local page presents both exact PDFs, assembled text, evidence, and required bounded attestations", () => {
   const view = buildCorrectionFlowDocumentReviewView({
     envelope: envelope(),
+    context: {
+      sourceResumeText: "Taylor Boundary\nService Operations Lead\nComplete source résumé evidence.",
+      reviewedFacts: ["Holds a current Quenby service certification."],
+      targetJob: {
+        title: "Service Operations Director",
+        company: "Northwind Service Cloud",
+        location: "Remote",
+        description: "Lead enterprise service delivery and operational governance.",
+        requirements: ["Enterprise service delivery", "Incident governance"],
+        preferredQualifications: ["Business education"],
+        detectedTechStack: ["TypeScript", "PostgreSQL"]
+      }
+    },
     documents: [
       {
         kind: "resume",
@@ -69,6 +82,8 @@ test("the local page presents both exact PDFs, assembled text, evidence, and req
   assert.equal(view.documents[1].pages.flat().includes("Validated synthetic cover-letter line."), true);
   assert.equal(view.documents[0].pdfPath, paths.resumePdfPath);
   assert.equal(view.documents[1].pdfPath, paths.coverLetterPdfPath);
+  assert.match(view.context.sourceResumeText, /Complete source résumé evidence/u);
+  assert.equal(view.context.targetJob.title, "Service Operations Director");
 
   const html = correctionFlowDocumentReviewHtml(paths);
   assert.match(html, /data-document-review-page/u);
@@ -84,6 +99,9 @@ test("the local page presents both exact PDFs, assembled text, evidence, and req
   assert.match(html, /Submit both review decisions/u);
   assert.match(html, /Synthetic local review only/u);
   assert.match(html, /does not authorize an application/u);
+  assert.match(html, /Source résumé and evidence/u);
+  assert.match(html, /Target job context/u);
+  assert.doesNotMatch(correctionFlowDocumentReviewHtml.css, /grid-template-columns:\s*1fr 1fr[^}]*\.documents/u);
 });
 
 test("the page is read-only and has no match questionnaire, application action, secrets, or external assets", () => {
@@ -102,7 +120,7 @@ test("the page is read-only and has no match questionnaire, application action, 
     "../lib/ai/correction-flow-document-review-page.ts",
     import.meta.url
   )), "utf8");
-  assert.match(source, /paginateResumeText/u);
+  assert.match(source, /buildCanonicalApplicationDocumentLayoutV2/u);
   assert.match(source, /CorrectionFlowDocumentReviewEnvelope/u);
   assert.doesNotMatch(source, /synthetic-one-job-review|SyntheticReviewState|buildSyntheticReviewSnapshot/u);
 });

@@ -86,34 +86,80 @@ export function syntheticUpdatedMatchOutput() {
 export function syntheticTailoredResumeOutput() {
   const payload = syntheticCorrectionFlowDocumentPayload();
   const facts = buildApplicationDocumentFactCatalog(payload);
-  const summaryFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary)?.factId;
-  const reviewedFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
-  if (!summaryFactId || !reviewedFactId) throw new Error("Synthetic document facts are incomplete.");
+  const factId = (value: string) => {
+    const normalized = value.trim().replace(/^[-*•▪◦–—]\s+/u, "");
+    const selected = facts.find((fact) => fact.excerpt === normalized)?.factId;
+    if (!selected) throw new Error(`Synthetic document fact is missing: ${normalized}`);
+    return selected;
+  };
+  const resumeText = SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.rawText.replace(
+    "Credential ID: CSOP-24017",
+    `Credential ID: CSOP-24017\n${SYNTHETIC_CORRECTION_FLOW_FACT}`
+  );
+  const heading = /^(?:SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL INFORMATION)$/u;
+  const resumeTextClaims = resumeText.split("\n")
+    .map((line) => line.trim().replace(/^[-*•▪◦–—]\s+/u, ""))
+    .filter((line) => line && !heading.test(line))
+    .map((claim) => ({ claim, factId: factId(claim) }));
   return {
     professionalSummary: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
-    professionalSummaryFactId: summaryFactId,
-    skillsSection: [],
+    professionalSummaryFactId: factId(SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary),
+    skillsSection: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.skills.map((text) => ({
+      text,
+      factId: factId(text)
+    })),
     bulletRewrites: [],
     rolesOrProjectsToEmphasize: [],
-    resumeTextClaims: [{ claim: SYNTHETIC_CORRECTION_FLOW_FACT, factId: reviewedFactId }],
+    resumeTextClaims,
     unsupportedKeywords: [],
     formattingWarnings: [],
-    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`
+    resumeText
   };
 }
 
 export function syntheticCoverLetterOutput() {
-  const reviewedFactId = buildApplicationDocumentFactCatalog(syntheticCorrectionFlowDocumentPayload())
-    .find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
-  if (!reviewedFactId) throw new Error("Synthetic reviewed fact is missing.");
+  const facts = buildApplicationDocumentFactCatalog(syntheticCorrectionFlowDocumentPayload());
+  const selectedFacts = [
+    "Directed service delivery across support, engineering, and customer success for 42 enterprise accounts.",
+    "Reduced median incident review time from five business days to two by standardizing evidence capture and ownership.",
+    "Built weekly operational governance reviews that tracked service levels, capacity risks, and corrective actions.",
+    SYNTHETIC_CORRECTION_FLOW_FACT
+  ];
+  const factId = (claim: string) => {
+    const source = claim.startsWith("I ") && claim !== SYNTHETIC_CORRECTION_FLOW_FACT
+      ? `${claim.slice(2, 3).toUpperCase()}${claim.slice(3)}`
+      : claim;
+    const id = facts.find((fact) => fact.excerpt === source)?.factId;
+    if (!id) throw new Error(`Synthetic cover-letter fact is missing: ${source}`);
+    return id;
+  };
+  const claims = selectedFacts.map((source) => source === SYNTHETIC_CORRECTION_FLOW_FACT
+    ? source
+    : `I ${source.slice(0, 1).toLowerCase()}${source.slice(1)}`);
   return {
-    title: "Synthetic Employer Service Operations Director cover letter",
-    coverLetter: `Dear Synthetic Employer Hiring Team,\n\nI am writing to apply for the Service Operations Director position.\n\n${SYNTHETIC_CORRECTION_FLOW_FACT}\n\nSincerely,\nTaylor Boundary`,
-    angle: "Use only current reviewed evidence.",
-    claimsUsed: [{
-      claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      factId: reviewedFactId
-    }]
+    title: "Northwind Service Cloud — Service Operations Director",
+    coverLetter: [
+      "Taylor Boundary",
+      "taylor.boundary@example.test | +1 555 010 0200 | Seattle, WA | Remote",
+      "",
+      "Dear Northwind Service Cloud Hiring Team,",
+      "",
+      "I am writing to apply for the Service Operations Director position.",
+      "The role calls for experience leading enterprise service delivery across cross-functional teams.",
+      "",
+      claims[0],
+      claims[1],
+      "",
+      claims[2],
+      claims[3],
+      "",
+      "Thank you for your time and consideration.",
+      "",
+      "Sincerely,",
+      "Taylor Boundary"
+    ].join("\n"),
+    angle: "Enterprise service delivery, incident governance, and accountable operational leadership.",
+    claimsUsed: claims.map((claim) => ({ claim, factId: factId(claim) }))
   };
 }
 

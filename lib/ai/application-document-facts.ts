@@ -63,7 +63,7 @@ const actionWords = [
   "supported", "transformed", "used", "utilized"
 ] as const;
 const actionClauseBoundary = new RegExp(
-  `\\s*;\\s*|\\s*,\\s*(?:and|but|while|then)\\s+|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
+  `\\s*;\\s*|\\s*,\\s*(?:but|while|then)\\s+|\\s*,\\s*and\\s+(?=(?:${actionWords.join("|")})\\b)|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
   "i"
 );
 

@@ -98,7 +98,7 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
   });
 
   const response = await page.goto(`${origin}/synthetic-evidence-correction`, {
-    waitUntil: "domcontentloaded",
+    waitUntil: "networkidle",
     timeout: 60_000
   });
   assert.equal(response?.status(), 200, `${await page.content()}\n${nextServer.getLogs()}`);
@@ -114,7 +114,9 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
   const outcome = page.getByLabel("Review outcome");
   await outcome.selectOption("SOURCE_CORRECTION");
   const source = page.getByLabel("Extracted source");
-  const sourceLabels = await source.locator("option").allTextContents();
+  const sourceLabels = await source.evaluate((select) =>
+    [...(select as HTMLSelectElement).options].map((option) => option.textContent ?? "")
+  );
   assert.ok(sourceLabels.some((label) => label.includes("resume.rawText")));
   assert.ok(sourceLabels.some((label) => label.includes("resume.education[0].sourceText")));
   assert.ok(!sourceLabels.some((label) => label.includes("fieldOfStudy")));

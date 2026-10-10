@@ -44,7 +44,7 @@ async function main() {
     throw new Error("The current Git head does not match the expected offline qualification head.");
   }
   if (hasDirtyCorrectionFlowQualificationWorktree(
-    gitOutput(["status", "--porcelain=v1", "--untracked-files=all"])
+    gitOutput(["status", "--porcelain=v1", "--untracked-files=normal"])
   )) {
     throw new Error("Offline adapter qualification requires a clean working tree.");
   }

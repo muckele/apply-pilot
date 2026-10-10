@@ -21,6 +21,10 @@ import {
   type TailoredResumeProviderOutput
 } from "@/lib/ai/application-document-facts";
 import {
+  validateCoverLetterQuality,
+  validateTailoredResumeQuality
+} from "@/lib/ai/application-document-quality";
+import {
   APPLICATION_DOCUMENT_THINKING_LEVEL
 } from "@/lib/ai/application-document-version";
 import { assertConservativeApplicationDocumentWireBound } from "@/lib/ai/client";
@@ -589,7 +593,10 @@ export function createCorrectionFlowProviderAdapter({
           value as TailoredResumeProviderOutput
         ),
         responseJsonSchema: buildTailoredResumeGeminiJsonSchema(payload),
-        validate: (value) => validateTailoredResumeClaims(payload, value as TailoredResumeOutput),
+        validate: (value) => validateTailoredResumeQuality(
+          payload,
+          validateTailoredResumeClaims(payload, value as TailoredResumeOutput)
+        ),
         signal
       });
     },
@@ -607,7 +614,10 @@ export function createCorrectionFlowProviderAdapter({
           value as CoverLetterProviderOutput
         ),
         responseJsonSchema: buildCoverLetterGeminiJsonSchema(payload),
-        validate: (value) => validateCoverLetterClaims(payload, value as CoverLetterOutput),
+        validate: (value) => validateCoverLetterQuality(
+          payload,
+          validateCoverLetterClaims(payload, value as CoverLetterOutput)
+        ),
         signal
       });
     },

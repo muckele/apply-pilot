@@ -97,7 +97,7 @@ function runnerFor({
   });
 }
 
-test("the two-document manifest freezes prompt v7, the 37-fact catalog, both wires, and the exact cap", () => {
+test("the two-document manifest freezes prompt v8, the 70-fact catalog, both wires, and the exact cap", () => {
   const value = manifest();
   assert.equal(value.contractVersion, "1");
   assert.equal(value.callCount, 2);
@@ -107,10 +107,10 @@ test("the two-document manifest freezes prompt v7, the 37-fact catalog, both wir
   assert.equal(value.stopAfterFirstFailure, true);
   assert.equal(value.rawOutputRetention, false);
   assert.equal(value.outputEmission, false);
-  assert.equal(value.factCatalogCount, 37);
-  assert.equal(value.factCatalogHash, "b26115a41ce6bdfd5c0775bbb10010052cec17ee8de2fe441f3ed2a072e02f15");
-  assert.equal(value.payloadHash, "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0");
-  assert.equal(value.reviewedEvidenceHash, "7646bd358e0b45e25d74d1a85c66a7d9ed8bb7eafbd39b833e8a3863c29505ec");
+  assert.equal(value.factCatalogCount, 70);
+  assert.equal(value.factCatalogHash, "c85e2373bf28d2e2098ec1b938fe278c4c64a2261bcc69e5720541012bf70c3e");
+  assert.equal(value.payloadHash, "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae");
+  assert.equal(value.reviewedEvidenceHash, "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708");
   assert.deepEqual(value.calls.map((call) => [
     call.stage,
     call.model,
@@ -121,10 +121,10 @@ test("the two-document manifest freezes prompt v7, the 37-fact catalog, both wir
     call.maximumCostMicros,
     call.wireRequestHash
   ]), [
-    ["tailored_resume", "gemini-3.8-flash", "7", "LOW", 56_000, 6_000, 64_500,
-      "c4aa6225ea4a0e750a9495295754ed1abe4e2b07368abb1a821e54e007f3af56"],
-    ["cover_letter", "gemini-3.8-flash", "7", "LOW", 56_000, 1_500, 47_625,
-      "050187b89f3462caf7f92f17b60060d3eb97cbbd1b6251b5e3f1a8fb5ca10ffb"]
+    ["tailored_resume", "gemini-3.8-flash", "8", "LOW", 56_000, 6_000, 64_500,
+      "49247fbe57954a9a53b46b0c1a8fd49acaa834ea4e40311b8dda560b5a6b3f26"],
+    ["cover_letter", "gemini-3.8-flash", "8", "LOW", 56_000, 1_500, 47_625,
+      "ae4b579e9d8c08ddd1a08580cf1dacac23ed4dcbaa5192221afe0dc848d50e3a"]
   ]);
   assert.deepEqual(value.calls.map((call) => call.pricingSnapshot), [
     {

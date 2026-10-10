@@ -10,6 +10,7 @@ import {
   validateTailoredResumeClaims,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
+import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
 import {
   APPLICATION_DOCUMENT_MODEL,
   APPLICATION_DOCUMENT_PROMPT_VERSION,
@@ -36,9 +37,9 @@ export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_CONTRACT_VERSION = "2" as const;
 export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_STEP_TIMEOUT_MS = 180_000 as const;
 
 const FROZEN_SYNTHETIC_PAYLOAD_HASH =
-  "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0";
+  "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae";
 const FROZEN_SYNTHETIC_REVIEWED_EVIDENCE_HASH =
-  "7646bd358e0b45e25d74d1a85c66a7d9ed8bb7eafbd39b833e8a3863c29505ec";
+  "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708";
 
 const providerModeSchema = z.enum(["offline_stubbed", "live_synthetic"]);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -389,7 +390,10 @@ export function createCorrectionFlowResumeDiagnosticRunner({
             providerParsed.data as TailoredResumeProviderOutput
           );
           const parsed = tailoredResumeSchema.parse(assembled);
-          validated = validateTailoredResumeClaims(payload, parsed);
+          validated = validateTailoredResumeQuality(
+            payload,
+            validateTailoredResumeClaims(payload, parsed)
+          );
         } catch (error) {
           const code = error instanceof PublicApiError &&
             typeof error.details?.code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(error.details.code)

@@ -9,7 +9,8 @@ import {
 } from "@/lib/ai/correction-flow-document-review-contract";
 import {
   buildCorrectionFlowDocumentReviewView,
-  correctionFlowDocumentReviewHtml
+  correctionFlowDocumentReviewHtml,
+  type CorrectionFlowDocumentReviewContext
 } from "@/lib/ai/correction-flow-document-review-page";
 import {
   createRepeatableSubmissionAdmission,
@@ -48,6 +49,7 @@ function pdfHeaders() {
 
 export async function startCorrectionFlowDocumentOwnerReview({
   envelope,
+  context: initialContext,
   documents: initialDocuments,
   renderedPdfs: initialRenderedPdfs,
   now = () => new Date(),
@@ -55,6 +57,7 @@ export async function startCorrectionFlowDocumentOwnerReview({
   signal
 }: {
   envelope: CorrectionFlowDocumentReviewEnvelope;
+  context: CorrectionFlowDocumentReviewContext;
   documents: readonly [ReviewDocument & { kind: "resume" }, ReviewDocument & { kind: "cover_letter" }];
   renderedPdfs: readonly [RenderedPdf & { kind: "resume" }, RenderedPdf & { kind: "cover_letter" }];
   now?: () => Date;
@@ -90,6 +93,7 @@ export async function startCorrectionFlowDocumentOwnerReview({
   const token = randomBytes(32).toString("base64url");
   let origin = "";
   let phase: "reviewing" | "completing" | "closed" = "reviewing";
+  let context: CorrectionFlowDocumentReviewContext | null = initialContext;
   let documents: typeof initialDocuments | null = initialDocuments;
   let renderedPdfs: typeof initialRenderedPdfs | null = initialRenderedPdfs;
   let view: ReturnType<typeof buildCorrectionFlowDocumentReviewView> | null = null;
@@ -237,6 +241,7 @@ export async function startCorrectionFlowDocumentOwnerReview({
   const dispose = () => {
     if (renderedPdfs) renderedPdfs.forEach((pdf) => pdf.bytes.fill(0));
     renderedPdfs = null;
+    context = null;
     documents = null;
     view = null;
     delivered.clear();
@@ -288,7 +293,12 @@ export async function startCorrectionFlowDocumentOwnerReview({
     if (!address || typeof address === "string") throw new Error("Document review did not obtain a loopback address.");
     origin = `http://127.0.0.1:${address.port}`;
     const paths = pathSet();
-    view = buildCorrectionFlowDocumentReviewView({ envelope, documents: initialDocuments, paths });
+    view = buildCorrectionFlowDocumentReviewView({
+      envelope,
+      context: initialContext,
+      documents: initialDocuments,
+      paths
+    });
     return Object.freeze({
       origin,
       reviewUrl: `${origin}${paths.reviewPath}`,
@@ -300,7 +310,7 @@ export async function startCorrectionFlowDocumentOwnerReview({
       closed,
       close,
       phase: () => phase,
-      hasPrivateInput: () => documents !== null || renderedPdfs !== null || view !== null,
+      hasPrivateInput: () => context !== null || documents !== null || renderedPdfs !== null || view !== null,
       deliveredPdfCount: () => delivered.size
     });
   } catch (error) {

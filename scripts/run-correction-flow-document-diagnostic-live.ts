@@ -163,7 +163,7 @@ export async function runCorrectionFlowDocumentDiagnosticLiveLauncher(
   let worktreeStatus: string;
   try {
     exactHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
-    worktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+    worktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=normal"]);
   } catch {
     throw preconsentError("LIVE_GIT_PREFLIGHT_FAILED", "The document diagnostic Git preflight failed.");
   }
