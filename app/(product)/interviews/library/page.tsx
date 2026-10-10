@@ -26,7 +26,7 @@ export default async function InterviewLibraryPage() {
       <Panel>
         <PanelHeader
           title="Practice material"
-          description="Generated interview prep is added here automatically; your edits remain reusable across future interviews."
+          description="Keep questions and honest STAR stories here for reuse. AI interview preparation is deferred for this MVP."
         />
         <InterviewLibrary
           initialQuestions={questions.map((item) => ({

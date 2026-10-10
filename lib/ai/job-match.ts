@@ -19,18 +19,29 @@ import {
 } from "@/lib/ai/gemini";
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { hasEvidenceNegationCue } from "@/lib/evidence-negation";
+import {
+  JOB_MATCH_MODEL,
+  JOB_MATCH_PROMPT_VERSION,
+  JOB_MATCH_PROVIDER,
+  JOB_MATCH_THINKING_LEVEL
+} from "@/lib/ai/job-match-version";
 import { PublicApiError } from "@/lib/api-errors";
+import type { JobMatchReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 
-// Result contract remains v3; prompt/cache revision 3.2 makes factual evidence
-// resume-only while retaining profile values as preference-fit context.
-export const JOB_MATCH_PROMPT_VERSION = "3.2";
-export const JOB_MATCH_PROVIDER = "gemini" as const;
-export const JOB_MATCH_MODEL = "gemini-3.8-flash";
-export const JOB_MATCH_THINKING_LEVEL = "MEDIUM" as const;
+// Result contract remains v3; prompt/cache revision 3.4 adds durable reviewed
+// evidence while retaining evidence-scoped gaps and illustrative-example guards.
+export {
+  JOB_MATCH_MODEL,
+  JOB_MATCH_PROMPT_VERSION,
+  JOB_MATCH_PROVIDER,
+  JOB_MATCH_THINKING_LEVEL
+} from "@/lib/ai/job-match-version";
 
 export type JobMatchEvidenceCitation = {
   ref: string;
   excerpt: string;
+  provenance?: "SUBMITTED_RESUME" | "OWNER_ATTESTED";
 };
 
 export type JobMatchModelFactualMatch = {
@@ -98,6 +109,7 @@ export type JobMatchOutput = Omit<JobMatchModelOutput, "factualMatches"> & {
 };
 
 export type MatchInput = {
+  evidenceSnapshotGeneration?: number;
   job: {
     title: string;
     company: string;
@@ -130,18 +142,63 @@ export type MatchInput = {
     skillsToEmphasize?: string[];
     skillsNotToExaggerate?: string[];
   } | null;
+  reviewedEvidence?: JobMatchReviewedEvidence | null;
 };
+
+export type JobMatchSemanticValidationCode =
+  | "FREE_TEXT_CLAIM"
+  | "EMPTY_SUPPORTED_KEYWORDS"
+  | "UNKNOWN_APPLICANT_REF"
+  | "UNKNOWN_JOB_REF"
+  | "UNSUPPORTED_APPLICANT_EXCERPT"
+  | "UNSUPPORTED_JOB_EXCERPT"
+  | "REVIEWED_EVIDENCE_EXCERPT_NOT_FULL"
+  | "APPLICANT_EVIDENCE_NEGATION_REVERSAL"
+  | "UNSUPPORTED_MATCHED_KEYWORD"
+  | "GAP_REFERENCE_NOT_STRUCTURED"
+  | "GAP_REQUIREMENT_NOT_FULL"
+  | "GAP_REQUIREMENT_NOT_EXACT"
+  | "GAP_KEYWORD_NOT_IN_REQUIREMENT"
+  | "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE"
+  | "GAP_KEYWORD_ILLUSTRATIVE_ONLY";
 
 export class JobMatchOutputValidationError extends Error {
   readonly validationStage: "schema" | "semantic";
+  readonly validationCode: JobMatchSemanticValidationCode | null;
   readonly fieldPath: string | null;
 
-  constructor(validationStage: "schema" | "semantic", fieldPath: string | null, message?: string) {
+  constructor(
+    validationStage: "schema" | "semantic",
+    fieldPath: string | null,
+    message?: string,
+    validationCode: JobMatchSemanticValidationCode | null = null
+  ) {
     super(message ?? "JOB_MATCH output failed " + validationStage + " validation.");
     this.name = "JobMatchOutputValidationError";
     this.validationStage = validationStage;
+    this.validationCode = validationCode;
     this.fieldPath = fieldPath;
   }
+}
+
+class JobMatchSemanticValidationError extends Error {
+  readonly validationCode: JobMatchSemanticValidationCode;
+  readonly fieldPath: string;
+
+  constructor(validationCode: JobMatchSemanticValidationCode, fieldPath: string, message: string) {
+    super(message);
+    this.name = "JobMatchSemanticValidationError";
+    this.validationCode = validationCode;
+    this.fieldPath = fieldPath;
+  }
+}
+
+function semanticFailure(
+  validationCode: JobMatchSemanticValidationCode,
+  fieldPath: string,
+  message: string
+): never {
+  throw new JobMatchSemanticValidationError(validationCode, fieldPath, message);
 }
 
 const scoreSchema = z.number().min(0).max(100).transform((value) => Math.round(value));
@@ -213,7 +270,8 @@ export function getJobMatchEvidenceReferences(input: MatchInput) {
     ...workHistoryReferences,
     ...indexedReferences("resume.projects", input.resume?.projects),
     ...indexedReferences("resume.education", input.resume?.education),
-    ...indexedReferences("resume.certifications", input.resume?.certifications)
+    ...indexedReferences("resume.certifications", input.resume?.certifications),
+    ...indexedReferences("reviewedEvidence.facts", input.reviewedEvidence?.facts)
   ];
   const preference = [
     ...exactReferences([["profile.careerGoals", input.profile?.careerGoals]]),
@@ -382,7 +440,29 @@ function resolveApplicantEvidence(input: MatchInput, ref: string): ResolvedEvide
       Array.isArray(input.resume?.certifications) ? input.resume.certifications : undefined
     )
   ].find((candidate) => candidate.found);
-  return indexed ?? { found: false };
+  if (indexed) return indexed;
+  const reviewed = indexedValue(
+    ref,
+    "reviewedEvidence.facts",
+    input.reviewedEvidence?.facts ? [...input.reviewedEvidence.facts] : undefined
+  );
+  if (!reviewed.found || !isReviewedEvidenceFact(reviewed.value)) return { found: false };
+  return { found: true, value: reviewed.value.fact };
+}
+
+function isReviewedEvidenceFact(value: unknown): value is JobMatchReviewedEvidence["facts"][number] {
+  return typeof value === "object" && value !== null && typeof Reflect.get(value, "fact") === "string";
+}
+
+function applicantEvidenceProvenance(input: MatchInput, ref: string) {
+  const resolved = indexedValue(
+    ref,
+    "reviewedEvidence.facts",
+    input.reviewedEvidence?.facts ? [...input.reviewedEvidence.facts] : undefined
+  );
+  return resolved.found && isReviewedEvidenceFact(resolved.value)
+    ? resolved.value.provenance
+    : "SUBMITTED_RESUME" as const;
 }
 
 function resolveJobEvidence(input: MatchInput, ref: string): ResolvedEvidence {
@@ -498,20 +578,56 @@ function comparable(value: string) {
   return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
+const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+const contrastClauseBoundary = /\b(?:but|however|although|though|yet)\b/giu;
+
+function semanticEvidenceClauses(value: unknown) {
+  return readableEvidenceExcerpt(value).split(/(?:\r?\n){2,}/gu)
+    .map((paragraph) => paragraph.replace(/\r?\n/gu, " "))
+    .flatMap((paragraph) => [...sentenceSegmenter.segment(paragraph)].map(({ segment }) => segment))
+    .flatMap((segment) => segment.split(contrastClauseBoundary))
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+}
+
+function positiveCitationReversesNegation(
+  value: unknown,
+  citation: JobMatchEvidenceCitation,
+  supportedKeywords: string[]
+) {
+  const excerpt = comparable(citation.excerpt);
+  return supportedKeywords.some((keyword) => {
+    if (!containsWholeKeyword(citation.excerpt, keyword)) return false;
+    const matchingClauses = semanticEvidenceClauses(value).filter((clause) =>
+      comparable(clause).includes(excerpt) && containsWholeKeyword(clause, keyword));
+    return matchingClauses.length > 0 && matchingClauses.every((clause) =>
+      hasEvidenceNegationCue(comparable(clause)));
+  });
+}
+
 function validateCitation(
   citation: JobMatchEvidenceCitation,
   resolver: (ref: string) => ResolvedEvidence,
-  source: "applicant" | "job"
+  source: "applicant" | "job",
+  fieldPath: string
 ) {
   const resolved = resolver(citation.ref);
   if (!resolved.found) {
-    throw new Error(`JOB_MATCH returned an unknown ${source} evidence reference: ${citation.ref}`);
+    semanticFailure(
+      source === "applicant" ? "UNKNOWN_APPLICANT_REF" : "UNKNOWN_JOB_REF",
+      `${fieldPath}.ref`,
+      `JOB_MATCH returned an unknown ${source} evidence reference.`
+    );
   }
 
   const haystack = comparable(evidenceText(resolved.value));
   const needle = comparable(citation.excerpt);
   if (!needle || !haystack.includes(needle)) {
-    throw new Error(`JOB_MATCH returned an unsupported ${source} evidence excerpt for ${citation.ref}`);
+    semanticFailure(
+      source === "applicant" ? "UNSUPPORTED_APPLICANT_EXCERPT" : "UNSUPPORTED_JOB_EXCERPT",
+      `${fieldPath}.excerpt`,
+      `JOB_MATCH returned an unsupported ${source} evidence excerpt.`
+    );
   }
 }
 
@@ -532,7 +648,8 @@ function applicantEvidenceText(input: MatchInput) {
     input.resume?.education,
     input.resume?.certifications,
     ...(input.resume?.skills ?? []),
-    ...(input.resume?.achievements ?? [])
+    ...(input.resume?.achievements ?? []),
+    ...(input.reviewedEvidence?.facts.map((fact) => fact.fact) ?? [])
   ].filter((value) => value !== null && value !== undefined);
   return comparable(values.map(evidenceText).join("\n"));
 }
@@ -541,6 +658,46 @@ function containsWholeKeyword(text: string, keyword: string) {
   const normalizedText = comparable(text);
   const escaped = comparable(keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}($|[^\\p{L}\\p{N}])`, "u").test(normalizedText);
+}
+
+function wholeKeywordOffsets(text: string, keyword: string) {
+  const normalizedText = comparable(text);
+  const escaped = comparable(keyword).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!escaped) return [];
+  const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`, "gu");
+  const offsets: number[] = [];
+  for (const match of normalizedText.matchAll(pattern)) {
+    offsets.push((match.index ?? 0) + match[1].length);
+  }
+  return offsets;
+}
+
+function illustrativeSpans(requirement: string) {
+  const normalized = comparable(requirement);
+  const cue = /\b(?:such\s+as|including|for\s+example|e\.?\s*g\.?)\s*[,\-:]?\s+/gu;
+  const spans: Array<{ start: number; end: number }> = [];
+  for (const match of normalized.matchAll(cue)) {
+    const start = (match.index ?? 0) + match[0].length;
+    const delimiter = normalized.slice(start).search(/[.;\n]/u);
+    spans.push({ start, end: delimiter === -1 ? normalized.length : start + delimiter });
+  }
+  for (const match of normalized.matchAll(/\betc\.?/gu)) {
+    const end = (match.index ?? 0) + match[0].length;
+    const prefix = normalized.slice(0, match.index);
+    const clauseStart = Math.max(prefix.lastIndexOf(";"), prefix.lastIndexOf("."), prefix.lastIndexOf("\n")) + 1;
+    const colon = prefix.lastIndexOf(":");
+    const start = colon >= clauseStart ? colon + 1 : clauseStart;
+    spans.push({ start, end });
+  }
+  return spans;
+}
+
+function keywordIsIllustrativeOnly(requirement: string, keyword: string) {
+  const offsets = wholeKeywordOffsets(requirement, keyword);
+  if (!offsets.length) return false;
+  const spans = illustrativeSpans(requirement);
+  return spans.length > 0 && offsets.every((offset) =>
+    spans.some((span) => offset >= span.start && offset < span.end));
 }
 
 function isPresentNumber(value: unknown): value is number {
@@ -573,45 +730,119 @@ function assessCompensation(input: MatchInput, modelScore: number | null) {
 }
 
 export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModelOutput): JobMatchOutput {
-  for (const match of output.factualMatches) {
+  for (const [matchIndex, match] of output.factualMatches.entries()) {
     if (Object.prototype.hasOwnProperty.call(match, "claim")) {
-      throw new Error("JOB_MATCH returned a free-text factual claim; factual claims are derived locally from validated evidence.");
+      semanticFailure(
+        "FREE_TEXT_CLAIM",
+        `factualMatches[${matchIndex}].claim`,
+        "JOB_MATCH returned a free-text factual claim; factual claims are derived locally from validated evidence."
+      );
     }
     if (!uniqueStrings(match.supportedKeywords).length) {
-      throw new Error("JOB_MATCH returned a factual match without a supported keyword.");
+      semanticFailure(
+        "EMPTY_SUPPORTED_KEYWORDS",
+        `factualMatches[${matchIndex}].supportedKeywords`,
+        "JOB_MATCH returned a factual match without a supported keyword."
+      );
     }
-    for (const citation of match.applicantEvidence) {
-      validateCitation(citation, (ref) => resolveApplicantEvidence(input, ref), "applicant");
+    for (const [citationIndex, citation] of match.applicantEvidence.entries()) {
+      const resolved = resolveApplicantEvidence(input, citation.ref);
+      validateCitation(
+        citation,
+        () => resolved,
+        "applicant",
+        `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}]`
+      );
+      if (
+        citation.ref.startsWith("reviewedEvidence.facts[") &&
+        resolved.found &&
+        comparable(evidenceText(resolved.value)) !== comparable(citation.excerpt)
+      ) {
+        semanticFailure(
+          "REVIEWED_EVIDENCE_EXCERPT_NOT_FULL",
+          `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}].excerpt`,
+          "JOB_MATCH did not preserve the complete reviewed evidence fact."
+        );
+      }
+      if (resolved.found && positiveCitationReversesNegation(resolved.value, citation, match.supportedKeywords)) {
+        semanticFailure(
+          "APPLICANT_EVIDENCE_NEGATION_REVERSAL",
+          `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}].excerpt`,
+          "JOB_MATCH used negated applicant evidence as a positive factual match."
+        );
+      }
     }
-    for (const citation of match.jobEvidence) {
-      validateCitation(citation, (ref) => resolveJobEvidence(input, ref), "job");
+    for (const [citationIndex, citation] of match.jobEvidence.entries()) {
+      validateCitation(
+        citation,
+        (ref) => resolveJobEvidence(input, ref),
+        "job",
+        `factualMatches[${matchIndex}].jobEvidence[${citationIndex}]`
+      );
     }
-    for (const keyword of match.supportedKeywords) {
+    for (const [keywordIndex, keyword] of match.supportedKeywords.entries()) {
       if (!includesKeyword(match.applicantEvidence, keyword) || !includesKeyword(match.jobEvidence, keyword)) {
-        throw new Error(`JOB_MATCH returned an unsupported matched keyword: ${keyword}`);
+        semanticFailure(
+          "UNSUPPORTED_MATCHED_KEYWORD",
+          `factualMatches[${matchIndex}].supportedKeywords[${keywordIndex}]`,
+          "JOB_MATCH returned an unsupported matched keyword."
+        );
       }
     }
   }
 
-  for (const gap of output.requirementGaps) {
+  for (const [gapIndex, gap] of output.requirementGaps.entries()) {
     if (!/^job\.(requirements|preferredQualifications)\[\d+\]$/.test(gap.jobRequirement.ref)) {
-      throw new Error(`JOB_MATCH gap did not cite a structured job requirement: ${gap.jobRequirement.ref}`);
+      semanticFailure(
+        "GAP_REFERENCE_NOT_STRUCTURED",
+        `requirementGaps[${gapIndex}].jobRequirement.ref`,
+        "JOB_MATCH gap did not cite a structured job requirement."
+      );
     }
     const resolvedRequirement = resolveJobEvidence(input, gap.jobRequirement.ref);
-    validateCitation(gap.jobRequirement, () => resolvedRequirement, "job");
+    validateCitation(
+      gap.jobRequirement,
+      () => resolvedRequirement,
+      "job",
+      `requirementGaps[${gapIndex}].jobRequirement`
+    );
     if (!resolvedRequirement.found
       || comparable(evidenceText(resolvedRequirement.value)) !== comparable(gap.jobRequirement.excerpt)) {
-      throw new Error("JOB_MATCH gap did not cite the full structured job requirement.");
+      semanticFailure(
+        "GAP_REQUIREMENT_NOT_FULL",
+        `requirementGaps[${gapIndex}].jobRequirement.excerpt`,
+        "JOB_MATCH gap did not cite the full structured job requirement."
+      );
     }
     if (comparable(gap.requirement) !== comparable(gap.jobRequirement.excerpt)) {
-      throw new Error("JOB_MATCH gap did not preserve the exact cited job requirement.");
+      semanticFailure(
+        "GAP_REQUIREMENT_NOT_EXACT",
+        `requirementGaps[${gapIndex}].requirement`,
+        "JOB_MATCH gap did not preserve the exact cited job requirement."
+      );
     }
-    for (const keyword of gap.missingKeywords) {
+    for (const [keywordIndex, keyword] of gap.missingKeywords.entries()) {
+      const keywordPath = `requirementGaps[${gapIndex}].missingKeywords[${keywordIndex}]`;
       if (!includesKeyword([gap.jobRequirement], keyword)) {
-        throw new Error(`JOB_MATCH returned an unsupported missing keyword: ${keyword}`);
+        semanticFailure(
+          "GAP_KEYWORD_NOT_IN_REQUIREMENT",
+          keywordPath,
+          "JOB_MATCH returned an unsupported missing keyword."
+        );
       }
       if (containsWholeKeyword(applicantEvidenceText(input), keyword)) {
-        throw new Error(`JOB_MATCH marked ${keyword} missing although it is present in submitted applicant evidence.`);
+        semanticFailure(
+          "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE",
+          keywordPath,
+          "JOB_MATCH marked a keyword missing although it is present in submitted applicant evidence."
+        );
+      }
+      if (keywordIsIllustrativeOnly(gap.requirement, keyword)) {
+        semanticFailure(
+          "GAP_KEYWORD_ILLUSTRATIVE_ONLY",
+          keywordPath,
+          "JOB_MATCH used an illustrative example as the sole witness for a broader evidence gap."
+        );
       }
     }
   }
@@ -621,8 +852,10 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
     const supportedKeywords = uniqueStrings(match.supportedKeywords);
     return {
       ...match,
-      applicantEvidence: match.applicantEvidence.map((citation) =>
-        citationForDisplay(citation, (ref) => resolveApplicantEvidence(input, ref))),
+      applicantEvidence: match.applicantEvidence.map((citation) => ({
+        ...citationForDisplay(citation, (ref) => resolveApplicantEvidence(input, ref)),
+        provenance: applicantEvidenceProvenance(input, citation.ref)
+      })),
       jobEvidence: match.jobEvidence.map((citation) =>
         citationForDisplay(citation, (ref) => resolveJobEvidence(input, ref))),
       supportedKeywords,
@@ -676,8 +909,9 @@ export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unk
   } catch (error) {
     throw new JobMatchOutputValidationError(
       "semantic",
-      null,
-      error instanceof Error ? error.message : undefined
+      error instanceof JobMatchSemanticValidationError ? error.fieldPath : null,
+      error instanceof Error ? error.message : undefined,
+      error instanceof JobMatchSemanticValidationError ? error.validationCode : null
     );
   }
 }

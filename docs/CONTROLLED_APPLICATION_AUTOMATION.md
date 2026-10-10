@@ -78,7 +78,7 @@ These controls are independent and must not be conflated:
 | --- | --- | --- |
 | `APPLICATION_AUTOMATION_ENABLED` | Global controlled-application emergency stop | Only exact lowercase `true` permits capability-increasing automation. |
 | `ApplicationAutomationPolicy.enabled` | Per-user capability gate | The global switch cannot override a disabled user policy. Both must permit capability. |
-| `AI_ENABLED` | Paid/provider execution switch | Exact `true` permits configured provider calls. When false, mocked, or missing usable provider credentials, deterministic local planning can still occur. |
+| `AI_ENABLED` | Paid/provider execution switch | Controls configured paid AI features. Application planning remains deterministic and local regardless of this setting. |
 | Compile-time/internal constants | Fixed safety invariants | READ-token TTL, preparation lease duration, and daily-cap window are code-defined rather than environment knobs. |
 
 ## Global automation emergency stop
@@ -97,7 +97,7 @@ Only exact lowercase `"true"` enables the global capability. Missing values, `"f
 | --- | --- |
 | DRAFT run creation | Allowed because the run is inert. Normal ownership, safe-target, idempotency, and active-run constraints still apply. |
 | Preparation acquisition | Capability is not acquired. An otherwise acquirable run is recorded `BLOCKED` with `automation_disabled`; a conflicting live preparation owner retains precedence. |
-| In-flight provider/local planning | If the attempt remains authoritative at TX2, its output is discarded and the run is recorded `BLOCKED` with `automation_disabled_during_preparation`. A stale or cancelled fence is resolved first. |
+| In-flight local planning | If the attempt remains authoritative at TX2, its output is discarded and the run is recorded `BLOCKED` with `automation_disabled_during_preparation`. A stale or cancelled fence is resolved first. |
 | Fill acquisition | Denied before an attempt or field step is created. `FILL_AND_REVIEW` never bypasses the global stop. An already-acquired orchestration rechecks policy through its guarded pre-field status reads and stops within the existing one-attempt semantics. |
 | Execution-token issuance | Blocked before a new credential is created. |
 | Reusable authorization | Input structure and expected binding are validated first; the global stop is then enforced before clock access, hashing, `lastUsedAt`, or any capability-side database mutation. |
@@ -224,7 +224,7 @@ Preparation uses these fixed invariants:
 - `dailyApplicationCap` defaults to 5.
 - The first successful acquisition for a run sets `firstPreparingAt` and consumes one cap slot.
 - Retry or reclaim of a run that already has `firstPreparingAt` consumes no additional slot.
-- Provider or planner failure does not refund the original slot.
+- Local planner failure does not refund the original slot.
 - A live `PREPARING` lease cannot be stolen.
 - An expired or missing lease can be reclaimed with a fresh attempt ID and lease.
 
@@ -232,7 +232,7 @@ The stable sequence is:
 
 1. Ensure a missing policy if necessary.
 2. Run TX1.
-3. Execute provider or deterministic local planning outside an interactive database transaction.
+3. Execute deterministic local planning outside an interactive database transaction.
 4. Run TX2.
 
 TX1 locks policy then run, rereads both authoritatively, classifies lease/acquisition state, evaluates current enablement and preparation gates, checks the rolling cap for a first acquisition, and records attempt/lease ownership. Preparation checks configured/static blocks but does not require the execution allowlist.
@@ -245,7 +245,7 @@ The authoritative completion fence conceptually requires all of:
 - the exact `prepareAttemptId`; and
 - the acquired `stateVersion`.
 
-The failure finalizer locks only the run and uses the same attempt fence. Cancellation or another authoritative state/version change makes the old attempt stale. If automation becomes disabled during provider work, an attempt that is still authoritative discards its result and becomes `BLOCKED` with `automation_disabled_during_preparation`; a stale or cancelled fence is resolved before any kill-switch overwrite.
+The failure finalizer locks only the run and uses the same attempt fence. Cancellation or another authoritative state/version change makes the old attempt stale. If automation becomes disabled during local planning, an attempt that is still authoritative discards its result and becomes `BLOCKED` with `automation_disabled_during_preparation`; a stale or cancelled fence is resolved before any kill-switch overwrite.
 
 Successful preparation ends in `READY` or `REVIEW_REQUIRED` according to deterministic review reasons. `finalReviewRequired` does not currently replace that reason-based decision with an unconditional review transition.
 
@@ -275,32 +275,17 @@ Real PostgreSQL 16 tests at `READ COMMITTED` protect policy first-persistence be
 
 The source action names and event titles are authoritative; this document intentionally does not duplicate a complete catalog.
 
-## Evidence-bound planning and provider routing
+## Evidence-bound local planning
 
 External job titles, company data, description digests, and requirements are untrusted data, never instructions. Job content may contain embedded instructions, but those instructions must never be followed or override the application-planning contract.
 
-Application planning builds bounded job-requirement and candidate-evidence catalogs locally. The provider references catalog IDs, while human-readable requirement and evidence text is hydrated from those catalogs. Unknown IDs are discarded, do-not-exaggerate controls are enforced, unsupported requirements become explicit gaps, and provider reasoning content is not persisted.
+Application planning builds bounded job-requirement and candidate-evidence catalogs and applies deterministic local rules. Human-readable requirement and evidence text is hydrated from those catalogs. Unknown IDs are discarded, do-not-exaggerate controls are enforced, and unsupported requirements become explicit gaps.
 
-Planner payloads intentionally exclude contact details, raw resume text, file data or paths, Answer Vault content, cookies, browser/session state, hidden page content, and sensitive demographic, disability, veteran, criminal-history, or work-authorization data. Plans remain advisory: the planner cannot invoke tools, execute code, fill forms, send messages, or submit applications.
+The planning projection excludes contact details, raw resume text, file data or paths, Answer Vault content, cookies, browser/session state, hidden page content, and sensitive demographic, disability, veteran, criminal-history, or work-authorization data. Plans remain advisory: local planning cannot invoke tools, execute code, fill forms, send messages, or submit applications.
 
-Provider controls are fail-closed:
+Provider configuration and stored provider credentials cannot activate paid application planning. The production planner always returns the validated deterministic local projection with provider metadata `local` and model metadata `heuristic-local`.
 
-- Global `AI_PROVIDER` defaults to `gemini` and accepts only `gemini` or `openai`.
-- `AI_PROVIDER=kimi` is invalid and fails with `AI_PROVIDER_UNKNOWN`.
-- `AI_PROVIDER_OVERRIDES` currently allows only the `APPLICATION_PLAN` feature to be overridden.
-- The `APPLICATION_PLAN` slot can select any registered provider. Kimi is reached through an override such as `APPLICATION_PLAN:kimi`; the slot is not intrinsically Kimi-only.
-- Malformed overrides, duplicate features, ineligible features, and unknown providers fail closed.
-- Kimi uses `MOONSHOT_API_KEY`, `KIMI_MODEL` (default `kimi-k3`), and `KIMI_REASONING_EFFORT` (`low`, `high`, or `max`). Its endpoint is fixed in code.
-- `AI_ENABLED=false`, provider mock mode, or missing usable provider credentials selects deterministic local behavior instead of disabling preparation itself.
-
-### Planning evaluation
-
-The evaluation runner is `npm run ai:evaluate`.
-
-- `AI_EVAL_PLAN_TOP` defaults to `0`, so no planning case is selected for a live evaluation by default.
-- `KIMI_EVAL_MODE` defaults to `synthetic`; accepted values are `synthetic`, `sanitized`, and `real`.
-- Real-data planning additionally requires exact `KIMI_EVAL_DATA_ACKNOWLEDGED=true` and is an explicit operator decision to send the privacy-minimized payload to Moonshot.
-- Evaluation reports write under the gitignored `evaluation-results/` directory.
+The generic evaluation tooling does not override this runtime boundary or grant authority for a live planning call.
 
 ## PostgreSQL concurrency tests
 

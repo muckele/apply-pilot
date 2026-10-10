@@ -9,6 +9,7 @@ import {
   parseCompatibleApplicationAnswerProposal,
   type ApplicationAnswerProposal
 } from "@/lib/application-runs/answer-packet-domain";
+import { assertCurrentApplicationRunEvidenceInTransaction } from "@/lib/application-runs/evidence-authority";
 import {
   loadVerifiedCurrentAnswerPacketForLockedRunInTransaction,
   type ApplicationRunAnswerPacketTransaction,
@@ -20,6 +21,7 @@ import {
   FILL_ERROR_CODES,
   FILL_LEASE_MS,
   FILL_STEP_RESULTS,
+  isValidEvidenceStaleStopPattern,
   projectVerifiedFillCandidates,
   reconcileFillFinalization,
   STOPPED_EARLY_FILL_ERRORS,
@@ -85,6 +87,17 @@ const finalizeInputSchema = z.object({
       message: "Fill finalization outcome and error must agree."
     });
   }
+  if (
+    value.outcome === "STOPPED_EARLY" &&
+    value.errorCode === "FILL_STALE" &&
+    !isValidEvidenceStaleStopPattern(value.steps)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["steps"],
+      message: "Evidence-stale Fill finalization must preserve a safe prefix and untouched tail."
+    });
+  }
   const stepKeys = value.steps.map((step) => step.stepKey);
   if (new Set(stepKeys).size !== stepKeys.length) {
     context.addIssue({
@@ -122,6 +135,7 @@ export type ApplicationRunFillAttemptServiceDependencies = {
   assertTransition?: typeof assertRunTransition;
   loadVerifiedCurrentAnswerPacketForLockedRunInTransaction?:
     typeof loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
+  assertCurrentApplicationRunEvidenceInTransaction?: typeof assertCurrentApplicationRunEvidenceInTransaction;
 };
 
 type FillPolicy = {
@@ -627,6 +641,8 @@ export function createApplicationRunFillAttemptService(
   const loadVerifiedCurrentPacket =
     dependencies.loadVerifiedCurrentAnswerPacketForLockedRunInTransaction ??
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction;
+  const assertCurrentEvidence = dependencies.assertCurrentApplicationRunEvidenceInTransaction ??
+    assertCurrentApplicationRunEvidenceInTransaction;
 
   async function acquireFillAttempt(input: unknown) {
     try {
@@ -638,6 +654,14 @@ export function createApplicationRunFillAttemptService(
         const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
         if (!policyAllowsFill(policy, env, run)) throw policyDenied();
         assertAcquisitionRunFence(run, parsed.expectedStateVersion);
+        try {
+          await assertCurrentEvidence(tx, run);
+        } catch (error) {
+          if (error instanceof PublicApiError && error.details?.code === "RUN_DOCUMENT_EVIDENCE_STALE") {
+            throw fillStale();
+          }
+          throw error;
+        }
 
         let verified: VerifiedCurrentAnswerPacket | null;
         try {
@@ -783,11 +807,25 @@ export function createApplicationRunFillAttemptService(
             return { ...status, leaseLive: false, fieldOperationAllowed: false, errorCode: "FILL_INTERNAL" as const };
           }
           const leaseLive = run.fillLeaseExpiresAt.getTime() > databaseNow.getTime();
+          const policyAllowed = policyAllowsFill(policy, env, run);
+          let evidenceCurrent = true;
+          if (leaseLive && policyAllowed) {
+            try {
+              await assertCurrentEvidence(tx, run);
+            } catch (error) {
+              if (error instanceof PublicApiError && error.details?.code === "RUN_DOCUMENT_EVIDENCE_STALE") {
+                evidenceCurrent = false;
+              } else {
+                throw error;
+              }
+            }
+          }
           return {
             ...status,
             leaseLive,
             expiredRecoveryRequired: !leaseLive,
-            fieldOperationAllowed: leaseLive && policyAllowsFill(policy, env, run)
+            fieldOperationAllowed: leaseLive && policyAllowed && evidenceCurrent,
+            errorCode: evidenceCurrent ? null : "FILL_STALE" as const
           };
         }
 

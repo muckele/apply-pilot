@@ -3,7 +3,20 @@ import type { Prisma } from "@prisma/client";
 import Link from "next/link";
 
 import { JobReviewActions } from "@/components/job-review-actions";
+import {
+  JobMatchOmissionNotice,
+  summarizeBoundedJobResults
+} from "@/components/job-match-omission-notice";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import {
+  CURRENT_JOB_MATCH_ANALYSES,
+  JOB_MATCH_LIST_CANDIDATE_LIMIT,
+  buildCurrentJobMatchContext,
+  currentJobMatchFields,
+  hasCurrentJobMatchAnalysis,
+  readCurrentJobMatchSources
+} from "@/lib/jobs/current-job-match";
+import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { reviewCategoryInfo, reviewCategoryOrder, mapJobForReviewQueue } from "@/lib/jobs/review-queue";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -54,6 +67,8 @@ function applicationStatusLabel(status?: string) {
 async function getReviewQueue(params: SearchParams) {
   const userId = await requirePageUserId();
   const filters = parseFilters(params);
+  const hasMinFitScore = Number.isInteger(filters.minFitScore) && filters.minFitScore > 0;
+  const sources = await readCurrentJobMatchSources(userId);
   const where: Prisma.JobPostingWhereInput = {
     userId,
     status: { notIn: ["ARCHIVED", "APPLIED"] }
@@ -99,10 +114,6 @@ async function getReviewQueue(params: SearchParams) {
     });
   }
 
-  if (Number.isInteger(filters.minFitScore) && filters.minFitScore > 0) {
-    where.overallFitScore = { gte: filters.minFitScore };
-  }
-
   if (Number.isInteger(filters.datePosted) && filters.datePosted > 0) {
     const since = new Date(Date.now() - filters.datePosted * 86_400_000);
     andConditions.push({
@@ -114,24 +125,42 @@ async function getReviewQueue(params: SearchParams) {
     where.AND = andConditions;
   }
 
-  const jobs = await prisma.jobPosting.findMany({
-    where,
-    include: {
-      applications: {
-        where: { userId },
-        select: { status: true },
-        take: 1
-      }
-    },
-    orderBy: [{ overallFitScore: "desc" }, { firstDiscoveredAt: "desc" }, { datePosted: "desc" }],
-    take: 100
-  });
+  const [jobs, candidateCount] = await Promise.all([
+    prisma.jobPosting.findMany({
+      where,
+      include: {
+        aiAnalyses: CURRENT_JOB_MATCH_ANALYSES,
+        currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT },
+        applications: {
+          where: { userId },
+          select: { status: true },
+          take: 1
+        }
+      },
+      orderBy: [{ overallFitScore: "desc" }, { firstDiscoveredAt: "desc" }, { datePosted: "desc" }],
+      take: hasMinFitScore ? JOB_MATCH_LIST_CANDIDATE_LIMIT : 100
+    }),
+    prisma.jobPosting.count({ where })
+  ]);
 
-  const queueJobs = jobs
+  const currentJobs = jobs.map((job) => {
+    const context = buildCurrentJobMatchContext({ job, ...sources });
+    return currentJobMatchFields(job, hasCurrentJobMatchAnalysis({
+      ...job,
+      currentEvidenceSourceValid: context.currentEvidenceSourceValid
+    }, context.matchInput));
+  });
+  const currentById = new Map(currentJobs.map((job) => [job.id, job]));
+  const filteredJobs = jobs.filter((job) => {
+    if (!hasMinFitScore) return true;
+    const score = currentById.get(job.id)?.overallFitScore;
+    return score !== null && score !== undefined && score >= filters.minFitScore;
+  });
+  const matchingQueueJobs = filteredJobs
     .map((job) =>
       mapJobForReviewQueue(
-        job,
-        jobs,
+        currentJobs.find((candidate) => candidate.id === job.id)!,
+        currentJobs,
         job.applications[0]?.status
       )
     )
@@ -139,6 +168,7 @@ async function getReviewQueue(params: SearchParams) {
       if (!filters.crmStatus) return true;
       return applicationStatusLabel(job.applicationStatus).toLowerCase() === filters.crmStatus.toLowerCase();
     });
+  const queueJobs = matchingQueueJobs.slice(0, 100);
 
   const counts = Object.fromEntries(reviewCategoryOrder.map((category) => [category, 0])) as Record<
     (typeof reviewCategoryOrder)[number],
@@ -148,7 +178,18 @@ async function getReviewQueue(params: SearchParams) {
     counts[job.category] += 1;
   });
 
-  return { filters, queueJobs, counts };
+  return {
+    filters,
+    queueJobs,
+    counts,
+    evaluatedCandidateCount: jobs.length,
+    ...summarizeBoundedJobResults({
+      evaluatedCandidateCount: jobs.length,
+      evaluatedMatchingCount: matchingQueueJobs.length,
+      totalCandidateCount: candidateCount,
+      visibleCount: queueJobs.length
+    })
+  };
 }
 
 type JobsReviewPageProps = {
@@ -157,7 +198,14 @@ type JobsReviewPageProps = {
 
 export default async function JobsReviewPage({ searchParams }: JobsReviewPageProps) {
   const params = (await searchParams) ?? {};
-  const { filters, queueJobs, counts } = await getReviewQueue(params);
+  const {
+    filters,
+    queueJobs,
+    counts,
+    evaluatedCandidateCount,
+    omittedCandidateCount,
+    unevaluatedCandidateCount
+  } = await getReviewQueue(params);
 
   return (
     <>
@@ -173,6 +221,16 @@ export default async function JobsReviewPage({ searchParams }: JobsReviewPagePro
           </Link>
         }
       />
+      {omittedCandidateCount > 0 || unevaluatedCandidateCount > 0 ? (
+        <div className="mb-4">
+          <JobMatchOmissionNotice
+            evaluatedCandidateCount={evaluatedCandidateCount}
+            omittedCandidateCount={omittedCandidateCount}
+            unevaluatedCandidateCount={unevaluatedCandidateCount}
+            viewLabel="review view"
+          />
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <section className="space-y-4">

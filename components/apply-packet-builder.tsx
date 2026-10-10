@@ -22,12 +22,14 @@ type PacketResumeOption = {
   title: string;
   atsCompatibility: number | null;
   jobFitScore: number | null;
+  evidenceCurrent: boolean;
   createdAt: string;
 };
 
 type PacketCoverLetterOption = {
   id: string;
   title: string;
+  evidenceCurrent: boolean;
   createdAt: string;
 };
 
@@ -210,6 +212,9 @@ export function ApplyPacketBuilder({
     selectedCoverId && application?.coverLetterVersionId === selectedCoverId
   );
   const packetSaved = selectedResumeSaved && selectedCoverSaved;
+  const selectedEvidenceCurrent = Boolean(
+    selectedResume?.evidenceCurrent && (!includeCoverLetter || selectedCover?.evidenceCurrent)
+  );
 
   if (previewMode === "synthetic-local" && syntheticReview) {
     const reviewApproved = syntheticReview.documentState === "approved";
@@ -419,6 +424,11 @@ export function ApplyPacketBuilder({
       </div>
 
       {message ? <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700">{message}</p> : null}
+      {!selectedEvidenceCurrent && (selectedResume || selectedCover) ? (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          Selected documents use older reviewed evidence. Regenerate them before export, packet save, or applied status.
+        </p>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <section className="rounded-lg border border-slate-200 bg-slate-50 p-4">
@@ -526,19 +536,19 @@ export function ApplyPacketBuilder({
               )}
               Draft cover
             </SecondaryButton>
-            <SecondaryButton type="button" onClick={() => exportFile("resume", "docx")} disabled={!selectedResume || Boolean(pending)}>
+            <SecondaryButton type="button" onClick={() => exportFile("resume", "docx")} disabled={!selectedResume?.evidenceCurrent || Boolean(pending)}>
               {pending === "export" ? <Loader2 className="mr-2 animate-spin" size={15} /> : <Download className="mr-2" size={15} />}
               Resume DOCX
             </SecondaryButton>
-            <SecondaryButton type="button" onClick={() => exportFile("resume", "pdf")} disabled={!selectedResume || Boolean(pending)}>
+            <SecondaryButton type="button" onClick={() => exportFile("resume", "pdf")} disabled={!selectedResume?.evidenceCurrent || Boolean(pending)}>
               <Download className="mr-2" size={15} />
               Resume PDF
             </SecondaryButton>
-            <SecondaryButton type="button" onClick={() => exportFile("cover", "docx")} disabled={!selectedCover || Boolean(pending)}>
+            <SecondaryButton type="button" onClick={() => exportFile("cover", "docx")} disabled={!selectedCover?.evidenceCurrent || Boolean(pending)}>
               <Download className="mr-2" size={15} />
               Cover DOCX
             </SecondaryButton>
-            <SecondaryButton type="button" onClick={() => exportFile("cover", "pdf")} disabled={!selectedCover || Boolean(pending)}>
+            <SecondaryButton type="button" onClick={() => exportFile("cover", "pdf")} disabled={!selectedCover?.evidenceCurrent || Boolean(pending)}>
               <Download className="mr-2" size={15} />
               Cover PDF
             </SecondaryButton>
@@ -552,7 +562,7 @@ export function ApplyPacketBuilder({
           <p className="mt-1 text-xs text-slate-500">Applied date: {formatDate(application?.dateApplied ?? null)}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <SecondaryButton type="button" onClick={() => updateApplication("SAVED")} disabled={Boolean(pending)}>
+          <SecondaryButton type="button" onClick={() => updateApplication("SAVED")} disabled={Boolean(pending) || !selectedEvidenceCurrent}>
             {pending === "save" ? <Loader2 className="mr-2 animate-spin" size={15} /> : <Save className="mr-2" size={15} />}
             Save packet
           </SecondaryButton>
@@ -565,7 +575,7 @@ export function ApplyPacketBuilder({
             <ExternalLink className="mr-2" size={15} aria-hidden="true" />
             Open apply link
           </a>
-          <PrimaryButton type="button" onClick={() => updateApplication("APPLIED")} disabled={Boolean(pending)}>
+          <PrimaryButton type="button" onClick={() => updateApplication("APPLIED")} disabled={Boolean(pending) || !selectedEvidenceCurrent}>
             {pending === "applied" ? (
               <Loader2 className="mr-2 animate-spin" size={15} />
             ) : (

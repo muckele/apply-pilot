@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import OpenAI from "openai";
 import { z } from "zod";
 
 import { generateJson, getOpenAIClient } from "@/lib/ai/client";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 
@@ -18,11 +18,11 @@ function paidEnvironment(t: TestContext) {
   const changes: Record<string, string | undefined> = {
     AI_ENABLED: "true",
     AI_MOCK_MODE: "false",
-    AI_PROVIDER: "openai",
+    AI_PROVIDER: "gemini",
     AI_PROVIDER_OVERRIDES: "",
-    OPENAI_API_KEY: "synthetic-never-log",
-    OPENAI_MOCK_MODE: "false",
-    OPENAI_MODEL: "gpt-4o-mini",
+    GEMINI_API_KEY: "synthetic-never-log",
+    OPENAI_API_KEY: undefined,
+    OPENAI_MOCK_MODE: undefined,
     AI_MAX_REQUEST_COST_CENTS: undefined,
     AI_CONFIRMATION_THRESHOLD_CENTS: undefined
   };
@@ -99,12 +99,40 @@ function installLedger(
 }
 
 const schema = z.object({ value: z.string() }).strict();
+const providerWireSchema = z.object({ text: z.string(), factId: z.string() }).strict();
+const responseJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { value: { type: "string" } },
+  required: ["value"]
+};
+
+function geminiResponse(
+  value: unknown,
+  usage = { inputTokens: 100, outputTokens: 20, thinkingTokens: 0 }
+) {
+  return new Response(JSON.stringify({
+    candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(value) }] } }],
+    usageMetadata: {
+      promptTokenCount: usage.inputTokens,
+      cachedContentTokenCount: 0,
+      candidatesTokenCount: usage.outputTokens,
+      thoughtsTokenCount: usage.thinkingTokens,
+      totalTokenCount: usage.inputTokens + usage.outputTokens + usage.thinkingTokens
+    }
+  }), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+function installGemini(t: TestContext, handler: typeof fetch) {
+  stub(t, globalThis, "fetch", handler);
+}
 
 function documentRequest(options: {
   confirmed?: boolean;
   payload?: unknown;
   feature?: "RESUME_TAILOR" | "COVER_LETTER";
   promptVersion?: string;
+  providerBoundary?: boolean;
 } = {}) {
   const feature = options.feature ?? "RESUME_TAILOR";
   return generateJson({
@@ -112,10 +140,18 @@ function documentRequest(options: {
     systemPrompt: "Return only source-supported content.",
     payload: options.payload ?? { resume: { rawText: "Synthetic TypeScript evidence." } },
     schema,
+    providerSchema: options.providerBoundary ? providerWireSchema : undefined,
+    decodeProvider: options.providerBoundary
+      ? (value) => {
+          const wire = providerWireSchema.parse(value);
+          return { value: `${wire.text}:${wire.factId}` };
+        }
+      : undefined,
+    responseJsonSchema,
     context: {
       userId: "synthetic-user",
       feature,
-      promptVersion: options.promptVersion ?? "3",
+      promptVersion: options.promptVersion ?? APPLICATION_DOCUMENT_PROMPT_VERSION,
       highCostConfirmed: options.confirmed,
       dataSharingConfirmed: options.confirmed
     }
@@ -125,73 +161,103 @@ function documentRequest(options: {
 test("document generation requires both data and exact-cost confirmation before reservation or dispatch", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
-  let calls = 0;
-  stub(t, client.chat.completions, "create", async () => { calls += 1; throw new Error("must not call"); });
+  let geminiCalls = 0;
+  installGemini(t, async () => { geminiCalls += 1; throw new Error("must not call"); });
 
   await assert.rejects(documentRequest(), (error: unknown) =>
     error instanceof PublicApiError && error.status === 428 &&
     error.details?.code === "AI_COST_CONFIRMATION_REQUIRED" &&
-    error.details.maximumCostMicros === 12_000 &&
+    error.details.maximumCostMicros === 64_500 &&
     error.details.dataType === "application_packet" &&
-    error.details.provider === "openai" &&
-    error.details.model === "gpt-4o-mini" &&
-    error.details.promptVersion === "3"
+    error.details.provider === "gemini" &&
+    error.details.model === "gemini-3.8-flash" &&
+    error.details.promptVersion === APPLICATION_DOCUMENT_PROMPT_VERSION
   );
+  assert.equal(geminiCalls, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
+test("document generation requires the approved Gemini runtime and does not fall back", async (t) => {
+  paidEnvironment(t);
+  delete process.env.AI_ENABLED;
+  const ledger = installLedger(t);
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+
+  await assert.rejects(documentRequest({ confirmed: true }), /unavailable in local mode/iu);
+
   assert.equal(calls, 0);
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("document generation preserves its existing OpenAI route when the global provider uses its Gemini default", async (t) => {
+test("document generation stays pinned to Gemini even when the legacy global provider selects OpenAI", async (t) => {
   paidEnvironment(t);
-  delete process.env.AI_PROVIDER;
-  delete process.env.AI_ENABLED;
+  process.env.AI_PROVIDER = "openai";
+  process.env.OPENAI_API_KEY = "unused-synthetic-openai-key";
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => {
+  installGemini(t, async () => {
     calls += 1;
-    return {
-      choices: [{ finish_reason: "stop", message: { content: '{"value":"supported"}' } }],
-      usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 0 } }
-    };
+    return geminiResponse({ value: "supported" });
   });
 
   const result = await documentRequest({ confirmed: true });
 
-  assert.equal(result.data.value, "supported");
-  assert.equal(result.meta.provider, "openai");
-  assert.equal(result.meta.model, "gpt-4o-mini");
+  assert.equal(result.meta.provider, "gemini");
+  assert.equal(result.meta.model, "gemini-3.8-flash");
   assert.equal(calls, 1);
-  assert.equal(ledger.reservations[0].provider, "openai");
+  assert.equal(ledger.reservations[0].provider, "gemini");
+});
+
+test("an OpenAI selection and key cannot replace a missing Gemini credential", async (t) => {
+  paidEnvironment(t);
+  process.env.AI_PROVIDER = "openai";
+  process.env.OPENAI_API_KEY = "unused-synthetic-openai-key";
+  delete process.env.GEMINI_API_KEY;
+  const ledger = installLedger(t);
+  let geminiCalls = 0;
+  let openAiCalls = 0;
+  installGemini(t, async () => { geminiCalls += 1; throw new Error("must not call"); });
+  const openAiClient = getOpenAIClient()!;
+  stub(t, openAiClient.chat.completions, "create", async () => {
+    openAiCalls += 1;
+    throw new Error("must not call");
+  });
+
+  await assert.rejects(documentRequest({ confirmed: true }), /unavailable in local mode/iu);
+
+  assert.equal(geminiCalls, 0);
+  assert.equal(openAiCalls, 0);
+  assert.equal(ledger.reservations.length, 0);
 });
 
 test("confirmed resume tailoring reserves its exact cap, sends one capped request, and caches only validated output", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
-  const requests: Array<Record<string, unknown>> = [];
-  const requestOptions: Array<Record<string, unknown> | undefined> = [];
-  stub(t, client.chat.completions, "create", async (
-    request: Record<string, unknown>,
-    options?: Record<string, unknown>
-  ) => {
-    requests.push(request);
-    requestOptions.push(options);
-    return {
-      choices: [{ finish_reason: "stop", message: { content: '{"value":"supported"}' } }],
-      usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 0 } }
-    };
+  const requests: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
+  installGemini(t, async (input, init) => {
+    requests.push({
+      url: String(input),
+      headers: new Headers(init?.headers),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>
+    });
+    return geminiResponse({ value: "supported" });
   });
 
   const result = await documentRequest({ confirmed: true });
 
   assert.equal(result.data.value, "supported");
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].max_tokens, 6_000);
-  assert.equal(requestOptions[0]?.maxRetries, 0);
-  assert.equal(ledger.reservations[0].maximumCostMicros, 12_000);
-  assert.equal(ledger.reservations[0].promptVersion, "3");
+  assert.match(requests[0].url, /\/models\/gemini-3\.8-flash:generateContent$/u);
+  assert.equal(requests[0].headers.get("x-goog-api-key"), "synthetic-never-log");
+  assert.equal(requests[0].headers.has("authorization"), false);
+  const generation = requests[0].body.generationConfig as Record<string, unknown>;
+  assert.equal(generation.maxOutputTokens, 6_000);
+  assert.deepEqual(generation.thinkingConfig, { thinkingLevel: "LOW" });
+  assert.equal(generation.responseMimeType, "application/json");
+  assert.deepEqual(generation.responseJsonSchema, responseJsonSchema);
+  assert.equal(ledger.reservations[0].maximumCostMicros, 64_500);
+  assert.equal(ledger.reservations[0].promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
   assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported" });
@@ -200,32 +266,27 @@ test("confirmed resume tailoring reserves its exact cap, sends one capped reques
 test("confirmed cover-letter generation uses its smaller output cap and exact reservation", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
   const requests: Array<Record<string, unknown>> = [];
-  stub(t, client.chat.completions, "create", async (request: Record<string, unknown>) => {
-    requests.push(request);
-    return {
-      choices: [{ finish_reason: "stop", message: { content: '{"value":"supported"}' } }],
-      usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 0 } }
-    };
+  installGemini(t, async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return geminiResponse({ value: "supported" });
   });
 
   const result = await documentRequest({ confirmed: true, feature: "COVER_LETTER" });
 
   assert.equal(result.data.value, "supported");
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].max_tokens, 1_500);
-  assert.equal(ledger.reservations[0].maximumCostMicros, 9_300);
+  assert.equal((requests[0].generationConfig as Record<string, unknown>).maxOutputTokens, 1_500);
+  assert.equal(ledger.reservations[0].maximumCostMicros, 47_625);
 });
 
 test("cache lookups are isolated by prompt version and validated without dispatch or reservation", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t, null, { value: "cached-supported" });
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => { calls += 1; throw new Error("must not call"); });
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
-  const result = await documentRequest({ promptVersion: "3" });
+  const result = await documentRequest({ promptVersion: "5" });
 
   assert.equal(result.data.value, "cached-supported");
   assert.equal(calls, 0);
@@ -233,20 +294,59 @@ test("cache lookups are isolated by prompt version and validated without dispatc
   assert.equal(ledger.cacheQueries.length, 1);
   const where = ledger.cacheQueries[0].where as Record<string, unknown>;
   assert.equal(where.userId, "synthetic-user");
-  assert.equal(where.provider, "openai");
-  assert.equal(where.model, "gpt-4o-mini");
+  assert.equal(where.provider, "gemini");
+  assert.equal(where.model, "gemini-3.8-flash");
   assert.equal(where.promptName, "resumeTailorPrompt");
-  assert.equal(where.promptVersion, "3");
+  assert.equal(where.promptVersion, "5");
   assert.equal(where.requestHash, result.meta.requestHash);
   assert.ok(Array.isArray(where.OR));
+});
+
+test("provider-wire decoding caches assembled output while cache reads validate the assembled shape", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t);
+  installGemini(t, async () => geminiResponse({ text: "supported", factId: "fact:0001" }));
+
+  const result = await documentRequest({ confirmed: true, providerBoundary: true });
+
+  assert.equal(result.data.value, "supported:fact:0001");
+  assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported:fact:0001" });
+});
+
+test("cached assembled output bypasses the incompatible provider-wire schema and decoder", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, { value: "cached-assembled" });
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+
+  const result = await documentRequest({ providerBoundary: true });
+
+  assert.equal(result.data.value, "cached-assembled");
+  assert.equal(calls, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
+test("current document requests query only the v8 cache identity, not legacy versions", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, { value: "cached-current" });
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+
+  const result = await documentRequest();
+
+  assert.equal(result.data.value, "cached-current");
+  assert.equal(calls, 0);
+  assert.equal(ledger.cacheQueries.length, 1);
+  const where = ledger.cacheQueries[0].where as Record<string, unknown>;
+  assert.equal(where.promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
+  assert.notEqual(where.promptVersion, "7");
 });
 
 test("oversize document input fails before cache, reservation, or provider dispatch", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => { calls += 1; throw new Error("must not call"); });
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
   await assert.rejects(
     documentRequest({
@@ -259,12 +359,11 @@ test("oversize document input fails before cache, reservation, or provider dispa
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("token-dense OpenAI input fails a conservative wire bound before reservation or dispatch", async (t) => {
+test("token-dense Gemini input fails a conservative wire bound before reservation or dispatch", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => { calls += 1; throw new Error("must not call"); });
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
   await assert.rejects(
     documentRequest({
@@ -281,9 +380,8 @@ test("token-dense OpenAI input fails a conservative wire bound before reservatio
 test("an uncertain document-provider outcome consumes the reservation once and never retries", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => {
+  installGemini(t, async () => {
     calls += 1;
     throw new Error("synthetic disconnect with private detail");
   });
@@ -297,43 +395,41 @@ test("an uncertain document-provider outcome consumes the reservation once and n
   );
   assert.equal(calls, 1);
   assert.equal(ledger.reconciliations[0].status, "UNCERTAIN");
-  assert.equal(ledger.reconciliations[0].actualCostMicros, 12_000);
+  assert.equal(ledger.reconciliations[0].actualCostMicros, 64_500);
   assert.equal(ledger.cacheWrites.length, 0);
 });
 
-test("an OpenAI 408 remains an uncertain non-retryable billing outcome", async (t) => {
+test("a Gemini HTTP rejection is definite, unbilled, and never retried", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => {
+  installGemini(t, async () => {
     calls += 1;
-    throw new OpenAI.APIError(408, undefined, "synthetic upstream timeout", undefined);
+    return new Response(JSON.stringify({ error: { status: "RESOURCE_EXHAUSTED" } }), {
+      status: 429,
+      headers: { "content-type": "application/json" }
+    });
   });
 
   await assert.rejects(
     documentRequest({ confirmed: true }),
     (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "APPLICATION_DOCUMENT_PROVIDER_UNCERTAIN" &&
-      error.details?.billingStatus === "uncertain" &&
-      error.details?.retryable === false
+      error.details?.code === "APPLICATION_DOCUMENT_PROVIDER_REJECTED" &&
+      error.details?.billingStatus === "not_charged" &&
+      error.details?.retryable === true
   );
   assert.equal(calls, 1);
-  assert.equal(ledger.reconciliations[0].status, "UNCERTAIN");
-  assert.equal(ledger.reconciliations[0].actualCostMicros, 12_000);
+  assert.equal(ledger.reconciliations[0].status, "FAILED");
+  assert.equal(ledger.reconciliations[0].actualCostMicros, 0);
 });
 
 test("billing reconciliation failure is visible, non-retryable, and never swallowed", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t, null, null, true);
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => {
+  installGemini(t, async () => {
     calls += 1;
-    return {
-      choices: [{ finish_reason: "stop", message: { content: '{"value":"supported"}' } }],
-      usage: { prompt_tokens: 100, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 0 } }
-    };
+    return geminiResponse({ value: "supported" });
   });
 
   await assert.rejects(
@@ -354,9 +450,8 @@ test("billing reconciliation failure is visible, non-retryable, and never swallo
 test("a prior uncertain identical document request blocks redispatch", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t, "UNCERTAIN");
-  const client = getOpenAIClient()!;
   let calls = 0;
-  stub(t, client.chat.completions, "create", async () => { calls += 1; throw new Error("must not call"); });
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
   await assert.rejects(
     documentRequest({ confirmed: true }),

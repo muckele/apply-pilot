@@ -3,9 +3,23 @@ import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import type { JobPosting } from "@prisma/client";
 
 import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
+import { EvidenceCorrectionReview } from "@/components/evidence-correction-review";
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
+import {
+  acceptedEvidenceFactsFromSnapshot,
+  CURRENT_EVIDENCE_SNAPSHOT_SELECT,
+  isEvidenceBindingCurrent
+} from "@/lib/jobs/evidence-snapshot-contracts";
+import {
+  CURRENT_JOB_MATCH_ANALYSIS_WHERE,
+  JOB_MATCH_PROFILE_SELECT,
+  buildCurrentJobMatchContext,
+  currentJobMatchInputHash,
+  hasCurrentJobMatchAnalysis
+} from "@/lib/jobs/current-job-match";
 import { getJobMatchAnalysisPresentation } from "@/lib/jobs/fit-presentation";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -34,16 +48,16 @@ function mapJobPosting(job: JobPosting, analysisOutput: unknown) {
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
     ...fitPresentation,
     status: job.status,
-    recommendation: job.matchRecommendation ?? "Review",
+    recommendation: fitPresentation.isCurrentAnalysis ? job.matchRecommendation ?? "Review" : "Review",
     sourceType: job.sourceType,
     keyReason:
       fitPresentation.factualMatches[0]?.claim ??
-      job.keyMatchReason ??
+      (fitPresentation.isCurrentAnalysis ? job.keyMatchReason : null) ??
       "Imported from an allowed source. Run fit scoring to generate a targeted match summary.",
-    missingKeywords: job.missingKeywords,
-    supportedKeywords: job.supportedKeywords,
+    missingKeywords: fitPresentation.isCurrentAnalysis ? job.missingKeywords : [],
+    supportedKeywords: fitPresentation.isCurrentAnalysis ? job.supportedKeywords : [],
     description: job.description,
-    concerns: job.concerns,
+    concerns: fitPresentation.isCurrentAnalysis ? job.concerns : [],
     applyUrl: job.applyUrl || job.sourceUrl,
     importedAt: job.firstDiscoveredAt.toISOString().slice(0, 10)
   };
@@ -52,8 +66,32 @@ function mapJobPosting(job: JobPosting, analysisOutput: unknown) {
 async function getJobDetail(id: string) {
   const userId = await requirePageUserId();
 
-  const [job, resumeVersions, coverLetters, application, contacts, matchAnalysis] = await Promise.all([
-    prisma.jobPosting.findFirst({ where: { id, userId } }),
+  const [job, masterResume, profile, resumeVersions, coverLetters, application, contacts, matchAnalysis] = await Promise.all([
+    prisma.jobPosting.findFirst({
+      where: { id, userId },
+      include: {
+        currentEvidenceSnapshot: {
+          select: CURRENT_EVIDENCE_SNAPSHOT_SELECT
+        }
+      }
+    }),
+    prisma.resume.findFirst({
+      where: { userId, isMaster: true },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        updatedAt: true,
+        rawText: true,
+        summary: true,
+        skills: true,
+        achievements: true,
+        workHistory: true,
+        projects: true,
+        education: true,
+        certifications: true
+      }
+    }),
+    prisma.userProfile.findUnique({ where: { userId }, select: JOB_MATCH_PROFILE_SELECT }),
     prisma.resumeVersion.findMany({
       where: { userId, jobPostingId: id },
       orderBy: { createdAt: "desc" },
@@ -64,13 +102,14 @@ async function getJobDetail(id: string) {
         fullText: true,
         atsCompatibility: true,
         jobFitScore: true,
+        evidenceSnapshotId: true,
         createdAt: true
       }
     }),
     prisma.generatedDocument.findMany({
       where: { userId, jobPostingId: id, type: "COVER_LETTER" },
       orderBy: { createdAt: "desc" },
-      select: { id: true, title: true, content: true, createdAt: true }
+      select: { id: true, title: true, content: true, evidenceSnapshotId: true, createdAt: true }
     }),
     prisma.application.findUnique({
       where: { userId_jobPostingId: { userId, jobPostingId: id } },
@@ -96,24 +135,52 @@ async function getJobDetail(id: string) {
       }
     }),
     prisma.aIAnalysis.findFirst({
-      where: { userId, jobPostingId: id, type: "JOB_MATCH" },
+      where: {
+        userId,
+        jobPostingId: id,
+        ...CURRENT_JOB_MATCH_ANALYSIS_WHERE
+      },
       orderBy: { createdAt: "desc" },
-      select: { output: true }
+      select: { id: true, inputHash: true, model: true, promptVersion: true, evidenceSnapshotId: true, output: true }
     })
   ]);
 
   if (job) {
+    const context = buildCurrentJobMatchContext({ job, resume: masterResume, profile });
+    const matchInput = context.matchInput;
+    const currentAnalysis = hasCurrentJobMatchAnalysis({
+      currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
+      currentEvidenceSourceValid: context.currentEvidenceSourceValid,
+      aiAnalyses: matchAnalysis ? [matchAnalysis] : []
+    }, matchInput)
+      ? matchAnalysis
+      : null;
+    const baselineReviewAnalysis = matchAnalysis?.evidenceSnapshotId === context.effectiveEvidenceSnapshotId &&
+      matchAnalysis.inputHash === currentJobMatchInputHash(matchInput)
+      ? matchAnalysis
+      : null;
+    const reviewAnalysis = currentAnalysis ?? baselineReviewAnalysis;
     return {
-      job: mapJobPosting(job, matchAnalysis?.output),
+      job: mapJobPosting(job, currentAnalysis?.output),
       resumeVersions: resumeVersions.map(
         (version): JobResumeVersionOption => ({
           ...version,
+          evidenceCurrent: isEvidenceBindingCurrent({
+            currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
+            currentEvidenceSourceValid: context.currentEvidenceSourceValid,
+            artifactEvidenceSnapshotId: version.evidenceSnapshotId
+          }),
           createdAt: version.createdAt.toISOString()
         })
       ),
       coverLetters: coverLetters.map(
         (document): JobCoverLetterOption => ({
           ...document,
+          evidenceCurrent: isEvidenceBindingCurrent({
+            currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
+            currentEvidenceSourceValid: context.currentEvidenceSourceValid,
+            artifactEvidenceSnapshotId: document.evidenceSnapshotId
+          }),
           createdAt: document.createdAt.toISOString()
         })
       ),
@@ -123,7 +190,25 @@ async function getJobDetail(id: string) {
             dateApplied: application.dateApplied?.toISOString() ?? null
           }
         : null,
-      contacts
+      contacts,
+      evidenceReview: masterResume
+        ? buildEvidenceCorrectionReview({
+            jobId: job.id,
+            resumeId: masterResume.id,
+            resumeUpdatedAt: masterResume.updatedAt.toISOString(),
+            resume: masterResume,
+            analysisId: reviewAnalysis?.id ?? null,
+            analysisInputHash: reviewAnalysis?.inputHash ?? null,
+            analysisModel: reviewAnalysis?.model ?? null,
+            analysisPromptVersion: reviewAnalysis?.promptVersion ?? null,
+            analysisOutput: reviewAnalysis?.output,
+            selectedResumeDocumentId: application?.resumeVersionId,
+            selectedCoverLetterDocumentId: application?.coverLetterVersionId,
+            acceptedFacts: context.effectiveEvidenceSnapshotId && job.currentEvidenceSnapshot
+              ? acceptedEvidenceFactsFromSnapshot(job.currentEvidenceSnapshot)
+              : []
+          })
+        : null
     };
   }
 
@@ -138,7 +223,7 @@ export default async function JobDetailPage({ params }: Props) {
     notFound();
   }
 
-  const { job, resumeVersions, coverLetters, application, contacts } = data;
+  const { job, resumeVersions, coverLetters, application, contacts, evidenceReview } = data;
 
   return (
     <>
@@ -159,7 +244,17 @@ export default async function JobDetailPage({ params }: Props) {
       />
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]">
-        <section className="space-y-6">
+        <section className="min-w-0 space-y-6">
+          {evidenceReview ? (
+            <Panel>
+              <PanelHeader
+                title="Evidence correction review"
+                description="Inspect extracted facts and resolve disputed gaps before any later reassessment or document rewrite."
+              />
+              <EvidenceCorrectionReview review={evidenceReview} />
+            </Panel>
+          ) : null}
+
           <Panel>
             <PanelHeader
               title="Apply packet builder"
@@ -170,14 +265,15 @@ export default async function JobDetailPage({ params }: Props) {
                 coverLetters[0]?.id ?? "no-cover"
               }`}
               job={job}
-              resumeVersions={resumeVersions.map(({ id, title, atsCompatibility, jobFitScore, createdAt }) => ({
+              resumeVersions={resumeVersions.map(({ id, title, atsCompatibility, jobFitScore, evidenceCurrent, createdAt }) => ({
                 id,
                 title,
                 atsCompatibility,
                 jobFitScore,
+                evidenceCurrent,
                 createdAt
               }))}
-              coverLetters={coverLetters.map(({ id, title, createdAt }) => ({ id, title, createdAt }))}
+              coverLetters={coverLetters.map(({ id, title, evidenceCurrent, createdAt }) => ({ id, title, evidenceCurrent, createdAt }))}
               application={application}
             />
           </Panel>
@@ -258,7 +354,7 @@ export default async function JobDetailPage({ params }: Props) {
                 <div>
                   <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-950">
                     <AlertTriangle size={17} className="text-amber-600" aria-hidden="true" />
-                    Missing or risky keywords
+                    Exact terms not found in submitted resume
                   </h3>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {job.missingKeywords.length ? (
@@ -268,14 +364,15 @@ export default async function JobDetailPage({ params }: Props) {
                         </span>
                       ))
                     ) : (
-                      <p className="text-xs leading-5 text-slate-500">No keyword gaps recorded yet.</p>
+                      <p className="text-xs leading-5 text-slate-500">No current evidence-review terms recorded.</p>
                     )}
                   </div>
                 </div>
               </div>
               {job.requirementGaps.length ? (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="text-xs font-semibold uppercase text-amber-900">Requirement gaps</p>
+                  <p className="text-xs font-semibold uppercase text-amber-900">Requirements not evidenced in the submitted resume</p>
+                  <p className="mt-1 text-xs leading-5 text-amber-800">Not evidenced is not proof that the applicant lacks the capability.</p>
                   <ul className="mt-2 space-y-1 text-sm leading-6 text-amber-900">
                     {job.requirementGaps.map((gap) => (
                       <li key={`${gap.requirement}-${gap.jobRequirement?.ref ?? "legacy"}`}>
@@ -328,7 +425,7 @@ export default async function JobDetailPage({ params }: Props) {
           </Panel>
         </section>
 
-        <aside className="space-y-6">
+        <aside className="min-w-0 space-y-6">
           <Panel>
             <PanelHeader title="Cover letter angle" />
             <p className="p-5 text-sm leading-6 text-slate-700">{job.suggestedCoverLetterAngle}</p>

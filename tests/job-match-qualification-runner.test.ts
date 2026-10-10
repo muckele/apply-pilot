@@ -29,6 +29,7 @@ import {
   createQualificationReviewArtifact
 } from "@/lib/ai/job-match-qualification-owner-review";
 import { JOB_MATCH_QUALIFICATION_CASES } from "@/evaluation/job-match-qualification-corpus";
+import { fixedSyntheticProviderRecommendation } from "@/tests/fixtures/job-match-qualification-provider-results";
 
 const privateRawText = "PRIVATE OWNER RESUME: customer-facing TypeScript and SQL work.";
 
@@ -258,10 +259,11 @@ test("the runner executes four cases sequentially once and retains safe metadata
     assert.equal(request.maxResponseBytes, QUALIFICATION_MAX_RESPONSE_BYTES);
     assert.equal(request.model, JOB_MATCH_MODEL);
     assert.equal(request.promptVersion, JOB_MATCH_PROMPT_VERSION);
+    assert.equal(Object.prototype.hasOwnProperty.call(request, "expectedRecommendation"), false);
     await Promise.resolve();
     active -= 1;
     return {
-      value: validModelOutput(request.expectedRecommendation),
+      value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
       finishReason: "STOP",
       responseBytes: 900,
       elapsedMs: 25,
@@ -300,7 +302,7 @@ test("the frozen corpus runs end to end through the production Gemini request bu
   const fetchImpl: typeof fetch = async (url, init) => {
     const body = String(init?.body ?? "");
     requests.push({ url: String(url), body });
-    const expected = JOB_MATCH_QUALIFICATION_CASES[requests.length - 1].expectedRecommendation;
+    const expected = fixedSyntheticProviderRecommendation(JOB_MATCH_QUALIFICATION_CASES[requests.length - 1].id);
     return new Response(JSON.stringify({
       candidates: [{ finishReason: "STOP", content: { parts: [{ text: JSON.stringify(validModelOutput(expected)) }] } }],
       usageMetadata: {
@@ -329,6 +331,7 @@ test("the frozen corpus runs end to end through the production Gemini request bu
     assert.equal(request.url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent");
     assert.match(request.body, /PRIVATE OWNER RESUME/);
     assert.match(request.body, /responseJsonSchema/);
+    assert.doesNotMatch(request.body, /expectedRecommendation|expectedBand|proposedRecommendation|reviewDisposition|disagreementCategories|humanReview/);
   }
   assert.doesNotMatch(JSON.stringify(report), /PRIVATE OWNER RESUME|PRIVATE MODEL OUTPUT|synthetic-never-send/);
 });
@@ -340,7 +343,7 @@ test("the runner stops on the first failure without retrying or leaking the thro
     calls += 1;
     if (calls === 2) throw new Error(`transport failed around ${privateRawText}`);
     return {
-      value: validModelOutput(request.expectedRecommendation),
+      value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
       finishReason: "STOP",
       responseBytes: 500,
       elapsedMs: 10,
@@ -380,7 +383,7 @@ test("execution fails closed before transport on stale input, incomplete consent
   const transport: QualificationTransport = async (request) => {
     calls += 1;
     return {
-      value: validModelOutput(request.expectedRecommendation),
+      value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
       finishReason: "STOP",
       responseBytes: QUALIFICATION_MAX_RESPONSE_BYTES + 1,
       elapsedMs: 1,
@@ -542,7 +545,7 @@ test("a paid invalid model response retains safe billing metadata without raw ou
     preparation,
     consent: approvedConsent(preparation.safeManifest.manifestHash),
     transport: async (request) => {
-      const semanticInvalid = validModelOutput(request.expectedRecommendation);
+      const semanticInvalid = validModelOutput(fixedSyntheticProviderRecommendation(request.caseId));
       semanticInvalid.factualMatches = [{
         applicantEvidence: [{ ref: "resume.skills[999]", excerpt: "PRIVATE INVALID CITATION" }],
         jobEvidence: [{ ref: "job.title", excerpt: request.payload.job.title }],
@@ -570,11 +573,13 @@ test("a paid invalid model response retains safe billing metadata without raw ou
     const safe = error.safeReport as {
       failureCode: string;
       validationStage: string | null;
+      validationCode: string | null;
       failureFieldPath: string | null;
     };
     assert.equal(safe.failureCode, "MODEL_OUTPUT_VALIDATION_FAILED");
     assert.equal(safe.validationStage, "semantic");
-    assert.equal(safe.failureFieldPath, null);
+    assert.equal(safe.validationCode, "UNKNOWN_APPLICANT_REF");
+    assert.equal(safe.failureFieldPath, "factualMatches[0].applicantEvidence[0].ref");
     assert.doesNotMatch(JSON.stringify(safe), /PRIVATE INVALID CITATION|resume\.skills\[999\]/);
     return true;
   });
@@ -619,7 +624,7 @@ test("transient review sees full normalized evidence but retains categories only
     preparation,
     consent: approvedConsent(preparation.safeManifest.manifestHash),
     transport: async (request) => ({
-      value: validModelOutput(request.expectedRecommendation),
+      value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
       finishReason: "STOP",
       responseBytes: 400,
       elapsedMs: 5,

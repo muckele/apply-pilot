@@ -30,7 +30,6 @@ export function InterviewCreateForm({ applications, jobs }: InterviewCreateFormP
   const [durationMinutes, setDurationMinutes] = useState("");
   const [locationOrLink, setLocationOrLink] = useState("");
   const [interviewers, setInterviewers] = useState("");
-  const [generatePrep, setGeneratePrep] = useState(true);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -50,8 +49,7 @@ export function InterviewCreateForm({ applications, jobs }: InterviewCreateFormP
       interviewerNames: interviewers
         .split(",")
         .map((name) => name.trim())
-        .filter(Boolean),
-      generatePrep
+        .filter(Boolean)
     };
 
     try {
@@ -162,15 +160,9 @@ export function InterviewCreateForm({ applications, jobs }: InterviewCreateFormP
         />
       </label>
 
-      <label className="flex items-start gap-2 text-xs font-medium leading-5 text-slate-600">
-        <input
-          type="checkbox"
-          checked={generatePrep}
-          onChange={(event) => setGeneratePrep(event.target.checked)}
-          className="mt-1"
-        />
-        Generate an interview prep brief from the linked job and profile.
-      </label>
+      <p className="text-xs leading-5 text-slate-600">
+        AI interview preparation is deferred for this MVP. Saving records scheduling details only.
+      </p>
 
       <button
         type="submit"

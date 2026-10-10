@@ -112,11 +112,13 @@ export function SyntheticOneJobReview({ fixture }: { fixture: SyntheticOneJobFix
             title: "Laserfiche tailored resume — synthetic",
             atsCompatibility: null,
             jobFitScore: fixture.job.fitScore,
+            evidenceCurrent: true,
             createdAt: "2026-10-05T17:00:00.000Z"
           }]}
           coverLetters={[{
             id: review.selectedCoverLetterId,
             title: "Laserfiche cover letter — synthetic",
+            evidenceCurrent: true,
             createdAt: "2026-10-05T17:00:00.000Z"
           }]}
           application={null}

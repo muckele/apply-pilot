@@ -191,6 +191,7 @@ test("Fill state builders use only supplied authority and retain the permanent a
   for (const errorCategory of [
     null,
     "FILL_POLICY_DENIED",
+    "FILL_STALE",
     "FILL_TARGET_TRUST_LOST",
     "FILL_UNEXPECTED_MUTATION",
     "FILL_WRITE_FAILED",
@@ -206,7 +207,6 @@ test("Fill state builders use only supplied authority and retain the permanent a
     assert.equal("fillAttemptId" in finalized, false);
   }
 
-  assert.throws(() => buildFinalizeRunFillData({ errorCategory: "FILL_STALE" as never }));
   assert.throws(() => buildFinalizeRunFillData({ errorCategory: "free-form" as never }));
 
   const recovered = buildRecoverExpiredRunFillData();

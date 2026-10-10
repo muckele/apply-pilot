@@ -25,6 +25,7 @@ export async function GET() {
       interviews,
       generatedDocuments,
       aiAnalyses,
+      evidenceSnapshots,
       tasks,
       followUpReminders,
       storedFiles,
@@ -67,6 +68,24 @@ export async function GET() {
       }),
       prisma.generatedDocument.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.aIAnalysis.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
+      prisma.evidenceSnapshot.findMany({
+        where: { userId },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          jobPostingId: true,
+          resumeId: true,
+          reviewedAnalysisId: true,
+          requestId: true,
+          schemaVersion: true,
+          sourceResumeUpdatedAt: true,
+          snapshotHash: true,
+          sourceProjectionHash: true,
+          gapProjectionHash: true,
+          reviewPayload: true,
+          createdAt: true
+        }
+      }),
       prisma.task.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.followUpReminder.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.storedFile.findMany({
@@ -145,6 +164,7 @@ export async function GET() {
       interviews,
       generatedDocuments,
       aiAnalyses,
+      evidenceSnapshots,
       tasks,
       followUpReminders,
       storedFiles,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { z } from "zod";
 
+import { PublicApiError } from "@/lib/api-errors";
 import { generateJson, getOpenAIClient, LocalAiUnavailableError } from "@/lib/ai/client";
 import { scoreJobMatch, validateAndNormalizeJobMatchOutput } from "@/lib/ai/job-match";
 import { draftCoverLetter, draftEmailReply, generateInterviewPrep, generateInterviewFeedback } from "@/lib/ai/documents";
@@ -122,29 +123,31 @@ test("local cover letter is claim-free and cross-applicant safe", async () => {
   }
 });
 
-test("local email reply fails closed for arbitrary email content", async () => {
+function isDeferredFeature(feature: string) {
+  return (error: unknown) => error instanceof PublicApiError &&
+    error.status === 503 && error.details?.code === "AI_FEATURE_DEFERRED" &&
+    error.details?.feature === feature && error.details?.retryable === false;
+}
+
+test("email drafting is explicitly deferred instead of producing fallback output", async () => {
   local();
-  await assert.rejects(draftEmailReply({ emailText: "Your application was rejected.", tone: "professional" }), LocalAiUnavailableError);
+  await assert.rejects(
+    draftEmailReply({ emailText: "Your application was rejected.", tone: "professional" }),
+    isDeferredFeature("EMAIL_REPLY")
+  );
 });
 
-test("local interview prep contains no invented applicant history", async () => {
+test("interview prep is explicitly deferred instead of producing fallback output", async () => {
   local();
   for (const resume of [alice.resume, bob.resume]) {
-    const prep = await generateInterviewPrep({ job, resume });
-    assert.deepEqual(prep.starStories, []);
-    assert.doesNotMatch(JSON.stringify(prep), /Mathew|Uckele|payer|billing|compliance|operations ownership|transition into technical|engineering depth/i);
+    await assert.rejects(generateInterviewPrep({ job, resume }), isDeferredFeature("INTERVIEW_PREP"));
   }
 });
 
-test("local interview feedback contains no invented applicant history", async () => {
+test("interview feedback is explicitly deferred instead of producing fallback output", async () => {
   local();
   for (const resume of [alice.resume, bob.resume]) {
-    const feedback = await generateInterviewFeedback({ job, resume });
-    assert.deepEqual(feedback.questionsAsked, []);
-    assert.deepEqual(feedback.strongMoments, []);
-    assert.deepEqual(feedback.weakAnswers, []);
-    assert.deepEqual(feedback.betterAnswers, []);
-    assert.doesNotMatch(JSON.stringify(feedback), /Mathew|Uckele|technical problem solving|customer communication|operational follow-through/i);
+    await assert.rejects(generateInterviewFeedback({ job, resume }), isDeferredFeature("INTERVIEW_FEEDBACK"));
   }
 });
 

@@ -54,11 +54,21 @@ import {
   assembleParsedResumeV9FromRecords
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
+import {
+  NO_APPLICATION_DOCUMENT_FACT_ID,
+  assembleTailoredResumeProviderOutput,
+  buildApplicationDocumentFactCatalog,
+  type TailoredResumeProviderOutput
+} from "@/lib/ai/application-document-facts";
 import { prisma } from "@/lib/prisma";
 import {
+  buildApplicationDocumentSystemPrompt,
   validateTailoredResumeClaims,
-  type ApplicationDocumentClaimEvidence
+  type ApplicationDocumentClaimEvidence,
+  type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
+import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
@@ -1284,7 +1294,7 @@ export function buildResumeParseGeminiProviderV9JsonSchema(
   ) as Record<string, unknown>;
 }
 
-const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
+export const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
   professionalSummary: z.string(),
   skillsSection: z.array(z.string()),
   bulletRewrites: z.array(
@@ -1306,6 +1316,100 @@ const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknow
     }).strict()).min(1)
   }).strict())
 }).strict();
+
+const tailoredResumeStringArray = { type: "array", items: { type: "string" } } as const;
+const providerFactSelectionSchema = z.object({
+  text: z.string(),
+  factId: z.string().min(1)
+}).strict();
+
+export const tailoredResumeProviderSchema: z.ZodType<
+  TailoredResumeProviderOutput,
+  z.ZodTypeDef,
+  unknown
+> = z.object({
+  professionalSummary: z.string(),
+  professionalSummaryFactId: z.string().min(1),
+  skillsSection: z.array(providerFactSelectionSchema),
+  bulletRewrites: z.array(z.object({
+    factId: z.string().min(1),
+    rewrite: z.string(),
+    reason: z.string()
+  }).strict()),
+  rolesOrProjectsToEmphasize: z.array(providerFactSelectionSchema),
+  resumeTextClaims: z.array(z.object({
+    claim: z.string().min(1),
+    factId: z.string().min(1)
+  }).strict()),
+  unsupportedKeywords: z.array(z.string()),
+  formattingWarnings: z.array(z.string()),
+  resumeText: z.string()
+}).strict();
+
+export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
+  return buildApplicationDocumentSystemPrompt(resumeTailorPrompt, payload);
+}
+
+export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {
+  const factIds = buildApplicationDocumentFactCatalog(payload).map((fact) => fact.factId);
+  const selectableFactIds = factIds.length ? factIds : [NO_APPLICATION_DOCUMENT_FACT_ID];
+  const factId = { type: "string", enum: selectableFactIds };
+  const selectedText = {
+    type: "object",
+    additionalProperties: false,
+    properties: { text: { type: "string" }, factId },
+    required: ["text", "factId"]
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      professionalSummary: { type: "string" },
+      professionalSummaryFactId: {
+        type: "string",
+        enum: [...new Set([...selectableFactIds, NO_APPLICATION_DOCUMENT_FACT_ID])]
+      },
+      skillsSection: { type: "array", items: selectedText },
+      bulletRewrites: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            factId,
+            rewrite: { type: "string" },
+            reason: { type: "string" }
+          },
+          required: ["factId", "rewrite", "reason"]
+        }
+      },
+      rolesOrProjectsToEmphasize: { type: "array", items: selectedText },
+      resumeTextClaims: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: { claim: { type: "string" }, factId },
+          required: ["claim", "factId"]
+        }
+      },
+      unsupportedKeywords: tailoredResumeStringArray,
+      formattingWarnings: tailoredResumeStringArray,
+      resumeText: { type: "string" }
+    },
+    required: [
+      "professionalSummary",
+      "professionalSummaryFactId",
+      "skillsSection",
+      "bulletRewrites",
+      "rolesOrProjectsToEmphasize",
+      "resumeTextClaims",
+      "unsupportedKeywords",
+      "formattingWarnings",
+      "resumeText"
+    ]
+  };
+}
 
 function assertSourceSupported(source: string, value: string | null, path: string) {
   if (value === null || value === "") return;
@@ -4242,13 +4346,28 @@ export async function tailorResume(
   userId?: string,
   options: AiInvocationOptions = {}
 ) {
+  const applicationPayload = payload as ApplicationDocumentPayload;
   const generated = await generateJson<TailoredResumeOutput>({
     promptName: "resumeTailorPrompt",
-    systemPrompt: resumeTailorPrompt,
+    systemPrompt: buildTailoredResumeSystemPrompt(applicationPayload),
     payload,
     schema: tailoredResumeSchema,
-    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "3", ...options } : undefined,
-    validate: (value) => validateTailoredResumeClaims(payload as Parameters<typeof validateTailoredResumeClaims>[0], value)
+    providerSchema: tailoredResumeProviderSchema,
+    decodeProvider: (value) => assembleTailoredResumeProviderOutput(
+      applicationPayload,
+      value as TailoredResumeProviderOutput
+    ),
+    responseJsonSchema: buildTailoredResumeGeminiJsonSchema(applicationPayload),
+    context: userId ? {
+      userId,
+      feature: "RESUME_TAILOR",
+      promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
+      ...options
+    } : undefined,
+    validate: (value) => validateTailoredResumeQuality(
+      applicationPayload,
+      validateTailoredResumeClaims(applicationPayload, value)
+    )
   });
 
   return {

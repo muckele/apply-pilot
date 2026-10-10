@@ -316,6 +316,7 @@ export async function startNextTestServer(options: StartNextTestServerOptions = 
       [
         path.join("node_modules", "next", "dist", "bin", "next"),
         "dev",
+        "--webpack",
         "--hostname",
         "127.0.0.1",
         "--port",

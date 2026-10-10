@@ -34,7 +34,7 @@ const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   },
   "sentry-solutions-engineer": {
     expectedJobProjectionHash: "ea8651b522a6ff3f6201e2260ab77e6189b62c031b23546c4daf1e155109915f",
-    expectedInputHash: "8e48e236cfffb507c39b1ff1be3c923e54135e276a7dd25c0f047f579aa37117",
+    expectedInputHash: "1ed378c81239975b20676c56363203b2797d54985f7361a7f8b89f8861b6da38",
     supported: {
       "job.requirements[2]": ["resume.skills[3]", "resume.workHistory[0]"],
       "job.requirements[3]": ["resume.projects[0]", "resume.achievements[0]"],
@@ -71,7 +71,7 @@ const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   },
   "flint-customer-success-engineer": {
     expectedJobProjectionHash: "fd86863498043f64aee0ff9357a0607dc04c8ea0d65b439433cc446e454874e1",
-    expectedInputHash: "d25f097a35591c8501c3455b8ddc0182a1bc5e05b7ba0a334ce54592fbaf84d0",
+    expectedInputHash: "056132242c697638c491f038f9498aaf4545ddb020432123fced3421c5dd8019",
     supported: {
       "job.requirements[1]": ["resume.achievements[0]", "resume.projects[0]"]
     },
@@ -104,7 +104,7 @@ const GUIDE_SEEDS: Readonly<Record<string, GuideSeed>> = Object.freeze({
   },
   "roku-technical-account-manager-10909": {
     expectedJobProjectionHash: "6b0bca5bc8bdd182022ede402fd8aa0679684c3b0a3bcd2862d8a8884147e493",
-    expectedInputHash: "49e26391c12be5f7f70d8c9f378d0df841eab8561903829e7d009fcbb4f7354d",
+    expectedInputHash: "543fb99185170a8fa7acb59228105a5b56a13c24e1bdb78eceed547bb08b5dc1",
     supported: {
       "job.requirements[2]": ["resume.skills[2]", "resume.skills[3]", "resume.workHistory[0]"],
       "job.requirements[6]": ["resume.skills[2]", "resume.workHistory[0]"],

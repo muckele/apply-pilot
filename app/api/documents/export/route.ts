@@ -9,6 +9,11 @@ import {
   type ResumeFormat
 } from "@/lib/documents/resume-format";
 import { prisma } from "@/lib/prisma";
+import {
+  CURRENT_EVIDENCE_SNAPSHOT_SELECT,
+  isEvidenceBindingCurrent,
+  resolveCurrentReviewedEvidence
+} from "@/lib/jobs/evidence-snapshot-contracts";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
@@ -21,6 +26,8 @@ const exportSchema = z.object({
 type GeneratedDocumentExportRow = {
   title: string;
   content: string;
+  evidenceSnapshotId?: string | null;
+  jobPosting?: ExportJobEvidence | null;
 };
 
 type ResumeVersionExportRow = {
@@ -32,6 +39,21 @@ type ResumeVersionExportRow = {
   accentColor: string;
   fontSize: number;
   lineSpacing: number;
+  evidenceSnapshotId?: string | null;
+  jobPosting?: ExportJobEvidence | null;
+};
+
+type ExportJobEvidence = {
+  currentEvidenceSnapshotId: string | null;
+  evidenceSnapshotGeneration: number;
+  currentEvidenceSnapshot: {
+    id: string;
+    resumeId: string;
+    sourceResumeUpdatedAt: Date;
+    snapshotHash: string;
+    reviewPayload: unknown;
+  } | null;
+  user: { resumes: Array<{ id: string; updatedAt: Date }> };
 };
 
 type DocumentExportRouteDependencies = {
@@ -61,6 +83,19 @@ export function createDocumentExportRouteHandlers(dependencies: DocumentExportRo
 
         if (!content) {
           throw new PublicApiError("Document not found.", 404);
+        }
+        const source = document ?? resumeVersion;
+        const currentEvidence = source?.jobPosting
+          ? resolveCurrentReviewedEvidence(source.jobPosting, source.jobPosting.user.resumes[0] ?? null)
+          : null;
+        if (source?.jobPosting && !isEvidenceBindingCurrent({
+          currentEvidenceSnapshotId: source.jobPosting.currentEvidenceSnapshotId,
+          currentEvidenceSourceValid: currentEvidence?.currentEvidenceSourceValid ?? false,
+          artifactEvidenceSnapshotId: source.evidenceSnapshotId ?? null
+        })) {
+          throw new PublicApiError("Regenerate this document from the current reviewed evidence before exporting it.", 409, {
+            code: "APPLICATION_DOCUMENT_EVIDENCE_STALE"
+          });
         }
 
         const resumeFormat: ResumeFormat = resumeVersion
@@ -117,13 +152,67 @@ export function createDocumentExportRouteHandlers(dependencies: DocumentExportRo
   };
 }
 
+const exportJobEvidenceSelect = {
+  currentEvidenceSnapshotId: true,
+  evidenceSnapshotGeneration: true,
+  currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT },
+  user: {
+    select: {
+      resumes: {
+        where: { isMaster: true },
+        orderBy: { updatedAt: "desc" as const },
+        take: 1,
+        select: { id: true, updatedAt: true }
+      }
+    }
+  }
+} as const;
+
 const handlers = createDocumentExportRouteHandlers({
   requireUserId,
   checkRateLimit,
-  findGeneratedDocument: ({ id, userId }) =>
-    prisma.generatedDocument.findFirst({ where: { id, userId } }),
-  findResumeVersion: ({ id, userId }) =>
-    prisma.resumeVersion.findFirst({ where: { id, userId } })
+  findGeneratedDocument: async ({ id, userId }) => {
+    const initial = await prisma.generatedDocument.findFirst({
+      where: { id, userId },
+      select: { jobPostingId: true }
+    });
+    if (!initial) return null;
+    return prisma.$transaction(async (tx) => {
+      if (initial.jobPostingId) {
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "JobPosting"
+          WHERE "id" = ${initial.jobPostingId} AND "userId" = ${userId}
+          FOR SHARE
+        `;
+        if (locked.length !== 1) return null;
+      }
+      return tx.generatedDocument.findFirst({
+        where: { id, userId, jobPostingId: initial.jobPostingId },
+        include: { jobPosting: { select: exportJobEvidenceSelect } }
+      });
+    });
+  },
+  findResumeVersion: async ({ id, userId }) => {
+    const initial = await prisma.resumeVersion.findFirst({
+      where: { id, userId },
+      select: { jobPostingId: true }
+    });
+    if (!initial) return null;
+    return prisma.$transaction(async (tx) => {
+      if (initial.jobPostingId) {
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT "id" FROM "JobPosting"
+          WHERE "id" = ${initial.jobPostingId} AND "userId" = ${userId}
+          FOR SHARE
+        `;
+        if (locked.length !== 1) return null;
+      }
+      return tx.resumeVersion.findFirst({
+        where: { id, userId, jobPostingId: initial.jobPostingId },
+        include: { jobPosting: { select: exportJobEvidenceSelect } }
+      });
+    });
+  }
 });
 
 export const POST = handlers.POST;

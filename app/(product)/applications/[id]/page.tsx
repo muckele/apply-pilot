@@ -7,6 +7,14 @@ import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } f
 import { getCurrentApplicationRun } from "@/lib/application-runs/service";
 import { readAutomationPolicy } from "@/lib/application-runs/service";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
+import {
+  CURRENT_JOB_MATCH_ANALYSES,
+  buildCurrentJobMatchContext,
+  currentJobMatchFields,
+  hasCurrentJobMatchAnalysis,
+  readCurrentJobMatchSources
+} from "@/lib/jobs/current-job-match";
+import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -21,19 +29,22 @@ function formatDate(value: Date | null | undefined) {
 export default async function ApplicationDetailPage({ params }: Props) {
   const userId = await requirePageUserId();
   const { id } = await params;
-  const application = await prisma.application.findFirst({
-    where: { id, userId },
-    include: {
-      jobPosting: true,
-      events: { orderBy: { occurredAt: "desc" } },
-      contacts: true,
-      emails: { orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }] },
-      interviews: { orderBy: { scheduledAt: "asc" } },
-      resumeVersion: true,
-      coverLetterVersion: true,
-      tasks: { orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }] }
-    }
-  });
+  const [application, sources] = await Promise.all([
+    prisma.application.findFirst({
+      where: { id, userId },
+      include: {
+        jobPosting: { include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } } },
+        events: { orderBy: { occurredAt: "desc" } },
+        contacts: true,
+        emails: { orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }] },
+        interviews: { orderBy: { scheduledAt: "asc" } },
+        resumeVersion: true,
+        coverLetterVersion: true,
+        tasks: { orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }] }
+      }
+    }),
+    readCurrentJobMatchSources(userId)
+  ]);
 
   if (!application) {
     notFound();
@@ -42,6 +53,14 @@ export default async function ApplicationDetailPage({ params }: Props) {
   const currentRun = await getCurrentApplicationRun(userId, application.id);
   const automationPolicy = currentRun ? await readAutomationPolicy(userId) : null;
   const attention = getApplicationAttention(application);
+  const currentContext = buildCurrentJobMatchContext({ job: application.jobPosting, ...sources });
+  const currentJob = currentJobMatchFields(
+    application.jobPosting,
+    hasCurrentJobMatchAnalysis({
+      ...application.jobPosting,
+      currentEvidenceSourceValid: currentContext.currentEvidenceSourceValid
+    }, currentContext.matchInput)
+  );
 
   return (
     <>
@@ -62,7 +81,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
               </div>
               <div>
                 <p className="text-xs text-slate-500">Fit score</p>
-                <div className="mt-2"><ScoreBadge score={application.jobPosting.overallFitScore} /></div>
+                <div className="mt-2"><ScoreBadge score={currentJob.overallFitScore} /></div>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Date applied</p>
