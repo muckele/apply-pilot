@@ -137,7 +137,7 @@ const javascript = `
         heading.textContent = 'Text fallback · page ' + (index + 1);
         const pre = document.createElement('pre');
         pre.className = 'fallback';
-        pre.textContent = page.join('\n');
+        pre.textContent = page.join('\\n');
         text.append(heading, pre);
       });
       const evidence = card.querySelector('[data-document-evidence]');

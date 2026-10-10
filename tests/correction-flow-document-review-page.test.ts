@@ -118,3 +118,7 @@ test("shared owner-review headers remain closed and permit only same-origin PDF 
   assert.match(pdfReview["content-security-policy"], /frame-ancestors 'none'/u);
   assert.equal(pdfReview["referrer-policy"], "no-referrer");
 });
+
+test("the same-origin review script is syntactically executable", () => {
+  assert.doesNotThrow(() => new Function(correctionFlowDocumentReviewHtml.javascript));
+});
