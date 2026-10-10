@@ -5,10 +5,12 @@ import {
   SYNTHETIC_CORRECTION_FLOW_FIXTURE
 } from "@/evaluation/correction-flow-qualification-fixture";
 import {
-  syntheticCorrectionFlowDocumentPayload,
-  syntheticCoverLetterOutput,
-  syntheticTailoredResumeOutput
+  syntheticCorrectionFlowDocumentPayload
 } from "@/evaluation/correction-flow-provider-stub";
+import {
+  buildCorrectionFlowDocumentDiagnosticManifest,
+  createCorrectionFlowDocumentReviewGenerationRunner
+} from "@/lib/ai/correction-flow-document-diagnostic";
 import {
   buildCorrectionFlowDocumentReviewManifest,
   correctionFlowDocumentReviewConsent,
@@ -18,6 +20,33 @@ import { startCorrectionFlowDocumentOwnerReview } from "@/lib/ai/correction-flow
 
 const exactHead = "f".repeat(40);
 const credential = "offline-review-credential-never-log";
+const fixedResumeOutput = Object.freeze({
+  professionalSummary: "Service operations leader building reliable customer workflows.",
+  professionalSummaryFactId: "fact:0000",
+  skillsSection: [],
+  bulletRewrites: [],
+  rolesOrProjectsToEmphasize: [],
+  resumeTextClaims: [{
+    claim: "Synthetic owner confirms current Quenby service certification for enterprise operations.",
+    factId: "fact:0033"
+  }],
+  unsupportedKeywords: [],
+  formattingWarnings: [],
+  resumeText: "Service operations leader building reliable customer workflows.\n" +
+    "Synthetic owner confirms current Quenby service certification for enterprise operations."
+});
+const fixedCoverLetterOutput = Object.freeze({
+  title: "Synthetic Employer Service Operations Director cover letter",
+  coverLetter: "Dear Synthetic Employer Hiring Team,\n\n" +
+    "I am writing to apply for the Service Operations Director position.\n\n" +
+    "Synthetic owner confirms current Quenby service certification for enterprise operations.\n\n" +
+    "Sincerely,\nTaylor Boundary",
+  angle: "Use only current reviewed evidence.",
+  claimsUsed: [{
+    claim: "Synthetic owner confirms current Quenby service certification for enterprise operations.",
+    factId: "fact:0033"
+  }]
+});
 
 function providerResponse(value: unknown) {
   return new Response(JSON.stringify({
@@ -100,7 +129,8 @@ test("the v2 review manifest freezes the exact visible-review scope and generati
 
 test("fixed outputs reach one exact local review and yield only a safe attestation receipt", async () => {
   const value = manifest();
-  const responses = [syntheticTailoredResumeOutput(), syntheticCoverLetterOutput()];
+  const responses = [fixedResumeOutput, fixedCoverLetterOutput];
+  const providerRequestBodies: string[] = [];
   let providerCalls = 0;
   let readyCalls = 0;
   const runner = createCorrectionFlowDocumentReviewRunner({
@@ -108,7 +138,10 @@ test("fixed outputs reach one exact local review and yield only a safe attestati
     consent: consentFor(value),
     payload: syntheticCorrectionFlowDocumentPayload(),
     credentials: { geminiApiKey: credential },
-    fetchImpl: async () => providerResponse(responses[providerCalls++]),
+    fetchImpl: async (_input, init) => {
+      providerRequestBodies.push(String(init?.body));
+      return providerResponse(responses[providerCalls++]);
+    },
     now: () => new Date("2026-10-10T05:02:00.000Z"),
     async onReviewReady(review) {
       readyCalls += 1;
@@ -144,6 +177,11 @@ test("fixed outputs reach one exact local review and yield only a safe attestati
   const receipt = await runner.run(new AbortController().signal);
   assert.equal(receipt.failureCode, null, JSON.stringify(receipt));
   assert.equal(providerCalls, 2);
+  assert.equal(providerRequestBodies.length, 2);
+  assert.doesNotMatch(
+    providerRequestBodies.join("\n"),
+    /expectedRecommendation|expectedBand|reviewDispositions/iu
+  );
   assert.equal(readyCalls, 1);
   assert.equal(receipt.status, "needs_revision");
   assert.equal(receipt.providerCallsStarted, 2);
@@ -162,7 +200,7 @@ test("fixed outputs reach one exact local review and yield only a safe attestati
 test("startup and ready-callback failures overwrite every claimed PDF buffer", async () => {
   for (const failure of ["start", "ready"] as const) {
     const value = manifest();
-    const responses = [syntheticTailoredResumeOutput(), syntheticCoverLetterOutput()];
+    const responses = [fixedResumeOutput, fixedCoverLetterOutput];
     let providerCalls = 0;
     let pdfs: readonly Buffer[] = [];
     let closeCalled = false;
@@ -215,6 +253,35 @@ test("startup and ready-callback failures overwrite every claimed PDF buffer", a
   }
 });
 
+test("cancellation during review startup closes the session before readiness and overwrites PDFs", async () => {
+  const value = manifest();
+  const responses = [fixedResumeOutput, fixedCoverLetterOutput];
+  const controller = new AbortController();
+  let providerCalls = 0;
+  let readyCalls = 0;
+  let pdfs: readonly Buffer[] = [];
+  const runner = createCorrectionFlowDocumentReviewRunner({
+    manifest: value,
+    consent: consentFor(value),
+    payload: syntheticCorrectionFlowDocumentPayload(),
+    credentials: { geminiApiKey: credential },
+    fetchImpl: async () => providerResponse(responses[providerCalls++]),
+    startReview(input) {
+      pdfs = input.renderedPdfs.map((pdf) => pdf.bytes);
+      const startup = startCorrectionFlowDocumentOwnerReview(input);
+      controller.abort();
+      return startup;
+    },
+    onReviewReady() { readyCalls += 1; }
+  });
+  const receipt = await runner.run(controller.signal);
+  assert.equal(receipt.failureCode, "EXECUTION_CANCELLED");
+  assert.equal(providerCalls, 2);
+  assert.equal(readyCalls, 0);
+  assert.equal(pdfs.length, 2);
+  assert.equal(pdfs.every((pdf) => pdf.every((byte) => byte === 0)), true);
+});
+
 test("failure, cancellation, and invalid consent never start a later stage or expose documents", async () => {
   const value = manifest();
   assert.throws(() => createCorrectionFlowDocumentReviewRunner({
@@ -222,7 +289,7 @@ test("failure, cancellation, and invalid consent never start a later stage or ex
     consent: { ...consentFor(value), manifestHash: "0".repeat(64) },
     payload: syntheticCorrectionFlowDocumentPayload(),
     credentials: { geminiApiKey: credential },
-    fetchImpl: async () => providerResponse(syntheticTailoredResumeOutput())
+    fetchImpl: async () => providerResponse(fixedResumeOutput)
   }), /consent|manifest/iu);
 
   let calls = 0;
@@ -241,4 +308,43 @@ test("failure, cancellation, and invalid consent never start a later stage or ex
   assert.equal(receipt.status, "stopped");
   assert.equal(receipt.reviewAttestation, null);
   assert.doesNotMatch(JSON.stringify(receipt), /private-provider-output/u);
+});
+
+test("the generation-to-bundle entry point cannot manufacture consent outside canonical v2", () => {
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  const diagnosticManifest = buildCorrectionFlowDocumentDiagnosticManifest({
+    exactHead,
+    providerMode: "offline_stubbed",
+    generatedAt: new Date("2026-10-10T05:00:00.000Z"),
+    payload,
+    safeLabel: SYNTHETIC_CORRECTION_FLOW_FIXTURE.safeLabel
+  });
+  const manufacturedAuthorizationAttempt = {
+    manifest: diagnosticManifest,
+    authorization: {
+      contractVersion: "2",
+      manifestHash: "0".repeat(64),
+      exactHead,
+      payloadHash: diagnosticManifest.payloadHash,
+      reviewedEvidenceHash: diagnosticManifest.reviewedEvidenceHash,
+      factCatalogHash: diagnosticManifest.factCatalogHash,
+      promptVersion: diagnosticManifest.calls[0].promptVersion,
+      model: diagnosticManifest.calls[0].model,
+      thinkingLevel: diagnosticManifest.calls[0].thinkingLevel,
+      generationId: "fabricated-generation",
+      rawProviderOutputRetention: false,
+      validatedDocumentPersistentRetention: false,
+      validatedDocumentLocalDisplay: true,
+      safeReceiptOnly: true,
+      approvedAt: "2026-10-10T05:01:00.000Z"
+    },
+    payload,
+    credentials: { geminiApiKey: credential },
+    fetchImpl: async () => providerResponse(fixedResumeOutput)
+  };
+  assert.throws(() => createCorrectionFlowDocumentReviewGenerationRunner(
+    manufacturedAuthorizationAttempt as unknown as Parameters<
+      typeof createCorrectionFlowDocumentReviewGenerationRunner
+    >[0]
+  ), /canonical v2|consent/iu);
 });

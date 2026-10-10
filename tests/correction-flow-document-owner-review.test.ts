@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
 
@@ -6,20 +7,25 @@ import { buildCorrectionFlowDocumentReviewEnvelope } from "@/lib/ai/correction-f
 import { startCorrectionFlowDocumentOwnerReview } from "@/lib/ai/correction-flow-document-owner-review";
 
 const hash = (character: string) => character.repeat(64);
+const resumePdfSource = "%PDF-1.4\nsynthetic resume pdf";
+const coverPdfSource = "%PDF-1.4\nsynthetic cover letter pdf";
+const pdfHash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+const resumePdfHash = pdfHash(resumePdfSource);
+const coverPdfHash = pdfHash(coverPdfSource);
 
 function fixture() {
+  const resumePdf = Buffer.from(resumePdfSource);
+  const coverPdf = Buffer.from(coverPdfSource);
   const envelope = buildCorrectionFlowDocumentReviewEnvelope({
     manifestHash: hash("1"), exactHead: "a".repeat(40), payloadHash: hash("2"),
     sourceResumeHash: hash("3"), profileHash: hash("4"), jobProjectionHash: hash("5"),
     reviewedEvidenceHash: hash("6"), factCatalogHash: hash("7"), promptVersion: "7",
     model: "gemini-3.8-flash", thinkingLevel: "LOW", generationId: "generation-owner-review",
     documents: [
-      { kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: hash("9") },
-      { kind: "cover_letter", validatedOutputHash: hash("a"), renderedPdfHash: hash("b") }
+      { kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: resumePdfHash },
+      { kind: "cover_letter", validatedOutputHash: hash("a"), renderedPdfHash: coverPdfHash }
     ]
   });
-  const resumePdf = Buffer.from("%PDF-1.4\nsynthetic resume pdf");
-  const coverPdf = Buffer.from("%PDF-1.4\nsynthetic cover letter pdf");
   return {
     envelope,
     documents: [
@@ -50,12 +56,12 @@ function submission(envelopeHash: string) {
     envelopeHash,
     documents: [
       {
-        kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: hash("9"),
+        kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: resumePdfHash,
         disposition: "approved", reason: null, reviewedAllPages: true,
         reviewedWritingQuality: true, reviewedVisualLayout: true
       },
       {
-        kind: "cover_letter", validatedOutputHash: hash("a"), renderedPdfHash: hash("b"),
+        kind: "cover_letter", validatedOutputHash: hash("a"), renderedPdfHash: coverPdfHash,
         disposition: "needs_revision", reason: "tone", reviewedAllPages: true,
         reviewedWritingQuality: true, reviewedVisualLayout: true
       }
@@ -241,4 +247,100 @@ test("a partial submission body is destroyed when the owner closes the review", 
   await settled;
   await review.closed;
   assert.equal(review.hasPrivateInput(), false);
+});
+
+test("every pre-listen rejection overwrites both owned PDF buffers", async () => {
+  for (const mode of ["timeout", "order", "signal"] as const) {
+    const input = fixture();
+    const controller = new AbortController();
+    if (mode === "signal") controller.abort();
+    const candidate = {
+      envelope: input.envelope,
+      documents: mode === "order" ? [input.documents[1], input.documents[0]] : input.documents,
+      renderedPdfs: input.renderedPdfs,
+      sessionTimeoutMs: mode === "timeout" ? 0 : 1_000,
+      signal: controller.signal
+    };
+    await assert.rejects(startCorrectionFlowDocumentOwnerReview(
+      candidate as unknown as Parameters<typeof startCorrectionFlowDocumentOwnerReview>[0]
+    ), mode === "timeout" ? /timeout/iu : mode === "order" ? /resume then cover letter/iu : /cancelled/iu);
+    assert.equal(input.resumePdf.every((byte) => byte === 0), true, mode);
+    assert.equal(input.coverPdf.every((byte) => byte === 0), true, mode);
+  }
+});
+
+test("an immediate startup abort settles the listen promise and overwrites both PDFs", async () => {
+  const input = fixture();
+  const controller = new AbortController();
+  const startup = startCorrectionFlowDocumentOwnerReview({
+    envelope: input.envelope,
+    documents: input.documents,
+    renderedPdfs: input.renderedPdfs,
+    signal: controller.signal
+  });
+  controller.abort();
+  await assert.rejects(Promise.race([
+    startup,
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error("Document review startup remained pending.")), 250
+    ))
+  ]), /closed during startup|cancelled/iu);
+  assert.equal(input.resumePdf.every((byte) => byte === 0), true);
+  assert.equal(input.coverPdf.every((byte) => byte === 0), true);
+});
+
+test("session admission rejects and overwrites PDF bytes that do not match the envelope", async () => {
+  const input = fixture();
+  input.resumePdf[0] ^= 1;
+  await assert.rejects(async () => {
+    const review = await startCorrectionFlowDocumentOwnerReview({
+      envelope: input.envelope,
+      documents: input.documents,
+      renderedPdfs: input.renderedPdfs
+    });
+    review.close("test_cleanup");
+    await review.closed;
+    throw new Error("Mismatched rendered PDF bytes were accepted.");
+  }, /rendered PDF hash/iu);
+  assert.equal(input.resumePdf.every((byte) => byte === 0), true);
+  assert.equal(input.coverPdf.every((byte) => byte === 0), true);
+});
+
+test("a PDF mutated after admission is rejected and every held PDF is overwritten", async () => {
+  const input = fixture();
+  const review = await startCorrectionFlowDocumentOwnerReview({
+    envelope: input.envelope,
+    documents: input.documents,
+    renderedPdfs: input.renderedPdfs
+  });
+  input.resumePdf[0] ^= 1;
+  const response = await fetch(review.pdfUrls[0]);
+  assert.equal(response.status, 409);
+  assert.equal((await review.closed).reason, "error");
+  await assert.rejects(review.finished, /closed/u);
+  assert.equal(input.resumePdf.every((byte) => byte === 0), true);
+  assert.equal(input.coverPdf.every((byte) => byte === 0), true);
+});
+
+test("concurrent duplicate decisions can record at most one attestation", async () => {
+  const input = fixture();
+  const review = await startCorrectionFlowDocumentOwnerReview({
+    envelope: input.envelope,
+    documents: input.documents,
+    renderedPdfs: input.renderedPdfs,
+    now: () => new Date("2026-10-10T04:10:00.000Z")
+  });
+  await Promise.all(review.pdfUrls.map(async (url) => fetch(url).then((response) => response.arrayBuffer())));
+  const body = JSON.stringify(submission(input.envelope.envelopeHash));
+  const responses = await Promise.all([
+    rawRequest(review.submissionUrl, {
+      method: "POST", origin: review.origin, headers: { "content-type": "application/json" }, body
+    }),
+    rawRequest(review.submissionUrl, {
+      method: "POST", origin: review.origin, headers: { "content-type": "application/json" }, body
+    })
+  ]);
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+  await review.finished;
+  await review.closed;
 });

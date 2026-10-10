@@ -147,6 +147,16 @@ test("every authority binding invalidates an earlier review attestation", () => 
       label
     );
   }
+  assert.equal(isCorrectionFlowDocumentReviewCurrent(
+    attestation,
+    { ...envelope, exactHead: "c".repeat(40) }
+  ), false, "forged envelope retains an old envelopeHash");
+  assert.throws(() => createCorrectionFlowDocumentReviewAttestation(
+    { ...envelope, exactHead: "c".repeat(40) },
+    delivered(),
+    validSubmission(envelope.envelopeHash),
+    "2026-10-10T04:05:00.000Z"
+  ), /envelope hash is invalid/iu);
 });
 
 test("review attestation rejects incomplete, stale, reordered, duplicated, or prose-bearing submissions", () => {

@@ -111,7 +111,7 @@ async function renderAndVerifyArtifact(
   artifactType: "RESUME" | "COVER_LETTER",
   content: string
 ) {
-  const [docx, pdf] = await Promise.all([
+  const [docxResult, pdfResult] = await Promise.allSettled([
     renderCanonicalApplicationDocumentV1({ artifactType, content }),
     renderGenericDocument({
       content,
@@ -126,23 +126,43 @@ async function renderAndVerifyArtifact(
       }
     })
   ]);
-  const [exactDocx, productionDocx] = await Promise.all([
-    extractExactCanonicalDocxContent(docx),
-    extractResumeDocxText(docx)
-  ]);
-  const extractedPdf = extractGeneratedPdfText(pdf);
-  return {
-    pdf,
-    verification: exportArtifactSchema.parse({
-      docxByteHash: sha256(docx),
-      docxExtractedTextHash: sha256(productionDocx),
-      pdfByteHash: sha256(pdf),
-      pdfExtractedTextHash: sha256(extractedPdf),
-      docxRoundTripExact: docxRoundTripComparable(exactDocx) === docxRoundTripComparable(content),
-      docxCriticalFactsPresent: criticalFactsPresent(content, productionDocx, false),
-      pdfCriticalFactsPresent: criticalFactsPresent(content, extractedPdf, true)
-    })
-  };
+  if (docxResult.status === "rejected" || pdfResult.status === "rejected") {
+    if (docxResult.status === "fulfilled") docxResult.value.fill(0);
+    if (pdfResult.status === "fulfilled") pdfResult.value.fill(0);
+    throw new Error("Canonical application-document rendering failed.");
+  }
+  const docx = docxResult.value;
+  const pdf = pdfResult.value;
+  try {
+    const [exactDocxResult, productionDocxResult] = await Promise.allSettled([
+      extractExactCanonicalDocxContent(docx),
+      extractResumeDocxText(docx)
+    ]);
+    if (exactDocxResult.status === "rejected" || productionDocxResult.status === "rejected") {
+      throw new Error("Canonical DOCX extraction failed.");
+    }
+    const exactDocx = exactDocxResult.value;
+    const productionDocx = productionDocxResult.value;
+    const extractedPdf = extractGeneratedPdfText(pdf);
+    const result = {
+      pdf,
+      verification: exportArtifactSchema.parse({
+        docxByteHash: sha256(docx),
+        docxExtractedTextHash: sha256(productionDocx),
+        pdfByteHash: sha256(pdf),
+        pdfExtractedTextHash: sha256(extractedPdf),
+        docxRoundTripExact: docxRoundTripComparable(exactDocx) === docxRoundTripComparable(content),
+        docxCriticalFactsPresent: criticalFactsPresent(content, productionDocx, false),
+        pdfCriticalFactsPresent: criticalFactsPresent(content, extractedPdf, true)
+      })
+    };
+    docx.fill(0);
+    return result;
+  } catch (error) {
+    docx.fill(0);
+    pdf.fill(0);
+    throw error;
+  }
 }
 
 function assertCompleteVerification(verification: CorrectionFlowDocumentExportVerification) {
@@ -162,16 +182,23 @@ async function renderVerifiedDocuments(input: {
   resumeText: string;
   coverLetter: string;
 }) {
-  const [resume, coverLetter] = await Promise.all([
+  const [resumeResult, coverLetterResult] = await Promise.allSettled([
     renderAndVerifyArtifact("RESUME", input.resumeText),
     renderAndVerifyArtifact("COVER_LETTER", input.coverLetter)
   ]);
-  const verification = correctionFlowDocumentExportVerificationSchema.parse({
-    inMemoryOnly: true,
-    resume: resume.verification,
-    coverLetter: coverLetter.verification
-  });
+  if (resumeResult.status === "rejected" || coverLetterResult.status === "rejected") {
+    if (resumeResult.status === "fulfilled") resumeResult.value.pdf.fill(0);
+    if (coverLetterResult.status === "fulfilled") coverLetterResult.value.pdf.fill(0);
+    throw new Error("Canonical application-document verification failed.");
+  }
+  const resume = resumeResult.value;
+  const coverLetter = coverLetterResult.value;
   try {
+    const verification = correctionFlowDocumentExportVerificationSchema.parse({
+      inMemoryOnly: true,
+      resume: resume.verification,
+      coverLetter: coverLetter.verification
+    });
     assertCompleteVerification(verification);
     return { verification, resumePdf: resume.pdf, coverLetterPdf: coverLetter.pdf };
   } catch (error) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { chromium } from "playwright";
@@ -9,6 +10,9 @@ import { startCorrectionFlowDocumentOwnerReview } from "@/lib/ai/correction-flow
 const hash = (character: string) => character.repeat(64);
 
 function input() {
+  const resumePdf = Buffer.from("%PDF-1.4\nresume browser");
+  const coverPdf = Buffer.from("%PDF-1.4\ncover browser");
+  const pdfHash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
   return {
     envelope: buildCorrectionFlowDocumentReviewEnvelope({
       manifestHash: hash("1"), exactHead: "a".repeat(40), payloadHash: hash("2"),
@@ -16,8 +20,8 @@ function input() {
       reviewedEvidenceHash: hash("6"), factCatalogHash: hash("7"), promptVersion: "7",
       model: "gemini-3.8-flash", thinkingLevel: "LOW", generationId: "browser-review",
       documents: [
-        { kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: hash("9") },
-        { kind: "cover_letter", validatedOutputHash: hash("a"), renderedPdfHash: hash("b") }
+        { kind: "resume", validatedOutputHash: hash("8"), renderedPdfHash: pdfHash(resumePdf) },
+        { kind: "cover_letter", validatedOutputHash: hash("a"), renderedPdfHash: pdfHash(coverPdf) }
       ]
     }),
     documents: [
@@ -25,8 +29,8 @@ function input() {
       { kind: "cover_letter" as const, title: "Synthetic cover letter", text: "Dear Synthetic Employer\nSynthetic browser cover fact.", evidence: [] }
     ] as const,
     renderedPdfs: [
-      { kind: "resume" as const, bytes: Buffer.from("%PDF-1.4\nresume browser") },
-      { kind: "cover_letter" as const, bytes: Buffer.from("%PDF-1.4\ncover browser") }
+      { kind: "resume" as const, bytes: resumePdf },
+      { kind: "cover_letter" as const, bytes: coverPdf }
     ] as const
   };
 }

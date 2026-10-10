@@ -20,6 +20,8 @@ const preconsentFailureCodes = new Set([
   "LIVE_GIT_PREFLIGHT_FAILED",
   "LIVE_HEAD_MISMATCH",
   "LIVE_WORKTREE_DIRTY",
+  "LIVE_HEAD_CHANGED",
+  "LIVE_WORKTREE_CHANGED",
   "MANIFEST_CONSENT_INPUT_FAILED",
   "MANIFEST_CONSENT_MISMATCH"
 ]);
@@ -249,6 +251,29 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
   let geminiApiKey = "";
   try {
     geminiApiKey = await dependencies.readSecret("Existing Gemini API key (input hidden): ");
+    let currentHead: string;
+    let currentWorktreeStatus: string;
+    try {
+      currentHead = dependencies.gitOutput(["rev-parse", "HEAD"]);
+      currentWorktreeStatus = dependencies.gitOutput(["status", "--porcelain=v1", "--untracked-files=all"]);
+    } catch {
+      throw preconsentError(
+        "LIVE_GIT_PREFLIGHT_FAILED",
+        "The document review Git pre-dispatch recheck failed; no provider call started."
+      );
+    }
+    if (currentHead !== exactHead) {
+      throw preconsentError(
+        "LIVE_HEAD_CHANGED",
+        "The document review Git head changed after consent; no provider call started."
+      );
+    }
+    if (hasDirtyCorrectionFlowQualificationWorktree(currentWorktreeStatus)) {
+      throw preconsentError(
+        "LIVE_WORKTREE_CHANGED",
+        "The document review worktree changed after consent; no provider call started."
+      );
+    }
     const receipt = await dependencies.execute({
       manifest,
       consent,

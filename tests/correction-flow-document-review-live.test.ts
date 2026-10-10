@@ -144,6 +144,41 @@ test("argument, runtime, head, dirty tree, consent mismatch, and cancellation st
   }
 });
 
+test("a post-consent head change stops after one secret read and before provider dispatch", async () => {
+  let headReads = 0;
+  let secretReads = 0;
+  let executes = 0;
+  let manifestHash = "";
+  await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher(
+    [`--expected-head=${exactHead}`],
+    {
+      assertLocalInteractiveRuntime() {},
+      gitOutput(args) {
+        if (args[0] === "rev-parse") {
+          headReads += 1;
+          return headReads === 1 ? exactHead : "f".repeat(40);
+        }
+        return "";
+      },
+      now: () => new Date("2026-10-10T05:00:00.000Z"),
+      write(value) {
+        if (value.includes('"status": "awaiting_manifest_consent"')) {
+          manifestHash = JSON.parse(value).safeManifest.manifestHash;
+        }
+      },
+      async readVisible() { return manifestHash; },
+      async readSecret() { secretReads += 1; return credential; },
+      async execute() { executes += 1; return safeReceipt(manifestHash); }
+    }
+  ), (error: unknown) => {
+    const diagnostic = correctionFlowDocumentReviewPreconsentDiagnostic(error);
+    return diagnostic?.failureCode === "LIVE_HEAD_CHANGED" && diagnostic.providerCallsStarted === 0;
+  });
+  assert.equal(headReads, 2);
+  assert.equal(secretReads, 1);
+  assert.equal(executes, 0);
+});
+
 test("the supported command has no database, environment-key, auto-open, or screenshot path", () => {
   const script = readFileSync(fileURLToPath(
     new URL("../scripts/run-correction-flow-document-review-live.ts", import.meta.url)

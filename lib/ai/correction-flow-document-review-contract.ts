@@ -137,6 +137,14 @@ export function buildCorrectionFlowDocumentReviewEnvelope(
   }));
 }
 
+export function isCorrectionFlowDocumentReviewEnvelopeAuthentic(value: unknown) {
+  const envelope = envelopeSchema.safeParse(value);
+  if (!envelope.success) return false;
+  const { envelopeHash, contractVersion, ...input } = envelope.data;
+  const core = { contractVersion, ...input };
+  return envelopeHash === hashAiInput("correctionFlowDocumentReviewEnvelope", "1", core);
+}
+
 export function createCorrectionFlowDocumentReviewAttestation(
   envelopeValue: unknown,
   deliveryValue: unknown,
@@ -144,6 +152,9 @@ export function createCorrectionFlowDocumentReviewAttestation(
   reviewedAt: string
 ): CorrectionFlowDocumentReviewAttestation {
   const envelope = envelopeSchema.parse(envelopeValue);
+  if (!isCorrectionFlowDocumentReviewEnvelopeAuthentic(envelope)) {
+    throw new Error("Document review envelope hash is invalid.");
+  }
   const delivery = z.tuple([resumeDelivery, coverLetterDelivery]).parse(deliveryValue);
   const submission = submissionSchema.parse(submissionValue);
   if (submission.envelopeHash !== envelope.envelopeHash) {
@@ -194,6 +205,7 @@ export function isCorrectionFlowDocumentReviewCurrent(
   const attestation = attestationSchema.safeParse(attestationValue);
   const envelope = envelopeSchema.safeParse(envelopeValue);
   if (!attestation.success || !envelope.success) return false;
+  if (!isCorrectionFlowDocumentReviewEnvelopeAuthentic(envelope.data)) return false;
   const { attestationHash, ...core } = attestation.data;
   return attestation.data.reviewEnvelopeHash === envelope.data.envelopeHash &&
     attestationHash === hashAiInput("correctionFlowDocumentReviewAttestation", "1", core);

@@ -54,6 +54,8 @@ export type { CorrectionFlowDocumentExportVerification };
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION = "1" as const;
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT = 2 as const;
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_STEP_TIMEOUT_MS = 180_000 as const;
+export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION = "2" as const;
+export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS = 900_000 as const;
 
 const FROZEN_SYNTHETIC_PAYLOAD_HASH =
   "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0";
@@ -90,6 +92,12 @@ type CallPlan = Readonly<{
   wireRequestHash: string;
 }>;
 
+const requiredOwnerAttestations = Object.freeze([
+  "reviewedAllPages",
+  "reviewedWritingQuality",
+  "reviewedVisualLayout"
+] as const);
+
 export type CorrectionFlowDocumentDiagnosticManifest = Readonly<{
   contractVersion: typeof CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION;
   exactHead: string;
@@ -113,6 +121,39 @@ export type CorrectionFlowDocumentDiagnosticManifest = Readonly<{
   reviewedEvidenceHash: string;
   factCatalogCount: number;
   factCatalogHash: string;
+  manifestHash: string;
+}>;
+
+export type CorrectionFlowDocumentReviewManifest = Readonly<{
+  contractVersion: typeof CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION;
+  exactHead: string;
+  providerMode: z.infer<typeof providerModeSchema>;
+  generatedAt: string;
+  callCount: typeof CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT;
+  stepTimeoutMs: typeof CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_STEP_TIMEOUT_MS;
+  noRetry: true;
+  noFallback: true;
+  stopAfterFirstFailure: true;
+  syntheticApplicantOnly: true;
+  recipient: "google-gemini-developer-api";
+  rawProviderOutputRetention: false;
+  validatedDocumentPersistentRetention: false;
+  validatedDocumentLocalDisplay: true;
+  validatedDocumentLifetimeMs: typeof CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS;
+  requiredOwnerAttestations: typeof requiredOwnerAttestations;
+  safeReceiptOnly: true;
+  productionWrites: false;
+  databaseWrites: false;
+  employerInteraction: false;
+  jobMatchCalls: 0;
+  safeLabel: string;
+  calls: readonly [CallPlan, CallPlan];
+  conservativeReservationMicros: number;
+  payloadHash: string;
+  reviewedEvidenceHash: string;
+  factCatalogCount: number;
+  factCatalogHash: string;
+  generationId: string;
   manifestHash: string;
 }>;
 
@@ -289,6 +330,109 @@ export function buildCorrectionFlowDocumentDiagnosticManifest({
   });
 }
 
+export function buildCorrectionFlowDocumentReviewManifest({
+  exactHead,
+  providerMode,
+  generatedAt,
+  payload,
+  safeLabel
+}: {
+  exactHead: string;
+  providerMode: z.infer<typeof providerModeSchema>;
+  generatedAt: Date;
+  payload: ApplicationDocumentPayload;
+  safeLabel: string;
+}): CorrectionFlowDocumentReviewManifest {
+  const generation = buildCorrectionFlowDocumentDiagnosticManifest({
+    exactHead,
+    providerMode,
+    generatedAt,
+    payload,
+    safeLabel
+  });
+  const core = Object.freeze({
+    contractVersion: CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION,
+    exactHead: generation.exactHead,
+    providerMode: generation.providerMode,
+    generatedAt: generation.generatedAt,
+    callCount: generation.callCount,
+    stepTimeoutMs: generation.stepTimeoutMs,
+    noRetry: true as const,
+    noFallback: true as const,
+    stopAfterFirstFailure: true as const,
+    syntheticApplicantOnly: true as const,
+    recipient: "google-gemini-developer-api" as const,
+    rawProviderOutputRetention: false as const,
+    validatedDocumentPersistentRetention: false as const,
+    validatedDocumentLocalDisplay: true as const,
+    validatedDocumentLifetimeMs: CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS,
+    requiredOwnerAttestations,
+    safeReceiptOnly: true as const,
+    productionWrites: false as const,
+    databaseWrites: false as const,
+    employerInteraction: false as const,
+    jobMatchCalls: 0 as const,
+    safeLabel: generation.safeLabel,
+    calls: generation.calls,
+    conservativeReservationMicros: generation.conservativeReservationMicros,
+    payloadHash: generation.payloadHash,
+    reviewedEvidenceHash: generation.reviewedEvidenceHash,
+    factCatalogCount: generation.factCatalogCount,
+    factCatalogHash: generation.factCatalogHash,
+    generationId: hashAiInput("correctionFlowDocumentReviewGeneration", "2", {
+      exactHead: generation.exactHead,
+      generatedAt: generation.generatedAt,
+      payloadHash: generation.payloadHash,
+      calls: generation.calls.map((call) => call.wireRequestHash)
+    })
+  });
+  return Object.freeze({
+    ...core,
+    manifestHash: hashAiInput("correctionFlowDocumentReviewManifest", "2", core)
+  });
+}
+
+export const correctionFlowDocumentReviewConsent = z.object({
+  manifestHash: sha256Schema,
+  exactHead: z.string().regex(/^[a-f0-9]{40}$/u),
+  providerMode: providerModeSchema,
+  approvedCallCount: z.literal(CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT),
+  approvedConservativeReservationMicros: z.literal(112_125),
+  approvedStepTimeoutMs: z.literal(CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_STEP_TIMEOUT_MS),
+  syntheticApplicantDataSharingApproved: z.literal(true),
+  existingCredentialUseApproved: z.boolean(),
+  noRetry: z.literal(true),
+  noFallback: z.literal(true),
+  stopAfterFirstFailure: z.literal(true),
+  noOwnerData: z.literal(true),
+  noProductionWrites: z.literal(true),
+  noDatabaseWrites: z.literal(true),
+  noEmployerInteraction: z.literal(true),
+  noJobMatchCalls: z.literal(true),
+  rawProviderOutputRetention: z.literal(false),
+  validatedDocumentPersistentRetention: z.literal(false),
+  validatedDocumentLocalDisplay: z.literal(true),
+  validatedDocumentLifetimeMs: z.literal(CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS),
+  safeReceiptOnly: z.literal(true),
+  approvedAt: z.string().datetime({ offset: true })
+}).strict();
+
+export type CorrectionFlowDocumentReviewConsent = z.infer<typeof correctionFlowDocumentReviewConsent>;
+
+function assertReviewConsent(manifest: CorrectionFlowDocumentReviewManifest, value: unknown) {
+  const consent = correctionFlowDocumentReviewConsent.parse(value);
+  if (
+    consent.manifestHash !== manifest.manifestHash ||
+    consent.exactHead !== manifest.exactHead ||
+    consent.providerMode !== manifest.providerMode ||
+    consent.approvedConservativeReservationMicros !== manifest.conservativeReservationMicros ||
+    consent.existingCredentialUseApproved !== (manifest.providerMode === "live_synthetic")
+  ) {
+    throw new Error("Document review consent does not match the canonical v2 manifest.");
+  }
+  return consent;
+}
+
 export const correctionFlowDocumentDiagnosticConsent = z.object({
   manifestHash: sha256Schema,
   exactHead: z.string().regex(/^[a-f0-9]{40}$/u),
@@ -404,7 +548,7 @@ export type CorrectionFlowDocumentDiagnosticReceipt = Readonly<{
   exportVerification: CorrectionFlowDocumentExportVerification | null;
 }>;
 
-export type CorrectionFlowDocumentReviewGenerationAuthorization = Readonly<{
+type CorrectionFlowDocumentReviewGenerationAuthorization = Readonly<{
   contractVersion: "2";
   manifestHash: string;
   exactHead: string;
@@ -816,22 +960,57 @@ export function createCorrectionFlowDocumentDiagnosticRunner(input: {
 }
 
 export function createCorrectionFlowDocumentReviewGenerationRunner(input: {
-  manifest: CorrectionFlowDocumentDiagnosticManifest;
-  authorization: CorrectionFlowDocumentReviewGenerationAuthorization;
+  manifest: CorrectionFlowDocumentReviewManifest;
+  consent: CorrectionFlowDocumentReviewConsent;
   payload: ApplicationDocumentPayload;
   credentials: Readonly<{ geminiApiKey: string }>;
   fetchImpl?: typeof fetch;
   now?: () => Date;
 }) {
-  const consent = correctionFlowDocumentDiagnosticConsent.parse({
-    manifestHash: input.manifest.manifestHash,
+  const canonical = buildCorrectionFlowDocumentReviewManifest({
     exactHead: input.manifest.exactHead,
     providerMode: input.manifest.providerMode,
+    generatedAt: new Date(input.manifest.generatedAt),
+    payload: input.payload,
+    safeLabel: input.manifest.safeLabel
+  });
+  if (!isDeepStrictEqual(canonical, input.manifest)) {
+    throw new Error("Document review generation requires the canonical v2 manifest.");
+  }
+  const reviewConsent = assertReviewConsent(canonical, input.consent);
+  const manifest = buildCorrectionFlowDocumentDiagnosticManifest({
+    exactHead: canonical.exactHead,
+    providerMode: canonical.providerMode,
+    generatedAt: new Date(canonical.generatedAt),
+    payload: input.payload,
+    safeLabel: canonical.safeLabel
+  });
+  const authorization: CorrectionFlowDocumentReviewGenerationAuthorization = {
+    contractVersion: "2",
+    manifestHash: canonical.manifestHash,
+    exactHead: canonical.exactHead,
+    payloadHash: canonical.payloadHash,
+    reviewedEvidenceHash: canonical.reviewedEvidenceHash,
+    factCatalogHash: canonical.factCatalogHash,
+    promptVersion: canonical.calls[0].promptVersion,
+    model: canonical.calls[0].model,
+    thinkingLevel: canonical.calls[0].thinkingLevel,
+    generationId: canonical.generationId,
+    rawProviderOutputRetention: false,
+    validatedDocumentPersistentRetention: false,
+    validatedDocumentLocalDisplay: true,
+    safeReceiptOnly: true,
+    approvedAt: reviewConsent.approvedAt
+  };
+  const consent = correctionFlowDocumentDiagnosticConsent.parse({
+    manifestHash: manifest.manifestHash,
+    exactHead: manifest.exactHead,
+    providerMode: manifest.providerMode,
     approvedCallCount: CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT,
-    approvedConservativeReservationMicros: input.manifest.conservativeReservationMicros,
-    approvedStepTimeoutMs: input.manifest.stepTimeoutMs,
+    approvedConservativeReservationMicros: manifest.conservativeReservationMicros,
+    approvedStepTimeoutMs: manifest.stepTimeoutMs,
     syntheticApplicantDataSharingApproved: true,
-    existingCredentialUseApproved: input.manifest.providerMode === "live_synthetic",
+    existingCredentialUseApproved: manifest.providerMode === "live_synthetic",
     noRetry: true,
     noFallback: true,
     stopAfterFirstFailure: true,
@@ -841,12 +1020,16 @@ export function createCorrectionFlowDocumentReviewGenerationRunner(input: {
     rawOutputRetention: false,
     outputEmission: false,
     inMemoryExportVerification: true,
-    approvedAt: input.authorization.approvedAt
+    approvedAt: reviewConsent.approvedAt
   });
   const runner = createCorrectionFlowDocumentRunnerCore({
-    ...input,
+    manifest,
     consent,
-    reviewAuthorization: input.authorization
+    payload: input.payload,
+    credentials: input.credentials,
+    fetchImpl: input.fetchImpl,
+    now: input.now,
+    reviewAuthorization: authorization
   });
   return Object.freeze({
     async run(signal: AbortSignal) {

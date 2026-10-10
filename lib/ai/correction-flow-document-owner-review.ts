@@ -1,8 +1,9 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 
 import {
   createCorrectionFlowDocumentReviewAttestation,
+  isCorrectionFlowDocumentReviewEnvelopeAuthentic,
   type CorrectionFlowDocumentReviewAttestation,
   type CorrectionFlowDocumentReviewEnvelope
 } from "@/lib/ai/correction-flow-document-review-contract";
@@ -50,36 +51,51 @@ export async function startCorrectionFlowDocumentOwnerReview({
   documents: initialDocuments,
   renderedPdfs: initialRenderedPdfs,
   now = () => new Date(),
-  sessionTimeoutMs = CORRECTION_FLOW_DOCUMENT_REVIEW_SESSION_TIMEOUT_MS
+  sessionTimeoutMs = CORRECTION_FLOW_DOCUMENT_REVIEW_SESSION_TIMEOUT_MS,
+  signal
 }: {
   envelope: CorrectionFlowDocumentReviewEnvelope;
   documents: readonly [ReviewDocument & { kind: "resume" }, ReviewDocument & { kind: "cover_letter" }];
   renderedPdfs: readonly [RenderedPdf & { kind: "resume" }, RenderedPdf & { kind: "cover_letter" }];
   now?: () => Date;
   sessionTimeoutMs?: number;
+  signal?: AbortSignal;
 }) {
-  if (
-    !Number.isSafeInteger(sessionTimeoutMs) ||
-    sessionTimeoutMs < 1 ||
-    sessionTimeoutMs > CORRECTION_FLOW_DOCUMENT_REVIEW_SESSION_TIMEOUT_MS
-  ) {
-    throw new Error("Document review timeout must be between 1 ms and 15 minutes.");
-  }
-  if (initialDocuments[0].kind !== "resume" || initialDocuments[1].kind !== "cover_letter" ||
-    initialRenderedPdfs[0].kind !== "resume" || initialRenderedPdfs[1].kind !== "cover_letter") {
-    throw new Error("Document review requires resume then cover letter.");
+  const startedAt = Date.now();
+  const disposeInitialPdfs = () => initialRenderedPdfs.forEach((pdf) => pdf.bytes.fill(0));
+  const pdfHash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+  try {
+    if (
+      !Number.isSafeInteger(sessionTimeoutMs) ||
+      sessionTimeoutMs < 1 ||
+      sessionTimeoutMs > CORRECTION_FLOW_DOCUMENT_REVIEW_SESSION_TIMEOUT_MS
+    ) {
+      throw new Error("Document review timeout must be between 1 ms and 15 minutes.");
+    }
+    if (initialDocuments[0].kind !== "resume" || initialDocuments[1].kind !== "cover_letter" ||
+      initialRenderedPdfs[0].kind !== "resume" || initialRenderedPdfs[1].kind !== "cover_letter") {
+      throw new Error("Document review requires resume then cover letter.");
+    }
+    if (signal?.aborted) throw new Error("Document review was cancelled before startup.");
+    if (!isCorrectionFlowDocumentReviewEnvelopeAuthentic(envelope) ||
+      initialRenderedPdfs.some((pdf, index) =>
+        pdfHash(pdf.bytes) !== envelope.documents[index].renderedPdfHash)) {
+      throw new Error("Document review rendered PDF hash does not match the authentic envelope.");
+    }
+  } catch (error) {
+    disposeInitialPdfs();
+    throw error;
   }
 
   const token = randomBytes(32).toString("base64url");
   let origin = "";
-  let phase: "reviewing" | "closed" = "reviewing";
+  let phase: "reviewing" | "completing" | "closed" = "reviewing";
   let documents: typeof initialDocuments | null = initialDocuments;
   let renderedPdfs: typeof initialRenderedPdfs | null = initialRenderedPdfs;
   let view: ReturnType<typeof buildCorrectionFlowDocumentReviewView> | null = null;
   const delivered = new Map<"resume" | "cover_letter", string>();
   const activePrivateBodyRequests = new Set<IncomingMessage>();
   const admission = createRepeatableSubmissionAdmission<"document_review">();
-  let timer: NodeJS.Timeout | undefined;
   let resolveFinished!: (value: CorrectionFlowDocumentReviewAttestation) => void;
   let rejectFinished!: (error: Error) => void;
   const finished = new Promise<CorrectionFlowDocumentReviewAttestation>((resolve, reject) => {
@@ -129,6 +145,11 @@ export async function startCorrectionFlowDocumentOwnerReview({
         }
         const pdf = renderedPdfs[pdfIndex];
         const identity = envelope.documents[pdfIndex];
+        if (pdfHash(pdf.bytes) !== identity.renderedPdfHash) {
+          sendOwnerReviewJson(response, 409, { error: "Review unavailable" });
+          close("error");
+          return;
+        }
         response.once("finish", () => {
           if (phase === "reviewing") delivered.set(pdf.kind, identity.renderedPdfHash);
         });
@@ -166,6 +187,7 @@ export async function startCorrectionFlowDocumentOwnerReview({
             JSON.parse(raw),
             now().toISOString()
           );
+          phase = "completing";
           resolveFinished(attestation);
           response.once("finish", () => close("completed"));
           sendOwnerReviewJson(response, 200, { status: "review_recorded", attestation });
@@ -178,6 +200,10 @@ export async function startCorrectionFlowDocumentOwnerReview({
       if (requestUrl.pathname === paths.cancelPath && request.method === "POST") {
         if (request.headers.origin !== origin) {
           sendOwnerReviewJson(response, 403, { error: "Origin rejected" });
+          return;
+        }
+        if (phase !== "reviewing") {
+          sendOwnerReviewJson(response, 409, { error: "Review unavailable" });
           return;
         }
         response.once("finish", () => close("owner_cancel"));
@@ -216,30 +242,53 @@ export async function startCorrectionFlowDocumentOwnerReview({
     delivered.clear();
   };
 
+  const listenController = new AbortController();
+  const onSignal = () => close("signal");
   const close = (reason: CloseReason = "owner_close") => {
     if (closeReason) return;
     closeReason = reason;
     phase = "closed";
-    if (timer) clearTimeout(timer);
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onSignal);
+    listenController.abort();
     for (const request of activePrivateBodyRequests) request.destroy();
     activePrivateBodyRequests.clear();
     dispose();
     if (reason !== "completed") rejectFinished(new Error(`Document review closed: ${reason}.`));
-    server.close(() => resolveClosed({ reason }));
+    if (server.listening) server.close(() => resolveClosed({ reason }));
+    else resolveClosed({ reason });
   };
 
+  signal?.addEventListener("abort", onSignal, { once: true });
+  const timer = setTimeout(
+    () => close("session_timeout"),
+    Math.max(1, sessionTimeoutMs - (Date.now() - startedAt))
+  );
+  timer.unref();
   try {
     await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
+      const cleanup = () => {
+        server.removeListener("error", onError);
+        server.removeListener("listening", onListening);
+        server.removeListener("close", onClose);
+      };
+      const onError = (error: Error) => { cleanup(); reject(error); };
+      const onListening = () => { cleanup(); resolve(); };
+      const onClose = () => {
+        cleanup();
+        reject(new Error("Document review server closed during startup."));
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.once("close", onClose);
+      server.listen({ port: 0, host: "127.0.0.1", signal: listenController.signal });
     });
+    if (closeReason) throw new Error(`Document review closed during startup: ${closeReason}.`);
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Document review did not obtain a loopback address.");
     origin = `http://127.0.0.1:${address.port}`;
     const paths = pathSet();
     view = buildCorrectionFlowDocumentReviewView({ envelope, documents: initialDocuments, paths });
-    timer = setTimeout(() => close("session_timeout"), sessionTimeoutMs);
-    timer.unref();
     return Object.freeze({
       origin,
       reviewUrl: `${origin}${paths.reviewPath}`,
@@ -255,10 +304,8 @@ export async function startCorrectionFlowDocumentOwnerReview({
       deliveredPdfCount: () => delivered.size
     });
   } catch (error) {
-    phase = "closed";
-    dispose();
-    server.close();
-    rejectFinished(new Error("Document review failed before startup."));
+    close(closeReason ?? "error");
+    await closed;
     throw error;
   }
 }
