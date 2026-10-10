@@ -22,6 +22,7 @@ import {
 } from "@/lib/ai/application-document-version";
 import { assertConservativeApplicationDocumentWireBound } from "@/lib/ai/client";
 import {
+  buildCorrectionFlowDocumentReviewBundle,
   correctionFlowDocumentExportVerificationSchema as exportVerificationSchema,
   verifyCorrectionFlowDocumentExports,
   type CorrectionFlowDocumentExportVerification
@@ -403,6 +404,24 @@ export type CorrectionFlowDocumentDiagnosticReceipt = Readonly<{
   exportVerification: CorrectionFlowDocumentExportVerification | null;
 }>;
 
+export type CorrectionFlowDocumentReviewGenerationAuthorization = Readonly<{
+  contractVersion: "2";
+  manifestHash: string;
+  exactHead: string;
+  payloadHash: string;
+  reviewedEvidenceHash: string;
+  factCatalogHash: string;
+  promptVersion: string;
+  model: string;
+  thinkingLevel: "LOW" | "MEDIUM" | "HIGH";
+  generationId: string;
+  rawProviderOutputRetention: false;
+  validatedDocumentPersistentRetention: false;
+  validatedDocumentLocalDisplay: true;
+  safeReceiptOnly: true;
+  approvedAt: string;
+}>;
+
 function baseReceipt(
   manifest: CorrectionFlowDocumentDiagnosticManifest
 ): CorrectionFlowDocumentDiagnosticReceipt {
@@ -434,14 +453,15 @@ function baseReceipt(
   };
 }
 
-export function createCorrectionFlowDocumentDiagnosticRunner({
+function createCorrectionFlowDocumentRunnerCore({
   manifest,
   consent,
   payload,
   credentials,
   fetchImpl,
   verifyExports,
-  now
+  now,
+  reviewAuthorization
 }: {
   manifest: CorrectionFlowDocumentDiagnosticManifest;
   consent: CorrectionFlowDocumentDiagnosticConsent;
@@ -450,6 +470,7 @@ export function createCorrectionFlowDocumentDiagnosticRunner({
   fetchImpl?: typeof fetch;
   verifyExports?: typeof verifyExportsDefault;
   now?: () => Date;
+  reviewAuthorization?: CorrectionFlowDocumentReviewGenerationAuthorization;
 }) {
   const canonical = buildCorrectionFlowDocumentDiagnosticManifest({
     exactHead: manifest.exactHead,
@@ -474,6 +495,30 @@ export function createCorrectionFlowDocumentDiagnosticRunner({
   if (manifest.providerMode === "live_synthetic" && now !== undefined) {
     throw new Error("Live document diagnostic clock override is forbidden.");
   }
+  if (reviewAuthorization) {
+    if (
+      reviewAuthorization.contractVersion !== "2" ||
+      reviewAuthorization.exactHead !== manifest.exactHead ||
+      reviewAuthorization.payloadHash !== manifest.payloadHash ||
+      reviewAuthorization.reviewedEvidenceHash !== manifest.reviewedEvidenceHash ||
+      reviewAuthorization.factCatalogHash !== manifest.factCatalogHash ||
+      reviewAuthorization.promptVersion !== APPLICATION_DOCUMENT_PROMPT_VERSION ||
+      reviewAuthorization.model !== APPLICATION_DOCUMENT_MODEL ||
+      reviewAuthorization.thinkingLevel !== APPLICATION_DOCUMENT_THINKING_LEVEL ||
+      reviewAuthorization.rawProviderOutputRetention !== false ||
+      reviewAuthorization.validatedDocumentPersistentRetention !== false ||
+      reviewAuthorization.validatedDocumentLocalDisplay !== true ||
+      reviewAuthorization.safeReceiptOnly !== true ||
+      !/^[a-f0-9]{64}$/u.test(reviewAuthorization.manifestHash) ||
+      !reviewAuthorization.generationId ||
+      !Number.isFinite(new Date(reviewAuthorization.approvedAt).getTime())
+    ) {
+      throw new Error("Document review generation authorization does not match the frozen plan.");
+    }
+    if (verifyExports !== undefined) {
+      throw new Error("Document review generation forbids export-verifier overrides.");
+    }
+  }
   const apiKey = credentials.geminiApiKey.trim();
   if (!apiKey) throw new Error("Gemini credential is required.");
   const exportVerifier = verifyExports ?? verifyExportsDefault;
@@ -481,8 +526,11 @@ export function createCorrectionFlowDocumentDiagnosticRunner({
   let used = false;
 
   return Object.freeze({
-    async run(signal: AbortSignal): Promise<CorrectionFlowDocumentDiagnosticReceipt> {
-      if (used) return { ...baseReceipt(manifest), failureCode: "DIAGNOSTIC_ALREADY_USED" };
+    async run(signal: AbortSignal) {
+      if (used) return {
+        receipt: { ...baseReceipt(manifest), failureCode: "DIAGNOSTIC_ALREADY_USED" },
+        bundle: null
+      };
       used = true;
       let receipt = baseReceipt(manifest);
       let failureStage: DiagnosticStage | null = null;
@@ -680,40 +728,129 @@ export function createCorrectionFlowDocumentDiagnosticRunner({
           throw new DocumentDiagnosticError("EXECUTION_CANCELLED", "Document diagnostic was cancelled.");
         }
         let exportVerification: CorrectionFlowDocumentExportVerification;
+        let bundle: Awaited<ReturnType<typeof buildCorrectionFlowDocumentReviewBundle>> | null = null;
         try {
-          exportVerification = exportVerificationSchema.parse(await exportVerifier({
-            tailoredResume,
-            coverLetter
-          }));
+          if (reviewAuthorization) {
+            bundle = await buildCorrectionFlowDocumentReviewBundle({
+              payload,
+              tailoredResume,
+              coverLetter,
+              binding: {
+                manifestHash: reviewAuthorization.manifestHash,
+                exactHead: reviewAuthorization.exactHead,
+                payloadHash: reviewAuthorization.payloadHash,
+                reviewedEvidenceHash: reviewAuthorization.reviewedEvidenceHash,
+                factCatalogHash: reviewAuthorization.factCatalogHash,
+                promptVersion: reviewAuthorization.promptVersion,
+                model: reviewAuthorization.model,
+                thinkingLevel: reviewAuthorization.thinkingLevel,
+                generationId: reviewAuthorization.generationId
+              },
+              expectedValidatedOutputHashes: {
+                tailoredResume: receipt.validatedOutputHashes.tailoredResume ?? "",
+                coverLetter: receipt.validatedOutputHashes.coverLetter ?? ""
+              }
+            });
+            exportVerification = bundle.safe.verification;
+          } else {
+            exportVerification = exportVerificationSchema.parse(await exportVerifier({
+              tailoredResume,
+              coverLetter
+            }));
+          }
         } catch {
+          bundle?.dispose();
           throw new DocumentDiagnosticError(
             "EXPORT_VERIFICATION_FAILED",
             "In-memory export verification failed."
           );
         }
         return Object.freeze({
-          ...receipt,
-          status: "passed" as const,
-          failureStage: null,
-          exportVerification
+          receipt: Object.freeze({
+            ...receipt,
+            status: "passed" as const,
+            failureStage: null,
+            exportVerification
+          }),
+          bundle
         });
       } catch (error) {
         const failure = error instanceof DocumentDiagnosticError
           ? error
           : new DocumentDiagnosticError("DOCUMENT_DIAGNOSTIC_FAILED", "Document diagnostic failed.");
         return Object.freeze({
-          ...receipt,
-          status: "stopped" as const,
-          failureStage,
-          failureCode: failure.code,
-          failureClass: failure.failureClass,
-          failureFieldPath: failure.fieldPath,
-          exportVerification: null
+          receipt: Object.freeze({
+            ...receipt,
+            status: "stopped" as const,
+            failureStage,
+            failureCode: failure.code,
+            failureClass: failure.failureClass,
+            failureFieldPath: failure.fieldPath,
+            exportVerification: null
+          }),
+          bundle: null
         });
       } finally {
         tailoredResume = null;
         coverLetter = null;
       }
+    }
+  });
+}
+
+export function createCorrectionFlowDocumentDiagnosticRunner(input: {
+  manifest: CorrectionFlowDocumentDiagnosticManifest;
+  consent: CorrectionFlowDocumentDiagnosticConsent;
+  payload: ApplicationDocumentPayload;
+  credentials: Readonly<{ geminiApiKey: string }>;
+  fetchImpl?: typeof fetch;
+  verifyExports?: typeof verifyExportsDefault;
+  now?: () => Date;
+}) {
+  const runner = createCorrectionFlowDocumentRunnerCore(input);
+  return Object.freeze({
+    async run(signal: AbortSignal): Promise<CorrectionFlowDocumentDiagnosticReceipt> {
+      return (await runner.run(signal)).receipt;
+    }
+  });
+}
+
+export function createCorrectionFlowDocumentReviewGenerationRunner(input: {
+  manifest: CorrectionFlowDocumentDiagnosticManifest;
+  authorization: CorrectionFlowDocumentReviewGenerationAuthorization;
+  payload: ApplicationDocumentPayload;
+  credentials: Readonly<{ geminiApiKey: string }>;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+}) {
+  const consent = correctionFlowDocumentDiagnosticConsent.parse({
+    manifestHash: input.manifest.manifestHash,
+    exactHead: input.manifest.exactHead,
+    providerMode: input.manifest.providerMode,
+    approvedCallCount: CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT,
+    approvedConservativeReservationMicros: input.manifest.conservativeReservationMicros,
+    approvedStepTimeoutMs: input.manifest.stepTimeoutMs,
+    syntheticApplicantDataSharingApproved: true,
+    existingCredentialUseApproved: input.manifest.providerMode === "live_synthetic",
+    noRetry: true,
+    noFallback: true,
+    stopAfterFirstFailure: true,
+    noOwnerData: true,
+    noProductionWrites: true,
+    noEmployerInteraction: true,
+    rawOutputRetention: false,
+    outputEmission: false,
+    inMemoryExportVerification: true,
+    approvedAt: input.authorization.approvedAt
+  });
+  const runner = createCorrectionFlowDocumentRunnerCore({
+    ...input,
+    consent,
+    reviewAuthorization: input.authorization
+  });
+  return Object.freeze({
+    async run(signal: AbortSignal) {
+      return runner.run(signal);
     }
   });
 }

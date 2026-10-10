@@ -251,7 +251,8 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
     resumeText: tailoredResume.resumeText,
     coverLetter: coverLetter.coverLetter
   });
-  const envelope = buildCorrectionFlowDocumentReviewEnvelope({
+  try {
+    const envelope = buildCorrectionFlowDocumentReviewEnvelope({
     manifestHash: input.binding.manifestHash,
     exactHead: input.binding.exactHead,
     payloadHash,
@@ -314,38 +315,43 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
     state = null;
   };
   const safe = Object.freeze({ envelope, verification: rendered.verification });
-  return Object.freeze({
-    safe,
-    claim() {
-      if (claimed) throw new Error("Document review bundle was already claimed.");
-      if (!state) throw new Error("Document review bundle was released.");
-      claimed = true;
-      let active = true;
-      const current = () => {
-        if (!active || !state) throw new Error("Document review bundle claim was released.");
-        return state;
-      };
-      return Object.freeze({
-        envelope,
-        get documents() { return current().documents; },
-        get renderedPdfs() { return current().renderedPdfs; },
-        hasPrivateInput: () => active && state !== null,
-        releaseOwnership() {
-          if (!active) return;
-          active = false;
-          disposeState(false);
-        },
-        dispose() {
-          if (!active) return;
-          active = false;
-          disposeState(true);
-        }
-      });
-    },
-    dispose() {
-      if (claimed) return;
-      claimed = true;
-      disposeState(true);
-    }
-  });
+    return Object.freeze({
+      safe,
+      claim() {
+        if (claimed) throw new Error("Document review bundle was already claimed.");
+        if (!state) throw new Error("Document review bundle was released.");
+        claimed = true;
+        let active = true;
+        const current = () => {
+          if (!active || !state) throw new Error("Document review bundle claim was released.");
+          return state;
+        };
+        return Object.freeze({
+          envelope,
+          get documents() { return current().documents; },
+          get renderedPdfs() { return current().renderedPdfs; },
+          hasPrivateInput: () => active && state !== null,
+          releaseOwnership() {
+            if (!active) return;
+            active = false;
+            disposeState(false);
+          },
+          dispose() {
+            if (!active) return;
+            active = false;
+            disposeState(true);
+          }
+        });
+      },
+      dispose() {
+        if (claimed) return;
+        claimed = true;
+        disposeState(true);
+      }
+    });
+  } catch (error) {
+    rendered.resumePdf.fill(0);
+    rendered.coverLetterPdf.fill(0);
+    throw error;
+  }
 }
