@@ -1,4 +1,20 @@
-# One-call synthetic resume diagnostic
+# Synthetic application-document diagnostics
+
+## Current two-document conformance launcher
+
+The current offline-tested launcher covers the two changed prompt-version `7` document wires without repeating either JOB_MATCH call. It requests a tailored résumé first and requests a cover letter only after the résumé passes the production decoder, server-owned fact assembly, final factual validators, and conservative cost check. It then renders both accepted documents to DOCX and PDF entirely in memory, re-extracts their text, verifies critical facts, and retains hashes and booleans only.
+
+The frozen envelope is two calls maximum to `gemini-3.8-flash` at LOW thinking, with 180 seconds per call, no retry, no fallback, and stop after the first failure or billing uncertainty. The résumé reservation is `$0.064500`; the cover-letter reservation is `$0.047625`; the exact total ceiling is `$0.112125`. The fixture has 37 exact source-bound facts. Raw output retention and document-output emission are both disabled. No database, production, or employer interaction is part of the launcher.
+
+After a new exact head has passed independent review and CI, the supported command is:
+
+```sh
+npm run correction-flow:diagnose-documents:live -- --expected-head=<full-reviewed-git-sha>
+```
+
+The launcher requires a clean matching head and a local interactive terminal. It displays the immutable safe manifest before credential acquisition, requires the owner to type its exact hash, and reads the existing Gemini key only from an echo-disabled `/dev/tty` prompt. The command is readiness documentation, not authorization to execute it; any paid run requires separate approval of that exact reviewed head and displayed manifest. A passing synthetic run would establish hosted wire/validator/export conformance for that fixture, not general writing quality.
+
+## Historical one-call résumé diagnostic
 
 Status: the separately authorized historical one-call diagnostic completed once at reviewed head `527778cc48fb2b11738be0661d52f72bd75c298c`. Later paid synthetic evidence showed that closing reference names alone still left verbatim excerpt generation brittle. The current atomic-fact correction is implemented and tested offline only. No additional provider call, paid retry, production write, employer interaction, merge, or deployment is authorized.
 
@@ -39,7 +55,7 @@ No provider request-schema rejection occurred. The executed schema allowed citat
 
 The first offline correction derived one exact reference catalog from the submitted payload, appended separate applicant and contextual-job allowlists to both application-document prompts, forbade child paths, and placed the same closed enum in both Gemini schemas. That historical prompt/cache version `4` correction was later superseded by stricter deterministic writing contracts.
 
-The current prompt/cache version `7` contract removes provider-authored references and excerpts entirely. The server builds a stable ordered catalog mapping each opaque `factId` to one exact source reference, exact standalone excerpt, and provenance. Gemini receives the selectable fact IDs with their source text and provenance, then returns generated prose plus one `factId` per factual item. The server resolves those IDs, derives bullet originals, assembles the existing persisted `claimEvidence`/`claimsUsed` shape, and runs the existing negation, qualifier, number, scope, unsupported-term, and source-relation guards before caching or persistence. The provider schema contains no `ref`, `excerpt`, `citation`, or free-standing evidence collection. Diagnostic contract version `2` uses the same provider decoder and assembler.
+The current prompt/cache version `7` contract removes provider-authored references and excerpts entirely. The server builds a stable ordered catalog mapping each opaque `factId` to one exact source reference, exact standalone excerpt, and provenance. Gemini receives the selectable fact IDs with their source text and provenance, then returns generated prose plus one `factId` per factual item. The server resolves those IDs, derives bullet originals, assembles the existing persisted `claimEvidence`/`claimsUsed` shape, and runs the existing negation, qualifier, number, scope, unsupported-term, and source-relation guards before caching or persistence. The provider schema contains no `ref`, `excerpt`, `citation`, or free-standing evidence collection. The historical one-call résumé diagnostic contract version `2` uses the same provider decoder and assembler; the current two-document launcher has its own contract version `1`.
 
 Validated caches retain only the assembled public document shape. A cache hit validates that assembled shape directly and does not re-run the incompatible provider-wire schema or decoder. Prompt/cache version `7` isolates these entries from legacy version `6`; no destructive legacy rewrite or database migration is required.
 
