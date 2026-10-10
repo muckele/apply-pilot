@@ -2,21 +2,42 @@
 
 ## Current two-document conformance launcher
 
-The current offline-tested launcher covers the two changed prompt-version `7` document wires without repeating either JOB_MATCH call. It requests a tailored résumé first and requests a cover letter only after the résumé passes the production decoder, server-owned fact assembly, final factual validators, and conservative cost check. It then renders both accepted documents to DOCX and PDF entirely in memory, re-extracts their text, verifies critical facts, and retains hashes and booleans only.
+Status: **hosted synthetic conformance passed** on 2026-10-10 at reviewed head `81bae91cc74516e8854719ec5c53d21e363fc1bf`. The separately approved run exercised both changed prompt-version `7` document wires without repeating either JOB_MATCH call. It requested a tailored résumé first and requested a cover letter only after the résumé passed the production decoder, server-owned fact assembly, final factual validators, and conservative cost check. It then rendered both accepted documents to DOCX and PDF entirely in memory, re-extracted their text, verified critical facts, and retained hashes and booleans only.
 
 The frozen envelope is two calls maximum to `gemini-3.8-flash` at LOW thinking, with 180 seconds per call, no retry, no fallback, and stop after the first failure or billing uncertainty. The résumé reservation is `$0.064500`; the cover-letter reservation is `$0.047625`; the exact total ceiling is `$0.112125`. The fixture has 37 exact source-bound facts. Raw output retention and document-output emission are both disabled. No database, production, or employer interaction is part of the launcher.
 
-After a new exact head has passed independent review and CI, the supported command is:
+The supported command used for this bounded run was:
 
 ```sh
-npm run correction-flow:diagnose-documents:live -- --expected-head=<full-reviewed-git-sha>
+npm run correction-flow:diagnose-documents:live -- --expected-head=81bae91cc74516e8854719ec5c53d21e363fc1bf
 ```
 
-The launcher requires a clean matching head and a local interactive terminal. It displays the immutable safe manifest before credential acquisition, requires the owner to type its exact hash, and reads the existing Gemini key only from an echo-disabled `/dev/tty` prompt. The command is readiness documentation, not authorization to execute it; any paid run requires separate approval of that exact reviewed head and displayed manifest. A passing synthetic run would establish hosted wire/validator/export conformance for that fixture, not general writing quality.
+The launcher requires a clean matching head and a local interactive terminal. It displays the immutable safe manifest before credential acquisition, requires the owner to type its exact hash, and reads the existing Gemini key only from an echo-disabled `/dev/tty` prompt. This recorded execution does not authorize another paid run. A new execution requires separate approval of its exact reviewed head, displayed manifest, data-sharing scope, cost, and retention behavior.
+
+## Observed two-document receipt
+
+Manifest `54c9817b4bf546ad2f566d46157bf9c5ef6fa139174e9a720285be480725c238` was generated at `2026-10-10T02:52:54.363Z` for the exact 37-fact synthetic fixture. Both approved calls started and completed. The receipt reported 5,841 input tokens, 1,143 output tokens, zero cached tokens, known estimated cost `$0.008668`, and zero calls with unknown billing. No retry or fallback occurred. Every failure field was null; raw output was not retained and document output was not emitted.
+
+The validated tailored-résumé hash was `fb66e9564ff12b8b40c9e6ae107cc37e44618c434cda24d3dab70fe8515e0f7d`; the validated cover-letter hash was `82065edfe1b83d7e65957c9f12536c790944674b798cd7f0b8c2a90ac67cd8a0`.
+
+| Artifact | Byte hash | Re-extracted text hash | Result |
+| --- | --- | --- | --- |
+| Résumé DOCX | `c52f51bc26ccb7900df61de6d99435e511e4372e0187299b7bf0937635ce607c` | `6b55ab1d8addde808203d71f93158304c6e94108a4004d902b40da350a238a49` | Exact canonical round-trip and critical facts present |
+| Résumé PDF | `484c553b45ca6aec1c472163dedac90f11222b76759223f598e8dde8c432c08e` | `f563a7459441ebdabf3719869e31bbdb06082cac6eb2a5404a91f40e4fc13d45` | Critical facts present |
+| Cover-letter DOCX | `f91883c35be19c8f37ef07bfaec509e1f9a5f34e25bfcf6f469cd026e71c1fb8` | `dd9dd2270eaf6e6562ec7c1957a0e0c980516099f67965ed0978bd90c144d952` | Exact canonical round-trip and critical facts present |
+| Cover-letter PDF | `eb418ab7f087b0664affddaf0e38c7e378dcc1c75ff55ba23b0609f273d10a99` | `86824138f65aadb532d4669e5f121e5fc9c605a8288dfd67d23cb553c8d78df0` | Critical facts present |
+
+This proves bounded hosted schema/transport compatibility, server-owned fact assembly, factual-validator acceptance, and text-preserving in-memory export for this synthetic fixture. It does not prove writing quality, visual document quality, real-owner data behavior, durable approval, production persistence/currentness, employer compatibility, or the full P0/P1 journey. Because neither validated document nor raw provider response was retained, the generated prose cannot be recovered, displayed, edited, reused, or approved retrospectively.
+
+## Minimum next approval
+
+Do not repeat JOB_MATCH. The smallest writing-quality step is a separately approved two-document generation against an unchanged, hash-bound evidence snapshot that retains only the post-decoder, post-assembly, post-factual-validation documents long enough for local visible review. That approval must explicitly cover the new generation cost and the changed validated-output retention/display policy; raw provider output can remain unretained.
+
+The review proof should present the formatted résumé and cover letter plus their current source-fact bindings, bind each accept/reject decision to the exact validated output hash, source/evidence snapshot, job projection, prompt/model version, and generation, and invalidate the decision when any binding changes. It must not infer durable production `ApplicationDocumentApproval` authority from document selection, packet-answer approval, or this synthetic receipt. A local in-memory review proof can validate the interaction without a database migration; durable production approval requires an explicit schema/authority decision before implementation. No document should enter preparation, export-for-use, or employer flow on a stale or absent approval.
 
 ## Historical one-call résumé diagnostic
 
-Status: the separately authorized historical one-call diagnostic completed once at reviewed head `527778cc48fb2b11738be0661d52f72bd75c298c`. Later paid synthetic evidence showed that closing reference names alone still left verbatim excerpt generation brittle. The current atomic-fact correction is implemented and tested offline only. No additional provider call, paid retry, production write, employer interaction, merge, or deployment is authorized.
+Status: the separately authorized historical one-call diagnostic completed once at reviewed head `527778cc48fb2b11738be0661d52f72bd75c298c`. Later paid synthetic evidence showed that closing reference names alone still left verbatim excerpt generation brittle. Prompt version `7` subsequently passed the bounded two-document hosted conformance run recorded above. No additional provider call, paid retry, production write, employer interaction, merge, or deployment is authorized by either receipt.
 
 ## Purpose
 
@@ -97,7 +118,7 @@ It never retains or emits the model output, credential, request body, applicant 
 
 The completed call proved that the exact frozen post-correction synthetic input reached Gemini and returned an HTTP-successful, complete, parseable, structurally valid response; it then localized rejection to one unknown citation reference. It did not qualify matching, correction persistence, reassessment, cover-letter generation, exports, browser behavior, real-owner data, or future provider responses.
 
-Offline tests prove that the current request publishes and schema-constrains opaque atomic fact IDs, keeps exact references and excerpts server-owned, and fails representative ID/meaning mismatches without exposing generated text. They do not prove that the current hosted model will follow either document schema on a future call. The minimum prospective provider proof for both changed wires is two separately approved synthetic calls—one tailored résumé and one cover letter—without repeating either JOB_MATCH call. Those calls remain unapproved here and should retain the existing one-shot, no-retry, no-fallback, no-raw-output, bounded-cost receipt rules.
+Offline tests prove that the current request publishes and schema-constrains opaque atomic fact IDs, keeps exact references and excerpts server-owned, and fails representative ID/meaning mismatches without exposing generated text. The later bounded hosted run proves that the reviewed model followed both changed document schemas once for the exact frozen fixture and that both accepted documents survived the in-memory export checks. It does not predict every future response or establish human writing-quality approval. The next proof is the separately approved visible review/currentness step above, not another match run or an unreviewed application attempt.
 
 ## Existing four-call launch guard
 
