@@ -100,6 +100,8 @@ type GenerateJsonInput<T> = {
   payload: unknown;
   fallback?: T;
   schema?: z.ZodType<T, z.ZodTypeDef, unknown>;
+  providerSchema?: z.ZodType<unknown, z.ZodTypeDef, unknown>;
+  decodeProvider?: (value: unknown) => T;
   responseJsonSchema?: Record<string, unknown>;
   context?: AiCallContext;
   validate?: (value: T) => T;
@@ -118,6 +120,8 @@ export async function generateJson<T>({
   payload,
   fallback,
   schema,
+  providerSchema,
+  decodeProvider,
   responseJsonSchema,
   context,
   validate
@@ -129,7 +133,7 @@ export async function generateJson<T>({
     const documentContext = { ...context, feature: context.feature };
     return generateGuardedApplicationDocumentJson({
       promptName, systemPrompt, payload, fallback, schema, responseJsonSchema,
-      context: documentContext, validate
+      providerSchema, decodeProvider, context: documentContext, validate
     });
   }
 
@@ -355,6 +359,8 @@ async function generateGuardedApplicationDocumentJson<T>({
   systemPrompt,
   payload,
   schema,
+  providerSchema,
+  decodeProvider,
   responseJsonSchema,
   context,
   validate
@@ -510,7 +516,11 @@ async function generateGuardedApplicationDocumentJson<T>({
     }
     let data: T;
     try {
-      data = validateGeneratedJson(response.value, schema, promptName, validate);
+      const providerValue = providerSchema
+        ? validateGeneratedJson(response.value, providerSchema, promptName)
+        : response.value;
+      const decoded = decodeProvider ? decodeProvider(providerValue) : providerValue as T;
+      data = validateGeneratedJson(decoded, schema, promptName, validate);
     } catch (error) {
       if (error instanceof PublicApiError) throw error;
       throw new ApplicationDocumentProviderError("Gemini returned an unsupported application document.", {

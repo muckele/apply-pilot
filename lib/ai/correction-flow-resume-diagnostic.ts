@@ -3,6 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  assembleTailoredResumeProviderOutput,
+  type TailoredResumeProviderOutput
+} from "@/lib/ai/application-document-facts";
+import {
   validateTailoredResumeClaims,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
@@ -24,10 +28,11 @@ import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
   buildTailoredResumeGeminiJsonSchema,
   buildTailoredResumeSystemPrompt,
+  tailoredResumeProviderSchema,
   tailoredResumeSchema
 } from "@/lib/ai/resume";
 
-export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_CONTRACT_VERSION = "1" as const;
+export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_CONTRACT_VERSION = "2" as const;
 export const CORRECTION_FLOW_RESUME_DIAGNOSTIC_STEP_TIMEOUT_MS = 180_000 as const;
 
 const FROZEN_SYNTHETIC_PAYLOAD_HASH =
@@ -364,8 +369,8 @@ export function createCorrectionFlowResumeDiagnosticRunner({
             failureCode: "CONSERVATIVE_RESERVATION_EXCEEDED"
           };
         }
-        const parsed = tailoredResumeSchema.safeParse(response.value);
-        if (!parsed.success) {
+        const providerParsed = tailoredResumeProviderSchema.safeParse(response.value);
+        if (!providerParsed.success) {
           return {
             ...initial,
             ...usageValues,
@@ -374,12 +379,17 @@ export function createCorrectionFlowResumeDiagnosticRunner({
             finishReason: "STOP",
             jsonParseStatus: "parsed",
             failureCode: "PROVIDER_DOCUMENT_SCHEMA_INVALID",
-            failureFieldPath: outputFieldPath(parsed.error.issues[0]?.path ?? [])
+            failureFieldPath: outputFieldPath(providerParsed.error.issues[0]?.path ?? [])
           };
         }
         let validated;
         try {
-          validated = validateTailoredResumeClaims(payload, parsed.data);
+          const assembled = assembleTailoredResumeProviderOutput(
+            payload,
+            providerParsed.data as TailoredResumeProviderOutput
+          );
+          const parsed = tailoredResumeSchema.parse(assembled);
+          validated = validateTailoredResumeClaims(payload, parsed);
         } catch (error) {
           const code = error instanceof PublicApiError &&
             typeof error.details?.code === "string" && /^[A-Z][A-Z0-9_]{1,79}$/u.test(error.details.code)

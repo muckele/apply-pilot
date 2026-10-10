@@ -98,6 +98,7 @@ function installLedger(
 }
 
 const schema = z.object({ value: z.string() }).strict();
+const providerWireSchema = z.object({ text: z.string(), factId: z.string() }).strict();
 const responseJsonSchema = {
   type: "object",
   additionalProperties: false,
@@ -130,6 +131,7 @@ function documentRequest(options: {
   payload?: unknown;
   feature?: "RESUME_TAILOR" | "COVER_LETTER";
   promptVersion?: string;
+  providerBoundary?: boolean;
 } = {}) {
   const feature = options.feature ?? "RESUME_TAILOR";
   return generateJson({
@@ -137,11 +139,18 @@ function documentRequest(options: {
     systemPrompt: "Return only source-supported content.",
     payload: options.payload ?? { resume: { rawText: "Synthetic TypeScript evidence." } },
     schema,
+    providerSchema: options.providerBoundary ? providerWireSchema : undefined,
+    decodeProvider: options.providerBoundary
+      ? (value) => {
+          const wire = providerWireSchema.parse(value);
+          return { value: `${wire.text}:${wire.factId}` };
+        }
+      : undefined,
     responseJsonSchema,
     context: {
       userId: "synthetic-user",
       feature,
-      promptVersion: options.promptVersion ?? "6",
+      promptVersion: options.promptVersion ?? "7",
       highCostConfirmed: options.confirmed,
       dataSharingConfirmed: options.confirmed
     }
@@ -161,7 +170,7 @@ test("document generation requires both data and exact-cost confirmation before 
     error.details.dataType === "application_packet" &&
     error.details.provider === "gemini" &&
     error.details.model === "gemini-3.8-flash" &&
-    error.details.promptVersion === "6"
+    error.details.promptVersion === "7"
   );
   assert.equal(geminiCalls, 0);
   assert.equal(ledger.reservations.length, 0);
@@ -247,7 +256,7 @@ test("confirmed resume tailoring reserves its exact cap, sends one capped reques
   assert.equal(generation.responseMimeType, "application/json");
   assert.deepEqual(generation.responseJsonSchema, responseJsonSchema);
   assert.equal(ledger.reservations[0].maximumCostMicros, 64_500);
-  assert.equal(ledger.reservations[0].promptVersion, "6");
+  assert.equal(ledger.reservations[0].promptVersion, "7");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
   assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported" });
@@ -292,7 +301,31 @@ test("cache lookups are isolated by prompt version and validated without dispatc
   assert.ok(Array.isArray(where.OR));
 });
 
-test("current document requests query only the v6 cache identity, not legacy v5", async (t) => {
+test("provider-wire decoding caches assembled output while cache reads validate the assembled shape", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t);
+  installGemini(t, async () => geminiResponse({ text: "supported", factId: "fact:0001" }));
+
+  const result = await documentRequest({ confirmed: true, providerBoundary: true });
+
+  assert.equal(result.data.value, "supported:fact:0001");
+  assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported:fact:0001" });
+});
+
+test("cached assembled output bypasses the incompatible provider-wire schema and decoder", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, { value: "cached-assembled" });
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+
+  const result = await documentRequest({ providerBoundary: true });
+
+  assert.equal(result.data.value, "cached-assembled");
+  assert.equal(calls, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
+test("current document requests query only the v7 cache identity, not legacy v6", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t, null, { value: "cached-current" });
   let calls = 0;
@@ -304,8 +337,8 @@ test("current document requests query only the v6 cache identity, not legacy v5"
   assert.equal(calls, 0);
   assert.equal(ledger.cacheQueries.length, 1);
   const where = ledger.cacheQueries[0].where as Record<string, unknown>;
-  assert.equal(where.promptVersion, "6");
-  assert.notEqual(where.promptVersion, "5");
+  assert.equal(where.promptVersion, "7");
+  assert.notEqual(where.promptVersion, "6");
 });
 
 test("oversize document input fails before cache, reservation, or provider dispatch", async (t) => {

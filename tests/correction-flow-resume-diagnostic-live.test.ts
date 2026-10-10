@@ -37,7 +37,7 @@ test("the résumé diagnostic launcher binds one displayed call before reading t
       assert.equal(input.consent.approvedCallCount, 1);
       assert.equal(input.credentials.geminiApiKey, credential);
       return {
-        contractVersion: "1",
+        contractVersion: "2",
         status: "passed",
         manifestHash,
         exactHead,

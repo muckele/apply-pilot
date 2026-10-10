@@ -15,12 +15,19 @@ import {
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
 import {
+  assembleCoverLetterProviderOutput,
+  assembleTailoredResumeProviderOutput,
+  type CoverLetterProviderOutput,
+  type TailoredResumeProviderOutput
+} from "@/lib/ai/application-document-facts";
+import {
   APPLICATION_DOCUMENT_THINKING_LEVEL
 } from "@/lib/ai/application-document-version";
 import { assertConservativeApplicationDocumentWireBound } from "@/lib/ai/client";
 import {
   buildCoverLetterGeminiJsonSchema,
   buildCoverLetterSystemPrompt,
+  coverLetterProviderSchema,
   coverLetterSchema
 } from "@/lib/ai/documents";
 import { buildGeminiJsonRequest, callGeminiJsonProvider, GeminiProviderError } from "@/lib/ai/gemini";
@@ -41,6 +48,7 @@ import { estimateAiCostMicros } from "@/lib/ai/pricing";
 import {
   buildTailoredResumeGeminiJsonSchema,
   buildTailoredResumeSystemPrompt,
+  tailoredResumeProviderSchema,
   tailoredResumeSchema,
   type TailoredResumeOutput
 } from "@/lib/ai/resume";
@@ -425,6 +433,8 @@ export function createCorrectionFlowProviderAdapter({
     systemPrompt,
     payload,
     schema,
+    providerSchema,
+    decodeProvider,
     responseJsonSchema,
     validate,
     signal
@@ -435,6 +445,8 @@ export function createCorrectionFlowProviderAdapter({
     systemPrompt: string;
     payload: ApplicationDocumentPayload;
     schema: typeof tailoredResumeSchema | typeof coverLetterSchema;
+    providerSchema: typeof tailoredResumeProviderSchema | typeof coverLetterProviderSchema;
+    decodeProvider(value: unknown): unknown;
     responseJsonSchema: Record<string, unknown>;
     validate(value: unknown): T;
     signal: AbortSignal;
@@ -474,9 +486,9 @@ export function createCorrectionFlowProviderAdapter({
         cachedInputTokens: response.usage.cachedInputTokens
       };
       const callMetrics = metrics(manifest, stage, usage);
-      const parsed = schema.safeParse(response.value);
-      if (!parsed.success) {
-        const fieldPath = outputFieldPath(parsed.error.issues[0]?.path ?? []);
+      const providerParsed = providerSchema.safeParse(response.value);
+      if (!providerParsed.success) {
+        const fieldPath = outputFieldPath(providerParsed.error.issues[0]?.path ?? []);
         throw new CorrectionFlowProviderAdapterError(
           "PROVIDER_DOCUMENT_SCHEMA_INVALID",
           "Gemini returned a qualification document with an unsupported shape.",
@@ -486,8 +498,20 @@ export function createCorrectionFlowProviderAdapter({
       }
       let result: T;
       try {
+        const assembled = decodeProvider(providerParsed.data);
+        const parsed = schema.safeParse(assembled);
+        if (!parsed.success) {
+          throw new CorrectionFlowProviderAdapterError(
+            "PROVIDER_DOCUMENT_SCHEMA_INVALID",
+            "Assembled qualification document has an unsupported shape.",
+            { billingStatus: "known", providerCompleted: true, usage,
+              estimatedCostMicros: callMetrics.estimatedCostMicros,
+              fieldPath: outputFieldPath(parsed.error.issues[0]?.path ?? []) }
+          );
+        }
         result = validate(parsed.data);
       } catch (error) {
+        if (error instanceof CorrectionFlowProviderAdapterError) throw error;
         const failure = claimValidationFailure(error);
         throw new CorrectionFlowProviderAdapterError(
           failure.code,
@@ -559,6 +583,11 @@ export function createCorrectionFlowProviderAdapter({
         systemPrompt: buildTailoredResumeSystemPrompt(payload),
         payload,
         schema: tailoredResumeSchema,
+        providerSchema: tailoredResumeProviderSchema,
+        decodeProvider: (value) => assembleTailoredResumeProviderOutput(
+          payload,
+          value as TailoredResumeProviderOutput
+        ),
         responseJsonSchema: buildTailoredResumeGeminiJsonSchema(payload),
         validate: (value) => validateTailoredResumeClaims(payload, value as TailoredResumeOutput),
         signal
@@ -572,6 +601,11 @@ export function createCorrectionFlowProviderAdapter({
         systemPrompt: buildCoverLetterSystemPrompt(payload),
         payload,
         schema: coverLetterSchema,
+        providerSchema: coverLetterProviderSchema,
+        decodeProvider: (value) => assembleCoverLetterProviderOutput(
+          payload,
+          value as CoverLetterProviderOutput
+        ),
         responseJsonSchema: buildCoverLetterGeminiJsonSchema(payload),
         validate: (value) => validateCoverLetterClaims(payload, value as CoverLetterOutput),
         signal

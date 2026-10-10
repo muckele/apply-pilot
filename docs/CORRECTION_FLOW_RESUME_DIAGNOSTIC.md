@@ -1,6 +1,6 @@
 # One-call synthetic resume diagnostic
 
-Status: the separately authorized one-call diagnostic completed once at reviewed head `527778cc48fb2b11738be0661d52f72bd75c298c`. The resulting reference-contract correction is implemented and tested offline. No additional provider call, paid retry, production write, employer interaction, merge, or deployment is authorized.
+Status: the separately authorized historical one-call diagnostic completed once at reviewed head `527778cc48fb2b11738be0661d52f72bd75c298c`. Later paid synthetic evidence showed that closing reference names alone still left verbatim excerpt generation brittle. The current atomic-fact correction is implemented and tested offline only. No additional provider call, paid retry, production write, employer interaction, merge, or deployment is authorized.
 
 ## Purpose
 
@@ -37,13 +37,17 @@ Local factual validation stopped at `APPLICATION_DOCUMENT_UNKNOWN_REFERENCE`, pa
 
 No provider request-schema rejection occurred. The executed schema allowed citation `ref` as any nonempty string, while the local resolver accepted only an input-dependent closed namespace. The base prompt gave examples and the special reviewed-fact form but did not enumerate every exact permitted reference or forbid child paths. That contract gap allowed a structurally valid response to reach the stricter local unknown-reference guard.
 
-The offline correction derives one exact reference catalog from the submitted payload, appends separate applicant and contextual-job allowlists to both application-document prompts, forbids child paths, and places the same closed enum in both Gemini schemas. Prompt/cache version `4` isolates the corrected contract. The factual validator is unchanged and remains authoritative; unknown citations, unsupported excerpts, job-only support, and fabricated claims still fail closed.
+The first offline correction derived one exact reference catalog from the submitted payload, appended separate applicant and contextual-job allowlists to both application-document prompts, forbade child paths, and placed the same closed enum in both Gemini schemas. That historical prompt/cache version `4` correction was later superseded by stricter deterministic writing contracts.
+
+The current prompt/cache version `7` contract removes provider-authored references and excerpts entirely. The server builds a stable ordered catalog mapping each opaque `factId` to one exact source reference, exact standalone excerpt, and provenance. Gemini receives the selectable fact IDs with their source text and provenance, then returns generated prose plus one `factId` per factual item. The server resolves those IDs, derives bullet originals, assembles the existing persisted `claimEvidence`/`claimsUsed` shape, and runs the existing negation, qualifier, number, scope, unsupported-term, and source-relation guards before caching or persistence. The provider schema contains no `ref`, `excerpt`, `citation`, or free-standing evidence collection. Diagnostic contract version `2` uses the same provider decoder and assembler.
+
+Validated caches retain only the assembled public document shape. A cache hit validates that assembled shape directly and does not re-run the incompatible provider-wire schema or decoder. Prompt/cache version `7` isolates these entries from legacy version `6`; no destructive legacy rewrite or database migration is required.
 
 The corrected wire schema uses only `object`, `array`, `string`, `enum`, `properties`, `required`, `additionalProperties`, `items`, and `minItems`. Google documents those features for structured outputs and separately requires application validation for semantically incorrect structured results: <https://ai.google.dev/gemini-api/docs/structured-output#json-schema-support>.
 
 Google lists Gemini 3.8 Flash as supporting structured outputs and LOW thinking: <https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash>. Google also documents that `max_output_tokens` includes thinking tokens and can hard-truncate output; this diagnostic keeps the production 6,000-token cap and LOW thinking unchanged: <https://ai.google.dev/gemini-api/docs/thinking#token-limits-and-max-output-tokens>.
 
-The diagnostic now proves that the returned value passed transport, structured JSON parsing, and Zod shape, then failed the factual validator's reference lookup. A separate prompt/validator tension remains possible for future outputs: the prompt permits stronger action verbs, while the factual validator admits only narrowly source-equivalent rewrites and rejects changed leadership or scope. That validator was not loosened merely to make a diagnostic pass.
+The historical diagnostic proves that the returned value passed transport, structured JSON parsing, and Zod shape, then failed the factual validator's reference lookup. The current offline corpus additionally covers wrong allowed IDs, unknown IDs, duplicate facts, redundant provider metadata, quotes, backslashes, multiline source text, negation, qualifiers, quantities, reviewed evidence, both document types, assembled-cache isolation, route persistence, and the unchanged export shape. The factual validator was not loosened merely to make a diagnostic pass.
 
 ## Activation contract
 
@@ -77,7 +81,7 @@ It never retains or emits the model output, credential, request body, applicant 
 
 The completed call proved that the exact frozen post-correction synthetic input reached Gemini and returned an HTTP-successful, complete, parseable, structurally valid response; it then localized rejection to one unknown citation reference. It did not qualify matching, correction persistence, reassessment, cover-letter generation, exports, browser behavior, real-owner data, or future provider responses.
 
-Offline tests prove that the corrected request publishes and schema-constrains the exact frozen applicant/job reference namespace and that representative child-path and reviewed-fact namespace mistakes still fail locally without exposing generated text. Only a separately approved future provider call could prove current-model conformance to the corrected wire contract; the existing receipt cannot prove that correction prospectively.
+Offline tests prove that the current request publishes and schema-constrains opaque atomic fact IDs, keeps exact references and excerpts server-owned, and fails representative ID/meaning mismatches without exposing generated text. They do not prove that the current hosted model will follow either document schema on a future call. The minimum prospective provider proof for both changed wires is two separately approved synthetic calls—one tailored résumé and one cover letter—without repeating either JOB_MATCH call. Those calls remain unapproved here and should retain the existing one-shot, no-retry, no-fallback, no-raw-output, bounded-cost receipt rules.
 
 ## Existing four-call launch guard
 

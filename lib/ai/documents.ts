@@ -6,7 +6,12 @@ import type { AiInvocationOptions } from "@/lib/ai/client";
 import { deferredAiFeatureError } from "@/lib/ai/deferred-features";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import {
-  buildApplicationDocumentCitationJsonSchema,
+  NO_APPLICATION_DOCUMENT_FACT_ID,
+  assembleCoverLetterProviderOutput,
+  buildApplicationDocumentFactCatalog,
+  type CoverLetterProviderOutput
+} from "@/lib/ai/application-document-facts";
+import {
   buildApplicationDocumentSystemPrompt,
   getCoverLetterUncitedLines,
   validateCoverLetterClaims,
@@ -29,6 +34,20 @@ export const coverLetterSchema = z.object({
   }).strict())
 }).strict();
 
+export const coverLetterProviderSchema: z.ZodType<
+  CoverLetterProviderOutput,
+  z.ZodTypeDef,
+  unknown
+> = z.object({
+  title: z.string(),
+  coverLetter: z.string(),
+  angle: z.string(),
+  claimsUsed: z.array(z.object({
+    claim: z.string().min(1),
+    factId: z.string().min(1)
+  }).strict())
+}).strict();
+
 const strictStringObject = (properties: Record<string, unknown>, required: string[]) => ({
   type: "object",
   additionalProperties: false,
@@ -46,6 +65,10 @@ export function buildCoverLetterSystemPrompt(payload: ApplicationDocumentPayload
 }
 
 export function buildCoverLetterGeminiJsonSchema(payload: ApplicationDocumentPayload) {
+  const facts = buildApplicationDocumentFactCatalog(payload);
+  const factIds = facts.length
+    ? facts.map((fact) => fact.factId)
+    : [NO_APPLICATION_DOCUMENT_FACT_ID];
   return strictStringObject({
     title: { type: "string" },
     coverLetter: { type: "string" },
@@ -54,12 +77,8 @@ export function buildCoverLetterGeminiJsonSchema(payload: ApplicationDocumentPay
       type: "array",
       items: strictStringObject({
         claim: { type: "string" },
-        citations: {
-          type: "array",
-          minItems: 1,
-          items: buildApplicationDocumentCitationJsonSchema(payload)
-        }
-      }, ["claim", "citations"])
+        factId: { type: "string", enum: factIds }
+      }, ["claim", "factId"])
     }
   }, ["title", "coverLetter", "angle", "claimsUsed"]);
 }
@@ -86,6 +105,11 @@ export async function draftCoverLetter(
     payload,
     fallback,
     schema: coverLetterSchema,
+    providerSchema: coverLetterProviderSchema,
+    decodeProvider: (value) => assembleCoverLetterProviderOutput(
+      payload,
+      value as CoverLetterProviderOutput
+    ),
     responseJsonSchema,
     context: userId ? {
       userId,

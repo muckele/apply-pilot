@@ -55,9 +55,14 @@ import {
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
+import {
+  NO_APPLICATION_DOCUMENT_FACT_ID,
+  assembleTailoredResumeProviderOutput,
+  buildApplicationDocumentFactCatalog,
+  type TailoredResumeProviderOutput
+} from "@/lib/ai/application-document-facts";
 import { prisma } from "@/lib/prisma";
 import {
-  buildApplicationDocumentCitationJsonSchema,
   buildApplicationDocumentSystemPrompt,
   validateTailoredResumeClaims,
   type ApplicationDocumentClaimEvidence,
@@ -1312,61 +1317,95 @@ export const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef,
 }).strict();
 
 const tailoredResumeStringArray = { type: "array", items: { type: "string" } } as const;
+const providerFactSelectionSchema = z.object({
+  text: z.string(),
+  factId: z.string().min(1)
+}).strict();
+
+export const tailoredResumeProviderSchema: z.ZodType<
+  TailoredResumeProviderOutput,
+  z.ZodTypeDef,
+  unknown
+> = z.object({
+  professionalSummary: z.string(),
+  professionalSummaryFactId: z.string().min(1),
+  skillsSection: z.array(providerFactSelectionSchema),
+  bulletRewrites: z.array(z.object({
+    factId: z.string().min(1),
+    rewrite: z.string(),
+    reason: z.string()
+  }).strict()),
+  rolesOrProjectsToEmphasize: z.array(providerFactSelectionSchema),
+  resumeTextClaims: z.array(z.object({
+    claim: z.string().min(1),
+    factId: z.string().min(1)
+  }).strict()),
+  unsupportedKeywords: z.array(z.string()),
+  formattingWarnings: z.array(z.string()),
+  resumeText: z.string()
+}).strict();
+
 export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
   return buildApplicationDocumentSystemPrompt(resumeTailorPrompt, payload);
 }
 
 export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {
-  const claimEvidence: Record<string, unknown> = {
-    type: "array",
-    items: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        claim: { type: "string" },
-        citations: {
-          type: "array",
-          minItems: 1,
-          items: buildApplicationDocumentCitationJsonSchema(payload)
-        }
-      },
-      required: ["claim", "citations"]
-    }
+  const factIds = buildApplicationDocumentFactCatalog(payload).map((fact) => fact.factId);
+  const selectableFactIds = factIds.length ? factIds : [NO_APPLICATION_DOCUMENT_FACT_ID];
+  const factId = { type: "string", enum: selectableFactIds };
+  const selectedText = {
+    type: "object",
+    additionalProperties: false,
+    properties: { text: { type: "string" }, factId },
+    required: ["text", "factId"]
   };
   return {
     type: "object",
     additionalProperties: false,
     properties: {
       professionalSummary: { type: "string" },
-      skillsSection: tailoredResumeStringArray,
+      professionalSummaryFactId: {
+        type: "string",
+        enum: [...new Set([...selectableFactIds, NO_APPLICATION_DOCUMENT_FACT_ID])]
+      },
+      skillsSection: { type: "array", items: selectedText },
       bulletRewrites: {
         type: "array",
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
-            original: { type: "string" },
+            factId,
             rewrite: { type: "string" },
             reason: { type: "string" }
           },
-          required: ["original", "rewrite", "reason"]
+          required: ["factId", "rewrite", "reason"]
         }
       },
-      rolesOrProjectsToEmphasize: tailoredResumeStringArray,
+      rolesOrProjectsToEmphasize: { type: "array", items: selectedText },
+      resumeTextClaims: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: { claim: { type: "string" }, factId },
+          required: ["claim", "factId"]
+        }
+      },
       unsupportedKeywords: tailoredResumeStringArray,
       formattingWarnings: tailoredResumeStringArray,
-      resumeText: { type: "string" },
-      claimEvidence
+      resumeText: { type: "string" }
     },
     required: [
       "professionalSummary",
+      "professionalSummaryFactId",
       "skillsSection",
       "bulletRewrites",
       "rolesOrProjectsToEmphasize",
+      "resumeTextClaims",
       "unsupportedKeywords",
       "formattingWarnings",
-      "resumeText",
-      "claimEvidence"
+      "resumeText"
     ]
   };
 }
@@ -4312,6 +4351,11 @@ export async function tailorResume(
     systemPrompt: buildTailoredResumeSystemPrompt(applicationPayload),
     payload,
     schema: tailoredResumeSchema,
+    providerSchema: tailoredResumeProviderSchema,
+    decodeProvider: (value) => assembleTailoredResumeProviderOutput(
+      applicationPayload,
+      value as TailoredResumeProviderOutput
+    ),
     responseJsonSchema: buildTailoredResumeGeminiJsonSchema(applicationPayload),
     context: userId ? {
       userId,

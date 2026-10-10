@@ -14,7 +14,7 @@ import {
   createCorrectionFlowProviderAdapter,
   type CorrectionFlowProviderFetches
 } from "@/lib/ai/correction-flow-provider-adapter";
-import { getApplicationDocumentEvidenceReferences } from "@/lib/ai/application-document-claims";
+import { buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
 import type { MatchInput } from "@/lib/ai/job-match";
 
 const exactHead = "8d850d0dcf9a141cf41363cc09cb2cde24c8317c";
@@ -86,35 +86,34 @@ function updatedMatchOutput() {
 }
 
 function resumeOutput() {
+  const facts = buildApplicationDocumentFactCatalog(documentPayload());
+  const summaryFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary)?.factId;
+  const reviewedFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
+  assert.ok(summaryFactId && reviewedFactId);
   return {
     professionalSummary: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
+    professionalSummaryFactId: summaryFactId,
     skillsSection: [],
     bulletRewrites: [],
     rolesOrProjectsToEmphasize: [],
+    resumeTextClaims: [{ claim: SYNTHETIC_CORRECTION_FLOW_FACT, factId: reviewedFactId }],
     unsupportedKeywords: [],
     formattingWarnings: [],
-    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`,
-    claimEvidence: [{
-      claim: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
-      citations: [{
-        ref: "resume.summary",
-        excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary
-      }]
-    }, {
-      claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
-    }]
+    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`
   };
 }
 
 function coverOutput() {
+  const reviewedFactId = buildApplicationDocumentFactCatalog(documentPayload())
+    .find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
+  assert.ok(reviewedFactId);
   return {
     title: "Synthetic Employer Service Operations Director cover letter",
     coverLetter: `Dear Synthetic Employer Hiring Team,\n\nI am writing to apply for the Service Operations Director position.\n\n${SYNTHETIC_CORRECTION_FLOW_FACT}\n\nSincerely,\nTaylor Boundary`,
     angle: "Use only current reviewed evidence.",
     claimsUsed: [{
       claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
+      factId: reviewedFactId
     }]
   };
 }
@@ -225,36 +224,35 @@ test("the manifest-bound adapter executes exactly four ordered SDK requests with
     assert.equal(generation.responseMimeType, "application/json");
     assert.ok(generation.responseJsonSchema);
   }
-  const references = getApplicationDocumentEvidenceReferences(documentPayload());
+  const factIds = buildApplicationDocumentFactCatalog(documentPayload()).map((fact) => fact.factId);
   const resumeBody = capturedBodies[2] as {
     systemInstruction: { parts: Array<{ text: string }> };
-    generationConfig: { responseJsonSchema: {
-      properties: { claimEvidence: { items: { properties: {
-        citations: { items: { properties: { ref: { enum: string[] } } } };
-      } } } };
-    } };
+    generationConfig: {
+      responseJsonSchema: {
+        properties: { professionalSummaryFactId: { enum: string[] } }
+      }
+    };
   };
   const coverBody = capturedBodies[3] as {
     systemInstruction: { parts: Array<{ text: string }> };
-    generationConfig: { responseJsonSchema: {
-      properties: { claimsUsed: { items: { properties: {
-        citations: { items: { properties: { ref: { enum: string[] } } } };
-      } } } };
-    } };
+    generationConfig: {
+      responseJsonSchema: {
+        properties: { claimsUsed: { items: { properties: { factId: { enum: string[] } } } } }
+      }
+    };
   };
   assert.deepEqual(
-    resumeBody.generationConfig.responseJsonSchema.properties.claimEvidence
-      .items.properties.citations.items.properties.ref.enum,
-    references.all
+    resumeBody.generationConfig.responseJsonSchema.properties.professionalSummaryFactId.enum
+      .filter((value) => value !== "__NO_APPLICANT_FACT__"),
+    factIds
   );
   assert.deepEqual(
-    coverBody.generationConfig.responseJsonSchema.properties.claimsUsed
-      .items.properties.citations.items.properties.ref.enum,
-    references.all
+    coverBody.generationConfig.responseJsonSchema.properties.claimsUsed.items.properties.factId.enum,
+    factIds
   );
   for (const body of [resumeBody, coverBody]) {
-    assert.match(body.systemInstruction.parts[0]?.text ?? "", /exact strings only/u);
-    assert.match(body.systemInstruction.parts[0]?.text ?? "", /Never append child paths/u);
+    assert.match(body.systemInstruction.parts[0]?.text ?? "", /Allowed applicant atomic facts/u);
+    assert.match(body.systemInstruction.parts[0]?.text ?? "", /Never return source references/u);
   }
   const serialized = JSON.stringify(capturedBodies);
   assert.doesNotMatch(serialized, /expectedRecommendation|expectedBand|reviewedRecommendation|disagreementCategories/u);
@@ -303,13 +301,7 @@ test("document claim failures retain their safe validator code and output path",
     ...resumeOutput(),
     professionalSummary: unsupportedClaim,
     resumeText: unsupportedClaim,
-    claimEvidence: [{
-      claim: unsupportedClaim,
-      citations: [{
-        ref: "resume.summary",
-        excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary
-      }]
-    }]
+    resumeTextClaims: []
   };
   const adapter = createCorrectionFlowProviderAdapter({
     manifest: value,

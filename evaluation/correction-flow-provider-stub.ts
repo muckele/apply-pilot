@@ -4,6 +4,7 @@ import {
   SYNTHETIC_CORRECTION_FLOW_REQUIREMENT
 } from "@/evaluation/correction-flow-qualification-fixture";
 import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
+import { buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
 import type {
   CorrectionFlowProviderFetches,
   CorrectionFlowProviderCredentials
@@ -83,35 +84,35 @@ export function syntheticUpdatedMatchOutput() {
 }
 
 export function syntheticTailoredResumeOutput() {
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  const facts = buildApplicationDocumentFactCatalog(payload);
+  const summaryFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary)?.factId;
+  const reviewedFactId = facts.find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
+  if (!summaryFactId || !reviewedFactId) throw new Error("Synthetic document facts are incomplete.");
   return {
     professionalSummary: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
+    professionalSummaryFactId: summaryFactId,
     skillsSection: [],
     bulletRewrites: [],
     rolesOrProjectsToEmphasize: [],
+    resumeTextClaims: [{ claim: SYNTHETIC_CORRECTION_FLOW_FACT, factId: reviewedFactId }],
     unsupportedKeywords: [],
     formattingWarnings: [],
-    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`,
-    claimEvidence: [{
-      claim: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
-      citations: [{
-        ref: "resume.summary",
-        excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary
-      }]
-    }, {
-      claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
-    }]
+    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`
   };
 }
 
 export function syntheticCoverLetterOutput() {
+  const reviewedFactId = buildApplicationDocumentFactCatalog(syntheticCorrectionFlowDocumentPayload())
+    .find((fact) => fact.excerpt === SYNTHETIC_CORRECTION_FLOW_FACT)?.factId;
+  if (!reviewedFactId) throw new Error("Synthetic reviewed fact is missing.");
   return {
     title: "Synthetic Employer Service Operations Director cover letter",
     coverLetter: `Dear Synthetic Employer Hiring Team,\n\nI am writing to apply for the Service Operations Director position.\n\n${SYNTHETIC_CORRECTION_FLOW_FACT}\n\nSincerely,\nTaylor Boundary`,
     angle: "Use only current reviewed evidence.",
     claimsUsed: [{
       claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
+      factId: reviewedFactId
     }]
   };
 }

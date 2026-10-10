@@ -9,14 +9,10 @@ type ReferenceContract = Readonly<{
   all: string[];
 }>;
 
-type CitationCollection = {
-  items: { properties: { citations: { items: { properties: { ref: { enum: string[] } } } } } };
-};
-
 type SchemaView = {
   properties: {
-    claimEvidence?: CitationCollection;
-    claimsUsed?: CitationCollection;
+    professionalSummaryFactId?: { enum: string[] };
+    claimsUsed?: { items: { properties: { factId: { enum: string[] } } } };
   };
 };
 
@@ -50,17 +46,19 @@ const expectedJobReferences = [
   "job.detectedTechStack[1]"
 ];
 
-test("application-document provider contracts publish the exact resolver namespace and close citation refs", async () => {
+test("application-document provider contracts keep refs server-side and close the wire to atomic fact IDs", async () => {
   const payload = syntheticCorrectionFlowDocumentPayload();
   const claimsModule = await import("@/lib/ai/application-document-claims") as Record<string, unknown>;
   const resumeModule = await import("@/lib/ai/resume") as Record<string, unknown>;
   const documentsModule = await import("@/lib/ai/documents") as Record<string, unknown>;
+  const factsModule = await import("@/lib/ai/application-document-facts") as Record<string, unknown>;
 
   assert.equal(typeof claimsModule.getApplicationDocumentEvidenceReferences, "function");
   assert.equal(typeof resumeModule.buildTailoredResumeSystemPrompt, "function");
   assert.equal(typeof resumeModule.buildTailoredResumeGeminiJsonSchema, "function");
   assert.equal(typeof documentsModule.buildCoverLetterSystemPrompt, "function");
   assert.equal(typeof documentsModule.buildCoverLetterGeminiJsonSchema, "function");
+  assert.equal(typeof factsModule.buildApplicationDocumentFactCatalog, "function");
 
   const references = (claimsModule.getApplicationDocumentEvidenceReferences as
     (value: typeof payload) => ReferenceContract)(payload);
@@ -74,10 +72,10 @@ test("application-document provider contracts publish the exact resolver namespa
   const coverPrompt = (documentsModule.buildCoverLetterSystemPrompt as
     (value: typeof payload) => string)(payload);
   for (const prompt of [resumePrompt, coverPrompt]) {
-    assert.match(prompt, /Allowed applicant evidence references \(exact strings only\)/u);
-    assert.match(prompt, /Allowed contextual job references \(exact strings only\)/u);
-    assert.match(prompt, /reviewedEvidence\.facts\[0\]\.fact/u);
-    assert.match(prompt, /Never append child paths/u);
+    assert.match(prompt, /Allowed applicant atomic facts \(select factId only\)/u);
+    assert.match(prompt, /Contextual job references \(never applicant evidence\)/u);
+    assert.match(prompt, /OWNER_ATTESTED/u);
+    assert.match(prompt, /Never return source references/u);
     assert.doesNotMatch(prompt, /resume\.workHistory\[0\]\.bullets\[0\]/u);
   }
   assert.match(coverPrompt, /Allowed uncited cover-letter lines \(exact strings only\)/u);
@@ -96,19 +94,26 @@ test("application-document provider contracts publish the exact resolver namespa
     (value: typeof payload) => SchemaView)(payload);
   const coverSchema = (documentsModule.buildCoverLetterGeminiJsonSchema as
     (value: typeof payload) => SchemaView)(payload);
+  const facts = (factsModule.buildApplicationDocumentFactCatalog as
+    (value: typeof payload) => Array<{ factId: string }>)(payload);
+  const factIds = facts.map((fact) => fact.factId);
   assert.deepEqual(
-    resumeSchema.properties.claimEvidence?.items.properties.citations.items.properties.ref.enum,
-    references.all
+    resumeSchema.properties.professionalSummaryFactId?.enum.filter(
+      (value) => value !== "__NO_APPLICANT_FACT__"
+    ),
+    factIds
   );
   assert.deepEqual(
-    coverSchema.properties.claimsUsed?.items.properties.citations.items.properties.ref.enum,
-    references.all
+    coverSchema.properties.claimsUsed?.items.properties.factId.enum,
+    factIds
   );
+  assert.doesNotMatch(JSON.stringify(resumeSchema), /"ref"|"excerpt"|claimEvidence|citations/u);
+  assert.doesNotMatch(JSON.stringify(coverSchema), /"ref"|"excerpt"|citations/u);
 });
 
 test("application-document prompt/cache identity advances for the full deterministic writing contract", async () => {
   const version = await import("@/lib/ai/application-document-version");
-  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "6");
+  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "7");
 });
 
 test("cover uncited-line projection collapses source whitespace into one physical line", async () => {

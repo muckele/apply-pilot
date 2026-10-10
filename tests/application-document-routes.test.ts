@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { after, test, type TestContext } from "node:test";
 import type { NextRequest } from "next/server";
+import { buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
 
 const priorDatabaseUrl = process.env.DATABASE_URL;
 const priorDirectUrl = process.env.DIRECT_URL;
@@ -131,6 +132,17 @@ const profile = {
   skillsNotToExaggerate: ["Kubernetes"]
 };
 
+function documentFactId(excerpt: string) {
+  const fact = buildApplicationDocumentFactCatalog({
+    job,
+    resume,
+    profile,
+    reviewedEvidence: { facts: [] }
+  }).find((entry) => entry.excerpt === excerpt);
+  assert.ok(fact, `missing document fact: ${excerpt}`);
+  return fact.factId;
+}
+
 async function setup(t: TestContext) {
   setEnv(t);
   const { prisma } = await import("@/lib/prisma");
@@ -230,38 +242,38 @@ test("both application-document routes require the private-data consent contract
     assert.equal(body.dataType, "application_packet");
     assert.equal(body.provider, "gemini");
     assert.equal(body.model, "gemini-3.8-flash");
-    assert.equal(body.promptVersion, "6");
+    assert.equal(body.promptVersion, "7");
   }
   assert.equal(providerCalls, 0);
   assert.equal(writes, 0);
 });
 
-test("a supported stubbed résumé result is persisted only after v6 evidence validation", async (t) => {
+test("a supported stubbed résumé result is persisted only after v7 atomic-fact validation", async (t) => {
   const prisma = await setup(t);
   const ledger = installLedger(t, prisma);
   const output = {
     professionalSummary: "Built reliable TypeScript services.",
-    skillsSection: ["TypeScript"],
+    professionalSummaryFactId: documentFactId("Built reliable TypeScript services."),
+    skillsSection: [{ text: "TypeScript", factId: documentFactId("TypeScript") }],
     bulletRewrites: [{
-      original: "Built reliable TypeScript services.",
+      factId: documentFactId("Built reliable TypeScript services."),
       rewrite: "Built reliable TypeScript services.",
       reason: "Preserves the supported result."
     }],
-    rolesOrProjectsToEmphasize: ["Platform Engineer"],
+    rolesOrProjectsToEmphasize: [{
+      text: "Platform Engineer",
+      factId: documentFactId("Platform Engineer")
+    }],
+    resumeTextClaims: [
+      { claim: "Synthetic Applicant", factId: documentFactId("Synthetic Applicant") },
+      {
+        claim: "Example Co | Platform Engineer",
+        factId: documentFactId("Example Co | Platform Engineer")
+      }
+    ],
     unsupportedKeywords: ["Kubernetes"],
     formattingWarnings: [],
-    resumeText: "Synthetic Applicant\nPlatform Engineer\n\nSUMMARY\nBuilt reliable TypeScript services.\n\nSKILLS\nTypeScript\n\nEXPERIENCE\nExample Co | Platform Engineer\n• Built reliable TypeScript services.",
-    claimEvidence: [
-      {
-        claim: "Built reliable TypeScript services.",
-        citations: [{ ref: "resume.workHistory[0]", excerpt: "Built reliable TypeScript services." }]
-      },
-      { claim: "TypeScript", citations: [{ ref: "resume.skills[0]", excerpt: "TypeScript" }] },
-      {
-        claim: "Platform Engineer",
-        citations: [{ ref: "resume.workHistory[0]", excerpt: "Platform Engineer" }]
-      }
-    ]
+    resumeText: "Synthetic Applicant\nPlatform Engineer\n\nSUMMARY\nBuilt reliable TypeScript services.\n\nSKILLS\nTypeScript\n\nEXPERIENCE\nExample Co | Platform Engineer\n• Built reliable TypeScript services."
   };
   let providerCalls = 0;
   let versionData: Record<string, unknown> | null = null;
@@ -295,7 +307,7 @@ test("a supported stubbed résumé result is persisted only after v6 evidence va
   assert.equal(persistedVersion.atsCompatibility, null);
   assert.equal(persistedVersion.jobFitScore, null);
   assert.equal(persistedAnalysis.confidence, null);
-  assert.equal(persistedAnalysis.promptVersion, "6");
+  assert.equal(persistedAnalysis.promptVersion, "7");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });
@@ -310,7 +322,7 @@ test("an unsupported stubbed cover-letter claim is billed as failed and never pe
         angle: "Invented synthetic claim that must be rejected.",
         claimsUsed: [{
           claim: "I led a Kubernetes migration for 14 engineers.",
-          citations: [{ ref: "resume.skills[0]", excerpt: "TypeScript" }]
+          factId: documentFactId("TypeScript")
         }]
       }, 80));
   stub(t, prisma.generatedDocument, "create", async () => { writes += 1; return {}; });

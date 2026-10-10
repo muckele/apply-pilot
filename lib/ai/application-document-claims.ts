@@ -1,4 +1,8 @@
 import { PublicApiError } from "@/lib/api-errors";
+import {
+  buildApplicationDocumentFactCatalog,
+  normalizeApplicationDocumentSourceLine
+} from "@/lib/ai/application-document-facts";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -99,13 +103,18 @@ export function buildApplicationDocumentSystemPrompt(
   payload: ApplicationDocumentPayload
 ) {
   const references = getApplicationDocumentEvidenceReferences(payload);
+  const facts = buildApplicationDocumentFactCatalog(payload).map(({ factId, excerpt, provenance }) => ({
+    factId,
+    text: excerpt,
+    provenance
+  }));
   return `${basePrompt.trim()}\n\n` +
-    `Allowed applicant evidence references (exact strings only): ${JSON.stringify(references.applicant)}\n` +
-    `Allowed contextual job references (exact strings only): ${JSON.stringify(references.job)}\n` +
-    "Use only listed references. Never append child paths to a listed reference. " +
-    "Every generated applicant claim must cite at least one listed applicant evidence reference; " +
-    "a contextual job reference cannot support an applicant claim by itself. " +
-    "If the applicant allowlist is empty, return no generated applicant claims.";
+    `Allowed applicant atomic facts (select factId only): ${JSON.stringify(facts)}\n` +
+    `Contextual job references (never applicant evidence): ${JSON.stringify(references.job)}\n` +
+    "For each generated applicant claim, return exactly one listed factId. " +
+    "Never return source references, excerpts, citations, or evidence objects; the server resolves them. " +
+    "A contextual job value cannot support an applicant claim. " +
+    "If the applicant fact catalog is empty, return no generated applicant claims.";
 }
 
 export function buildApplicationDocumentCitationJsonSchema(payload: ApplicationDocumentPayload) {
@@ -155,10 +164,13 @@ function resolveReference(payload: ApplicationDocumentPayload, ref: string) {
   return undefined;
 }
 
-function evidenceText(value: unknown) {
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-    ? String(value)
-    : JSON.stringify(value);
+function primitiveEvidenceTexts(value: unknown): string[] {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return [String(value)];
+  }
+  if (Array.isArray(value)) return value.flatMap(primitiveEvidenceTexts);
+  if (value && typeof value === "object") return Object.values(value).flatMap(primitiveEvidenceTexts);
+  return [];
 }
 
 function comparable(value: string) {
@@ -266,9 +278,9 @@ function standaloneKey(value: string) {
 
 function containsStandaloneEvidence(value: unknown, excerpt: string): boolean {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const target = standaloneKey(excerpt);
+    const target = standaloneKey(normalizeApplicationDocumentSourceLine(excerpt));
     return String(value).split(/\r?\n/)
-      .flatMap((line) => semanticClauses(line))
+      .flatMap((line) => semanticClauses(normalizeApplicationDocumentSourceLine(line)))
       .some((clause) => standaloneKey(clause) === target);
   }
   if (Array.isArray(value)) return value.some((item) => containsStandaloneEvidence(item, excerpt));
@@ -279,10 +291,10 @@ function containsStandaloneEvidence(value: unknown, excerpt: string): boolean {
 }
 
 function containsExactEvidenceLine(value: unknown, line: string): boolean {
-  const target = comparable(line.trim().replace(/^[-•]\s*/, ""));
+  const target = comparable(normalizeApplicationDocumentSourceLine(line));
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return String(value).split(/\r?\n/).some((sourceLine) =>
-      comparable(sourceLine.trim().replace(/^[-•]\s*/, "")) === target);
+      comparable(normalizeApplicationDocumentSourceLine(sourceLine)) === target);
   }
   if (Array.isArray(value)) return value.some((item) => containsExactEvidenceLine(item, line));
   if (value && typeof value === "object") {
@@ -362,9 +374,9 @@ function validateClaimEvidence(
           retryable: false
         });
       }
-      const haystack = comparable(evidenceText(resolved));
       const excerpt = comparable(citation.excerpt);
-      if (!excerpt || !haystack.includes(excerpt)) {
+      const sourceTexts = primitiveEvidenceTexts(resolved).map(comparable);
+      if (!excerpt || !sourceTexts.some((sourceText) => sourceText.includes(excerpt))) {
         throw new PublicApiError(`Application document returned an unsupported ${source} evidence excerpt.`, 422, {
           code: "APPLICATION_DOCUMENT_UNSUPPORTED_EXCERPT",
           fieldPath: `${fieldPrefix}[${claimIndex}].citations[${citationIndex}].excerpt`,
@@ -374,7 +386,7 @@ function validateClaimEvidence(
       if (!citation.ref.startsWith("job.")) {
         applicantEvidence.push({
           excerpt,
-          contexts: evidenceContexts(haystack, excerpt),
+          contexts: sourceTexts.flatMap((sourceText) => evidenceContexts(sourceText, excerpt)),
           standalone: containsStandaloneEvidence(resolved, citation.excerpt),
           eligible: referenceCanSupportApplicantClaim(citation.ref)
         });
@@ -478,7 +490,7 @@ export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutpu
   }
 
   for (const [lineIndex, rawLine] of output.resumeText.split(/\r?\n/).entries()) {
-    const line = rawLine.trim().replace(/^[-•]\s*/, "");
+    const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isHeading(line) ||
       containsExactEvidenceLine(payload.resume ?? {}, line) ||
       containsStandaloneEvidence(payload.resume ?? {}, line)) continue;

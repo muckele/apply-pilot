@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  SYNTHETIC_CORRECTION_FLOW_FACT,
   SYNTHETIC_CORRECTION_FLOW_FIXTURE
 } from "@/evaluation/correction-flow-qualification-fixture";
-import { syntheticCorrectionFlowDocumentPayload } from "@/evaluation/correction-flow-provider-stub";
+import {
+  syntheticCorrectionFlowDocumentPayload,
+  syntheticTailoredResumeOutput
+} from "@/evaluation/correction-flow-provider-stub";
 import {
   buildCorrectionFlowResumeDiagnosticManifest,
   correctionFlowResumeDiagnosticConsent,
@@ -46,25 +48,7 @@ function consentFor(value: ReturnType<typeof manifest>) {
 }
 
 function validOutput() {
-  return {
-    professionalSummary: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
-    skillsSection: [],
-    bulletRewrites: [],
-    rolesOrProjectsToEmphasize: [],
-    unsupportedKeywords: [],
-    formattingWarnings: [],
-    resumeText: `${SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary}\n${SYNTHETIC_CORRECTION_FLOW_FACT}`,
-    claimEvidence: [{
-      claim: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary,
-      citations: [{
-        ref: "resume.summary",
-        excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary
-      }]
-    }, {
-      claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      citations: [{ ref: "reviewedEvidence.facts[0].fact", excerpt: SYNTHETIC_CORRECTION_FLOW_FACT }]
-    }]
-  };
+  return syntheticTailoredResumeOutput();
 }
 
 function providerResponse(value: unknown) {
@@ -88,15 +72,15 @@ test("the one-call manifest binds the complete reviewed payload and exact produc
   assert.equal(value.callCount, 1);
   assert.equal(value.call.stage, "tailored_resume");
   assert.equal(value.call.model, "gemini-3.8-flash");
-  assert.equal(value.call.promptVersion, "6");
+  assert.equal(value.call.promptVersion, "7");
   assert.equal(value.call.thinkingLevel, "LOW");
   assert.equal(value.call.maximumInputTokens, 56_000);
   assert.equal(value.call.maximumOutputTokens, 6_000);
   assert.equal(value.conservativeReservationMicros, 64_500);
   assert.equal(value.payloadHash, "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0");
   assert.equal(value.reviewedEvidenceHash, "7646bd358e0b45e25d74d1a85c66a7d9ed8bb7eafbd39b833e8a3863c29505ec");
-  assert.equal(value.schemaHash, "3a3593ed2dac836b31a279c14be21886e26db1f3910f262e9e4676b72ba7e7fc");
-  assert.equal(value.wireRequestHash, "667b2b598c4dbaf4862997229f4591cb96a31457f9341be2133cae0eb5227345");
+  assert.equal(value.schemaHash, "42292c5f403c9fb391b286c175997ae9f954a3318830b1d11ed1af904bb0d61d");
+  assert.equal(value.wireRequestHash, "c4aa6225ea4a0e750a9495295754ed1abe4e2b07368abb1a821e54e007f3af56");
 
   for (const mutate of [
     (changed: ReturnType<typeof syntheticCorrectionFlowDocumentPayload>) => {
@@ -197,10 +181,7 @@ test("structural and factual failures retain bounded category, path, usage, and 
       ...validOutput(),
       professionalSummary: `Synthetic owner led an unsupported lunar logistics program ${privateSentinel}.`,
       resumeText: `Synthetic owner led an unsupported lunar logistics program ${privateSentinel}.`,
-      claimEvidence: [{
-        claim: `Synthetic owner led an unsupported lunar logistics program ${privateSentinel}.`,
-        citations: [{ ref: "resume.summary", excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary }]
-      }]
+      resumeTextClaims: []
     }, "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM", "output.claimEvidence[0].claim"]
   ] as const) {
     const value = manifest();
@@ -231,17 +212,7 @@ test("factual failures retain a privacy-safe validator class without generated t
     ...baseOutput,
     professionalSummary: unsupportedClaim,
     resumeText: unsupportedClaim,
-    claimEvidence: [
-      ...baseOutput.claimEvidence,
-      ...baseOutput.claimEvidence,
-      {
-        claim: unsupportedClaim,
-        citations: [{
-          ref: "resume.summary",
-          excerpt: SYNTHETIC_CORRECTION_FLOW_FIXTURE.resume.summary
-        }]
-      }
-    ]
+    resumeTextClaims: []
   };
   const value = manifest();
   const runner = createCorrectionFlowResumeDiagnosticRunner({
@@ -256,24 +227,14 @@ test("factual failures retain a privacy-safe validator class without generated t
   assert.equal(receipt.status, "stopped");
   assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM");
   assert.equal(receipt.failureClass, "source_relation_mismatch");
-  assert.equal(receipt.failureFieldPath, "output.claimEvidence[4].claim");
+  assert.equal(receipt.failureFieldPath, "output.claimEvidence[0].claim");
   assert.doesNotMatch(JSON.stringify(receipt), new RegExp(privateSentinel, "u"));
 });
 
-test("the observed fifth-claim unknown-reference category remains privacy-safe and exact", async () => {
+test("an unknown atomic fact ID remains privacy-safe and exact", async () => {
   const value = manifest();
   const output = validOutput();
-  output.claimEvidence = [
-    ...output.claimEvidence,
-    ...output.claimEvidence,
-    {
-      claim: SYNTHETIC_CORRECTION_FLOW_FACT,
-      citations: [{
-        ref: "reviewedEvidence.facts[0]",
-        excerpt: SYNTHETIC_CORRECTION_FLOW_FACT
-      }]
-    }
-  ];
+  output.professionalSummaryFactId = "fact:9999";
   const runner = createCorrectionFlowResumeDiagnosticRunner({
     manifest: value,
     consent: consentFor(value),
@@ -284,15 +245,15 @@ test("the observed fifth-claim unknown-reference category remains privacy-safe a
 
   const receipt = await runner.run(new AbortController().signal);
   assert.equal(receipt.status, "stopped");
-  assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_UNKNOWN_REFERENCE");
-  assert.equal(receipt.failureFieldPath, "output.claimEvidence[4].citations[0].ref");
+  assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_UNKNOWN_FACT_ID");
+  assert.equal(receipt.failureFieldPath, "output.professionalSummaryFactId");
   assert.equal(receipt.providerCallsStarted, 1);
   assert.equal(receipt.providerCallsCompleted, 1);
   assert.equal(receipt.providerHttpStatus, 200);
   assert.equal(receipt.finishReason, "STOP");
   assert.equal(receipt.jsonParseStatus, "parsed");
   assert.equal(receipt.unknownBillingCallCount, 0);
-  assert.doesNotMatch(JSON.stringify(receipt), /reviewedEvidence\.facts|Synthetic owner/u);
+  assert.doesNotMatch(JSON.stringify(receipt), /fact:9999|Synthetic owner/u);
 });
 
 test("transport uncertainty is one-shot and a live manifest forbids an injected transport", async () => {
