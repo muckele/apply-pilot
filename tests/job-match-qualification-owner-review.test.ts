@@ -28,9 +28,18 @@ import {
   qualificationSourceOriginLabel,
   startJobMatchQualificationOwnerReview
 } from "@/lib/ai/job-match-qualification-owner-review";
+import { ownerReviewSecurityHeaders as qualificationSecurityHeaders } from "@/lib/ai/job-match-qualification-owner-review-http";
+import { ownerReviewSecurityHeaders as sharedSecurityHeaders } from "@/lib/ai/local-owner-review-http";
 import { fixedSyntheticProviderRecommendation } from "@/tests/fixtures/job-match-qualification-provider-results";
 
 const now = new Date("2026-10-05T17:00:00.000Z");
+
+test("qualification review preserves the shared closed owner-review headers", () => {
+  assert.deepEqual(
+    qualificationSecurityHeaders("application/json; charset=utf-8"),
+    sharedSecurityHeaders("application/json; charset=utf-8")
+  );
+});
 
 test("provider evidence labels name every supported source section without machine paths or indexes", () => {
   const expected = new Map<string, string>([
