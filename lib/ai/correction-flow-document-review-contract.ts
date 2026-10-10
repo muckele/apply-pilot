@@ -6,7 +6,6 @@ export const CORRECTION_FLOW_DOCUMENT_REVIEW_CONTRACT_VERSION = "1" as const;
 
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
 const gitSha = z.string().regex(/^[a-f0-9]{40}$/u);
-const documentKind = z.enum(["resume", "cover_letter"]);
 const disposition = z.enum(["approved", "needs_revision"]);
 const revisionReason = z.enum(["clarity", "tone", "formatting", "length", "other"]);
 

@@ -1,5 +1,19 @@
 # Synthetic application-document diagnostics
 
+## Visible local review implementation
+
+Status: **offline implementation complete; live review not run**. Contract version `2` composes the unchanged prompt-version `7` résumé-first, cover-letter-second generation path with a one-shot validated bundle and a tokenized `127.0.0.1` review session. The session shows both exact canonical PDFs, text fallbacks, and server-resolved evidence bindings on one page. It accepts only ordered approve/needs-revision decisions with affirmative all-pages, writing-quality, and visual-layout attestations for both exact document hashes.
+
+The live envelope remains exactly two Gemini 3.8 Flash LOW calls, no JOB_MATCH call, no retry, no fallback, 180 seconds per call, and a `$0.112125` conservative ceiling. Raw provider output is never retained. Validated document strings and mutable PDF buffers exist only in the local process for at most 15 minutes and are released on completion, cancellation, signal, startup/output failure, or timeout. The safe receipt contains only hashes, bounded disposition/reason categories, attestations, usage, cost, and bounded failure metadata. It creates no database row and grants no preparation, export-for-use, Fill, employer, submission, merge, or deployment authority.
+
+After independent review, a clean pushed exact head, and green exact-head CI, the supported command is:
+
+```sh
+npm run correction-flow:review-documents:live -- --expected-head=<full-reviewed-git-sha>
+```
+
+The launcher prints the immutable safe manifest, requires the owner to type its exact hash, and only then reads the existing Gemini credential through hidden `/dev/tty` input. After both outputs pass decoding, server-owned fact assembly, factual validation, and canonical export verification, it prints one tokenized loopback URL. It does not open a browser or capture a screenshot. The owner must be present at the Mac to inspect and decide before the 15-minute deadline. As of this document update, that attendance-dependent live step remains intentionally pending and no additional provider call has occurred.
+
 ## Current two-document conformance launcher
 
 Status: **hosted synthetic conformance passed** on 2026-10-10 at reviewed head `81bae91cc74516e8854719ec5c53d21e363fc1bf`. The separately approved run exercised both changed prompt-version `7` document wires without repeating either JOB_MATCH call. It requested a tailored résumé first and requested a cover letter only after the résumé passed the production decoder, server-owned fact assembly, final factual validators, and conservative cost check. It then rendered both accepted documents to DOCX and PDF entirely in memory, re-extracted their text, verified critical facts, and retained hashes and booleans only.
@@ -31,9 +45,9 @@ This proves bounded hosted schema/transport compatibility, server-owned fact ass
 
 ## Minimum next approval
 
-Do not repeat JOB_MATCH. The smallest writing-quality step is a separately approved two-document generation against an unchanged, hash-bound evidence snapshot that retains only the post-decoder, post-assembly, post-factual-validation documents long enough for local visible review. That approval must explicitly cover the new generation cost and the changed validated-output retention/display policy; raw provider output can remain unretained.
+Do not repeat JOB_MATCH. The separately approved smallest writing-quality step is the contract-v2 two-document generation above against an unchanged, hash-bound evidence snapshot. It retains only post-decoder, post-assembly, post-factual-validation documents long enough for local visible review; raw provider output remains unretained.
 
-The review proof should present the formatted résumé and cover letter plus their current source-fact bindings, bind each accept/reject decision to the exact validated output hash, source/evidence snapshot, job projection, prompt/model version, and generation, and invalidate the decision when any binding changes. It must not infer durable production `ApplicationDocumentApproval` authority from document selection, packet-answer approval, or this synthetic receipt. A local in-memory review proof can validate the interaction without a database migration; durable production approval requires an explicit schema/authority decision before implementation. No document should enter preparation, export-for-use, or employer flow on a stale or absent approval.
+The implementation presents the formatted résumé and cover letter plus their current source-fact bindings, binds each accept/reject decision to the exact validated output hash, source/evidence snapshot, job projection, prompt/model version, and generation, and invalidates the decision when any binding changes. It does not infer durable production `ApplicationDocumentApproval` authority from document selection, packet-answer approval, or this synthetic receipt. This local in-memory review proof needs no database migration; durable production approval still requires an explicit schema/authority decision before implementation. No document should enter preparation, export-for-use, or employer flow on a stale or absent production approval.
 
 ## Historical one-call résumé diagnostic
 
