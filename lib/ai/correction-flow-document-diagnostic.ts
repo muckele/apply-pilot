@@ -1,7 +1,5 @@
-import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
-import JSZip from "jszip";
 import { z } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
@@ -24,6 +22,11 @@ import {
 } from "@/lib/ai/application-document-version";
 import { assertConservativeApplicationDocumentWireBound } from "@/lib/ai/client";
 import {
+  correctionFlowDocumentExportVerificationSchema as exportVerificationSchema,
+  verifyCorrectionFlowDocumentExports,
+  type CorrectionFlowDocumentExportVerification
+} from "@/lib/ai/correction-flow-document-review-bundle";
+import {
   buildCoverLetterGeminiJsonSchema,
   buildCoverLetterSystemPrompt,
   coverLetterProviderSchema,
@@ -44,12 +47,8 @@ import {
   tailoredResumeProviderSchema,
   tailoredResumeSchema
 } from "@/lib/ai/resume";
-import {
-  CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1,
-  renderCanonicalApplicationDocumentV1,
-  renderGenericDocument
-} from "@/lib/documents/export-renderer";
-import { extractResumeDocxText } from "@/lib/resume-docx-text";
+
+export type { CorrectionFlowDocumentExportVerification };
 
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION = "1" as const;
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT = 2 as const;
@@ -331,149 +330,7 @@ function assertConsent(
   return consent;
 }
 
-function sha256(value: string | Buffer) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function decodeXml(value: string) {
-  return value
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&quot;", "\"")
-    .replaceAll("&apos;", "'");
-}
-
-async function extractExactCanonicalDocxContent(bytes: Buffer) {
-  const zip = await JSZip.loadAsync(bytes);
-  const documentXml = await zip.file("word/document.xml")?.async("string");
-  if (!documentXml) throw new Error("Canonical DOCX is missing word/document.xml.");
-  return [...documentXml.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/gu)]
-    .map((paragraph) => {
-      const text = decodeXml(
-        [...paragraph[0].matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/gu)]
-          .map((match) => match[1])
-          .join("")
-      );
-      return /<w:numPr(?:\s[^>]*)?>/u.test(paragraph[0]) ? `• ${text}` : text;
-    })
-    .join("\n");
-}
-
-function extractGeneratedPdfText(bytes: Buffer) {
-  const source = bytes.toString("utf8");
-  if (!source.startsWith("%PDF-1.4\n")) throw new Error("Canonical PDF header is missing.");
-  return [...source.matchAll(/\(((?:\\.|[^\\)])*)\) Tj/gu)]
-    .map((match) => match[1].replace(/\\([()\\])/gu, "$1"))
-    .join("\n");
-}
-
-function comparable(value: string) {
-  return value.trim().replace(/\s+/gu, " ");
-}
-
-function normalizeBulletMarker(value: string, marker: "•" | "-") {
-  return value.replace(/^\s*[-*•]\s+/u, `${marker} `);
-}
-
-function docxRoundTripComparable(value: string) {
-  return value.split(/\r?\n/u).map((line) => normalizeBulletMarker(line, "•")).join("\n");
-}
-
-function pdfComparable(value: string) {
-  return comparable(normalizeBulletMarker(value, "-")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E]/gu, "?"));
-}
-
-function criticalFactsPresent(source: string, extracted: string, pdf: boolean) {
-  const normalize = (line: string) => pdf
-    ? pdfComparable(line)
-    : comparable(normalizeBulletMarker(line, "•"));
-  const haystack = comparable(extracted.split(/\r?\n/u).map(normalize).join("\n"));
-  return source.split(/\r?\n/u)
-    .map(normalize)
-    .filter(Boolean)
-    .every((line) => haystack.includes(line));
-}
-
-const exportArtifactSchema = z.object({
-  docxByteHash: sha256Schema,
-  docxExtractedTextHash: sha256Schema,
-  pdfByteHash: sha256Schema,
-  pdfExtractedTextHash: sha256Schema,
-  docxRoundTripExact: z.boolean(),
-  docxCriticalFactsPresent: z.boolean(),
-  pdfCriticalFactsPresent: z.boolean()
-}).strict();
-
-const exportVerificationSchema = z.object({
-  inMemoryOnly: z.literal(true),
-  resume: exportArtifactSchema,
-  coverLetter: exportArtifactSchema
-}).strict();
-
-export type CorrectionFlowDocumentExportVerification = z.infer<typeof exportVerificationSchema>;
-
-async function verifyArtifact(
-  artifactType: "RESUME" | "COVER_LETTER",
-  content: string
-) {
-  const [docx, pdf] = await Promise.all([
-    renderCanonicalApplicationDocumentV1({ artifactType, content }),
-    renderGenericDocument({
-      content,
-      format: "pdf",
-      resumeFormat: {
-        template: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.template,
-        pageSize: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.pageSize,
-        fontFamily: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.fontFamily,
-        accentColor: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.accentColor,
-        fontSize: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.fontSize,
-        lineSpacing: CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1.lineSpacing
-      }
-    })
-  ]);
-  const [exactDocx, productionDocx] = await Promise.all([
-    extractExactCanonicalDocxContent(docx),
-    extractResumeDocxText(docx)
-  ]);
-  const extractedPdf = extractGeneratedPdfText(pdf);
-  return Object.freeze({
-    docxByteHash: sha256(docx),
-    docxExtractedTextHash: sha256(productionDocx),
-    pdfByteHash: sha256(pdf),
-    pdfExtractedTextHash: sha256(extractedPdf),
-    docxRoundTripExact: docxRoundTripComparable(exactDocx) === docxRoundTripComparable(content),
-    docxCriticalFactsPresent: criticalFactsPresent(content, productionDocx, false),
-    pdfCriticalFactsPresent: criticalFactsPresent(content, extractedPdf, true)
-  });
-}
-
-async function verifyExportsDefault(input: {
-  tailoredResume: z.infer<typeof tailoredResumeSchema>;
-  coverLetter: z.infer<typeof coverLetterSchema>;
-}) {
-  const [resume, coverLetter] = await Promise.all([
-    verifyArtifact("RESUME", input.tailoredResume.resumeText),
-    verifyArtifact("COVER_LETTER", input.coverLetter.coverLetter)
-  ]);
-  const verification = exportVerificationSchema.parse({
-    inMemoryOnly: true,
-    resume,
-    coverLetter
-  });
-  if (
-    !verification.resume.docxRoundTripExact ||
-    !verification.resume.docxCriticalFactsPresent ||
-    !verification.resume.pdfCriticalFactsPresent ||
-    !verification.coverLetter.docxRoundTripExact ||
-    !verification.coverLetter.docxCriticalFactsPresent ||
-    !verification.coverLetter.pdfCriticalFactsPresent
-  ) {
-    throw new Error("In-memory application-document export verification failed.");
-  }
-  return verification;
-}
+const verifyExportsDefault = verifyCorrectionFlowDocumentExports;
 
 function outputFieldPath(path: readonly PropertyKey[]) {
   let value = "output";
