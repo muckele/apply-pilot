@@ -88,7 +88,7 @@ test("the one-call manifest binds the complete reviewed payload and exact produc
   assert.equal(value.callCount, 1);
   assert.equal(value.call.stage, "tailored_resume");
   assert.equal(value.call.model, "gemini-3.8-flash");
-  assert.equal(value.call.promptVersion, "5");
+  assert.equal(value.call.promptVersion, "6");
   assert.equal(value.call.thinkingLevel, "LOW");
   assert.equal(value.call.maximumInputTokens, 56_000);
   assert.equal(value.call.maximumOutputTokens, 6_000);
@@ -96,7 +96,7 @@ test("the one-call manifest binds the complete reviewed payload and exact produc
   assert.equal(value.payloadHash, "8101fc98203c04abb7963b211a0a8542ed81f5faf8772e98cf6719e0635635c0");
   assert.equal(value.reviewedEvidenceHash, "7646bd358e0b45e25d74d1a85c66a7d9ed8bb7eafbd39b833e8a3863c29505ec");
   assert.equal(value.schemaHash, "3a3593ed2dac836b31a279c14be21886e26db1f3910f262e9e4676b72ba7e7fc");
-  assert.equal(value.wireRequestHash, "c17acdeec74cb244d6a7a18548817cd84ea1c0539bf684eb4674e5a9eba14f68");
+  assert.equal(value.wireRequestHash, "667b2b598c4dbaf4862997229f4591cb96a31457f9341be2133cae0eb5227345");
 
   for (const mutate of [
     (changed: ReturnType<typeof syntheticCorrectionFlowDocumentPayload>) => {

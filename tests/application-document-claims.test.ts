@@ -113,6 +113,122 @@ test("supported resume rewrites may strengthen only the action verb", async () =
   assert.deepEqual(claims.validateTailoredResumeClaims(payload, strengthened), strengthened);
 });
 
+test("every generated resume claim field accepts the same narrow deterministic grammar", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const source = "Built a reliable TypeScript service.";
+  const claim = "I engineered the reliable TypeScript service.";
+  const grammarPayload = structuredClone(payload);
+  grammarPayload.resume.rawText = `Synthetic Applicant\n${source}`;
+  grammarPayload.resume.summary = source;
+  grammarPayload.resume.skills = [source];
+  grammarPayload.resume.workHistory = [{
+    sourceText: source,
+    company: "Example Co",
+    title: "Platform Engineer",
+    bullets: [source]
+  }];
+  const changed = {
+    ...structuredClone(resumeOutput),
+    professionalSummary: claim,
+    skillsSection: [claim],
+    bulletRewrites: [{ original: source, rewrite: claim, reason: "Deterministic grammar fixture." }],
+    rolesOrProjectsToEmphasize: [claim],
+    resumeText: `SUMMARY\n${claim}\nSKILLS\n${claim}\nEXPERIENCE\n${claim}\nPROJECTS\n${claim}`,
+    claimEvidence: [{
+      claim,
+      citations: [{ ref: "resume.rawText", excerpt: source }]
+    }]
+  };
+  assert.deepEqual(claims.validateTailoredResumeClaims(grammarPayload, changed), changed);
+});
+
+test("every generated resume claim field rejects unsupported freewriting", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const variants = [
+    "Built dependable TypeScript services.",
+    "Built TypeScript services reliably.",
+    "Built reliable services using TypeScript."
+  ];
+  for (const field of ["professionalSummary", "skillsSection", "bulletRewrites", "rolesOrProjectsToEmphasize"] as const) {
+    const changed = structuredClone(resumeOutput);
+    const claim = variants[field === "professionalSummary" ? 0 : field === "skillsSection" ? 1 : 2];
+    changed.professionalSummary = "";
+    changed.skillsSection = [];
+    changed.bulletRewrites = [];
+    changed.rolesOrProjectsToEmphasize = [];
+    if (field === "professionalSummary") changed.professionalSummary = claim;
+    if (field === "skillsSection") changed.skillsSection = [claim];
+    if (field === "bulletRewrites") changed.bulletRewrites = [{
+      original: "Built reliable TypeScript services.",
+      rewrite: claim,
+      reason: "Synthetic unsupported freewriting."
+    }];
+    if (field === "rolesOrProjectsToEmphasize") changed.rolesOrProjectsToEmphasize = [claim];
+    changed.resumeText = `SUMMARY\n${claim}`;
+    changed.claimEvidence = [{
+      claim,
+      citations: [{ ref: "resume.workHistory[0]", excerpt: "Built reliable TypeScript services." }]
+    }];
+    assert.throws(
+      () => claims.validateTailoredResumeClaims(payload, changed),
+      (error: unknown) => error instanceof PublicApiError &&
+        error.details?.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM" &&
+        error.details?.failureClass === "source_relation_mismatch"
+    );
+  }
+});
+
+test("resume bullet original must be copied from the citation supporting its rewrite", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const changed = structuredClone(resumeOutput);
+  changed.bulletRewrites[0].original = "Managed a fabricated Kubernetes migration.";
+  assert.throws(
+    () => claims.validateTailoredResumeClaims(payload, changed),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_BULLET_SOURCE_MISMATCH" &&
+      error.details?.fieldPath === "bulletRewrites[0].original" &&
+      !error.message.includes("Kubernetes")
+  );
+});
+
+test("resume bullet original cannot be copied from contextual job evidence", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const mixedPayload = structuredClone(payload);
+  mixedPayload.job.description = "I built the reliable TypeScript services.";
+  const changed = structuredClone(resumeOutput);
+  changed.bulletRewrites[0].original = mixedPayload.job.description;
+  changed.claimEvidence[0].citations.push({
+    ref: "job.description",
+    excerpt: mixedPayload.job.description
+  });
+  assert.throws(
+    () => claims.validateTailoredResumeClaims(mixedPayload, changed),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_BULLET_SOURCE_MISMATCH" &&
+      error.details?.fieldPath === "bulletRewrites[0].original"
+  );
+});
+
+test("resume bullet original may match any applicant citation across duplicate claim entries", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const duplicatePayload = structuredClone(payload);
+  duplicatePayload.resume.rawText += "\nI built the reliable TypeScript services.";
+  const changed = structuredClone(resumeOutput);
+  changed.claimEvidence.unshift({
+    claim: "Built reliable TypeScript services.",
+    citations: [{
+      ref: "resume.rawText",
+      excerpt: "I built the reliable TypeScript services."
+    }]
+  });
+  assert.deepEqual(claims.validateTailoredResumeClaims(duplicatePayload, changed), changed);
+});
+
 test("supported resume rewrites accept narrow non-leadership action paraphrases", async () => {
   const claims = await claimsModule();
   assert.ok(claims);
@@ -406,6 +522,65 @@ test("resume validation rejects a rewritten factual line omitted from claim evid
   );
 });
 
+test("resume text accepts exact standalone source lines without duplicate claim evidence", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const changed = structuredClone(resumeOutput);
+  changed.professionalSummary = "";
+  changed.skillsSection = [];
+  changed.bulletRewrites = [];
+  changed.rolesOrProjectsToEmphasize = [];
+  changed.claimEvidence = [];
+  changed.resumeText = [
+    "Synthetic Applicant",
+    "SKILLS",
+    "TypeScript",
+    "EXPERIENCE",
+    "Example Co | Platform Engineer",
+    "Built reliable TypeScript services."
+  ].join("\n");
+  assert.deepEqual(claims.validateTailoredResumeClaims(payload, changed), changed);
+});
+
+test("resume text accepts an exact unchanged source line containing multiple action clauses", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const multiActionPayload = structuredClone(payload);
+  const sourceLine = "Built TypeScript services and improved incident workflows.";
+  multiActionPayload.resume.rawText = `Synthetic Applicant\n${sourceLine}`;
+  const changed = structuredClone(resumeOutput);
+  changed.professionalSummary = "";
+  changed.skillsSection = [];
+  changed.bulletRewrites = [];
+  changed.rolesOrProjectsToEmphasize = [];
+  changed.claimEvidence = [];
+  changed.resumeText = `Synthetic Applicant\nEXPERIENCE\n${sourceLine}`;
+  assert.deepEqual(claims.validateTailoredResumeClaims(multiActionPayload, changed), changed);
+});
+
+test("resume text cannot extract an affirmative substring from a negated source line", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const negatedPayload = structuredClone(payload);
+  negatedPayload.resume.rawText = "Synthetic Applicant\nNo Kubernetes experience.";
+  negatedPayload.resume.summary = "No Kubernetes experience.";
+  negatedPayload.resume.skills = [];
+  negatedPayload.resume.workHistory = [];
+  const changed = structuredClone(resumeOutput);
+  changed.professionalSummary = "";
+  changed.skillsSection = [];
+  changed.bulletRewrites = [];
+  changed.rolesOrProjectsToEmphasize = [];
+  changed.claimEvidence = [];
+  changed.resumeText = "Synthetic Applicant\nSKILLS\nKubernetes experience.";
+  assert.throws(
+    () => claims.validateTailoredResumeClaims(negatedPayload, changed),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED" &&
+      error.details?.fieldPath === "resumeText.line[2]"
+  );
+});
+
 test("cover validation accepts cited applicant facts and rejects uncited invented facts", async () => {
   const claims = await claimsModule();
   assert.ok(claims);
@@ -440,6 +615,78 @@ test("cover validation accepts cited applicant facts and rejects uncited invente
       error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED" &&
       error.details?.fieldPath === "coverLetter"
   );
+});
+
+test("cover claims accept the narrow grammar and reject truthful-looking freewriting outside it", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const relationPayload = structuredClone(payload);
+  relationPayload.resume.rawText += "\nBuilt a reliable TypeScript service with PostgreSQL.";
+  const source = "Built a reliable TypeScript service with PostgreSQL.";
+  const accepted = "I engineered the reliable TypeScript service with PostgreSQL.";
+  const makeOutput = (claim: string) => ({
+    title: "Example Co cover letter",
+    coverLetter: `Dear Example Co Hiring Team,\n\n${claim}\n\nSincerely,\nSynthetic Applicant`,
+    angle: "Synthetic deterministic grammar fixture.",
+    claimsUsed: [{ claim, citations: [{ ref: "resume.rawText", excerpt: source }] }]
+  });
+  assert.deepEqual(
+    claims.validateCoverLetterClaims(relationPayload, makeOutput(accepted)),
+    makeOutput(accepted)
+  );
+  for (const claim of [
+    "I built reliable TypeScript and PostgreSQL services.",
+    "I built a reliable TypeScript service using PostgreSQL.",
+    "I created a dependable TypeScript service with PostgreSQL."
+  ]) {
+    assert.throws(
+      () => claims.validateCoverLetterClaims(relationPayload, makeOutput(claim)),
+      (error: unknown) => error instanceof PublicApiError &&
+        error.details?.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM" &&
+        error.details?.failureClass === "source_relation_mismatch"
+    );
+  }
+});
+
+test("cover application intent outside the published uncited set requires evidence", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const output = {
+    title: "Example Co cover letter",
+    coverLetter: "Dear Example Co Hiring Team,\n\nI am excited to apply for the Platform Engineer position.\n\nSincerely,\nSynthetic Applicant",
+    angle: "Synthetic unlisted intent sentence.",
+    claimsUsed: []
+  };
+  assert.throws(
+    () => claims.validateCoverLetterClaims(payload, output),
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED" &&
+      error.details?.fieldPath === "coverLetter"
+  );
+});
+
+test("published cover lines remain exempt when company or title contains an abbreviation", async () => {
+  const claims = await claimsModule();
+  assert.ok(claims);
+  const abbreviatedPayload = structuredClone(payload);
+  abbreviatedPayload.job.company = "Acme Inc.";
+  abbreviatedPayload.job.title = "Sr. Platform Engineer";
+  const output = {
+    title: "Acme Inc. Sr. Platform Engineer cover letter",
+    coverLetter: [
+      "Dear Acme Inc. Hiring Team,",
+      "",
+      "I am writing to apply for the Sr. Platform Engineer position.",
+      "",
+      "Thank you for your time and consideration.",
+      "",
+      "Sincerely,",
+      "Synthetic Applicant"
+    ].join("\n"),
+    angle: "Synthetic exact uncited-line fixture.",
+    claimsUsed: []
+  };
+  assert.deepEqual(claims.validateCoverLetterClaims(abbreviatedPayload, output), output);
 });
 
 test("cover validation rejects an uncited first-person status claim without an action verb or number", async () => {

@@ -80,6 +80,17 @@ test("application-document provider contracts publish the exact resolver namespa
     assert.match(prompt, /Never append child paths/u);
     assert.doesNotMatch(prompt, /resume\.workHistory\[0\]\.bullets\[0\]/u);
   }
+  assert.match(coverPrompt, /Allowed uncited cover-letter lines \(exact strings only\)/u);
+  for (const exactLine of [
+    "Dear Synthetic Employer Hiring Team,",
+    "I am writing to apply for the Service Operations Director position.",
+    "Thank you for your time and consideration.",
+    "Sincerely,",
+    "Taylor Boundary",
+    "[Your name]"
+  ]) {
+    assert.ok(coverPrompt.includes(JSON.stringify(exactLine)), exactLine);
+  }
 
   const resumeSchema = (resumeModule.buildTailoredResumeGeminiJsonSchema as
     (value: typeof payload) => SchemaView)(payload);
@@ -95,7 +106,21 @@ test("application-document provider contracts publish the exact resolver namespa
   );
 });
 
-test("application-document prompt/cache identity advances for the bounded paraphrase contract", async () => {
+test("application-document prompt/cache identity advances for the full deterministic writing contract", async () => {
   const version = await import("@/lib/ai/application-document-version");
-  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "5");
+  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "6");
+});
+
+test("cover uncited-line projection collapses source whitespace into one physical line", async () => {
+  const claimsModule = await import("@/lib/ai/application-document-claims");
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  payload.job = {
+    ...payload.job,
+    company: "Synthetic\nEmployer",
+    title: "Sr.\nService Operations Director"
+  };
+  const lines = claimsModule.getCoverLetterUncitedLines(payload);
+  assert.ok(lines.includes("Dear Synthetic Employer Hiring Team,"));
+  assert.ok(lines.includes("I am writing to apply for the Sr. Service Operations Director position."));
+  assert.ok(lines.every((line) => !line.includes("\n")));
 });

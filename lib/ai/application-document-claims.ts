@@ -278,6 +278,19 @@ function containsStandaloneEvidence(value: unknown, excerpt: string): boolean {
   return false;
 }
 
+function containsExactEvidenceLine(value: unknown, line: string): boolean {
+  const target = comparable(line.trim().replace(/^[-•]\s*/, ""));
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value).split(/\r?\n/).some((sourceLine) =>
+      comparable(sourceLine.trim().replace(/^[-•]\s*/, "")) === target);
+  }
+  if (Array.isArray(value)) return value.some((item) => containsExactEvidenceLine(item, line));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => containsExactEvidenceLine(item, line));
+  }
+  return false;
+}
+
 function sameTokens(left: string[], right: string[]) {
   return left.length === right.length && left.every((token, index) => token === right[index]);
 }
@@ -449,11 +462,26 @@ export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutpu
     }))
   ];
   requireClaims(supportedClaims, requiredClaims);
+  for (const [rewriteIndex, rewrite] of output.bulletRewrites.entries()) {
+    const originalMatchesCitation = output.claimEvidence.some((entry) =>
+      comparable(entry.claim) === comparable(rewrite.rewrite) &&
+      entry.citations.some((citation) =>
+        referenceCanSupportApplicantClaim(citation.ref) &&
+        citation.excerpt.trim() === rewrite.original.trim()));
+    if (!originalMatchesCitation) {
+      throw new PublicApiError("Application document bullet source does not match its cited excerpt.", 422, {
+        code: "APPLICATION_DOCUMENT_BULLET_SOURCE_MISMATCH",
+        fieldPath: `bulletRewrites[${rewriteIndex}].original`,
+        retryable: false
+      });
+    }
+  }
 
-  const sourceText = comparable(evidenceText(payload.resume ?? {}));
   for (const [lineIndex, rawLine] of output.resumeText.split(/\r?\n/).entries()) {
     const line = rawLine.trim().replace(/^[-•]\s*/, "");
-    if (!line || isHeading(line) || sourceText.includes(comparable(line))) continue;
+    if (!line || isHeading(line) ||
+      containsExactEvidenceLine(payload.resume ?? {}, line) ||
+      containsStandaloneEvidence(payload.resume ?? {}, line)) continue;
     if (!supportedClaims.has(comparable(line))) {
       throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
         code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
@@ -469,9 +497,13 @@ function sentenceKey(value: string) {
   return comparable(value).replace(/[.!?]+$/, "");
 }
 
-function exactCoverBoilerplate(payload: ApplicationDocumentPayload) {
-  const title = typeof payload.job?.title === "string" ? payload.job.title.trim() : "";
-  const company = typeof payload.job?.company === "string" ? payload.job.company.trim() : "";
+export function getCoverLetterUncitedLines(payload: ApplicationDocumentPayload) {
+  const title = typeof payload.job?.title === "string"
+    ? payload.job.title.trim().replace(/\s+/g, " ")
+    : "";
+  const company = typeof payload.job?.company === "string"
+    ? payload.job.company.trim().replace(/\s+/g, " ")
+    : "";
   const values = [
     "I am interested in learning more about the role and how I might contribute to your team.",
     "I would welcome the opportunity to discuss the role further.",
@@ -494,18 +526,22 @@ function exactCoverBoilerplate(payload: ApplicationDocumentPayload) {
   }
   if (company) values.push(`Dear ${company} Hiring Team,`);
   values.push("Dear Hiring Team,", "Sincerely,", "Best,", "Best regards,", "Regards,", "Thank you,");
-  return new Set(values.map(sentenceKey));
-}
-
-function coverSentencesRequiringEvidence(payload: ApplicationDocumentPayload, text: string) {
-  const exempt = exactCoverBoilerplate(payload);
   const firstResumeLine = typeof payload.resume?.rawText === "string"
     ? payload.resume.rawText.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
     : undefined;
-  if (firstResumeLine) exempt.add(sentenceKey(firstResumeLine));
-  exempt.add(sentenceKey("[Your name]"));
+  if (firstResumeLine) values.push(firstResumeLine);
+  values.push("[Your name]");
+  return Object.freeze(values);
+}
+
+function coverSentencesRequiringEvidence(payload: ApplicationDocumentPayload, text: string) {
+  const exempt = new Set(getCoverLetterUncitedLines(payload).map(sentenceKey));
   return text.split(/\r?\n/)
-    .flatMap((line) => [...sentenceSegmenter.segment(line)].map(({ segment }) => segment.trim()))
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || exempt.has(sentenceKey(trimmed))) return [];
+      return [...sentenceSegmenter.segment(trimmed)].map(({ segment }) => segment.trim());
+    })
     .filter((sentence) => sentence && !exempt.has(sentenceKey(sentence)));
 }
 

@@ -8,6 +8,7 @@ import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-docume
 import {
   buildApplicationDocumentCitationJsonSchema,
   buildApplicationDocumentSystemPrompt,
+  getCoverLetterUncitedLines,
   validateCoverLetterClaims,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
@@ -36,7 +37,12 @@ const strictStringObject = (properties: Record<string, unknown>, required: strin
 });
 
 export function buildCoverLetterSystemPrompt(payload: ApplicationDocumentPayload) {
-  return buildApplicationDocumentSystemPrompt(coverLetterPrompt, payload);
+  return buildApplicationDocumentSystemPrompt(
+    `${coverLetterPrompt.trim()}\n\n` +
+      `Allowed uncited cover-letter lines (exact strings only): ${JSON.stringify(getCoverLetterUncitedLines(payload))}\n` +
+      "Do not write any other uncited line or sentence.",
+    payload
+  );
 }
 
 export function buildCoverLetterGeminiJsonSchema(payload: ApplicationDocumentPayload) {
