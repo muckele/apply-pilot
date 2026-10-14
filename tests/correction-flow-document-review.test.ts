@@ -230,6 +230,36 @@ test("startup and ready-callback failures overwrite every claimed PDF buffer", a
   }
 });
 
+test("safe receipts distinguish owner cancellation and original review expiry", async () => {
+  for (const mode of ["cancel", "expiry"] as const) {
+    const value = manifest();
+    let providerCalls = 0;
+    let heldPdfs: readonly Buffer[] = [];
+    const runner = createCorrectionFlowDocumentReviewRunner({
+      manifest: value,
+      consent: consentFor(value),
+      payload: syntheticCorrectionFlowDocumentPayload(),
+      credentials: { geminiApiKey: credential },
+      fetchImpl: async () => providerResponse([fixedResumeOutput, fixedCoverLetterOutput][providerCalls++]),
+      startReview: async (input) => {
+        heldPdfs = input.renderedPdfs.map(pdf => pdf.bytes);
+        return startCorrectionFlowDocumentOwnerReview({ ...input, sessionTimeoutMs: mode === "expiry" ? 30 : 5_000 });
+      },
+      async onReviewReady(review) {
+        if (mode === "cancel") {
+          const result = await fetch(review.cancelUrl, {method:"POST", headers:{origin:new URL(review.reviewUrl).origin}});
+          assert.equal(result.status, 204);
+        }
+      }
+    });
+    const receipt = await runner.run(new AbortController().signal);
+    assert.equal(receipt.failureCode, mode === "cancel" ? "OWNER_REVIEW_CANCELLED" : "OWNER_REVIEW_EXPIRED");
+    assert.equal(receipt.reviewAttestation, null);
+    assert.equal(providerCalls, 2);
+    assert.equal(heldPdfs.every(pdf => pdf.every(byte => byte === 0)), true);
+  }
+});
+
 test("cancellation during review startup closes the session before readiness and overwrites PDFs", async () => {
   const value = manifest();
   const responses = [fixedResumeOutput, fixedCoverLetterOutput];

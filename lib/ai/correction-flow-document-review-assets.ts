@@ -14,6 +14,7 @@ main { width:100%; padding:24px 32px 64px; }
 .brand-mark { display:grid; place-items:center; width:40px; height:40px; border-radius:10px; color:var(--product-primary-text); background:var(--product-mint); font-size:14px; letter-spacing:-.04em; }
 .appearance { display:flex; align-items:center; gap:8px; color:var(--product-muted); font-size:14px; }
 .appearance select { min-height:40px; border:1px solid var(--product-border); border-radius:8px; padding:6px 10px; background:var(--product-surface); color:var(--product-text); }
+.review-settings { position:relative; } .review-settings .appearance { position:absolute; right:0; z-index:3; padding:12px; background:var(--product-surface); border:1px solid var(--product-border); border-radius:8px; }
 .notice { margin:20px 0 24px; color:var(--product-muted); font-size:13px; }
 .notice p { margin:4px 0; } .notice strong { color:var(--product-accent); }
 h1 { margin:20px 0 8px; font-size:32px; font-weight:700; letter-spacing:-.04em; line-height:1.2; }
@@ -64,6 +65,32 @@ export const documentReviewJavascript = `${PRODUCT_THEME_BOOTSTRAP_SCRIPT}
   const status = document.getElementById('review-status');
   const byKind = (kind) => document.querySelector('[data-document-card="' + kind + '"]');
   let state = null;
+  let terminalOutcome = null;
+  let expiryTimer;
+  const draftKey = 'apply-pilot-document-review-feedback';
+  const clearDraft = () => { try { sessionStorage.removeItem(draftKey); } catch {} };
+  const finishLocalReview = (outcome) => { terminalOutcome=outcome;clearTimeout(expiryTimer);clearDraft();state=null;document.getElementById('submit-review').disabled=true;document.getElementById('cancel-review').disabled=true; };
+  const decisions = () => ['resume','cover_letter'].map(kind=>{const card=byKind(kind);return {kind,disposition:card.querySelector('input[name="'+kind+'-disposition"]:checked')?.value,reason:card.querySelector('select').value||null,reviewedAllPages:card.querySelector('[data-attestation="all-pages"]').checked,reviewedWritingQuality:card.querySelector('[data-attestation="writing"]').checked,reviewedVisualLayout:card.querySelector('[data-attestation="layout"]').checked};});
+  const saveDraft = () => {
+    if (!state) return;
+    // Tab-scoped feedback metadata only: no document text, source evidence, PDF bytes, or credentials.
+    try { sessionStorage.setItem(draftKey, JSON.stringify({envelopeHash:state.envelopeHash,expiresAt:state.expiresAt,documents:decisions()})); } catch {}
+  };
+  const restoreDraft = () => {
+    try {
+      const draft=JSON.parse(sessionStorage.getItem(draftKey)||'null');
+      if(!draft)return;
+      if(draft.envelopeHash!==state.envelopeHash||draft.expiresAt!==state.expiresAt||Date.now()>=draft.expiresAt||!Array.isArray(draft.documents)||draft.documents.length!==2){clearDraft();return;}
+      for(const [index,kind] of ['resume','cover_letter'].entries()) {
+        const value=draft.documents[index];if(value.kind!==kind){clearDraft();return;}
+        const card=byKind(kind);
+        if(['approved','needs_revision'].includes(value.disposition))card.querySelector('input[value="'+value.disposition+'"]').checked=true;
+        if(['clarity','tone','formatting','length','other'].includes(value.reason))card.querySelector('select').value=value.reason;
+        for(const [field,selector] of [['reviewedAllPages','all-pages'],['reviewedWritingQuality','writing'],['reviewedVisualLayout','layout']])card.querySelector('[data-attestation="'+selector+'"]').checked=value[field]===true;
+      }
+    } catch { clearDraft(); }
+  };
+  root.addEventListener('change',saveDraft);
   const media = matchMedia('(prefers-color-scheme: dark)');
   const theme = document.getElementById('review-theme');
   const applyTheme = (preference) => {
@@ -127,7 +154,10 @@ export const documentReviewJavascript = `${PRODUCT_THEME_BOOTSTRAP_SCRIPT}
     choosePage(card,0);
   };
   const render = (view) => {
+    if(terminalOutcome)return;
     state=view;
+    restoreDraft();
+    expiryTimer=setTimeout(()=>{if(!state)return;finishLocalReview('expired');status.textContent='This review expired. Its original 15-minute limit has ended. Check the runner receipt for its final status.';},Math.max(0,view.expiresAt-Date.now()));
     document.querySelector('[data-output-origin]').textContent=view.context.outputOrigin==='authored_sample'?'Authored synthetic sample · no provider call was made.':'Review generated documents against your source evidence.';
     document.querySelector('[data-correction-history-label]').textContent=view.context.outputOrigin==='authored_sample'?'Illustrative saved correction history':'Saved correction history';
     renderReadable(document.querySelector('[data-source-resume]'),view.context.sourceResumeText,'resume');
@@ -157,10 +187,39 @@ export const documentReviewJavascript = `${PRODUCT_THEME_BOOTSTRAP_SCRIPT}
   document.querySelectorAll('[data-review-kind]').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('[data-document-card]').forEach(card=>{card.hidden=card.dataset.documentCard!==button.dataset.reviewKind;});document.querySelectorAll('[data-review-kind]').forEach(tab=>tab.setAttribute('aria-pressed',String(tab===button)));focusDocument(byKind(button.dataset.reviewKind));}));
   document.querySelectorAll('[data-document-view]').forEach(button=>button.addEventListener('click',()=>{const card=button.closest('[data-document-card]');card.querySelector('[data-readable-document]').hidden=button.dataset.documentView!=='reading';card.querySelector('[data-layout-document]').hidden=button.dataset.documentView!=='layout';card.querySelectorAll('[data-document-view]').forEach(tab=>tab.setAttribute('aria-pressed',String(tab===button)));}));
   document.querySelectorAll('[data-embedded-preview]').forEach(details=>details.addEventListener('toggle',()=>{const frame=details.querySelector('iframe');if(details.open&&!frame.getAttribute('src'))frame.src=frame.dataset.pdfPath;}));
-  fetch(paths.state, { cache: 'no-store', credentials: 'omit' }).then(response=>response.ok?response.json():Promise.reject(new Error('state'))).then(render).catch(()=>{status.textContent='Review unavailable. Close this window and reopen the current review.';});
-  const collect=()=>({envelopeHash:state.envelopeHash,documents:['resume','cover_letter'].map(kind=>{const card=byKind(kind);const identity=state.documents.find(entry=>entry.kind===kind);return {kind,validatedOutputHash:identity.validatedOutputHash,renderedPdfHash:identity.renderedPdfHash,disposition:card.querySelector('input[name="'+kind+'-disposition"]:checked')?.value,reason:card.querySelector('select').value||null,reviewedAllPages:card.querySelector('[data-attestation="all-pages"]').checked,reviewedWritingQuality:card.querySelector('[data-attestation="writing"]').checked,reviewedVisualLayout:card.querySelector('[data-attestation="layout"]').checked};})});
-  document.getElementById('submit-review').addEventListener('click',async()=>{if(!state)return;const response=await fetch(paths.submit,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collect())});status.textContent=response.ok?'Review recorded. This local session is closed.':'Complete both exact document reviews before submitting.';});
-  document.getElementById('cancel-review').addEventListener('click',()=>{navigator.sendBeacon(paths.cancel,new Blob([],{type:'text/plain'}));status.textContent='Review cancelled.';});
-  addEventListener('pagehide', () => navigator.sendBeacon(paths.cancel, new Blob([], { type: 'text/plain' })));
+  fetch(paths.state, { cache: 'no-store', credentials: 'omit' }).then(response=>response.ok?response.json():Promise.reject(new Error('state'))).then(render).catch(()=>{if(terminalOutcome)return;finishLocalReview('unavailable');status.textContent='Review unavailable. The local session may have ended or the connection failed. Reopening this address cannot restart it; check the runner receipt.';});
+  const collect=()=>({envelopeHash:state.envelopeHash,documents:decisions().map(value=>{const identity=state.documents.find(entry=>entry.kind===value.kind);return {...value,validatedOutputHash:identity.validatedOutputHash,renderedPdfHash:identity.renderedPdfHash};})});
+  const documentName=kind=>kind==='resume'?'Résumé':'Cover letter';
+  const explain=(body)=>{
+    if(body.error==='PDF_DELIVERY_REQUIRED')return (body.documents||[]).map(kind=>documentName(kind)+': open the exact PDF using its link or embedded preview and wait for it to load.').join(' ');
+    if(body.error==='REVIEW_FIELDS_REQUIRED')return (body.fields||[]).map(path=>{
+      const [,index,field]=path.split('.');const name=documentName(index==='0'?'resume':'cover_letter');
+      const labels={disposition:'choose Approve or Needs revision',reason:'choose a revision category for Needs revision, or None for approval',reviewedAllPages:'confirm you reviewed every PDF page',reviewedWritingQuality:'confirm you reviewed the writing quality',reviewedVisualLayout:'confirm you reviewed the visual layout'};
+      return labels[field]?name+': '+labels[field]+'.':'The review no longer matches these documents. Check the runner receipt.';
+    }).join(' ')||'Complete both document decisions and inspection checks.';
+    if(body.error==='REVIEW_IDENTITY_MISMATCH')return 'The review no longer matches these exact documents. No decision was recorded; check the runner receipt.';
+    if(body.error==='REVIEW_UNAVAILABLE')return 'This review is no longer available. Check the runner receipt for its final status.';
+    if(body.error==='REVIEW_SUBMISSION_PENDING')return 'Another review submission is being processed. Your choices remain here; check the runner receipt before trying again.';
+    return 'The review request was rejected. No decision was recorded; check the runner receipt.';
+  };
+  const submit=document.getElementById('submit-review');
+  submit.addEventListener('click',async()=>{
+    if(terminalOutcome)return;
+    if(!state){status.textContent='Review unavailable. Check the runner receipt for this session.';return;}
+    submit.disabled=true;
+    try {
+      const response=await fetch(paths.submit,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collect())});
+      // A confirmed accepted submission is authoritative even if its response arrives after the local deadline.
+      if(response.ok){finishLocalReview('recorded');status.textContent='Review recorded. This local session is closed.';}
+      else {const body=await response.json().catch(()=>({}));if(terminalOutcome)return;if(['REVIEW_IDENTITY_MISMATCH','REVIEW_UNAVAILABLE'].includes(body.error))finishLocalReview('unavailable');status.textContent=explain(body);}
+    } catch {if(!terminalOutcome)status.textContent='Could not confirm the review submission because the local connection failed. Your choices remain here; check the runner receipt before trying again.';}
+    finally {submit.disabled=Boolean(terminalOutcome);}
+  });
+  document.getElementById('cancel-review').addEventListener('click',async()=>{
+    if(terminalOutcome)return;
+    try {const response=await fetch(paths.cancel,{method:'POST'});if(!response.ok)throw new Error('cancel');if(terminalOutcome==='recorded')return;finishLocalReview('cancelled');status.textContent='Review cancelled.';}
+    catch {if(!terminalOutcome)status.textContent='Could not confirm cancellation. Stop the local runner to close the review.';}
+  });
+  // Reload and PDF navigation do not cancel. Explicit Cancel, runner stop, and the original deadline still close it.
 })();
 `;

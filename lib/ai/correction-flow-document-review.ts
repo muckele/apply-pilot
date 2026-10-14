@@ -199,11 +199,14 @@ export function createCorrectionFlowDocumentReviewRunner({
         });
       } catch {
         review?.close(signal.aborted ? "signal" : "error");
-        if (review) await review.closed;
+        const closed = review ? await review.closed : null;
         return reviewReceipt(manifest, generated.receipt, {
           status: "stopped",
           failureStage: "owner_review",
-          failureCode: signal.aborted ? "EXECUTION_CANCELLED" : "OWNER_REVIEW_INCOMPLETE",
+          failureCode: signal.aborted || closed?.reason === "signal" ? "EXECUTION_CANCELLED"
+            : closed?.reason === "session_timeout" ? "OWNER_REVIEW_EXPIRED"
+              : closed?.reason === "owner_cancel" ? "OWNER_REVIEW_CANCELLED"
+                : "OWNER_REVIEW_INCOMPLETE",
           envelopeHash
         });
       } finally {

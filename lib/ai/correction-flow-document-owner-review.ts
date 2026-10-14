@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage } from "node:http";
 
 import {
   createCorrectionFlowDocumentReviewAttestation,
+  correctionFlowDocumentReviewSchemas,
   isCorrectionFlowDocumentReviewEnvelopeAuthentic,
   type CorrectionFlowDocumentReviewAttestation,
   type CorrectionFlowDocumentReviewEnvelope
@@ -137,7 +138,7 @@ export async function startCorrectionFlowDocumentOwnerReview({
         return;
       }
       if (request.method === "GET" && requestUrl.pathname === paths.statePath && view && phase === "reviewing") {
-        sendOwnerReviewJson(response, 200, view);
+        sendOwnerReviewJson(response, 200, { ...view, expiresAt: startedAt + sessionTimeoutMs });
         return;
       }
       const pdfIndex = paths.pdfPaths.indexOf(requestUrl.pathname);
@@ -167,30 +168,51 @@ export async function startCorrectionFlowDocumentOwnerReview({
           return;
         }
         if (phase !== "reviewing" || !view) {
-          sendOwnerReviewJson(response, 409, { error: "Review unavailable" });
+          sendOwnerReviewJson(response, 409, { error: "REVIEW_UNAVAILABLE" });
           return;
         }
         const release = admission.acquire("document_review");
         if (!release) {
-          sendOwnerReviewJson(response, 409, { error: "Review unavailable" });
+          sendOwnerReviewJson(response, 409, { error: "REVIEW_SUBMISSION_PENDING" });
           return;
         }
         activePrivateBodyRequests.add(request);
         try {
           const raw = await readBoundedOwnerReviewBody(request);
           if (phase !== "reviewing" || !view) {
-            if (!response.destroyed) sendOwnerReviewJson(response, 409, { error: "Review unavailable" });
+            if (!response.destroyed) sendOwnerReviewJson(response, 409, { error: "REVIEW_UNAVAILABLE" });
             return;
           }
-          const attestation = createCorrectionFlowDocumentReviewAttestation(
-            envelope,
-            [
-              { kind: "resume", renderedPdfHash: delivered.get("resume"), delivered: true },
-              { kind: "cover_letter", renderedPdfHash: delivered.get("cover_letter"), delivered: true }
-            ],
-            JSON.parse(raw),
-            now().toISOString()
-          );
+          const submission = JSON.parse(raw);
+          const missingPdfs = envelope.documents.filter(document =>
+            delivered.get(document.kind) !== document.renderedPdfHash).map(document => document.kind);
+          if (missingPdfs.length) {
+            sendOwnerReviewJson(response, 400, { error: "PDF_DELIVERY_REQUIRED", documents: missingPdfs });
+            return;
+          }
+          const parsed = correctionFlowDocumentReviewSchemas.submission.safeParse(submission);
+          if (!parsed.success) {
+            // Return schema-owned field paths only; never rejected values, raw errors, or arbitrary keys.
+            const fields = [...new Set(parsed.error.issues.map(issue => issue.path.join(".")))]
+              .filter(path => /^(?:envelopeHash|documents(?:\.[01](?:\.(?:kind|validatedOutputHash|renderedPdfHash|disposition|reason|reviewedAllPages|reviewedWritingQuality|reviewedVisualLayout))?)?)$/u.test(path));
+            sendOwnerReviewJson(response, 400, { error: "REVIEW_FIELDS_REQUIRED", fields });
+            return;
+          }
+          let attestation: CorrectionFlowDocumentReviewAttestation;
+          try {
+            attestation = createCorrectionFlowDocumentReviewAttestation(
+              envelope,
+              [
+                { kind: "resume", renderedPdfHash: delivered.get("resume"), delivered: true },
+                { kind: "cover_letter", renderedPdfHash: delivered.get("cover_letter"), delivered: true }
+              ],
+              parsed.data,
+              now().toISOString()
+            );
+          } catch {
+            sendOwnerReviewJson(response, 409, { error: "REVIEW_IDENTITY_MISMATCH" });
+            return;
+          }
           phase = "completing";
           resolveFinished(attestation);
           response.once("finish", () => close("completed"));

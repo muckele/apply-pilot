@@ -1,5 +1,15 @@
 # Synthetic application-document diagnostics
 
+## October 14 review submission correction
+
+The owner-run prompt-v10 review at `d3202f3527f139f6a8120d551bfe283e87f3beac` completed both calls with 11,464 input tokens, 2,980 output tokens, zero cached tokens, known estimated cost `$0.019773`, and no unknown billing, retry, or fallback. Its safe receipt stopped at `owner_review` / `OWNER_REVIEW_INCOMPLETE` with no accepted review attestation. The owner's separate feedback was **Needs revision / Formatting for both documents**; this is preserved as feedback, not reconstructed as an accepted attestation. No raw response or validated document was retained.
+
+Offline synthetic reproduction confirmed that refreshing sent the old page's unconditional cancellation beacon and destroyed the session. Missing PDF delivery and unchecked inspection fields also collapsed into one generic submission error. The historical receipt cannot distinguish timeout from refresh cancellation or identify the final rejected field. Native Chromium loaded both exact synthetic PDFs with the existing CSP; the reported gray viewer remains unproven. PDF headers, delivery guards, hashes, and inspection requirements are unchanged.
+
+The correction keeps reloads inside the same original 15-minute deadline, with no new generation or timer extension. Only decision categories and inspection booleans, bound to the envelope and original expiry, survive reload in tab-scoped session storage; document text, evidence, and PDF bytes remain in memory only. Feedback metadata is cleared on confirmed completion, cancellation, expiry, or an unavailable/mismatched session. Closing the tab alone does not immediately cancel the runner: use **Cancel local review** or stop the runner; its original expiry still disposes the documents. Missing delivery, missing checks, identity mismatch, and connection failures now have distinct messages. Future safe receipts distinguish `OWNER_REVIEW_CANCELLED` and `OWNER_REVIEW_EXPIRED`; the historical receipt is unchanged. Appearance is under **Settings**, and inspection checks say **I reviewed…** so they do not imply approval.
+
+These changes and native-viewer regressions use synthetic offline fixtures only. They do not authorize another provider call, revive the closed owner session, establish writing-quality acceptance, or authorize publication or deployment.
+
 ## Visible local review implementation
 
 Status: **first live review completed with both documents marked needs revision; offline correction implemented; no repeat paid run**. Contract version `2` now composes the prompt-version `8` résumé-first, cover-letter-second generation path with a one-shot validated bundle and a tokenized `127.0.0.1` review session. The session shows full source résumé and target-job context before two full-width, independently scrollable exact PDFs, page-aligned text fallbacks, and server-resolved evidence bindings. It accepts only ordered approve/needs-revision decisions with affirmative all-pages, writing-quality, and visual-layout attestations for both exact document hashes.

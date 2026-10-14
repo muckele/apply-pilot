@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
-import { chromium } from "playwright";
+import { chromium, type Page } from "playwright";
 
 import { buildCorrectionFlowDocumentReviewEnvelope } from "@/lib/ai/correction-flow-document-review-contract";
 import { startCorrectionFlowDocumentOwnerReview } from "@/lib/ai/correction-flow-document-owner-review";
@@ -52,6 +52,58 @@ function input() {
   };
 }
 
+async function assertNativePdfLoaded(page: Page, pdfUrl: string) {
+  const started = Date.now();
+  while (Date.now() - started < 5_000) {
+    for (const frame of page.frames().filter(frame => frame.url().startsWith("chrome-extension:"))) {
+      const loaded = await frame.evaluate((expectedUrl) => {
+        // Pinned native Chromium viewer: test actual completion for this exact file, not a hidden fetch.
+        const viewer = document.querySelector("pdf-viewer") as HTMLElement & { loadState_?: string; originalUrl?: string };
+        return viewer?.originalUrl === expectedUrl && viewer.loadState_ === "success";
+      }, pdfUrl);
+      if (loaded) return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.fail("The visible PDF control did not finish loading the exact document in native Chromium.");
+}
+
+test("native Chromium PDF controls support revision feedback without hidden fetches", async (t) => {
+  const browser = await chromium.launch({ headless: true, channel: "chromium" });
+  t.after(() => browser.close());
+  const review = await startCorrectionFlowDocumentOwnerReview(input());
+  t.after(() => review.close("test_cleanup"));
+  const page = await browser.newPage();
+  await page.clock.install();
+  const violations: string[] = [];
+  page.on("console", (message) => {
+    if (/Content Security Policy|Refused to load/u.test(message.text())) violations.push(message.text());
+  });
+  await page.goto(review.reviewUrl);
+  await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor();
+  await page.getByRole("button", { name: "3 Tailored documents" }).click();
+  for (const kind of ["resume", "cover_letter"]) {
+    await page.getByRole("button", { name: kind === "resume" ? "Review résumé" : "Review cover letter", exact: true }).click();
+    const card = page.locator(`[data-document-card="${kind}"]`);
+    await card.locator("summary").filter({ hasText: "Embedded PDF preview" }).click();
+    await assertNativePdfLoaded(page, review.pdfUrls[kind === "resume" ? 0 : 1]);
+    await card.getByLabel("Needs revision").check();
+    await card.locator("select").selectOption("formatting");
+    await card.getByLabel("I reviewed every PDF page").check();
+    await card.getByLabel("I reviewed the writing quality").check();
+    await card.getByLabel("I reviewed the visual layout").check();
+  }
+  assert.deepEqual(violations, []);
+  assert.equal(review.deliveredPdfCount(), 2);
+  await page.getByRole("button", { name: "Submit both review decisions" }).click();
+  const attestation = await review.finished;
+  assert.equal(attestation.documents.every(document => document.disposition === "needs_revision" && document.reason === "formatting"), true);
+  assert.equal((await review.closed).reason, "completed");
+  await page.getByText("Review recorded. This local session is closed.", {exact:true}).waitFor();
+  await page.clock.fastForward(900_001);
+  assert.equal(await page.locator("#review-status").textContent(), "Review recorded. This local session is closed.");
+});
+
 test("desktop and mobile staged review keeps complete source context and requires both exact document decisions", async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
@@ -100,13 +152,6 @@ test("desktop and mobile staged review keeps complete source context and require
     await resume.locator("summary").filter({ hasText: "Embedded PDF preview" }).click();
     await page.waitForFunction(() => !!document.querySelector('[data-document-pdf="resume"]')?.getAttribute("src"));
     assert.equal(await resume.locator('[data-document-pdf="resume"]').getAttribute("src"), new URL(review.pdfUrls[0]!).pathname);
-    await page.evaluate(async (urls) => {
-      for (const url of urls) {
-        const response = await fetch(url, { cache: "no-store" });
-        if (!response.ok) throw new Error("PDF unavailable");
-        await response.arrayBuffer();
-      }
-    }, review.pdfUrls);
     for (const kind of ["resume", "cover_letter"]) {
       await page.getByRole("button", { name: kind === "resume" ? "Review résumé" : "Review cover letter", exact: true }).click();
       const card = page.locator(`[data-document-card="${kind}"]`);
@@ -118,10 +163,11 @@ test("desktop and mobile staged review keeps complete source context and require
         assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height, "Switching documents must reveal the opening paragraph without manual scrolling.");
         assert.equal(await card.locator("[data-document-title]").evaluate(element => element === document.activeElement), true);
       }
+      if (kind === "cover_letter") await card.locator("summary").filter({hasText:"Embedded PDF preview"}).click();
       await card.getByLabel("Approve exact document").check();
-      await card.getByLabel("Review every PDF page").check();
-      await card.getByLabel("Review the writing quality").check();
-      await card.getByLabel("Review the visual layout").check();
+      await card.getByLabel("I reviewed every PDF page").check();
+      await card.getByLabel("I reviewed the writing quality").check();
+      await card.getByLabel("I reviewed the visual layout").check();
     }
     await page.getByRole("button", { name: "Submit both review decisions" }).click();
     const attestation = await review.finished;
@@ -144,6 +190,7 @@ test("review themes persist and System tracks actual OS preference changes on de
     await page.goto(review.reviewUrl);
     const theme = page.getByLabel("Appearance", {exact:true});
     const resolved = () => page.locator("html").getAttribute("data-product-theme");
+    await page.getByText("Settings", {exact:true}).click();
     await theme.selectOption("light");
     assert.equal(await resolved(),"light");
     await page.emulateMedia({colorScheme:"dark"});
@@ -164,5 +211,149 @@ test("review themes persist and System tracks actual OS preference changes on de
     assert.equal(await second.locator("html").getAttribute("data-product-theme"),"light");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),true);
     await context.close();
+  }
+});
+
+
+test("reload preserves the same review and feedback without cancelling or extending its lifetime", async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const review = await startCorrectionFlowDocumentOwnerReview(input());
+  t.after(() => review.close("test_cleanup"));
+  const page = await browser.newPage();
+  await page.goto(review.reviewUrl);
+  await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor();
+  await page.getByRole("button", {name:"3 Tailored documents"}).click();
+  const resume = page.locator('[data-document-card="resume"]');
+  await resume.getByLabel("Needs revision").check();
+  await resume.locator("select").selectOption("formatting");
+  await page.reload();
+  await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor({timeout:3_000});
+  assert.equal(review.phase(), "reviewing");
+  await page.getByRole("button", {name:"3 Tailored documents"}).click();
+  assert.equal(await resume.getByLabel("Needs revision").isChecked(), true);
+  assert.equal(await resume.locator("select").inputValue(), "formatting");
+  await page.getByRole("button", {name:"Cancel local review"}).click();
+  assert.equal((await review.closed).reason, "owner_cancel");
+  assert.equal(review.hasPrivateInput(), false);
+});
+
+
+test("submission explains missing PDF delivery, unchecked fields, and connection failure without losing choices", async (t) => {
+  const browser = await chromium.launch({headless:true,channel:"chromium"});
+  t.after(() => browser.close());
+  const review = await startCorrectionFlowDocumentOwnerReview(input());
+  t.after(() => review.close("test_cleanup"));
+  const page = await browser.newPage();
+  await page.clock.install();
+  await page.goto(review.reviewUrl);
+  await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor();
+  await page.getByRole("button", {name:"3 Tailored documents"}).click();
+  for (const kind of ["resume", "cover_letter"]) {
+    await page.getByRole("button", {name:kind === "resume" ? "Review résumé" : "Review cover letter",exact:true}).click();
+    const card=page.locator(`[data-document-card="${kind}"]`);
+    await card.getByLabel("Needs revision").check();
+    await card.locator("select").selectOption("formatting");
+  }
+  const submit=page.getByRole("button", {name:"Submit both review decisions"});
+  await submit.click();
+  await page.getByText("Résumé: open the exact PDF using its link or embedded preview and wait for it to load.", {exact:false}).waitFor();
+  assert.equal(review.phase(), "reviewing");
+  for (const kind of ["resume", "cover_letter"]) {
+    await page.getByRole("button", {name:kind === "resume" ? "Review résumé" : "Review cover letter",exact:true}).click();
+    const card=page.locator(`[data-document-card="${kind}"]`);
+    const popupPromise=page.waitForEvent("popup");
+    await card.locator("[data-open-pdf]").click();
+    const popup=await popupPromise;
+    await assertNativePdfLoaded(popup, review.pdfUrls[kind === "resume" ? 0 : 1]);
+    await popup.close();
+  }
+  assert.equal(review.deliveredPdfCount(), 2);
+  await submit.click();
+  await page.getByText("Résumé: confirm you reviewed every PDF page.", {exact:false}).waitFor();
+  assert.match(await page.locator("#review-status").textContent() ?? "", /Cover letter: confirm you reviewed the writing quality/);
+  const draft=await page.evaluate(() => sessionStorage.getItem("apply-pilot-document-review-feedback"));
+  assert.ok(draft);
+  assert.doesNotMatch(draft, /browser source|browser resume|browser cover|PDF-|validatedOutputHash|example.test/);
+  await page.route(review.submissionUrl, route => route.abort());
+  await submit.click();
+  await page.getByText("Could not confirm the review submission because the local connection failed.", {exact:false}).waitFor();
+  assert.equal(await page.locator('[data-document-card="cover_letter"]').getByLabel("Needs revision").isChecked(), true);
+  await page.unroute(review.submissionUrl);
+  await page.getByRole("button", {name:"Cancel local review"}).click();
+  await review.closed;
+  await page.getByText("Review cancelled.", {exact:true}).waitFor();
+  await page.clock.fastForward(900_001);
+  assert.equal(await page.locator("#review-status").textContent(), "Review cancelled.");
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("apply-pilot-document-review-feedback")), null);
+});
+
+
+test("terminal submission responses clear feedback, while pending admission preserves it", async (t) => {
+  const browser=await chromium.launch({headless:true});
+  t.after(() => browser.close());
+  for (const code of ["REVIEW_SUBMISSION_PENDING", "REVIEW_IDENTITY_MISMATCH", "REVIEW_UNAVAILABLE"]) {
+    const review=await startCorrectionFlowDocumentOwnerReview(input());
+    t.after(() => review.close("test_cleanup"));
+    const page=await browser.newPage();
+    await page.clock.install();
+    await page.goto(review.reviewUrl);
+    await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor();
+    await page.getByRole("button",{name:"3 Tailored documents"}).click();
+    await page.getByLabel("Needs revision",{exact:true}).first().check();
+    await page.route(review.submissionUrl, route => route.fulfill({status:409,contentType:"application/json",body:JSON.stringify({error:code})}));
+    await page.getByRole("button",{name:"Submit both review decisions"}).click();
+    await page.waitForFunction(() => (document.getElementById("review-status")?.textContent?.length||0)>0);
+    const draft=await page.evaluate(() => sessionStorage.getItem("apply-pilot-document-review-feedback"));
+    assert.equal(draft!==null, code === "REVIEW_SUBMISSION_PENDING");
+    if (code !== "REVIEW_SUBMISSION_PENDING") {
+      const terminalMessage=await page.locator("#review-status").textContent();
+      await page.clock.fastForward(900_001);
+      assert.equal(await page.locator("#review-status").textContent(),terminalMessage);
+    }
+    review.close("test_cleanup");
+    await review.closed;
+    await page.close();
+  }
+});
+
+test("late network failures cannot overwrite confirmed cancellation, expiry, or a recorded review", async (t) => {
+  const browser=await chromium.launch({headless:true});
+  t.after(() => browser.close());
+  for (const outcome of ["cancelled", "expired", "recorded", "accepted_after_expiry"] as const) {
+    const review=await startCorrectionFlowDocumentOwnerReview(input());
+    t.after(() => review.close("test_cleanup"));
+    const page=await browser.newPage();
+    await page.clock.install();
+    await page.goto(review.reviewUrl);
+    await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor();
+    await page.getByRole("button",{name:"3 Tailored documents"}).click();
+    let release!: () => Promise<void>;
+    let captured!: () => void;
+    const pending=new Promise<void>(resolve=>{captured=resolve;});
+    await page.route(outcome === "recorded" ? review.cancelUrl : review.submissionUrl, route => {
+      release=()=>outcome === "accepted_after_expiry" ? route.fulfill({status:200,contentType:"application/json",body:'{"status":"review_recorded"}'}) : route.abort();captured();
+    });
+    await page.getByRole("button",{name:outcome === "recorded" ? "Cancel local review" : "Submit both review decisions"}).click();
+    await pending;
+    if(outcome === "cancelled") {
+      await page.getByRole("button",{name:"Cancel local review"}).click();
+      await page.getByText("Review cancelled.",{exact:true}).waitFor();
+    } else if(outcome === "expired" || outcome === "accepted_after_expiry") {
+      await page.clock.fastForward(900_001);
+    } else {
+      // UI transport race only: actual document acceptance is covered by native-viewer tests above.
+      await page.route(review.submissionUrl,route=>route.fulfill({status:200,contentType:"application/json",body:'{"status":"review_recorded"}'}));
+      await page.getByRole("button",{name:"Submit both review decisions"}).click();
+      await page.getByText("Review recorded. This local session is closed.",{exact:true}).waitFor();
+    }
+    const terminalMessage=await page.locator("#review-status").textContent();
+    await release();
+    await page.waitForTimeout(50);
+    assert.equal(await page.locator("#review-status").textContent(),outcome === "accepted_after_expiry" ? "Review recorded. This local session is closed." : terminalMessage);
+    assert.equal(await page.evaluate(()=>sessionStorage.getItem("apply-pilot-document-review-feedback")),null);
+    review.close("test_cleanup");
+    await review.closed;
+    await page.close();
   }
 });

@@ -91,9 +91,9 @@ test("the local page presents both exact PDFs, assembled text, evidence, and req
   assert.match(html, /data-document-card="cover_letter"/u);
   assert.match(html, /data-document-pdf="resume"/u);
   assert.match(html, /data-document-pdf="cover_letter"/u);
-  assert.match(html, /Review every PDF page/u);
-  assert.match(html, /Review the writing quality/u);
-  assert.match(html, /Review the visual layout/u);
+  assert.match(html, /I reviewed every PDF page/u);
+  assert.match(html, /I reviewed the writing quality/u);
+  assert.match(html, /I reviewed the visual layout/u);
   assert.match(html, /Approve exact document/u);
   assert.match(html, /Needs revision/u);
   assert.match(html, /Submit both review decisions/u);

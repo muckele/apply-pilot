@@ -145,15 +145,15 @@ function documentCard(kind: "resume" | "cover_letter", pdfPath: string) {
       <iframe class="pdf" data-document-pdf="${kind}" title="Exact ${label} PDF" data-pdf-path="${escapeAttribute(pdfPath)}"></iframe>
     </details>
     <details class="preview-details"><summary>Read document text</summary><div data-document-text></div></details>
-    <details class="preview-details"><summary>Exact document identifiers</summary><p class="exact-identifiers" data-document-hash></p></details>
-    <details class="evidence"><summary>Review server-resolved evidence bindings</summary><ul data-document-evidence></ul></details>
-    <fieldset><legend>${label} decision</legend>
+    <details class="preview-details"><summary>Technical details: exact document identifiers</summary><p class="exact-identifiers" data-document-hash></p></details>
+    <details class="evidence"><summary>Supporting source evidence</summary><ul data-document-evidence></ul></details>
+    <fieldset><legend>${label} decision</legend><p class="muted">These checks record what you inspected. You can select Needs revision after reviewing it.</p>
       <label><input type="radio" name="${kind}-disposition" value="approved"> Approve exact document</label>
       <label><input type="radio" name="${kind}-disposition" value="needs_revision"> Needs revision</label>
       <label>Revision category <select><option value="">None</option><option value="clarity">Clarity</option><option value="tone">Tone</option><option value="formatting">Formatting</option><option value="length">Length</option><option value="other">Other</option></select></label>
-      <label><input type="checkbox" data-attestation="all-pages"> Review every PDF page</label>
-      <label><input type="checkbox" data-attestation="writing"> Review the writing quality</label>
-      <label><input type="checkbox" data-attestation="layout"> Review the visual layout</label>
+      <label><input type="checkbox" data-attestation="all-pages"> I reviewed every PDF page</label>
+      <label><input type="checkbox" data-attestation="writing"> I reviewed the writing quality</label>
+      <label><input type="checkbox" data-attestation="layout"> I reviewed the visual layout</label>
     </fieldset>
   </section>`;
 }
@@ -162,7 +162,7 @@ function html(pathsValue: ReviewPaths) {
   const paths = checkedPaths(pathsValue);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Synthetic document review</title><link rel="stylesheet" href="/document-review.css"><script defer src="/document-review.js"></script></head>
   <body><main data-document-review-page data-state-path="${escapeAttribute(paths.statePath)}" data-submission-path="${escapeAttribute(paths.submissionPath)}" data-cancel-path="${escapeAttribute(paths.cancelPath)}">
-    <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">AP</span>Apply Pilot</div><label class="appearance">Appearance <select id="review-theme" aria-label="Appearance"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></label></header>
+    <header class="topbar"><div class="brand"><span class="brand-mark" aria-hidden="true">AP</span>Apply Pilot</div><details class="review-settings"><summary>Settings</summary><label class="appearance">Appearance <select id="review-theme" aria-label="Appearance"><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></label></details></header>
     <h1>Prepare your application</h1><p class="muted" data-workspace-job></p>
     <div class="notice"><strong>Synthetic local review only</strong><p data-output-origin></p><p>This proof does not authorize an application, export-for-use, employer interaction, or submission.</p></div>
     <nav class="stage-nav" aria-label="Application preparation"><button data-go-stage="background" aria-current="step"><span class="step-number">1</span>Background and target job</button><button data-go-stage="corrections" aria-current="false"><span class="step-number">2</span>Missing-fact corrections</button><button data-go-stage="documents" aria-current="false"><span class="step-number">3</span>Tailored documents</button></nav>

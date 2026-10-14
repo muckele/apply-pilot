@@ -159,7 +159,7 @@ test("the loopback review serves only tokenized no-store state, assets, and exac
   assert.equal((await rawRequest(review.pdfUrls[0], { headers: { range: "bytes=0-4" } })).status, 416);
 });
 
-test("submission requires both delivered exact PDFs, exact origin, and all bounded attestations", async () => {
+test("submission requires both delivered exact PDFs, exact origin, and all bounded attestations", async (t) => {
   const input = fixture();
   const review = await startCorrectionFlowDocumentOwnerReview({
     envelope: input.envelope,
@@ -168,23 +168,41 @@ test("submission requires both delivered exact PDFs, exact origin, and all bound
     renderedPdfs: input.renderedPdfs,
     now: () => new Date("2026-10-10T04:10:00.000Z")
   });
+  t.after(() => review.close("test_cleanup"));
   const request = (body: unknown, origin = review.origin) => rawRequest(review.submissionUrl, {
     method: "POST",
     origin,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
-  assert.equal((await request(submission(input.envelope.envelopeHash))).status, 400);
+  const undelivered = await request(submission(input.envelope.envelopeHash));
+  assert.equal(undelivered.status, 400);
+  assert.deepEqual(JSON.parse(undelivered.body), {
+    error: "PDF_DELIVERY_REQUIRED", documents: ["resume", "cover_letter"]
+  });
   await fetch(review.pdfUrls[0]).then((response) => response.arrayBuffer());
   await fetch(review.pdfUrls[1]).then((response) => response.arrayBuffer());
   assert.equal((await request(submission(input.envelope.envelopeHash), "http://wrong.example")).status, 403);
-  assert.equal((await request({
+  const unchecked = await request({
     ...submission(input.envelope.envelopeHash),
     documents: [
       { ...submission(input.envelope.envelopeHash).documents[0], reviewedVisualLayout: false },
       submission(input.envelope.envelopeHash).documents[1]
     ]
-  })).status, 400);
+  });
+  assert.equal(unchecked.status, 400);
+  assert.deepEqual(JSON.parse(unchecked.body), {
+    error: "REVIEW_FIELDS_REQUIRED", fields: ["documents.0.reviewedVisualLayout"]
+  });
+  const mismatched = submission(input.envelope.envelopeHash);
+  mismatched.documents[0].renderedPdfHash = hash("f");
+  const mismatch = await request(mismatched);
+  assert.equal(mismatch.status, 409);
+  assert.deepEqual(JSON.parse(mismatch.body), { error: "REVIEW_IDENTITY_MISMATCH" });
+  const privateMarker = "PRIVATE_SYNTHETIC_REJECTED_FIELD";
+  const unexpected = await request({ ...submission(input.envelope.envelopeHash), [privateMarker]: privateMarker });
+  assert.equal(unexpected.status, 400);
+  assert.doesNotMatch(unexpected.body, new RegExp(privateMarker, "u"));
 
   const response = await request(submission(input.envelope.envelopeHash));
   assert.equal(response.status, 200);
@@ -201,6 +219,19 @@ test("submission requires both delivered exact PDFs, exact origin, and all bound
   assert.equal(input.resumePdf.every((byte) => byte === 0), true);
   assert.equal(input.coverPdf.every((byte) => byte === 0), true);
   assert.doesNotMatch(response.body, /Synthetic resume fact|Synthetic source fact|Dear Synthetic/u);
+});
+
+test("state reloads keep the original absolute expiry and cannot retain PDFs past it", async (t) => {
+  const input = fixture();
+  const review = await startCorrectionFlowDocumentOwnerReview({ ...input, sessionTimeoutMs: 200 });
+  t.after(() => review.close("test_cleanup"));
+  const first = await fetch(review.stateUrl).then(response => response.json()) as { expiresAt: number };
+  await new Promise(resolve => setTimeout(resolve, 60));
+  const reloaded = await fetch(review.stateUrl).then(response => response.json()) as { expiresAt: number };
+  assert.equal(reloaded.expiresAt, first.expiresAt);
+  assert.equal((await review.closed).reason, "session_timeout");
+  assert.equal(review.hasPrivateInput(), false);
+  assert.equal(input.renderedPdfs.every(pdf => pdf.bytes.every(byte => byte === 0)), true);
 });
 
 test("cancellation and timeout close once, reject completion, and clear all held material", async () => {
