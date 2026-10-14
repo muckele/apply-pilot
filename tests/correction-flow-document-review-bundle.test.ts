@@ -15,6 +15,8 @@ import {
   syntheticTailoredResumeOutput
 } from "@/evaluation/correction-flow-provider-stub";
 
+import { PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
+
 const hash = (character: string) => character.repeat(64);
 
 function validInput(payload = syntheticCorrectionFlowDocumentPayload()) {
@@ -25,6 +27,7 @@ function validInput(payload = syntheticCorrectionFlowDocumentPayload()) {
     tailoredResume,
     coverLetter,
     binding: {
+      rendering: PRODUCT_DOCUMENT_REVIEW_RENDERING,
       manifestHash: hash("1"),
       exactHead: "a".repeat(40),
       payloadHash: hashAiInput("correctionFlowResumeDiagnosticPayload", "1", payload),

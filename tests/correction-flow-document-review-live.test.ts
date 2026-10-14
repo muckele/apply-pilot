@@ -9,12 +9,14 @@ import {
 } from "@/scripts/run-correction-flow-document-review-live";
 import type { CorrectionFlowDocumentReviewReceipt } from "@/lib/ai/correction-flow-document-review";
 
+import { PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
+
 const exactHead = "e".repeat(40);
 const credential = "synthetic-visible-review-key-never-log";
 
 function safeReceipt(manifestHash: string): CorrectionFlowDocumentReviewReceipt {
   return {
-    contractVersion: "2" as const,
+    contractVersion: "3" as const,
     status: "approved" as const,
     manifestHash,
     exactHead,
@@ -69,7 +71,8 @@ function safeReceipt(manifestHash: string): CorrectionFlowDocumentReviewReceipt 
   };
 }
 
-test("the launcher requires exact consent before one hidden credential read and emits only URL plus safe receipt", async () => {
+// Fully injected unit harness: no real consent, credential input, provider transport, or owner window.
+test("the mocked launcher binds product rendering before simulated consent and emits only URL plus safe receipt", async () => {
   const events: string[] = [];
   const writes: string[] = [];
   let manifestHash = "";
@@ -84,7 +87,8 @@ test("the launcher requires exact consent before one hidden credential read and 
         if (value.includes('"status": "awaiting_manifest_consent"')) {
           const parsed = JSON.parse(value);
           manifestHash = parsed.safeManifest.manifestHash;
-          assert.equal(parsed.safeManifest.contractVersion, "2");
+          assert.equal(parsed.safeManifest.contractVersion, "3");
+          assert.deepEqual(parsed.safeManifest.rendering, PRODUCT_DOCUMENT_REVIEW_RENDERING);
           assert.equal(parsed.safeManifest.validatedDocumentLifetimeMs, 900_000);
           assert.equal(parsed.safeManifest.conservativeReservationMicros, 112_125);
           events.push("manifest");

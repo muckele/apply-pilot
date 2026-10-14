@@ -75,9 +75,9 @@ function consentFor(value: ReturnType<typeof manifest>) {
   });
 }
 
-test("the v2 review manifest freezes the exact visible-review scope and generation plan", () => {
+test("the v3 review manifest freezes the exact visible-review scope and generation plan", () => {
   const value = manifest();
-  assert.equal(value.contractVersion, "2");
+  assert.equal(value.contractVersion, "3");
   assert.equal(value.callCount, 2);
   assert.equal(value.stepTimeoutMs, 180_000);
   assert.equal(value.conservativeReservationMicros, 112_125);
@@ -317,7 +317,7 @@ test("failure, cancellation, and invalid consent never start a later stage or ex
   assert.doesNotMatch(JSON.stringify(receipt), /private-provider-output/u);
 });
 
-test("the generation-to-bundle entry point cannot manufacture consent outside canonical v2", () => {
+test("the generation-to-bundle entry point cannot manufacture consent outside canonical v3", () => {
   const payload = syntheticCorrectionFlowDocumentPayload();
   const diagnosticManifest = buildCorrectionFlowDocumentDiagnosticManifest({
     exactHead,
@@ -353,5 +353,25 @@ test("the generation-to-bundle entry point cannot manufacture consent outside ca
     manufacturedAuthorizationAttempt as unknown as Parameters<
       typeof createCorrectionFlowDocumentReviewGenerationRunner
     >[0]
-  ), /canonical v2|consent/iu);
+  ), /canonical v3|consent/iu);
+});
+
+
+test("obsolete or altered rendering manifests stop before mocked provider dispatch", () => {
+  const current = manifest();
+  let dispatches = 0;
+  for (const changed of [
+    { ...current, contractVersion: "2" },
+    { ...current, rendering: { ...current.rendering, layoutVersion: "2" } },
+    { ...current, rendering: { ...current.rendering, resumeFormat: { ...current.rendering.resumeFormat, fontSize: 10 } } }
+  ]) {
+    assert.throws(() => createCorrectionFlowDocumentReviewRunner({
+      manifest: changed as typeof current,
+      consent: consentFor(current),
+      payload: syntheticCorrectionFlowDocumentPayload(),
+      credentials: { geminiApiKey: credential },
+      fetchImpl: async () => { dispatches += 1; return providerResponse(fixedResumeOutput); }
+    }), /manifest/i);
+  }
+  assert.equal(dispatches, 0);
 });

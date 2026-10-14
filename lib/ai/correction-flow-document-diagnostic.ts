@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
+import { PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
 import {
   assembleCoverLetterProviderOutput,
   assembleTailoredResumeProviderOutput,
@@ -55,10 +56,10 @@ import {
 
 export type { CorrectionFlowDocumentExportVerification };
 
-export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION = "1" as const;
+export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION = "2" as const;
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT = 2 as const;
 export const CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_STEP_TIMEOUT_MS = 180_000 as const;
-export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION = "2" as const;
+export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION = "3" as const;
 export const CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS = 900_000 as const;
 
 const FROZEN_SYNTHETIC_PAYLOAD_HASH =
@@ -103,6 +104,7 @@ const requiredOwnerAttestations = Object.freeze([
 ] as const);
 
 export type CorrectionFlowDocumentDiagnosticManifest = Readonly<{
+  rendering: typeof PRODUCT_DOCUMENT_REVIEW_RENDERING;
   contractVersion: typeof CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION;
   exactHead: string;
   providerMode: z.infer<typeof providerModeSchema>;
@@ -129,6 +131,7 @@ export type CorrectionFlowDocumentDiagnosticManifest = Readonly<{
 }>;
 
 export type CorrectionFlowDocumentReviewManifest = Readonly<{
+  rendering: typeof PRODUCT_DOCUMENT_REVIEW_RENDERING;
   contractVersion: typeof CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION;
   exactHead: string;
   providerMode: z.infer<typeof providerModeSchema>;
@@ -310,6 +313,7 @@ export function buildCorrectionFlowDocumentDiagnosticManifest({
   ] as const);
   const core = Object.freeze({
     contractVersion: CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION,
+    rendering: PRODUCT_DOCUMENT_REVIEW_RENDERING,
     exactHead,
     providerMode,
     generatedAt: generatedAt.toISOString(),
@@ -334,7 +338,7 @@ export function buildCorrectionFlowDocumentDiagnosticManifest({
   });
   return Object.freeze({
     ...core,
-    manifestHash: hashAiInput("correctionFlowDocumentDiagnosticManifest", "1", core)
+    manifestHash: hashAiInput("correctionFlowDocumentDiagnosticManifest", CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CONTRACT_VERSION, core)
   });
 }
 
@@ -360,6 +364,7 @@ export function buildCorrectionFlowDocumentReviewManifest({
   });
   const core = Object.freeze({
     contractVersion: CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION,
+    rendering: generation.rendering,
     exactHead: generation.exactHead,
     providerMode: generation.providerMode,
     generatedAt: generation.generatedAt,
@@ -387,16 +392,17 @@ export function buildCorrectionFlowDocumentReviewManifest({
     reviewedEvidenceHash: generation.reviewedEvidenceHash,
     factCatalogCount: generation.factCatalogCount,
     factCatalogHash: generation.factCatalogHash,
-    generationId: hashAiInput("correctionFlowDocumentReviewGeneration", "2", {
+    generationId: hashAiInput("correctionFlowDocumentReviewGeneration", CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION, {
       exactHead: generation.exactHead,
       generatedAt: generation.generatedAt,
       payloadHash: generation.payloadHash,
+      rendering: generation.rendering,
       calls: generation.calls.map((call) => call.wireRequestHash)
     })
   });
   return Object.freeze({
     ...core,
-    manifestHash: hashAiInput("correctionFlowDocumentReviewManifest", "2", core)
+    manifestHash: hashAiInput("correctionFlowDocumentReviewManifest", CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION, core)
   });
 }
 
@@ -436,7 +442,7 @@ function assertReviewConsent(manifest: CorrectionFlowDocumentReviewManifest, val
     consent.approvedConservativeReservationMicros !== manifest.conservativeReservationMicros ||
     consent.existingCredentialUseApproved !== (manifest.providerMode === "live_synthetic")
   ) {
-    throw new Error("Document review consent does not match the canonical v2 manifest.");
+    throw new Error("Document review consent does not match the canonical v3 manifest.");
   }
   return consent;
 }
@@ -557,7 +563,8 @@ export type CorrectionFlowDocumentDiagnosticReceipt = Readonly<{
 }>;
 
 type CorrectionFlowDocumentReviewGenerationAuthorization = Readonly<{
-  contractVersion: "2";
+  contractVersion: typeof CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION;
+  rendering: typeof PRODUCT_DOCUMENT_REVIEW_RENDERING;
   manifestHash: string;
   exactHead: string;
   payloadHash: string;
@@ -649,7 +656,8 @@ function createCorrectionFlowDocumentRunnerCore({
   }
   if (reviewAuthorization) {
     if (
-      reviewAuthorization.contractVersion !== "2" ||
+      reviewAuthorization.contractVersion !== CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION ||
+      !isDeepStrictEqual(reviewAuthorization.rendering, manifest.rendering) ||
       reviewAuthorization.exactHead !== manifest.exactHead ||
       reviewAuthorization.payloadHash !== manifest.payloadHash ||
       reviewAuthorization.reviewedEvidenceHash !== manifest.reviewedEvidenceHash ||
@@ -894,6 +902,7 @@ function createCorrectionFlowDocumentRunnerCore({
               tailoredResume,
               coverLetter,
               binding: {
+                rendering: reviewAuthorization.rendering,
                 manifestHash: reviewAuthorization.manifestHash,
                 exactHead: reviewAuthorization.exactHead,
                 payloadHash: reviewAuthorization.payloadHash,
@@ -989,7 +998,7 @@ export function createCorrectionFlowDocumentReviewGenerationRunner(input: {
     safeLabel: input.manifest.safeLabel
   });
   if (!isDeepStrictEqual(canonical, input.manifest)) {
-    throw new Error("Document review generation requires the canonical v2 manifest.");
+    throw new Error("Document review generation requires the canonical v3 manifest.");
   }
   const reviewConsent = assertReviewConsent(canonical, input.consent);
   const manifest = buildCorrectionFlowDocumentDiagnosticManifest({
@@ -1000,7 +1009,8 @@ export function createCorrectionFlowDocumentReviewGenerationRunner(input: {
     safeLabel: canonical.safeLabel
   });
   const authorization: CorrectionFlowDocumentReviewGenerationAuthorization = {
-    contractVersion: "2",
+    contractVersion: CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION,
+    rendering: canonical.rendering,
     manifestHash: canonical.manifestHash,
     exactHead: canonical.exactHead,
     payloadHash: canonical.payloadHash,

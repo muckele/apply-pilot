@@ -43,7 +43,7 @@ test("the launcher binds two sequential document calls before one hidden credent
         assert.equal(input.consent.approvedCallCount, 2);
         assert.equal(input.credentials.geminiApiKey, credential);
         return {
-          contractVersion: "1",
+          contractVersion: "2",
           status: "passed",
           manifestHash,
           exactHead,

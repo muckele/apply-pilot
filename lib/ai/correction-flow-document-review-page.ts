@@ -1,6 +1,7 @@
 import type { CorrectionFlowDocumentReviewEnvelope } from "@/lib/ai/correction-flow-document-review-contract";
 import { documentReviewCss as css, documentReviewJavascript as javascript } from "@/lib/ai/correction-flow-document-review-assets";
-import { buildCanonicalApplicationDocumentLayoutV2 } from "@/lib/documents/application-document-layout-v2";
+import { buildProductDocumentLayout } from "@/lib/documents/product-document-layout";
+import { productDocumentReviewInput } from "@/lib/documents/product-document-review";
 
 type ReviewPaths = Readonly<{
   reviewPath: string;
@@ -68,10 +69,9 @@ export function buildCorrectionFlowDocumentReviewView(input: {
     if (document.kind !== expectedKinds[index] || expected.kind !== document.kind) {
       throw new Error("Document review view requires resume then cover letter.");
     }
-    const layout = buildCanonicalApplicationDocumentLayoutV2({
-      artifactType: document.kind === "resume" ? "RESUME" : "COVER_LETTER",
-      content: document.text
-    });
+    const layout = buildProductDocumentLayout(productDocumentReviewInput(
+      document.kind === "resume" ? "RESUME" : "COVER_LETTER", document.text
+    ));
     return Object.freeze({
       kind: document.kind,
       title: document.title,
@@ -96,7 +96,7 @@ export function buildCorrectionFlowDocumentReviewView(input: {
       renderedPdfHash: string;
       pdfPath: string;
       text: string;
-      layout: ReturnType<typeof buildCanonicalApplicationDocumentLayoutV2>;
+      layout: ReturnType<typeof buildProductDocumentLayout>;
       pages: readonly (readonly string[])[];
       evidence: readonly ReviewEvidence[];
     }>,
@@ -107,7 +107,7 @@ export function buildCorrectionFlowDocumentReviewView(input: {
       renderedPdfHash: string;
       pdfPath: string;
       text: string;
-      layout: ReturnType<typeof buildCanonicalApplicationDocumentLayoutV2>;
+      layout: ReturnType<typeof buildProductDocumentLayout>;
       pages: readonly (readonly string[])[];
       evidence: readonly ReviewEvidence[];
     }>

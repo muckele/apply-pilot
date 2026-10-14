@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import JSZip from "jszip";
 import { z } from "zod";
+import parsePdf from "pdf-parse";
 
 import { buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
 import {
@@ -18,13 +20,8 @@ import type { CorrectionFlowDocumentReviewContext } from "@/lib/ai/correction-fl
 import { coverLetterSchema } from "@/lib/ai/documents";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { tailoredResumeSchema } from "@/lib/ai/resume";
-import {
-  renderCanonicalApplicationDocumentV1
-} from "@/lib/documents/export-renderer";
-import {
-  normalizeApplicationDocumentPdfText,
-  renderCanonicalApplicationDocumentPdfV2
-} from "@/lib/documents/application-document-layout-v2";
+import { renderProductDocument } from "@/lib/documents/product-document-renderer";
+import { productDocumentReviewInput, PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -78,12 +75,12 @@ async function extractExactCanonicalDocxContent(bytes: Buffer) {
     .join("\n");
 }
 
-function extractGeneratedPdfText(bytes: Buffer) {
-  const source = bytes.toString("utf8");
-  if (!source.startsWith("%PDF-1.4\n")) throw new Error("Canonical PDF header is missing.");
-  return [...source.matchAll(/\(((?:\\.|[^\\)])*)\) Tj/gu)]
-    .map((match) => match[1].replace(/\\([()\\])/gu, "$1"))
-    .join("\n");
+async function extractGeneratedPdfText(bytes: Buffer) {
+  // Copying Uint8Array semantics are required by PDF.js; decode the actual WinAnsi PDF output.
+  const input = new Uint8Array(bytes);
+  try {
+    return (await parsePdf(input as unknown as Buffer, { version: "v2.0.550" })).text;
+  } finally { input.fill(0); }
 }
 
 function comparable(value: string) {
@@ -95,11 +92,12 @@ function normalizeBulletMarker(value: string, marker: "•" | "-") {
 }
 
 function docxRoundTripComparable(value: string) {
-  return value.split(/\r?\n/u).map((line) => normalizeBulletMarker(line, "•")).join("\n");
+  // Product exports encode blank-line spacing geometrically, retaining each substantive paragraph.
+  return value.split(/\r?\n/u).map((line) => normalizeBulletMarker(line.trim(), "•")).filter(Boolean).join("\n");
 }
 
 function pdfComparable(value: string) {
-  return comparable(normalizeApplicationDocumentPdfText(normalizeBulletMarker(value, "-")));
+  return comparable(value.split(/\r?\n/u).map(line => normalizeBulletMarker(line, "•")).join("\n"));
 }
 
 function criticalFactsPresent(source: string, extracted: string, pdf: boolean) {
@@ -118,8 +116,8 @@ async function renderAndVerifyArtifact(
   content: string
 ) {
   const [docxResult, pdfResult] = await Promise.allSettled([
-    renderCanonicalApplicationDocumentV1({ artifactType, content }),
-    Promise.resolve(renderCanonicalApplicationDocumentPdfV2({ artifactType, content }))
+    renderProductDocument({ ...productDocumentReviewInput(artifactType, content), format: "docx" }),
+    renderProductDocument({ ...productDocumentReviewInput(artifactType, content), format: "pdf" })
   ]);
   if (docxResult.status === "rejected" || pdfResult.status === "rejected") {
     if (docxResult.status === "fulfilled") docxResult.value.fill(0);
@@ -138,7 +136,7 @@ async function renderAndVerifyArtifact(
     }
     const exactDocx = exactDocxResult.value;
     const productionDocx = productionDocxResult.value;
-    const extractedPdf = extractGeneratedPdfText(pdf);
+    const extractedPdf = await extractGeneratedPdfText(pdf);
     const result = {
       pdf,
       verification: exportArtifactSchema.parse({
@@ -148,7 +146,7 @@ async function renderAndVerifyArtifact(
         pdfExtractedTextHash: sha256(extractedPdf),
         docxRoundTripExact: docxRoundTripComparable(exactDocx) === docxRoundTripComparable(content),
         docxCriticalFactsPresent: criticalFactsPresent(content, productionDocx, false),
-        pdfCriticalFactsPresent: criticalFactsPresent(content, extractedPdf, true)
+        pdfCriticalFactsPresent: pdfComparable(content) === pdfComparable(extractedPdf)
       })
     };
     docx.fill(0);
@@ -217,6 +215,7 @@ export async function verifyCorrectionFlowDocumentExports(input: {
 }
 
 type ReviewBinding = Readonly<{
+  rendering: typeof PRODUCT_DOCUMENT_REVIEW_RENDERING;
   manifestHash: string;
   exactHead: string;
   payloadHash: string;
@@ -271,6 +270,9 @@ export async function buildCorrectionFlowDocumentReviewBundle(input: {
   binding: ReviewBinding;
   expectedValidatedOutputHashes: Readonly<{ tailoredResume: string; coverLetter: string }>;
 }) {
+  if (!isDeepStrictEqual(input.binding.rendering, PRODUCT_DOCUMENT_REVIEW_RENDERING)) {
+    throw new Error("Document review rendering does not match the product export plan.");
+  }
   const payloadHash = hashAiInput("correctionFlowResumeDiagnosticPayload", "1", input.payload);
   if (payloadHash !== input.binding.payloadHash) throw new Error("Document review payload hash changed.");
   const reviewedEvidenceHash = hashAiInput(

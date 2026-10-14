@@ -147,7 +147,10 @@ export const documentReviewJavascript = `${PRODUCT_THEME_BOOTSTRAP_SCRIPT}
     for(const [index,page] of documentView.layout.pages.entries()) {
       const frame=node('div','','document-page');frame.dataset.layoutPage=String(index);
       const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 '+documentView.layout.pageWidth+' '+documentView.layout.pageHeight);svg.setAttribute('role','img');svg.setAttribute('aria-label','Page '+page.number+' layout preview');
-      for(const block of page.blocks) { const text=document.createElementNS(svg.namespaceURI,'text');text.setAttribute('x',block.x);text.setAttribute('y',block.y+block.fontSize);text.setAttribute('font-family','Arial, Helvetica, sans-serif');text.setAttribute('font-size',block.fontSize);text.setAttribute('font-weight',block.bold?'700':'400');text.setAttribute('fill',block.color);text.textContent=block.text;svg.append(text); }
+      for(const block of page.blocks) {
+        const text=document.createElementNS(svg.namespaceURI,'text');text.setAttribute('x',block.x);text.setAttribute('y',block.y+block.fontSize);text.setAttribute('font-family',documentView.layout.fontFamily);text.setAttribute('font-size',block.fontSize);text.setAttribute('font-weight',block.bold?'700':'400');text.setAttribute('fill',block.color);text.textContent=block.text;svg.append(text);
+        if(block.headingRule){const line=document.createElementNS(svg.namespaceURI,'line');const left=block.headingRule==='left';line.setAttribute('x1',left?block.x-6:block.x);line.setAttribute('x2',left?block.x-6:documentView.layout.pageWidth-documentView.layout.margin);line.setAttribute('y1',block.y+block.height+1);line.setAttribute('y2',left?block.y+1:block.y+block.height+1);line.setAttribute('stroke',block.color);line.setAttribute('stroke-width',left?2:.7);svg.append(line);}
+      }
       frame.append(svg);container.append(frame);
       const button=node('button','Page '+page.number);button.dataset.pageChoice=String(index);button.addEventListener('click',()=>choosePage(card,index));rail.append(button);
     }

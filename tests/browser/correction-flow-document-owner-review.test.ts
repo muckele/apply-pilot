@@ -6,15 +6,16 @@ import { chromium, type Page } from "playwright";
 
 import { buildCorrectionFlowDocumentReviewEnvelope } from "@/lib/ai/correction-flow-document-review-contract";
 import { startCorrectionFlowDocumentOwnerReview } from "@/lib/ai/correction-flow-document-owner-review";
-import { renderCanonicalApplicationDocumentPdfV2 } from "@/lib/documents/application-document-layout-v2";
+import { renderProductDocument } from "@/lib/documents/product-document-renderer";
+import { productDocumentReviewInput } from "@/lib/documents/product-document-review";
 
 const hash = (character: string) => character.repeat(64);
 
-function input() {
+async function input() {
   const resumeText = "Taylor Boundary\ntaylor.boundary@example.test | Remote\nService Operations Leader\nSUMMARY\nSynthetic browser resume fact.";
   const coverText = "Taylor Boundary\ntaylor.boundary@example.test | Remote\n\nDear Synthetic Employer,\n\nSynthetic browser cover fact.\n\nSincerely,\nTaylor Boundary";
-  const resumePdf = renderCanonicalApplicationDocumentPdfV2({ artifactType: "RESUME", content: resumeText });
-  const coverPdf = renderCanonicalApplicationDocumentPdfV2({ artifactType: "COVER_LETTER", content: coverText });
+  const resumePdf = await renderProductDocument({ ...productDocumentReviewInput("RESUME", resumeText), format: "pdf" });
+  const coverPdf = await renderProductDocument({ ...productDocumentReviewInput("COVER_LETTER", coverText), format: "pdf" });
   const pdfHash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
   return {
     envelope: buildCorrectionFlowDocumentReviewEnvelope({
@@ -71,7 +72,7 @@ async function assertNativePdfLoaded(page: Page, pdfUrl: string) {
 test("native Chromium PDF controls support revision feedback without hidden fetches", async (t) => {
   const browser = await chromium.launch({ headless: true, channel: "chromium" });
   t.after(() => browser.close());
-  const review = await startCorrectionFlowDocumentOwnerReview(input());
+  const review = await startCorrectionFlowDocumentOwnerReview(await input());
   t.after(() => review.close("test_cleanup"));
   const page = await browser.newPage();
   await page.clock.install();
@@ -108,7 +109,7 @@ test("desktop and mobile staged review keeps complete source context and require
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
-    const fixture = input();
+    const fixture = await input();
     const review = await startCorrectionFlowDocumentOwnerReview(fixture);
     t.after(() => review.close("test_cleanup"));
     const page = await browser.newPage({ viewport });
@@ -142,6 +143,8 @@ test("desktop and mobile staged review keeps complete source context and require
       : resume.locator("[data-reading-content]").getByText("Synthetic browser resume fact.");
     const openingBounds = await resumeOpening.boundingBox();
     assert.ok(openingBounds && openingBounds.y >= 0 && openingBounds.y + openingBounds.height <= viewport.height, "The document opening must be visible when entering document review.");
+    assert.equal(await resume.locator("svg line").count(), 1, "The review must draw the shared product section rule.");
+    assert.equal(await resume.locator("svg text").first().getAttribute("font-family"), "Arial");
     await resume.getByRole("button", { name: "Readable text", exact: true }).click();
     await resume.locator("[data-reading-content]").getByText("Synthetic browser resume fact.").waitFor();
     assert.equal(await page.locator('[data-document-card="cover_letter"]').isVisible(), false);
@@ -182,7 +185,7 @@ test("review themes persist and System tracks actual OS preference changes on de
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
-    const review = await startCorrectionFlowDocumentOwnerReview(input());
+    const review = await startCorrectionFlowDocumentOwnerReview(await input());
     t.after(() => review.close("test_cleanup"));
     const context = await browser.newContext({viewport,colorScheme:"dark"});
     t.after(() => context.close());
@@ -218,7 +221,7 @@ test("review themes persist and System tracks actual OS preference changes on de
 test("reload preserves the same review and feedback without cancelling or extending its lifetime", async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
-  const review = await startCorrectionFlowDocumentOwnerReview(input());
+  const review = await startCorrectionFlowDocumentOwnerReview(await input());
   t.after(() => review.close("test_cleanup"));
   const page = await browser.newPage();
   await page.goto(review.reviewUrl);
@@ -242,7 +245,7 @@ test("reload preserves the same review and feedback without cancelling or extend
 test("submission explains missing PDF delivery, unchecked fields, and connection failure without losing choices", async (t) => {
   const browser = await chromium.launch({headless:true,channel:"chromium"});
   t.after(() => browser.close());
-  const review = await startCorrectionFlowDocumentOwnerReview(input());
+  const review = await startCorrectionFlowDocumentOwnerReview(await input());
   t.after(() => review.close("test_cleanup"));
   const page = await browser.newPage();
   await page.clock.install();
@@ -293,7 +296,7 @@ test("terminal submission responses clear feedback, while pending admission pres
   const browser=await chromium.launch({headless:true});
   t.after(() => browser.close());
   for (const code of ["REVIEW_SUBMISSION_PENDING", "REVIEW_IDENTITY_MISMATCH", "REVIEW_UNAVAILABLE"]) {
-    const review=await startCorrectionFlowDocumentOwnerReview(input());
+    const review=await startCorrectionFlowDocumentOwnerReview(await input());
     t.after(() => review.close("test_cleanup"));
     const page=await browser.newPage();
     await page.clock.install();
@@ -321,7 +324,7 @@ test("late network failures cannot overwrite confirmed cancellation, expiry, or 
   const browser=await chromium.launch({headless:true});
   t.after(() => browser.close());
   for (const outcome of ["cancelled", "expired", "recorded", "accepted_after_expiry"] as const) {
-    const review=await startCorrectionFlowDocumentOwnerReview(input());
+    const review=await startCorrectionFlowDocumentOwnerReview(await input());
     t.after(() => review.close("test_cleanup"));
     const page=await browser.newPage();
     await page.clock.install();

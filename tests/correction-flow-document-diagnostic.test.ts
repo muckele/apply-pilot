@@ -99,7 +99,7 @@ function runnerFor({
 
 test("the two-document manifest freezes prompt v11, the 70-fact catalog, both wires, and the exact cap", () => {
   const value = manifest();
-  assert.equal(value.contractVersion, "1");
+  assert.equal(value.contractVersion, "2");
   assert.equal(value.callCount, 2);
   assert.equal(value.stepTimeoutMs, 180_000);
   assert.equal(value.noRetry, true);

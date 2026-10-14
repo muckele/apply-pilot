@@ -120,7 +120,7 @@ test("the page is read-only and has no match questionnaire, application action, 
     "../lib/ai/correction-flow-document-review-page.ts",
     import.meta.url
   )), "utf8");
-  assert.match(source, /buildCanonicalApplicationDocumentLayoutV2/u);
+  assert.match(source, /buildProductDocumentLayout/u);
   assert.match(source, /CorrectionFlowDocumentReviewEnvelope/u);
   assert.doesNotMatch(source, /synthetic-one-job-review|SyntheticReviewState|buildSyntheticReviewSnapshot/u);
 });

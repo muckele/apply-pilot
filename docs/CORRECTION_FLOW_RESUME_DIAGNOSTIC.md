@@ -1,5 +1,9 @@
 # Synthetic application-document diagnostics
 
+## Current offline rendering integrity correction
+
+The current two-document diagnostic uses contract `2`; visible review uses contract `3`, with application-document prompt/cache `11`. Both use the ordinary product renderer and layout `3` for PDFs, DOCX and on-screen pages. Manifests disclose the complete rendering plan: the existing 11 pt résumé option, default 10 pt letter, and Helvetica PDFs. Old rendering manifests cannot authorize this plan. See [C2 document quality](C2_DOCUMENT_QUALITY.md#diagnosticproduct-rendering-parity-correction). No new live consent, key input or paid execution is authorized. Earlier versions below describe historical runs.
+
 ## October 14 review submission correction
 
 The owner-run prompt-v10 review at `d3202f3527f139f6a8120d551bfe283e87f3beac` completed both calls with 11,464 input tokens, 2,980 output tokens, zero cached tokens, known estimated cost `$0.019773`, and no unknown billing, retry, or fallback. Its safe receipt stopped at `owner_review` / `OWNER_REVIEW_INCOMPLETE` with no accepted review attestation. The owner's separate feedback was **Needs revision / Formatting for both documents**; this is preserved as feedback, not reconstructed as an accepted attestation. No raw response or validated document was retained.
