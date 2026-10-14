@@ -55,6 +55,9 @@ test("the offline documents are complete relative to their available source reco
     assert.match(resume.resumeText, new RegExp(project.name, "u"));
   }
   assert.ok(coverLetter.claimsUsed.length >= 3);
+  assert.match(coverLetter.coverLetter, /18%/u);
+  assert.match(coverLetter.coverLetter, /six service coordinators/u);
+  assert.match(coverLetter.coverLetter, /capacity dashboard/u);
   assert.doesNotMatch(
     `${resume.resumeText}\n${coverLetter.coverLetter}`,
     /synthetic owner|source-backed|reviewed evidence|diagnostic|fixture|factId/iu

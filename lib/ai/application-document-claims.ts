@@ -538,11 +538,13 @@ export function getCoverLetterUncitedLines(payload: ApplicationDocumentPayload) 
     );
   }
   if (company) values.push(`Dear ${company} Hiring Team,`);
+  if (title && company) values.push(`I am applying for the ${title} position at ${company}.`);
   if (Array.isArray(payload.job?.requirements)) {
-    for (const requirement of payload.job.requirements.slice(0, 3)) {
+    for (const requirement of payload.job.requirements.slice(0, 30)) {
       if (typeof requirement !== "string" || !requirement.trim()) continue;
       const clean = requirement.trim().replace(/[.!?]+$/u, "");
       values.push(`The role calls for ${clean.slice(0, 1).toLocaleLowerCase()}${clean.slice(1)}.`);
+      values.push(`Your posting highlights ${clean.slice(0, 1).toLocaleLowerCase()}${clean.slice(1)}.`);
     }
   }
   values.push("Dear Hiring Team,", "Sincerely,", "Best,", "Best regards,", "Regards,", "Thank you,");

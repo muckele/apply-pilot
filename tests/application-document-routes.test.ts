@@ -242,7 +242,7 @@ test("both application-document routes require the private-data consent contract
     assert.equal(body.dataType, "application_packet");
     assert.equal(body.provider, "gemini");
     assert.equal(body.model, "gemini-3.8-flash");
-    assert.equal(body.promptVersion, "8");
+    assert.equal(body.promptVersion, "10");
   }
   assert.equal(providerCalls, 0);
   assert.equal(writes, 0);
@@ -302,7 +302,7 @@ test("a supported stubbed résumé result is persisted only after v8 atomic-fact
   assert.equal(persistedVersion.atsCompatibility, null);
   assert.equal(persistedVersion.jobFitScore, null);
   assert.equal(persistedAnalysis.confidence, null);
-  assert.equal(persistedAnalysis.promptVersion, "8");
+  assert.equal(persistedAnalysis.promptVersion, "10");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });

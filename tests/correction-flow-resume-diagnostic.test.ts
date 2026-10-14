@@ -72,7 +72,7 @@ test("the one-call manifest binds the complete reviewed payload and exact produc
   assert.equal(value.callCount, 1);
   assert.equal(value.call.stage, "tailored_resume");
   assert.equal(value.call.model, "gemini-3.8-flash");
-  assert.equal(value.call.promptVersion, "8");
+  assert.equal(value.call.promptVersion, "10");
   assert.equal(value.call.thinkingLevel, "LOW");
   assert.equal(value.call.maximumInputTokens, 56_000);
   assert.equal(value.call.maximumOutputTokens, 6_000);

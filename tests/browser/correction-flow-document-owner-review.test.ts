@@ -34,6 +34,7 @@ function input() {
     context: {
       sourceResumeText: "Taylor Boundary\nService Operations Lead\nComplete browser source résumé.",
       reviewedFacts: ["Holds a current Quenby service certification."],
+      reviewedResumeFacts: ["Source-supported service delivery fact."],
       targetJob: {
         title: "Service Operations Director",
         company: "Northwind Service Cloud",
@@ -51,7 +52,7 @@ function input() {
   };
 }
 
-test("desktop and mobile local review show both documents and require complete exact decisions", async (t) => {
+test("desktop and mobile staged review keeps complete source context and requires both exact document decisions", async (t) => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
@@ -61,21 +62,44 @@ test("desktop and mobile local review show both documents and require complete e
     const page = await browser.newPage({ viewport });
     t.after(() => page.close());
     await page.goto(review.reviewUrl);
-    await page.getByText("Synthetic browser resume fact.").waitFor();
-    await page.getByText("Complete browser source résumé.").waitFor();
-    await page.getByRole("heading", { name: "Service Operations Director" }).waitFor();
-    assert.equal(await page.locator("[data-document-card]").count(), 2);
+    await page.locator("[data-source-resume]").getByText("Complete browser source résumé.").waitFor();
     assert.equal(await page.locator("textarea, [contenteditable], a[download]").count(), 0);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-    if (viewport.width === 1280) {
-      const boxes = await page.locator("[data-document-card]").evaluateAll((cards) =>
-        cards.map((card) => card.getBoundingClientRect().toJSON())
-      );
-      assert.ok(boxes.every((box) => box.width >= 1100));
-      assert.ok(Math.abs(boxes[0]!.x - boxes[1]!.x) < 2);
+    if (viewport.width >= 900) {
+      const source = await page.locator("[data-source-panel]").boundingBox();
+      assert.ok(source && source.width >= 550);
+      assert.equal(await page.locator("[data-job-panel]").isVisible(), true);
+    } else {
+      await page.getByRole("button", { name: "Read target job", exact: true }).click();
     }
-    const screenshot = await page.screenshot({ fullPage: true });
-    assert.ok(screenshot.byteLength > 20_000);
+    await page.getByRole("heading", { name: "Service Operations Director", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Expand master résumé", exact: true }).click();
+    const expanded = await page.locator("[data-source-panel]").boundingBox();
+    assert.ok(expanded && expanded.width >= viewport.width - 70);
+    await page.getByRole("button", { name: "Continue to corrections", exact: true }).click();
+    const correctionIntro = page.locator('[data-review-stage="corrections"] .section-intro');
+    assert.match(await correctionIntro.textContent() ?? "", /Review saved corrections/);
+    assert.match(await correctionIntro.textContent() ?? "", /return to evidence correction/);
+    await page.getByRole("heading", { name: "Reviewed résumé corrections" }).waitFor();
+    assert.equal(await page.locator("[data-reviewed-resume-facts]").textContent(), "Source-supported service delivery fact.");
+    assert.equal(await page.locator("[data-reviewed-facts]").textContent(), "Holds a current Quenby service certification.");
+    await page.getByRole("button", { name: "Continue to documents", exact: true }).click();
+    const resume = page.locator('[data-document-card="resume"]');
+    const resumeOpening = viewport.width >= 900
+      ? resume.locator("svg text").filter({hasText:"Synthetic browser resume fact."})
+      : resume.locator("[data-reading-content]").getByText("Synthetic browser resume fact.");
+    const openingBounds = await resumeOpening.boundingBox();
+    assert.ok(openingBounds && openingBounds.y >= 0 && openingBounds.y + openingBounds.height <= viewport.height, "The document opening must be visible when entering document review.");
+    await resume.getByRole("button", { name: "Readable text", exact: true }).click();
+    await resume.locator("[data-reading-content]").getByText("Synthetic browser resume fact.").waitFor();
+    assert.equal(await page.locator('[data-document-card="cover_letter"]').isVisible(), false);
+    assert.equal(await page.locator("iframe[src]").count(), 0);
+    const link = resume.locator("[data-open-pdf]");
+    assert.equal(await link.getAttribute("target"), "_blank");
+    assert.equal(await link.getAttribute("href"), new URL(review.pdfUrls[0]!).pathname);
+    await resume.locator("summary").filter({ hasText: "Embedded PDF preview" }).click();
+    await page.waitForFunction(() => !!document.querySelector('[data-document-pdf="resume"]')?.getAttribute("src"));
+    assert.equal(await resume.locator('[data-document-pdf="resume"]').getAttribute("src"), new URL(review.pdfUrls[0]!).pathname);
     await page.evaluate(async (urls) => {
       for (const url of urls) {
         const response = await fetch(url, { cache: "no-store" });
@@ -84,7 +108,16 @@ test("desktop and mobile local review show both documents and require complete e
       }
     }, review.pdfUrls);
     for (const kind of ["resume", "cover_letter"]) {
+      await page.getByRole("button", { name: kind === "resume" ? "Review résumé" : "Review cover letter", exact: true }).click();
       const card = page.locator(`[data-document-card="${kind}"]`);
+      if (kind === "cover_letter") {
+        const opening = viewport.width >= 900
+          ? card.locator("svg text").filter({hasText:"Synthetic browser cover fact."})
+          : card.locator("[data-reading-content]").getByText("Synthetic browser cover fact.");
+        const bounds = await opening.boundingBox();
+        assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= viewport.height, "Switching documents must reveal the opening paragraph without manual scrolling.");
+        assert.equal(await card.locator("[data-document-title]").evaluate(element => element === document.activeElement), true);
+      }
       await card.getByLabel("Approve exact document").check();
       await card.getByLabel("Review every PDF page").check();
       await card.getByLabel("Review the writing quality").check();
@@ -96,5 +129,40 @@ test("desktop and mobile local review show both documents and require complete e
     await review.closed;
     assert.equal(review.hasPrivateInput(), false);
     await page.close();
+  }
+});
+
+test("review themes persist and System tracks actual OS preference changes on desktop and mobile", async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  for (const viewport of [{width:1440,height:1000},{width:390,height:844}]) {
+    const review = await startCorrectionFlowDocumentOwnerReview(input());
+    t.after(() => review.close("test_cleanup"));
+    const context = await browser.newContext({viewport,colorScheme:"dark"});
+    t.after(() => context.close());
+    const page = await context.newPage();
+    await page.goto(review.reviewUrl);
+    const theme = page.getByLabel("Appearance", {exact:true});
+    const resolved = () => page.locator("html").getAttribute("data-product-theme");
+    await theme.selectOption("light");
+    assert.equal(await resolved(),"light");
+    await page.emulateMedia({colorScheme:"dark"});
+    assert.equal(await resolved(),"light");
+    await theme.selectOption("dark");
+    await page.emulateMedia({colorScheme:"light"});
+    assert.equal(await resolved(),"dark");
+    await theme.selectOption("system");
+    await page.emulateMedia({colorScheme:"dark"});
+    await page.waitForFunction(() => document.documentElement.dataset.productTheme === "dark");
+    await page.emulateMedia({colorScheme:"light"});
+    await page.waitForFunction(() => document.documentElement.dataset.productTheme === "light");
+    assert.equal(await page.evaluate(() => localStorage.getItem("apply-pilot-theme")),"system");
+    const second = await context.newPage();
+    await second.emulateMedia({colorScheme:"light"});
+    await second.goto(review.reviewUrl);
+    assert.equal(await second.getByLabel("Appearance",{exact:true}).inputValue(),"system");
+    assert.equal(await second.locator("html").getAttribute("data-product-theme"),"light");
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),true);
+    await context.close();
   }
 });

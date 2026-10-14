@@ -99,8 +99,8 @@ test("the local page presents both exact PDFs, assembled text, evidence, and req
   assert.match(html, /Submit both review decisions/u);
   assert.match(html, /Synthetic local review only/u);
   assert.match(html, /does not authorize an application/u);
-  assert.match(html, /Source résumé and evidence/u);
-  assert.match(html, /Target job context/u);
+  assert.match(html, /Master résumé/u);
+  assert.match(html, /target job/iu);
   assert.doesNotMatch(correctionFlowDocumentReviewHtml.css, /grid-template-columns:\s*1fr 1fr[^}]*\.documents/u);
 });
 
@@ -113,7 +113,7 @@ test("the page is read-only and has no match questionnaire, application action, 
   assert.doesNotMatch(combined, /SyntheticReviewState|applicant question|work authorization|not_sure|yesEvidencePrompt/u);
   assert.doesNotMatch(combined, /textarea|contenteditable|regenerate|download=/iu);
   assert.doesNotMatch(combined, /GEMINI_API_KEY|API key|type="password"|name="credential"|raw provider|rawOutput/u);
-  assert.doesNotMatch(combined, /https?:\/\//u);
+  assert.doesNotMatch(combined.replaceAll("http://www.w3.org/2000/svg", "SVG_NAMESPACE"), /https?:\/\//u);
   assert.doesNotMatch(combined, />\s*(?:Apply|Fill|Submit application)\s*</iu);
 
   const source = readFileSync(fileURLToPath(new URL(

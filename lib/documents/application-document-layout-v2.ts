@@ -141,7 +141,45 @@ function buildResumeLayout(content: string): MutablePage[] {
     y += style.after;
     contentIndex += 1;
   }
+  balanceLastResumePages(pages);
   return pages;
+}
+
+// Move only complete trailing sections. Keep font size, evidence order and page count.
+function balanceLastResumePages(pages: MutablePage[]) {
+  if (pages.length < 2) return;
+  const previous = pages.at(-2)!;
+  const last = pages.at(-1)!;
+  const bottom = (blocks: readonly ApplicationDocumentLayoutBlock[]) => {
+    const block = blocks.at(-1)!;
+    return block.y + block.height;
+  };
+  const capacity = profile.pageHeight - profile.margin * 2;
+  const previousHeight = bottom(previous.blocks) - profile.margin;
+  const lastHeight = bottom(last.blocks) - profile.margin;
+  let bestDifference = Math.abs(previousHeight - lastHeight);
+  let best: { index: number; blocks: ApplicationDocumentLayoutBlock[] } | undefined;
+  for (const [index, block] of previous.blocks.entries()) {
+    if (index === 0 || block.role !== "section_heading") continue;
+    const tail = previous.blocks.slice(index);
+    const movedHeight = bottom(tail) - block.y;
+    const retainedHeight = bottom(previous.blocks.slice(0, index)) - profile.margin;
+    const combinedHeight = movedHeight + 14 + lastHeight;
+    const difference = Math.abs(retainedHeight - combinedHeight);
+    if (combinedHeight > capacity || difference >= bestDifference) continue;
+    bestDifference = difference;
+    best = {
+      index,
+      blocks: [
+        ...tail.map((entry) => Object.freeze({ ...entry, y: entry.y - block.y + profile.margin })),
+        ...last.blocks.map((entry) => Object.freeze({ ...entry, y: entry.y + movedHeight + 14 }))
+      ]
+    };
+  }
+  if (best) {
+    previous.blocks = previous.blocks.slice(0, best.index);
+    last.blocks = best.blocks;
+  }
 }
 
 function coverRole(line: string, contentIndex: number) {

@@ -80,3 +80,28 @@ test("PDF text preserves common professional punctuation with ASCII-safe glyphs"
   assert.match(source, /Led "customer-first" delivery-without invented claims\./u);
   assert.doesNotMatch(source, /2021\?Present/u);
 });
+
+test("a short last resume page is balanced at a whole section without losing or reordering evidence", () => {
+  const layout = buildCanonicalApplicationDocumentLayoutV2({
+    artifactType: "RESUME", content: syntheticTailoredResumeOutput().resumeText
+  });
+  assert.equal(layout.pages.length, 2);
+  const heights = layout.pages.map((page) => {
+    const last = page.blocks.at(-1)!;
+    return last.y + last.height - layout.margin;
+  });
+  assert.ok(Math.abs(heights[0]! - heights[1]!) < 160, `unbalanced heights: ${heights}`);
+  assert.equal(layout.pages[1]!.blocks[0]!.role, "section_heading");
+  assert.equal(layout.pages[1]!.blocks[0]!.text, "PROJECTS");
+  const text = layout.pages.flatMap((page) => page.blocks).map((block) => block.text).join(" ");
+  assert.ok(text.indexOf("Fabrikam") < text.indexOf("Service Evidence Console"));
+  assert.ok(text.indexOf("Service Evidence Console") < text.indexOf("EDUCATION"));
+  assert.match(text, /480-hour/u);
+  assert.match(text, /Bachelor of Arts in Business Administration/u);
+  assert.match(text, /Professional interests/u);
+  const comparable = (value: string) => value.replaceAll("•", "").replace(/\s+/gu, " ").trim();
+  assert.equal(comparable(text), comparable(syntheticTailoredResumeOutput().resumeText));
+  assert.ok(layout.pages.flatMap((page) => page.blocks)
+    .filter((block) => ["bullet", "body"].includes(block.role))
+    .every((block) => block.fontSize === 9.5));
+});

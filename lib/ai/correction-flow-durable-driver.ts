@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { NextRequest } from "next/server";
 
-import { createDocumentExportRouteHandlers } from "@/app/api/documents/export/route";
+import { createDocumentExportRouteHandlers } from "@/lib/documents/document-export-route";
 import {
   SYNTHETIC_CORRECTION_FLOW_DEGREE,
   SYNTHETIC_CORRECTION_FLOW_FABRICATED_FACT,

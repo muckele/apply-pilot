@@ -17,8 +17,7 @@ import {
 
 const hash = (character: string) => character.repeat(64);
 
-function validInput() {
-  const payload = syntheticCorrectionFlowDocumentPayload();
+function validInput(payload = syntheticCorrectionFlowDocumentPayload()) {
   const tailoredResume = assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput());
   const coverLetter = assembleCoverLetterProviderOutput(payload, syntheticCoverLetterOutput());
   return {
@@ -47,6 +46,20 @@ function validInput() {
     }
   };
 }
+
+test("review context distinguishes submitted-resume corrections from owner-attested additions", async () => {
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  const summary = String(payload.resume!.summary);
+  (payload.reviewedEvidence!.facts as Array<Record<string, unknown>>).push({
+    gapId: "gap:1", fact: summary, sourceRef: "resume.summary", provenance: "SUBMITTED_RESUME"
+  });
+  const bundle = await buildCorrectionFlowDocumentReviewBundle(validInput(payload));
+  const claim = bundle.claim();
+  assert.deepEqual(claim.context.reviewedResumeFacts, [summary]);
+  assert.deepEqual(claim.context.reviewedFacts, ["I hold current Quenby certification in enterprise service operations."]);
+  assert.ok(!claim.context.reviewedFacts.includes(summary));
+  claim.dispose();
+});
 
 test("the one-shot bundle revalidates assembled documents and exact in-memory exports", async () => {
   const input = validInput();

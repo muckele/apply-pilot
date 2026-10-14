@@ -239,16 +239,19 @@ function text(value: unknown) {
 }
 
 function buildReviewContext(payload: ApplicationDocumentPayload): CorrectionFlowDocumentReviewContext {
-  const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
+  const reviewedEntries = Array.isArray(payload.reviewedEvidence?.facts)
     ? payload.reviewedEvidence.facts.flatMap((value) =>
         value && typeof value === "object" && !Array.isArray(value) &&
           typeof (value as { fact?: unknown }).fact === "string"
-          ? [(value as { fact: string }).fact]
+          ? [value as { fact: string; provenance?: string }]
           : [])
     : [];
   return Object.freeze({
     sourceResumeText: text(payload.resume?.rawText),
-    reviewedFacts: Object.freeze(reviewedFacts),
+    reviewedFacts: Object.freeze(reviewedEntries.filter((entry) => entry.provenance === "OWNER_ATTESTED")
+      .map((entry) => entry.fact)),
+    reviewedResumeFacts: Object.freeze(reviewedEntries.filter((entry) => entry.provenance === "SUBMITTED_RESUME")
+      .map((entry) => entry.fact)),
     targetJob: Object.freeze({
       title: text(payload.job?.title),
       company: text(payload.job?.company),
