@@ -15,10 +15,13 @@ import {
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
+import { pdfFonts } from "@/lib/documents/pdf-font";
+
 const exportSchema = z.object({
   documentId: z.string().optional(),
   resumeVersionId: z.string().optional(),
-  format: z.enum(["markdown", "docx", "pdf"]).default("markdown")
+  format: z.enum(["markdown", "docx", "pdf"]).default("markdown"),
+  pdfFont: z.enum(pdfFonts).optional()
 });
 
 type GeneratedDocumentExportRow = {
@@ -130,6 +133,7 @@ export function createDocumentExportRouteHandlers(dependencies: DocumentExportRo
             content,
             artifactType,
             format: "pdf",
+            pdfFont: input.pdfFont,
             resumeFormat
           });
           return new NextResponse(new Uint8Array(buffer), {

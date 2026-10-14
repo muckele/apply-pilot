@@ -101,7 +101,7 @@ test("rendered one-page journey approves exact documents then invalidates the ap
         dimensions.scrollHeight <= dimensions.clientHeight + 1,
         `${title} clips at ${width}px: ${JSON.stringify(dimensions)}`
       );
-      await preview.getByText(/Full document preview/i).waitFor();
+      await preview.getByText(/Full document text/i).waitFor();
     }
     const resume = page.locator('[data-document-preview="Formatted resume"] [data-reading-content]');
     for (const text of [

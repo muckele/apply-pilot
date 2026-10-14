@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -56,15 +57,15 @@ const jobRequirements = [
 ] as const;
 const missingRequirementKeywords = ["Zephyrite", "Asterism", "Quenby"] as const;
 
-test("actual owned product job route reviews full career and exports current files without navigation mutations", {timeout:90_000}, async () => {
+test("actual owned product job route reviews full career and exports current files without navigation mutations", {timeout:120_000}, async () => {
   const config=validatePostgresTestEnvironment(process.env);
   assertPostgresTestMajorVersion(await verifyLivePostgresTestDatabase(config));
   const client=new PrismaClient({datasources:{db:{url:config.url}}});
   const payload=realisticDocumentQualityPayload(),resumeData=payload.resume!;
   const user=await client.user.create({data:{email:`product-review-${randomUUID()}@example.test`,name:"Synthetic Product Reviewer"}});
   let nextServer:Awaited<ReturnType<typeof startNextTestServer>>|undefined;
-  const browser=await chromium.launch({headless:true});
-  const outputDir="/tmp/ap-pr35-actual-product-evidence";await mkdir(outputDir,{recursive:true});
+  const browser=await chromium.launch({headless:true,channel:"chromium"});
+  const outputDir="/tmp/ap-pr35-pdf-font-evidence";await mkdir(outputDir,{recursive:true});
   try {
     const job=await client.jobPosting.create({data:{userId:user.id,title:"Service Operations Director",company:"Northwind Service Cloud",normalizedTitle:randomUUID(),normalizedCompany:randomUUID(),normalizedLocation:"remote",sourceUrl:"https://example.test/product-review",normalizedApplyUrl:"https://example.test/product-review",sourceType:"MANUAL",description:String(payload.job!.description),requirements:[...(payload.job!.requirements as string[]),"Current Quenby certification"],preferredQualifications:["Business education"],benefits:[],detectedTechStack:["SQL"],missingKeywords:[],supportedKeywords:[],concerns:[]}});
     const resume=await client.resume.create({data:{userId:user.id,isMaster:true,title:"Synthetic three-job master",rawText:String(resumeData.rawText),summary:String(resumeData.summary),skills:resumeData.skills as string[],achievements:resumeData.achievements as string[],workHistory:resumeData.workHistory as Prisma.InputJsonValue,projects:resumeData.projects as Prisma.InputJsonValue,education:resumeData.education as Prisma.InputJsonValue,certifications:resumeData.certifications as Prisma.InputJsonValue}});
@@ -145,11 +146,91 @@ test("actual owned product job route reviews full career and exports current fil
     }
     for(const format of ["pdf","docx"] as const){const exported=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format}});assert.equal(exported.status(),200);await writeFile(`${outputDir}/custom-resume.${format}`,await exported.body());}
     await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Selected version and formatting$/}).click();
-    await page.locator('[data-selected-document="resume"] select').selectOption(customVersion.id);
-    await page.getByText("DOCX preserves Georgia. The current PDF export uses Times.",{exact:true}).waitFor();
+    await page.getByLabel("Résumé version",{exact:true}).selectOption(customVersion.id);
+    await page.getByText(/PDF uses Helvetica. DOCX uses Georgia/).waitFor();
     for(const [name,viewport] of [["desktop",{width:1440,height:1000}],["mobile",{width:390,height:844}]] as const){await page.setViewportSize(viewport);await page.screenshot({path:`${outputDir}/${name}-system-georgia-preview.png`});}
     await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Selected version and formatting$/}).click();
-    await page.locator('[data-selected-document="resume"] select').selectOption(version.id);
+    await page.getByLabel("Résumé version",{exact:true}).selectOption(version.id);
+    // Exercise the real font control, actual export handler and exact preview bytes for both artifacts.
+    const fontChecks:Array<{kind:string;font:string;hash:string;pages:number}>=[];
+    for (const kind of ["resume","cover"] as const) {
+      await page.getByRole("button",{name:kind === "resume" ? "Review résumé" : "Review cover letter",exact:true}).click();
+      for (const pdfFont of ["HELVETICA","TIMES"] as const) {
+        const requestsBefore:number=api.length;
+        await page.getByLabel("PDF font",{exact:true}).selectOption(pdfFont);
+        assert.equal(api.length,requestsBefore,"Font choice must not save, approve or generate.");
+        assert.equal(await page.locator("[data-actual-product-pdf]").count(),0,"A changed font retires the old preview.");
+        const responsePromise=page.waitForResponse(response=>response.url().endsWith("/api/documents/export") && response.request().postDataJSON().format === "pdf");
+        await page.getByRole("button",{name:"Preview actual PDF",exact:true}).click();
+        const exported=await responsePromise;assert.equal(exported.status(),200);
+        assert.equal(exported.request().postDataJSON().pdfFont,pdfFont);
+        // Chromium can expose an empty CDP response.body() for PDF attachments. Read the actual
+        // preview blob and independently compare it to the same authenticated production handler.
+        const independent=await page.request.post(origin+"/api/documents/export",{data:exported.request().postDataJSON()});
+        assert.equal(independent.status(),200);
+        const bytes=await independent.body();
+        assert.match(bytes.toString("latin1"),pdfFont === "TIMES" ? /BaseFont \/Times-Roman\b/ : /BaseFont \/Helvetica\b/);
+        await page.locator("[data-actual-product-pdf] iframe").waitFor();
+        const previewBytes=await page.locator("[data-actual-product-pdf] iframe").evaluate(async element=>Array.from(new Uint8Array(await (await fetch((element as HTMLIFrameElement).src)).arrayBuffer())));
+        assert.deepEqual(Buffer.from(previewBytes),bytes,"The browser preview must use the actual response bytes.");
+        const downloadPromise=page.waitForEvent("download");
+        await page.getByRole("link",{name:"Download this exact PDF",exact:true}).click();
+        const downloaded=await downloadPromise,path=await downloaded.path();assert.ok(path);
+        assert.deepEqual(await readFile(path),bytes,"Exact preview download must be byte identical.");
+        await writeFile(`${outputDir}/${kind}-${pdfFont.toLowerCase()}.pdf`,bytes);
+        const pages=Number(bytes.toString("latin1").match(/\/Count (\d+)/)![1]);
+        fontChecks.push({kind,font:pdfFont,hash:createHash("sha256").update(bytes).digest("hex"),pages});
+        for (const width of [1440,320,390]) {
+          await page.setViewportSize({width,height:width === 1440 ? 1000 : 844});
+          await page.getByLabel("PDF font",{exact:true}).scrollIntoViewIfNeeded();
+          const bounds=await page.getByLabel("PDF font",{exact:true}).boundingBox();assert.ok(bounds&&bounds.height>=44&&bounds.x>=0&&bounds.x+bounds.width<=width+1);
+          assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+          assert.equal(await page.getByRole("link",{name:"Open this exact PDF in a new tab",exact:true}).isVisible(),true);
+          await page.screenshot({path:`${outputDir}/pdf-font-${kind}-${pdfFont.toLowerCase()}-${width}.png`});
+          await page.locator("[data-actual-product-pdf] iframe").scrollIntoViewIfNeeded();
+          await page.screenshot({path:`${outputDir}/actual-pdf-${kind}-${pdfFont.toLowerCase()}-${width}.png`});
+        }
+      }
+    }
+    await writeFile(`${outputDir}/pdf-font-checks.json`,JSON.stringify(fontChecks,null,2));
+    // A pending response for a retired font must never appear under its replacement choice.
+    await page.getByRole("button",{name:"Review résumé",exact:true}).click();
+    let releaseFont!:()=>void,markFontSeen!:()=>void,markFontDone!:()=>void;
+    const fontDelayed=new Promise<void>(resolve=>{releaseFont=resolve;}),fontSeen=new Promise<void>(resolve=>{markFontSeen=resolve;}),fontDone=new Promise<void>(resolve=>{markFontDone=resolve;});
+    await page.route("**/api/documents/export",async route=>{const result=await route.fetch();markFontSeen();await fontDelayed;await route.fulfill({response:result}).catch(()=>undefined);markFontDone();});
+    await page.getByRole("button",{name:"Preview actual PDF",exact:true}).click();await fontSeen;
+    await page.getByLabel("PDF font",{exact:true}).selectOption("TIMES");releaseFont();await fontDone;
+    assert.equal(await page.locator("[data-actual-product-pdf]").count(),0);
+    await page.unroute("**/api/documents/export");
+    await page.getByLabel("PDF font",{exact:true}).selectOption("HELVETICA");
+    // Verify the ordinary résumé editor also presents separate font choices and preserves edit invalidation.
+    const editor=await browser.newPage({viewport:{width:1440,height:1000}});
+    await editor.goto(`${origin}/resumes/${customVersion.id}`,{waitUntil:"networkidle"});
+    assert.equal(await editor.getByLabel("DOCX font",{exact:true}).inputValue(),"GEORGIA");
+    assert.deepEqual(await editor.getByLabel("DOCX font",{exact:true}).locator("option").evaluateAll(options=>options.map(option=>(option as HTMLOptionElement).value)),["ARIAL","CALIBRI","GEORGIA"]);
+    await editor.getByLabel("PDF font",{exact:true}).selectOption("TIMES");
+    await editor.getByRole("button",{name:"Preview actual PDF",exact:true}).click();await editor.locator("[data-actual-product-pdf] iframe").waitFor();
+    assert.equal(await editor.getByRole("button",{name:"Save version",exact:true}).isDisabled(),true);
+    for(const width of [1440,320,390]){
+      await editor.setViewportSize({width,height:width===1440?1000:844});
+      assert.equal(await editor.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await editor.getByLabel("PDF font",{exact:true}).scrollIntoViewIfNeeded();
+      const control=await editor.getByLabel("PDF font",{exact:true}).boundingBox();assert.ok(control&&control.height>=44&&control.x>=0&&control.x+control.width<=width+1);
+      await editor.screenshot({path:`${outputDir}/pdf-font-resume-editor-${width}.png`});
+    }
+    await editor.getByLabel("PDF font",{exact:true}).selectOption("HELVETICA");
+    assert.equal(await editor.locator("[data-actual-product-pdf]").count(),0);
+    await editor.getByLabel("Resume text",{exact:true}).fill(tailored.resumeText+"\nSynthetic owner edit");
+    assert.equal(await editor.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
+    await editor.getByRole("button",{name:"Save version",exact:true}).click();
+    await editor.getByText("Regenerate this document from current reviewed evidence before exporting.",{exact:true}).waitFor();
+    assert.equal(await editor.locator("[data-actual-product-pdf]").count(),0);
+    const edited=await client.resumeVersion.findUniqueOrThrow({where:{id:customVersion.id}});assert.equal(edited.evidenceSnapshotId,null);
+    for(const pdfFont of ["HELVETICA","TIMES"]){const rejected=await editor.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format:"pdf",pdfFont}});assert.equal(rejected.status(),409);}
+    await editor.close();
+    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
+    await page.getByRole("button",{name:"Review résumé",exact:true}).click();
+    assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).count(),1,JSON.stringify({stage:await page.locator('[data-product-review-stage="documents"]').getAttribute("hidden"),buttons:await page.locator('[data-product-documents] button').allTextContents()}));
     let releaseDelayed!:()=>void,markDelayedSeen!:()=>void,markDelayedDone!:()=>void;
     const delayed=new Promise<void>(resolve=>{releaseDelayed=resolve;}),seen=new Promise<void>(resolve=>{markDelayedSeen=resolve;}),done=new Promise<void>(resolve=>{markDelayedDone=resolve;});
     await page.route("**/api/documents/export",async route=>{const result=await route.fetch();markDelayedSeen();await delayed;await route.fulfill({response:result}).catch(()=>undefined);markDelayedDone();});
@@ -172,7 +253,7 @@ test("actual owned product job route reviews full career and exports current fil
     await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
     const stale=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:version.id,format:"pdf"}});assert.equal(stale.status(),409);
     assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
-    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,georgiaDisclosureReviewed:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
+    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,explicitPdfFontChecks:fontChecks,docxGeorgiaPreserved:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
     await page.close();
   }finally{await browser.close();await nextServer?.stop();await client.user.delete({where:{id:user.id}});await client.$disconnect();}
 });

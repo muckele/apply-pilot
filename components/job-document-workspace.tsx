@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { FormattedDocumentPreview } from "@/components/formatted-document-preview";
+import { PdfFontChoice, ActualPdfPreview } from "@/components/pdf-export-options";
+import { defaultPdfFont, pdfFontLabels, type PdfFont } from "@/lib/documents/pdf-font";
 import { defaultResumeFormat, type ResumeFormat } from "@/lib/documents/resume-format";
 
 export type JobResumeVersionOption = {id:string;title:string;fullText:string;summary:string|null;atsCompatibility:number|null;jobFitScore:number|null;evidenceCurrent:boolean;createdAt:string;resumeFormat?:ResumeFormat};
@@ -33,6 +35,7 @@ export function JobDocumentWorkspace({resumeVersions,coverLetters,evidenceInvali
 function DocumentReviewCard({kind,selected,stored,text,conflict,changeText,clearDraft,confirmSaved,format,evidenceInvalidated,versions,chooseVersion}:{kind:"resume"|"cover";selected:JobResumeVersionOption|JobCoverLetterOption|null;stored:string;text:string;conflict:boolean;changeText:(text:string)=>void;clearDraft:()=>void;confirmSaved:(text:string)=>void;format:ResumeFormat;evidenceInvalidated:boolean;versions:Array<JobResumeVersionOption|JobCoverLetterOption>;chooseVersion:(id:string)=>void}) {
   const router=useRouter();
   const [busy,setBusy]=useState<string|null>(null),[message,setMessage]=useState<string|null>(null),[pdfUrl,setPdfUrl]=useState<string|null>(null);
+  const [pdfFont,setPdfFont]=useState<PdfFont>(defaultPdfFont);
   const revision=useRef(0),url=useRef<string|null>(null),abort=useRef<AbortController|null>(null),operation=useRef(false);
   const dirty=text!==stored;
   const eligible=!!selected?.evidenceCurrent&&!evidenceInvalidated&&!dirty&&!conflict;
@@ -43,7 +46,7 @@ function DocumentReviewCard({kind,selected,stored,text,conflict,changeText,clear
     operation.current=true;
     const started=revision.current,controller=new AbortController();abort.current=controller;setBusy(preview?"preview":"export");setMessage(null);
     try {
-      const response=await fetch("/api/documents/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...(kind==="resume"?{resumeVersionId:selected.id}:{documentId:selected.id}),format:exportFormat}),signal:controller.signal});
+      const response=await fetch("/api/documents/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...(kind==="resume"?{resumeVersionId:selected.id}:{documentId:selected.id}),format:exportFormat,...(exportFormat==="pdf"?{pdfFont}:{})}),signal:controller.signal});
       if(!response.ok){const body=await response.json().catch(()=>null);throw new Error(body?.error??"Export failed.");}
       const blob=await response.blob();if(started!==revision.current||controller.signal.aborted)return;
       const objectUrl=URL.createObjectURL(blob);
@@ -74,9 +77,10 @@ function DocumentReviewCard({kind,selected,stored,text,conflict,changeText,clear
       {conflict?<p role="status">The saved document changed while this draft was open. Copy your draft, then discard it to review the current version before editing again.</p>:null}
       {message?<p role="status">{message}</p>:null}
       {selected?<FormattedDocumentPreview text={text} title={kind==="resume"?"Résumé page layout":"Cover letter page layout"} format={format} artifactType={kind==="resume"?"RESUME":"COVER_LETTER"} showTitle={false}/>:<p>No saved document yet. Generate explicitly after reviewing the evidence.</p>}
+      {selected?<div className="my-3 space-y-2"><PdfFontChoice value={pdfFont} disabled={busy==="save"} onChange={font=>{invalidate();setPdfFont(font);setMessage(null);}}/><p className="text-sm product-review-metadata">PDF uses {pdfFontLabels[pdfFont]}. DOCX uses { {ARIAL:"Arial",CALIBRI:"Calibri",GEORGIA:"Georgia"}[format.fontFamily] }. PDF font choice applies to this review only; it does not approve a prepared application.</p></div>:null}
       <div className="application-background-actions"><button disabled={!eligible||!!busy} onClick={()=>exportFile("pdf",true)}>{busy==="preview"?"Loading PDF…":"Preview actual PDF"}</button>{(["markdown","docx","pdf"] as const).map(item=><button key={item} disabled={!eligible||!!busy} onClick={()=>exportFile(item)}>Download {item.toUpperCase()}</button>)}</div>
-      {pdfUrl?<div data-actual-product-pdf><a href={pdfUrl} target="_blank" rel="noreferrer">Open this exact PDF in a new tab</a><iframe title="Actual exported document PDF" className="w-full min-h-[600px]" src={pdfUrl}/></div>:null}
-      <details><summary>Selected version and formatting</summary><label className="block">{kind==="resume"?"Résumé version":"Cover-letter version"}<select className="block w-full mt-1" value={selected?.id??""} disabled={!selected} onChange={event=>chooseVersion(event.target.value)}>{versions.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}</select></label><p>{format.template} · {format.pageSize} · {format.fontFamily} · {format.fontSize} pt · {format.lineSpacing}% line spacing</p></details>
+      {pdfUrl?<ActualPdfPreview url={pdfUrl} font={pdfFont}/>:null}
+      <details><summary>Selected version and formatting</summary><label className="block">{kind==="resume"?"Résumé version":"Cover-letter version"}<select aria-label={kind==="resume"?"Résumé version":"Cover-letter version"} className="block w-full mt-1" value={selected?.id??""} disabled={!selected} onChange={event=>chooseVersion(event.target.value)}>{versions.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}</select></label><p>{format.template} · {format.pageSize} · {format.fontFamily} · {format.fontSize} pt · {format.lineSpacing}% line spacing</p></details>
       <details><summary>Edit document text</summary><label className="block">{kind==="resume"?"Tailored résumé text":"Cover-letter text"}<textarea className="w-full mt-2" rows={14} value={text} disabled={!selected||busy==="save"} onChange={event=>{invalidate();changeText(event.target.value);setMessage(null);}}/></label><button onClick={save} disabled={!selected||!!busy||!dirty||conflict}>{busy==="save"?"Saving…":"Save edits"}</button>{dirty||conflict?<button disabled={!!busy} onClick={()=>{invalidate();clearDraft();setMessage(null);}}>Discard unsaved edits</button>:null}</details>
       {kind==="resume"&&selected?.evidenceCurrent?<Link href={"/resumes/"+selected.id}>Format and preview résumé</Link>:null}
     </section>;

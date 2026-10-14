@@ -34,7 +34,8 @@ function renderPdf(layout:ProductDocumentLayout) {
 }
 
 export async function renderProductDocument(input:ProductDocumentInput & {format:"pdf"|"docx"}) {
-  const layout=buildProductDocumentLayout(input);
+  // PDF choice is an export preference, never a DOCX font or approval setting.
+  const layout=buildProductDocumentLayout(input.format==="docx"?{...input,pdfFont:undefined}:input);
   if(input.format==="pdf")return renderPdf(layout);
   const children:Paragraph[]=[];
   const emitted=new Set<number>();

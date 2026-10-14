@@ -16,12 +16,13 @@ const normalize = (text:string) => text.replace(/[•]/gu, "-").replace(/\s+/gu,
 // PDF.js expects copying Uint8Array.slice semantics, not Buffer.slice views.
 const readPdf = (bytes:Buffer) => pdf(new Uint8Array(bytes) as unknown as Buffer, {version:"v2.0.550"});
 
-test("Georgia review discloses the direct PDF font while DOCX preserves the selected font", async () => {
+test("The DOCX layout guide describes its limits and keeps Georgia independent from PDF choices", async () => {
   const resumeFormat={...defaultResumeFormat,fontFamily:"GEORGIA" as const};
   const input={artifactType:"RESUME" as const,content:"Synthetic Owner\nSUMMARY\nSource-backed experience.",resumeFormat};
   const html=renderToStaticMarkup(createElement(FormattedDocumentPreview,{text:input.content,title:"Selected document",format:resumeFormat}));
-  assert.ok(html.includes("DOCX preserves Georgia. The current PDF export uses Times."));
-  assert.match((await renderProductDocument({...input,format:"pdf"})).toString("latin1"),/BaseFont \/Times-Roman/u);
+  assert.ok(html.includes("DOCX uses Georgia"));
+  assert.ok(html.includes("not an exact PDF preview"));
+  assert.match((await renderProductDocument({...input,format:"pdf",pdfFont:"TIMES"})).toString("latin1"),/BaseFont \/Times-Roman/u);
   const zip=await JSZip.loadAsync(await renderProductDocument({...input,format:"docx"}));
   assert.match(await zip.file("word/document.xml")!.async("string"),/w:ascii="Georgia"/u);
 });
@@ -106,4 +107,40 @@ test("bold at-sign runs stay within actual PDF printable bounds", async () => {
     return "";
   }});
   assert.equal(overflow,false);
+});
+
+for (const artifactType of ["RESUME", "COVER_LETTER"] as const) for (const pdfFont of ["HELVETICA", "TIMES"] as const) {
+  test(`${artifactType} ${pdfFont} PDF keeps every ordered fact and measured geometry on multiple pages`, async () => {
+    const fullContent=artifactType === "RESUME" ? content : "Synthetic Owner\nDear Hiring Team,\n" + Array.from({length:35},(_,i)=>`Paragraph ${i+1}: I led source-confirmed service programs, coordinated delivery, and maintained measured quality and accurate reporting for customer teams.`).join("\n\n") + "\nSincerely,\nSynthetic Owner";
+    const input={content:fullContent,artifactType,resumeFormat:{...defaultResumeFormat,fontFamily:"GEORGIA" as const,fontSize:12,lineSpacing:150},pdfFont};
+    const layout=buildProductDocumentLayout(input),bytes=await renderProductDocument({...input,format:"pdf"});
+    assert.ok(layout.pages.length>1);
+    const expectedFont=pdfFont === "TIMES" ? "Times-Roman" : "Helvetica";
+    assert.match(bytes.toString("latin1"),new RegExp(`/BaseFont /${expectedFont}\\b`));
+    const parsed=await readPdf(bytes);
+    assert.equal(parsed.numpages,layout.pages.length);
+    assert.equal(normalize(parsed.text),normalize(fullContent));
+    let measured=0;
+    await pdf(new Uint8Array(bytes) as unknown as Buffer,{version:"v2.0.550",pagerender:async page=>{
+      const {items}=await page.getTextContent();
+      const viewport=page.getViewport(1);
+      for(const item of items){
+        measured++;
+        assert.ok(item.transform[4]>=layout.margin-1);
+        assert.ok(item.transform[4]+item.width<=layout.pageWidth-layout.margin+1);
+        assert.ok(item.transform[5]-item.height>=layout.margin-1);
+        assert.ok(item.transform[5]+item.height<=viewport.height-layout.margin+1);
+      }
+      return "";
+    }});
+    assert.ok(measured>0);
+    const word=await JSZip.loadAsync(await renderProductDocument({...input,format:"docx"}));
+    assert.match(await word.file("word/styles.xml")!.async("string"),/w:ascii="Georgia"/u);
+  });
+}
+
+for(const pdfFont of ["HELVETICA","TIMES"] as const) test(`${pdfFont} rejects unsupported PDF glyphs while DOCX preserves them`,async()=>{
+  const input={artifactType:"COVER_LETTER" as const,content:"Synthetic Owner\nConfirmed 中文 evidence",resumeFormat:defaultResumeFormat,pdfFont};
+  await assert.rejects(renderProductDocument({...input,format:"pdf"}),error=>error instanceof Error && "status" in error && error.status === 422);
+  assert.match((await mammoth.extractRawText({buffer:await renderProductDocument({...input,format:"docx"})})).value,/中文/u);
 });

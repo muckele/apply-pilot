@@ -1,7 +1,9 @@
 import { isResumeBullet, stripResumeBullet, type ResumeFormat } from "@/lib/documents/resume-format";
 
-export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "1";
-export type ProductDocumentInput = { content:string; artifactType:"RESUME"|"COVER_LETTER"; resumeFormat:ResumeFormat };
+import { pdfFontNames, type PdfFont } from "@/lib/documents/pdf-font";
+
+export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "2";
+export type ProductDocumentInput = { content:string; artifactType:"RESUME"|"COVER_LETTER"; resumeFormat:ResumeFormat; pdfFont?:PdfFont };
 export type ProductDocumentBlock = { text:string; sourceText:string; paragraphId:number; role:string; x:number; y:number; width:number; height:number; fontSize:number; bold:boolean; color:string; headingRule?:"left"|"bottom" };
 export type ProductDocumentLayout = { version:string; pageWidth:number; pageHeight:number; margin:number; fontFamily:string; pdfFont:string; pdfBoldFont:string; pages:Array<{number:number;blocks:ProductDocumentBlock[]}> };
 const headings=/^(SUMMARY|PROFILE|SKILLS|TECHNICAL SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?)[:]?$/iu;
@@ -27,6 +29,7 @@ export function buildProductDocumentLayout(input:ProductDocumentInput):ProductDo
   const margin=f.template==="COMPACT"?36:46.8;
   const fontFamily={ARIAL:"Arial",CALIBRI:"Calibri",GEORGIA:"Georgia"}[f.fontFamily];
   const layout:ProductDocumentLayout={version:PRODUCT_DOCUMENT_LAYOUT_VERSION,pageWidth,pageHeight,margin,fontFamily,pdfFont:f.fontFamily==="GEORGIA"?"Times-Roman":"Helvetica",pdfBoldFont:f.fontFamily==="GEORGIA"?"Times-Bold":"Helvetica-Bold",pages:[{number:1,blocks:[]}]};
+  if(input.pdfFont){layout.pdfFont=pdfFontNames[input.pdfFont].regular;layout.pdfBoldFont=pdfFontNames[input.pdfFont].bold;}
   let page=layout.pages[0]!,y=margin,index=0;
   const nextPage=()=>{page={number:layout.pages.length+1,blocks:[]};layout.pages.push(page);y=margin;};
   for(const raw of input.content.split(/\r?\n/u)) {

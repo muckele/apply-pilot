@@ -444,3 +444,26 @@ test("canonical DOCX is semantically deterministic except for exact created and 
   assert.deepEqual(docxParagraphs(firstXml.document), [input.content]);
   assert.deepEqual(docxParagraphs(secondXml.document), [input.content]);
 });
+
+for (const [field, id] of [["resumeVersionId", RESUME_VERSION_ID], ["documentId", DOCUMENT_ID]] as const) {
+  for (const [pdfFont, baseFont] of [["HELVETICA", "Helvetica"], ["TIMES", "Times-Roman"]] as const) {
+    test(`ordinary ${field} explicitly selects ${pdfFont} without changing DOCX fonts`, async () => {
+      const { handlers } = route(field === "resumeVersionId" ? { document: null } : { resume: null });
+      const response = await handlers.POST(request({ [field]: id, format: "pdf", pdfFont }));
+      assert.equal(response.status, 200);
+      assert.match((await responseBytes(response)).toString("latin1"), new RegExp(`/BaseFont /${baseFont}\\b`));
+      const word = await handlers.POST(request({ [field]: id, format: "docx", pdfFont }));
+      assert.equal(word.status, 200);
+      assert.match((await docxXml(await responseBytes(word))).styles, field === "resumeVersionId" ? /w:ascii="Georgia"/ : /w:ascii="Arial"/);
+    });
+  }
+}
+
+test("ordinary PDF rejects unsupported font choices and still rejects stale evidence for either supported font", async () => {
+  const current = route({ document: null });
+  assert.equal((await current.handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "pdf", pdfFont: "GEORGIA" }))).status, 422);
+  const stale = route({ document: null, resume: resumeVersion({ evidenceSnapshotId: "snapshot-old", jobPosting: exportJobEvidence("snapshot-current") }) });
+  for (const pdfFont of ["HELVETICA", "TIMES"]) {
+    assert.equal((await stale.handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "pdf", pdfFont }))).status, 409);
+  }
+});
