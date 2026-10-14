@@ -29,7 +29,7 @@ type RouteHandlers = {
 };
 
 async function createHandlers(dependencies: RouteDependencies): Promise<RouteHandlers> {
-  const routeModule = await import("@/app/api/application-runs/[id]/complete-by-user/route").catch(
+  const routeModule = await import("@/lib/application-runs/http/complete-by-user").catch(
     () => null
   );
   assert.ok(routeModule, "expected the complete-by-user route module to exist");

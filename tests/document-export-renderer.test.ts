@@ -4,7 +4,7 @@ import test from "node:test";
 import JSZip from "jszip";
 import { NextRequest } from "next/server";
 
-import { createDocumentExportRouteHandlers } from "@/app/api/documents/export/route";
+import { createDocumentExportRouteHandlers } from "@/lib/documents/document-export-route";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1,
