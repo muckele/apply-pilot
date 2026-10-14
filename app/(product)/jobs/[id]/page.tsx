@@ -3,9 +3,9 @@ import { AlertTriangle, CheckCircle2, ExternalLink } from "lucide-react";
 import type { JobPosting } from "@prisma/client";
 
 import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
-import { EvidenceCorrectionReview } from "@/components/evidence-correction-review";
+import { ApplicationReviewWorkspace } from "@/components/application-review-workspace";
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
-import { JobDocumentWorkspace, type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
+import { type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import {
@@ -20,6 +20,7 @@ import {
   currentJobMatchInputHash,
   hasCurrentJobMatchAnalysis
 } from "@/lib/jobs/current-job-match";
+import type { ResumeFormat } from "@/lib/documents/resume-format";
 import { getJobMatchAnalysisPresentation } from "@/lib/jobs/fit-presentation";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -57,6 +58,8 @@ function mapJobPosting(job: JobPosting, analysisOutput: unknown) {
     missingKeywords: fitPresentation.isCurrentAnalysis ? job.missingKeywords : [],
     supportedKeywords: fitPresentation.isCurrentAnalysis ? job.supportedKeywords : [],
     description: job.description,
+    requirements: job.requirements,
+    preferredQualifications: job.preferredQualifications,
     concerns: fitPresentation.isCurrentAnalysis ? job.concerns : [],
     applyUrl: job.applyUrl || job.sourceUrl,
     importedAt: job.firstDiscoveredAt.toISOString().slice(0, 10)
@@ -100,6 +103,7 @@ async function getJobDetail(id: string) {
         title: true,
         summary: true,
         fullText: true,
+        template: true, pageSize: true, fontFamily: true, accentColor: true, fontSize: true, lineSpacing: true,
         atsCompatibility: true,
         jobFitScore: true,
         evidenceSnapshotId: true,
@@ -162,9 +166,12 @@ async function getJobDetail(id: string) {
     const reviewAnalysis = currentAnalysis ?? baselineReviewAnalysis;
     return {
       job: mapJobPosting(job, currentAnalysis?.output),
+      sourceText: masterResume?.rawText ?? "",
+      workspaceIdentity: currentJobMatchInputHash(matchInput),
       resumeVersions: resumeVersions.map(
         (version): JobResumeVersionOption => ({
           ...version,
+          resumeFormat: { template:version.template as ResumeFormat["template"], pageSize:version.pageSize as ResumeFormat["pageSize"], fontFamily:version.fontFamily as ResumeFormat["fontFamily"], accentColor:version.accentColor, fontSize:version.fontSize, lineSpacing:version.lineSpacing },
           evidenceCurrent: isEvidenceBindingCurrent({
             currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
             currentEvidenceSourceValid: context.currentEvidenceSourceValid,
@@ -223,7 +230,7 @@ export default async function JobDetailPage({ params }: Props) {
     notFound();
   }
 
-  const { job, resumeVersions, coverLetters, application, contacts, evidenceReview } = data;
+  const { job, resumeVersions, coverLetters, application, contacts, evidenceReview, sourceText, workspaceIdentity } = data;
 
   return (
     <>
@@ -243,24 +250,8 @@ export default async function JobDetailPage({ params }: Props) {
         }
       />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]">
-        <section className="min-w-0 space-y-6">
-          {evidenceReview ? (
-            <Panel>
-              <PanelHeader
-                title="Evidence correction review"
-                description="Inspect extracted facts and resolve disputed gaps before any later reassessment or document rewrite."
-              />
-              <EvidenceCorrectionReview review={evidenceReview} />
-            </Panel>
-          ) : null}
-
-          <Panel>
-            <PanelHeader
-              title="Apply packet builder"
-              description="Review the match, generate documents, export files, and update the CRM record."
-            />
-            <ApplyPacketBuilder
+      <ApplicationReviewWorkspace key={workspaceIdentity} sourceText={sourceText} job={job} correctionReview={evidenceReview} resumeVersions={resumeVersions} coverLetters={coverLetters} generationControls={
+<ApplyPacketBuilder
               key={`${application?.id ?? "no-application"}-${resumeVersions[0]?.id ?? "no-resume"}-${
                 coverLetters[0]?.id ?? "no-cover"
               }`}
@@ -276,8 +267,10 @@ export default async function JobDetailPage({ params }: Props) {
               coverLetters={coverLetters.map(({ id, title, evidenceCurrent, createdAt }) => ({ id, title, evidenceCurrent, createdAt }))}
               application={application}
             />
-          </Panel>
-
+      } />
+      <details className="mt-6"><summary className="cursor-pointer py-3">Additional job information and CRM</summary>
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]">
+        <section className="min-w-0 space-y-6">
           <Panel>
             <PanelHeader title="Fit analysis" />
             <div className="space-y-5 p-5">
@@ -397,18 +390,6 @@ export default async function JobDetailPage({ params }: Props) {
           </Panel>
 
           <Panel>
-            <PanelHeader
-              title="Generated documents"
-              description="Preview, edit, and export saved resume and cover letter versions for this job."
-            />
-            <JobDocumentWorkspace
-              key={`${resumeVersions[0]?.id ?? "no-resume"}-${coverLetters[0]?.id ?? "no-cover"}`}
-              resumeVersions={resumeVersions}
-              coverLetters={coverLetters}
-            />
-          </Panel>
-
-          <Panel>
             <PanelHeader title="Full posting" />
             <div className="p-5 text-sm leading-7 text-slate-700">{job.description}</div>
           </Panel>
@@ -437,6 +418,7 @@ export default async function JobDetailPage({ params }: Props) {
           </Panel>
         </aside>
       </div>
+      </details>
     </>
   );
 }

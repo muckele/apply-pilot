@@ -1,320 +1,83 @@
 "use client";
-
-import { useMemo, useState } from "react";
-import { Download, Loader2, Pencil, Save } from "lucide-react";
-import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-
-import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import Link from "next/link";
 import { FormattedDocumentPreview } from "@/components/formatted-document-preview";
+import { defaultResumeFormat, type ResumeFormat } from "@/lib/documents/resume-format";
 
-export type JobResumeVersionOption = {
-  id: string;
-  title: string;
-  fullText: string;
-  summary: string | null;
-  atsCompatibility: number | null;
-  jobFitScore: number | null;
-  evidenceCurrent: boolean;
-  createdAt: string;
-};
+export type JobResumeVersionOption = {id:string;title:string;fullText:string;summary:string|null;atsCompatibility:number|null;jobFitScore:number|null;evidenceCurrent:boolean;createdAt:string;resumeFormat?:ResumeFormat};
+export type JobCoverLetterOption = {id:string;title:string;content:string;evidenceCurrent:boolean;createdAt:string};
+type ExportFormat="markdown"|"docx"|"pdf";
 
-export type JobCoverLetterOption = {
-  id: string;
-  title: string;
-  content: string;
-  evidenceCurrent: boolean;
-  createdAt: string;
-};
-
-type ExportFormat = "markdown" | "docx" | "pdf";
-
-type SaveState = "idle" | "saving" | "exporting";
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit"
-  }).format(new Date(value));
+export function JobDocumentWorkspace({resumeVersions,coverLetters,evidenceInvalidated=false}:{resumeVersions:JobResumeVersionOption[];coverLetters:JobCoverLetterOption[];evidenceInvalidated?:boolean}) {
+  const [kind,setKind]=useState<"resume"|"cover">("resume"),[resumeId,setResumeId]=useState(resumeVersions[0]?.id??""),[coverId,setCoverId]=useState(coverLetters[0]?.id??"");
+  const root=useRef<HTMLDivElement>(null);
+  const [drafts,setDrafts]=useState<Record<string,{baseText:string;text:string}>>({});
+  const resume=resumeVersions.find(item=>item.id===resumeId)??resumeVersions[0]??null,cover=coverLetters.find(item=>item.id===coverId)??coverLetters[0]??null;
+  const selected=kind==="resume"?resume:cover,stored=kind==="resume"?resume?.fullText??"":cover?.content??"";
+  const format=kind==="resume"?resume?.resumeFormat??defaultResumeFormat:defaultResumeFormat;
+  const identity=JSON.stringify([kind,selected?.id,stored,format,selected?.evidenceCurrent,evidenceInvalidated]);
+  const draftKey=kind+":"+(selected?.id??""),draft=drafts[draftKey];
+  const text=draft?.text??stored,conflict=!!draft&&draft.baseText!==stored&&draft.text!==stored;
+  function changeText(next:string){setDrafts(previous=>({...previous,[draftKey]:{baseText:previous[draftKey]?.baseText??stored,text:next}}));}
+  function clearDraft(){setDrafts(previous=>{const next={...previous};delete next[draftKey];return next;});}
+  function confirmSaved(next:string){setDrafts(previous=>({...previous,[draftKey]:{baseText:next,text:next}}));}
+  function focusSelected(){requestAnimationFrame(()=>{const title=root.current?.querySelector<HTMLElement>(".application-document-title");title?.focus({preventScroll:true});title?.scrollIntoView({block:"start"});});}
+  function chooseKind(next:"resume"|"cover"){setKind(next);focusSelected();}
+  function chooseVersion(id:string){if(kind==="resume")setResumeId(id);else setCoverId(id);focusSelected();}
+  return <div ref={root} className="application-documents" data-product-documents>
+    <nav className="application-document-nav" aria-label="Choose document"><button aria-pressed={kind==="resume"} onClick={()=>chooseKind("resume")}>Review résumé</button><button aria-pressed={kind==="cover"} onClick={()=>chooseKind("cover")}>Review cover letter</button></nav>
+    <DocumentReviewCard key={identity} kind={kind} selected={selected} stored={stored} text={text} conflict={conflict} changeText={changeText} clearDraft={clearDraft} confirmSaved={confirmSaved} format={format} evidenceInvalidated={evidenceInvalidated} versions={kind==="resume"?resumeVersions:coverLetters} chooseVersion={chooseVersion}/>
+  </div>;
 }
-
-async function downloadGeneratedFile(payload: { resumeVersionId?: string; documentId?: string; format: ExportFormat }) {
-  const response = await fetch("/api/documents/export", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-
-  if (!response.ok) {
-    const json = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(json?.error ?? "Export failed.");
-  }
-
-  const blob = await response.blob();
-  const disposition = response.headers.get("content-disposition");
-  const filename = disposition?.match(/filename="([^"]+)"/)?.[1] ?? `jobmatch-document.${payload.format}`;
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
-export function JobDocumentWorkspace({
-  resumeVersions,
-  coverLetters
-}: {
-  resumeVersions: JobResumeVersionOption[];
-  coverLetters: JobCoverLetterOption[];
-}) {
-  const router = useRouter();
-  const [selectedResumeId, setSelectedResumeId] = useState(resumeVersions[0]?.id ?? "");
-  const [selectedCoverId, setSelectedCoverId] = useState(coverLetters[0]?.id ?? "");
-  const selectedResume = useMemo(
-    () => resumeVersions.find((version) => version.id === selectedResumeId) ?? null,
-    [resumeVersions, selectedResumeId]
-  );
-  const selectedCover = useMemo(
-    () => coverLetters.find((document) => document.id === selectedCoverId) ?? null,
-    [coverLetters, selectedCoverId]
-  );
-  const [resumeText, setResumeText] = useState(selectedResume?.fullText ?? "");
-  const [coverText, setCoverText] = useState(selectedCover?.content ?? "");
-  const [resumeState, setResumeState] = useState<SaveState>("idle");
-  const [coverState, setCoverState] = useState<SaveState>("idle");
-  const [message, setMessage] = useState<string | null>(null);
-
-  function chooseResume(id: string) {
-    const next = resumeVersions.find((version) => version.id === id) ?? null;
-    setSelectedResumeId(id);
-    setResumeText(next?.fullText ?? "");
-    setMessage(null);
-  }
-
-  function chooseCover(id: string) {
-    const next = coverLetters.find((document) => document.id === id) ?? null;
-    setSelectedCoverId(id);
-    setCoverText(next?.content ?? "");
-    setMessage(null);
-  }
-
-  async function saveResume() {
-    if (!selectedResume) return;
-    setResumeState("saving");
-    setMessage(null);
-    const response = await fetch(`/api/resume-versions/${selectedResume.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fullText: resumeText })
-    });
-    setResumeState("idle");
-
-    if (!response.ok) {
-      const json = (await response.json().catch(() => null)) as { error?: string } | null;
-      setMessage(json?.error ?? "Could not save resume edits.");
-      return;
-    }
-
-    setMessage("Resume edits saved.");
-    router.refresh();
-  }
-
-  async function saveCoverLetter() {
-    if (!selectedCover) return;
-    setCoverState("saving");
-    setMessage(null);
-    const response = await fetch(`/api/generated-documents/${selectedCover.id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: coverText })
-    });
-    setCoverState("idle");
-
-    if (!response.ok) {
-      const json = (await response.json().catch(() => null)) as { error?: string } | null;
-      setMessage(json?.error ?? "Could not save cover letter edits.");
-      return;
-    }
-
-    setMessage("Cover letter edits saved.");
-    router.refresh();
-  }
-
-  async function exportResume(format: ExportFormat) {
-    if (!selectedResume) return;
-    setResumeState("exporting");
-    setMessage(null);
+function DocumentReviewCard({kind,selected,stored,text,conflict,changeText,clearDraft,confirmSaved,format,evidenceInvalidated,versions,chooseVersion}:{kind:"resume"|"cover";selected:JobResumeVersionOption|JobCoverLetterOption|null;stored:string;text:string;conflict:boolean;changeText:(text:string)=>void;clearDraft:()=>void;confirmSaved:(text:string)=>void;format:ResumeFormat;evidenceInvalidated:boolean;versions:Array<JobResumeVersionOption|JobCoverLetterOption>;chooseVersion:(id:string)=>void}) {
+  const router=useRouter();
+  const [busy,setBusy]=useState<string|null>(null),[message,setMessage]=useState<string|null>(null),[pdfUrl,setPdfUrl]=useState<string|null>(null);
+  const revision=useRef(0),url=useRef<string|null>(null),abort=useRef<AbortController|null>(null),operation=useRef(false);
+  const dirty=text!==stored;
+  const eligible=!!selected?.evidenceCurrent&&!evidenceInvalidated&&!dirty&&!conflict;
+  function invalidate(){revision.current++;abort.current?.abort();abort.current=null;operation.current=false;if(url.current)URL.revokeObjectURL(url.current);url.current=null;setPdfUrl(null);setBusy(null);}
+  useEffect(()=>()=>{revision.current++;abort.current?.abort();if(url.current)URL.revokeObjectURL(url.current);},[]);
+  async function exportFile(exportFormat:ExportFormat,preview=false) {
+    if(!eligible||operation.current||!selected)return;
+    operation.current=true;
+    const started=revision.current,controller=new AbortController();abort.current=controller;setBusy(preview?"preview":"export");setMessage(null);
     try {
-      await downloadGeneratedFile({ resumeVersionId: selectedResume.id, format });
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Export failed.");
-    } finally {
-      setResumeState("idle");
-    }
+      const response=await fetch("/api/documents/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({...(kind==="resume"?{resumeVersionId:selected.id}:{documentId:selected.id}),format:exportFormat}),signal:controller.signal});
+      if(!response.ok){const body=await response.json().catch(()=>null);throw new Error(body?.error??"Export failed.");}
+      const blob=await response.blob();if(started!==revision.current||controller.signal.aborted)return;
+      const objectUrl=URL.createObjectURL(blob);
+      if(preview){if(url.current)URL.revokeObjectURL(url.current);url.current=objectUrl;setPdfUrl(objectUrl);}
+      else {const link=document.createElement("a");link.href=objectUrl;link.download=response.headers.get("content-disposition")?.match(/filename="([^"]+)"/u)?.[1]??("document."+exportFormat);link.click();URL.revokeObjectURL(objectUrl);}
+    }catch(error){if(started===revision.current&&!controller.signal.aborted)setMessage(error instanceof Error?error.message:"Export unavailable.");}
+    finally{if(started===revision.current){setBusy(null);abort.current=null;operation.current=false;}}
   }
-
-  async function exportCoverLetter(format: ExportFormat) {
-    if (!selectedCover) return;
-    setCoverState("exporting");
-    setMessage(null);
+  async function save() {
+    if(!selected||operation.current||conflict)return;
+    operation.current=true;
+    const started=revision.current;setBusy("save");setMessage(null);
     try {
-      await downloadGeneratedFile({ documentId: selectedCover.id, format });
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Export failed.");
-    } finally {
-      setCoverState("idle");
-    }
+      const response=await fetch(kind==="resume"?"/api/resume-versions/"+selected.id:"/api/generated-documents/"+selected.id,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify(kind==="resume"?{fullText:text}:{content:text})});
+      if(started!==revision.current)return;
+      if(!response.ok){const body=await response.json().catch(()=>null);throw new Error(body?.error??"Could not save edits.");}
+      const saved=await response.json();
+      if(started!==revision.current)return;
+      confirmSaved(kind==="resume"?saved.version.fullText:saved.document.content);
+      setMessage("Edits saved. Regenerate from reviewed evidence before exporting.");router.refresh();
+    }catch(error){if(started===revision.current)setMessage(error instanceof Error?error.message:"Could not save edits.");}
+    finally{if(started===revision.current){setBusy(null);operation.current=false;}}
   }
-
-  return (
-    <div className="space-y-5 p-5">
-      {message ? <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700">{message}</p> : null}
-
-      <section className="rounded-lg border border-slate-200">
-        <div className="border-b border-slate-200 p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-950">Tailored resume</h3>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                Edit the selected resume draft before exporting or marking the job as applied.
-              </p>
-            </div>
-            <select
-              value={selectedResumeId}
-              onChange={(event) => chooseResume(event.target.value)}
-              className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 lg:w-72"
-              disabled={!resumeVersions.length}
-            >
-              {resumeVersions.length ? (
-                resumeVersions.map((version) => (
-                  <option key={version.id} value={version.id}>
-                    {version.title}
-                  </option>
-                ))
-              ) : (
-                <option value="">No tailored resumes yet</option>
-              )}
-            </select>
-          </div>
-          {selectedResume ? (
-            <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-              <span>Created {formatDate(selectedResume.createdAt)}</span>
-              {!selectedResume.evidenceCurrent ? <span className="font-semibold text-amber-700">Older reviewed evidence — regenerate before export</span> : null}
-              {selectedResume.atsCompatibility ? <span>{selectedResume.atsCompatibility}% ATS compatible</span> : null}
-              {selectedResume.jobFitScore ? <span>{selectedResume.jobFitScore}% job fit</span> : null}
-            </div>
-          ) : null}
-        </div>
-        <div className="space-y-3 p-4">
-          <textarea
-            value={resumeText}
-            onChange={(event) => setResumeText(event.target.value)}
-            rows={14}
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 text-slate-700"
-            placeholder="Generate a tailored resume to preview and edit it here."
-            disabled={!selectedResume}
-          />
-          <div className="flex flex-wrap gap-2">
-            <PrimaryButton type="button" onClick={saveResume} disabled={!selectedResume || resumeState !== "idle"}>
-              {resumeState === "saving" ? <Loader2 className="mr-2 animate-spin" size={15} /> : <Save className="mr-2" size={15} />}
-              Save edits
-            </PrimaryButton>
-            {(["markdown", "docx", "pdf"] as const).map((format) => (
-              <SecondaryButton
-                key={format}
-                type="button"
-                onClick={() => exportResume(format)}
-                disabled={!selectedResume?.evidenceCurrent || resumeState !== "idle"}
-              >
-                {resumeState === "exporting" ? (
-                  <Loader2 className="mr-2 animate-spin" size={15} />
-                ) : (
-                  <Download className="mr-2" size={15} />
-                )}
-                {format.toUpperCase()}
-              </SecondaryButton>
-            ))}
-            {selectedResume?.evidenceCurrent ? (
-              <Link
-                href={`/resumes/${selectedResume.id}`}
-                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              >
-                <Pencil className="mr-2" size={15} />
-                Format and preview
-              </Link>
-            ) : null}
-          </div>
-        </div>
-      </section>
-
-      <section className="rounded-lg border border-slate-200">
-        <div className="border-b border-slate-200 p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-950">Cover letter</h3>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                Keep the letter specific, short, and reviewed before sending or pasting anywhere.
-              </p>
-            </div>
-            <select
-              value={selectedCoverId}
-              onChange={(event) => chooseCover(event.target.value)}
-              className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 lg:w-72"
-              disabled={!coverLetters.length}
-            >
-              {coverLetters.length ? (
-                coverLetters.map((document) => (
-                  <option key={document.id} value={document.id}>
-                    {document.title}
-                  </option>
-                ))
-              ) : (
-                <option value="">No cover letters yet</option>
-              )}
-            </select>
-          </div>
-          {selectedCover ? <p className="mt-3 text-xs text-slate-500">Created {formatDate(selectedCover.createdAt)}{!selectedCover.evidenceCurrent ? " · Older reviewed evidence — regenerate before export" : ""}</p> : null}
-        </div>
-        <div className="space-y-3 p-4">
-          <textarea
-            value={coverText}
-            onChange={(event) => setCoverText(event.target.value)}
-            rows={12}
-            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm leading-6 text-slate-700"
-            placeholder="Generate a cover letter to preview and edit it here."
-            disabled={!selectedCover}
-          />
-          {selectedCover ? (
-            <FormattedDocumentPreview text={coverText} title="Cover letter preview" />
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            <PrimaryButton type="button" onClick={saveCoverLetter} disabled={!selectedCover || coverState !== "idle"}>
-              {coverState === "saving" ? <Loader2 className="mr-2 animate-spin" size={15} /> : <Save className="mr-2" size={15} />}
-              Save edits
-            </PrimaryButton>
-            {(["markdown", "docx", "pdf"] as const).map((format) => (
-              <SecondaryButton
-                key={format}
-                type="button"
-                onClick={() => exportCoverLetter(format)}
-                disabled={!selectedCover?.evidenceCurrent || coverState !== "idle"}
-              >
-                {coverState === "exporting" ? (
-                  <Loader2 className="mr-2 animate-spin" size={15} />
-                ) : (
-                  <Download className="mr-2" size={15} />
-                )}
-                {format.toUpperCase()}
-              </SecondaryButton>
-            ))}
-          </div>
-        </div>
-      </section>
-    </div>
-  );
+  return <section className="application-review-panel" data-selected-document={kind}>
+      <h3 tabIndex={-1} className="application-document-title">{kind==="resume"?"Tailored résumé":"Cover letter"}</h3>
+      {selected&&!selected.evidenceCurrent?<p role="status">Older reviewed evidence — regenerate before export.</p>:null}
+      {dirty?<p role="status">Unsaved edits — export and actual PDF preview are unavailable.</p>:null}
+      {conflict?<p role="status">The saved document changed while this draft was open. Copy your draft, then discard it to review the current version before editing again.</p>:null}
+      {message?<p role="status">{message}</p>:null}
+      {selected?<FormattedDocumentPreview text={text} title={kind==="resume"?"Résumé page layout":"Cover letter page layout"} format={format} artifactType={kind==="resume"?"RESUME":"COVER_LETTER"} showTitle={false}/>:<p>No saved document yet. Generate explicitly after reviewing the evidence.</p>}
+      <div className="application-background-actions"><button disabled={!eligible||!!busy} onClick={()=>exportFile("pdf",true)}>{busy==="preview"?"Loading PDF…":"Preview actual PDF"}</button>{(["markdown","docx","pdf"] as const).map(item=><button key={item} disabled={!eligible||!!busy} onClick={()=>exportFile(item)}>Download {item.toUpperCase()}</button>)}</div>
+      {pdfUrl?<div data-actual-product-pdf><a href={pdfUrl} target="_blank" rel="noreferrer">Open this exact PDF in a new tab</a><iframe title="Actual exported document PDF" className="w-full min-h-[600px]" src={pdfUrl}/></div>:null}
+      <details><summary>Selected version and formatting</summary><label className="block">{kind==="resume"?"Résumé version":"Cover-letter version"}<select className="block w-full mt-1" value={selected?.id??""} disabled={!selected} onChange={event=>chooseVersion(event.target.value)}>{versions.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}</select></label><p>{format.template} · {format.pageSize} · {format.fontFamily} · {format.fontSize} pt · {format.lineSpacing}% line spacing</p></details>
+      <details><summary>Edit document text</summary><label className="block">{kind==="resume"?"Tailored résumé text":"Cover-letter text"}<textarea className="w-full mt-2" rows={14} value={text} disabled={!selected||busy==="save"} onChange={event=>{invalidate();changeText(event.target.value);setMessage(null);}}/></label><button onClick={save} disabled={!selected||!!busy||!dirty||conflict}>{busy==="save"?"Saving…":"Save edits"}</button>{dirty||conflict?<button disabled={!!busy} onClick={()=>{invalidate();clearDraft();setMessage(null);}}>Discard unsaved edits</button>:null}</details>
+      {kind==="resume"&&selected?.evidenceCurrent?<Link href={"/resumes/"+selected.id}>Format and preview résumé</Link>:null}
+    </section>;
 }

@@ -38,7 +38,7 @@ type AcceptedDraft = {
 
 const emptyAcceptedDraft: AcceptedDraft = { action: "RETAIN", fact: "", ownerAttested: false };
 
-export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectionReviewModel }) {
+export function EvidenceCorrectionReview({ review, onReviewChanged, onReassessmentSaved }: { review: EvidenceCorrectionReviewModel; onReviewChanged?:()=>void; onReassessmentSaved?:()=>void }) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [acceptedDrafts, setAcceptedDrafts] = useState<Record<string, AcceptedDraft>>({});
   const [result, setResult] = useState<EvidenceSnapshotSaveResponse | null>(null);
@@ -51,6 +51,7 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
   const draftFor = (gapId: string) => drafts[gapId] ?? emptyDraft;
   const acceptedDraftFor = (factId: string) => acceptedDrafts[factId] ?? emptyAcceptedDraft;
   const update = (gapId: string, patch: Partial<Draft>) => {
+    onReviewChanged?.();
     reviewRevision.current += 1;
     requestId.current = null;
     setDrafts((current) => ({ ...current, [gapId]: { ...(current[gapId] ?? emptyDraft), ...patch } }));
@@ -62,6 +63,7 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
     }
   };
   const updateAccepted = (factId: string, patch: Partial<AcceptedDraft>) => {
+    onReviewChanged?.();
     reviewRevision.current += 1;
     requestId.current = null;
     setAcceptedDrafts((current) => ({
@@ -77,6 +79,7 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
   };
 
   async function saveSnapshot() {
+    onReviewChanged?.();
     const startedRevision = reviewRevision.current;
     setError(null);
     setPending("save");
@@ -189,6 +192,7 @@ export function EvidenceCorrectionReview({ review }: { review: EvidenceCorrectio
         result.snapshot.id !== startedSnapshotId
       ) return;
       setReassessmentSaved(true);
+      onReassessmentSaved?.();
     } catch (cause) {
       if (startedRevision !== reviewRevision.current) return;
       setError(cause instanceof Error ? cause.message : "The reassessment could not be completed.");

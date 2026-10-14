@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
-import { renderGenericDocument } from "@/lib/documents/export-renderer";
+import { renderProductDocument } from "@/lib/documents/product-document-renderer";
 import {
   defaultResumeFormat,
   normalizeHexColor,
@@ -54,7 +54,7 @@ type ExportJobEvidence = {
   user: { resumes: Array<{ id: string; updatedAt: Date }> };
 };
 
-type DocumentExportRouteDependencies = {
+export type DocumentExportRouteDependencies = {
   requireUserId: typeof requireUserId;
   checkRateLimit: typeof checkRateLimit;
   findGeneratedDocument: (input: { id: string; userId: string }) => Promise<GeneratedDocumentExportRow | null>;
@@ -106,11 +106,13 @@ export function createDocumentExportRouteHandlers(dependencies: DocumentExportRo
               lineSpacing: resumeVersion.lineSpacing
             }
           : defaultResumeFormat;
-        const contentWithTitle = document ? `${title}\n\n${content}` : content;
+        // Titles label versions and filenames; the employer-facing body is the stored document text.
+        const artifactType = document ? "COVER_LETTER" as const : "RESUME" as const;
 
         if (input.format === "docx") {
-          const buffer = await renderGenericDocument({
-            content: contentWithTitle,
+          const buffer = await renderProductDocument({
+            content,
+            artifactType,
             format: "docx",
             resumeFormat
           });
@@ -124,8 +126,9 @@ export function createDocumentExportRouteHandlers(dependencies: DocumentExportRo
         }
 
         if (input.format === "pdf") {
-          const buffer = await renderGenericDocument({
-            content: contentWithTitle,
+          const buffer = await renderProductDocument({
+            content,
+            artifactType,
             format: "pdf",
             resumeFormat
           });

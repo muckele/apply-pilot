@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { chromium } from "playwright";
+import { startNextTestServer } from "@/tests/browser/next-test-server";
+import { realisticDocumentQualityPayload } from "@/evaluation/document-quality-career-fixture";
+import { syntheticTailoredResumeOutput, syntheticCoverLetterOutput } from "@/evaluation/correction-flow-provider-stub";
+import { SYNTHETIC_CORRECTION_FLOW_FACT } from "@/evaluation/correction-flow-qualification-fixture";
+import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
+import { assembleTailoredResumeProviderOutput, assembleCoverLetterProviderOutput } from "@/lib/ai/application-document-facts";
+import { validateTailoredResumeClaims, validateCoverLetterClaims } from "@/lib/ai/application-document-claims";
 
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { NextRequest } from "next/server";
 
-import { createDocumentExportRouteHandlers } from "@/app/api/documents/export/route";
+import { createDocumentExportRouteHandlers } from "@/lib/documents/document-export-route";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 import { validateAndNormalizeJobMatchOutput, type MatchInput } from "@/lib/ai/job-match";
@@ -46,6 +55,127 @@ const jobRequirements = [
   "Legacy certification for Quenby systems"
 ] as const;
 const missingRequirementKeywords = ["Zephyrite", "Asterism", "Quenby"] as const;
+
+test("actual owned product job route reviews full career and exports current files without navigation mutations", {timeout:90_000}, async () => {
+  const config=validatePostgresTestEnvironment(process.env);
+  assertPostgresTestMajorVersion(await verifyLivePostgresTestDatabase(config));
+  const client=new PrismaClient({datasources:{db:{url:config.url}}});
+  const payload=realisticDocumentQualityPayload(),resumeData=payload.resume!;
+  const user=await client.user.create({data:{email:`product-review-${randomUUID()}@example.test`,name:"Synthetic Product Reviewer"}});
+  let nextServer:Awaited<ReturnType<typeof startNextTestServer>>|undefined;
+  const browser=await chromium.launch({headless:true});
+  const outputDir="/tmp/ap-pr35-actual-product-evidence";await mkdir(outputDir,{recursive:true});
+  try {
+    const job=await client.jobPosting.create({data:{userId:user.id,title:"Service Operations Director",company:"Northwind Service Cloud",normalizedTitle:randomUUID(),normalizedCompany:randomUUID(),normalizedLocation:"remote",sourceUrl:"https://example.test/product-review",normalizedApplyUrl:"https://example.test/product-review",sourceType:"MANUAL",description:String(payload.job!.description),requirements:[...(payload.job!.requirements as string[]),"Current Quenby certification"],preferredQualifications:["Business education"],benefits:[],detectedTechStack:["SQL"],missingKeywords:[],supportedKeywords:[],concerns:[]}});
+    const resume=await client.resume.create({data:{userId:user.id,isMaster:true,title:"Synthetic three-job master",rawText:String(resumeData.rawText),summary:String(resumeData.summary),skills:resumeData.skills as string[],achievements:resumeData.achievements as string[],workHistory:resumeData.workHistory as Prisma.InputJsonValue,projects:resumeData.projects as Prisma.InputJsonValue,education:resumeData.education as Prisma.InputJsonValue,certifications:resumeData.certifications as Prisma.InputJsonValue}});
+    const input=buildCurrentJobMatchInput({job,resume,profile:null,reviewedEvidence:null});
+    const initialOutput={...noGapMatch(input),requirementGaps:[{requirement:job.requirements.at(-1)!,jobRequirement:{ref:`job.requirements[${job.requirements.length-1}]`,excerpt:job.requirements.at(-1)!},missingKeywords:["Quenby"]}]};
+    const analysis=await client.aIAnalysis.create({data:{userId:user.id,jobPostingId:job.id,type:"JOB_MATCH",model:JOB_MATCH_MODEL,promptName:"jobMatchPrompt",promptVersion:JOB_MATCH_PROMPT_VERSION,inputHash:currentJobMatchInputHash(input),input:{fixture:"product-review"},output:initialOutput as Prisma.InputJsonValue}});
+    const review=buildEvidenceCorrectionReview({jobId:job.id,resumeId:resume.id,resumeUpdatedAt:resume.updatedAt.toISOString(),resume,analysisId:analysis.id,analysisInputHash:analysis.inputHash,analysisModel:analysis.model,analysisPromptVersion:analysis.promptVersion,analysisOutput:analysis.output});
+    const saved=await saveEvidenceSnapshot(user.id,job.id,{schema:"apply-pilot/evidence-snapshot-save/v2",requestId:randomUUID(),resumeId:resume.id,resumeUpdatedAt:resume.updatedAt.toISOString(),reviewedAnalysis:{id:analysis.id,inputHash:analysis.inputHash!,model:JOB_MATCH_MODEL,promptVersion:JOB_MATCH_PROMPT_VERSION},acceptedFactActions:[],decisions:[{gapId:review.gaps[0]!.id,kind:"OWNER_ATTESTATION",attestedFact:SYNTHETIC_CORRECTION_FLOW_FACT,ownerAttested:true,reuseScope:"JOB_ONLY",masterProfileOptIn:false}]});
+    const matcher=createJobMatchRunner({prismaClient:client,score:async matchInput=>{assert.ok(matchInput.reviewedEvidence?.facts.some(fact=>fact.fact===SYNTHETIC_CORRECTION_FLOW_FACT));return noGapMatch(matchInput);}});
+    await matcher(user.id,job.id,{force:true});
+    const tailored=assembleTailoredResumeProviderOutput(payload,syntheticTailoredResumeOutput(payload));validateTailoredResumeClaims(payload,tailored);
+    const letter=assembleCoverLetterProviderOutput(payload,syntheticCoverLetterOutput(payload));validateCoverLetterClaims(payload,letter);
+    const version=await client.resumeVersion.create({data:{userId:user.id,resumeId:resume.id,jobPostingId:job.id,evidenceSnapshotId:saved.snapshot.id,title:"Synthetic complete tailored résumé",fullText:tailored.resumeText,skills:[],bullets:[]}});
+    const customVersion=await client.resumeVersion.create({data:{userId:user.id,resumeId:resume.id,jobPostingId:job.id,evidenceSnapshotId:saved.snapshot.id,title:"Synthetic Georgia custom format",fullText:tailored.resumeText,skills:[],bullets:[],template:"MODERN",pageSize:"A4",fontFamily:"GEORGIA",fontSize:12,lineSpacing:150,accentColor:"#A1B2C3",createdAt:new Date("2026-10-01T00:00:00Z")}});
+    const coverDocument=await client.generatedDocument.create({data:{userId:user.id,jobPostingId:job.id,evidenceSnapshotId:saved.snapshot.id,type:"COVER_LETTER",title:letter.title,content:letter.coverLetter}});
+    nextServer=await startNextTestServer({environment:{...process.env,ALLOW_DEMO_USER:"true",DEFAULT_DEMO_USER_ID:user.id,AUTH_SECRET:"synthetic-product-review-local-secret"},readinessPath:"/login",startupTimeoutMs:60_000});
+    const origin=nextServer.origin,page=await browser.newPage({viewport:{width:1440,height:1000}}),api:string[]=[],errors:string[]=[];
+    page.on("request",request=>{const url=new URL(request.url());if(url.pathname.startsWith("/api/")&&url.pathname!=="/api/auth/session")api.push(url.pathname);});
+    page.on("pageerror",error=>errors.push(error.message));
+    const response=await page.goto(`${origin}/jobs/${job.id}`,{waitUntil:"networkidle"});
+    assert.equal(response?.status(),200,nextServer.getLogs());
+    await page.locator("[data-product-source]").getByText(/Harbor Customer Solutions/).waitFor();
+    assert.equal(await page.locator("[data-product-source]").getByText(/480-hour/).count(),1);
+    const source=await page.locator("[data-product-source]").boundingBox();assert.ok(source&&source.width>=450);
+    const initialGeneration=(await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration;
+    for(const [name,viewport] of [["desktop",{width:1440,height:1000}],["mobile",{width:390,height:844}]] as const) {
+      await page.setViewportSize(viewport);
+      for(const theme of ["light","dark","system"] as const) {
+        await page.locator("summary").filter({hasText:/^Appearance$/}).click();
+        await page.locator(`[data-theme-choice="${theme}"] input`).check({force:true});
+        await page.locator("summary").filter({hasText:/^Appearance$/}).click();
+        if(theme==="system"){await page.emulateMedia({colorScheme:"dark"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");await page.emulateMedia({colorScheme:"light"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="light");}
+        await page.getByRole("button",{name:"1. Background and target job",exact:true}).click();
+        await page.screenshot({path:`${outputDir}/${name}-${theme}-source.png`});
+        await page.getByRole("button",{name:"Continue to corrections",exact:true}).click();
+        assert.match(await page.locator('[data-product-review-stage="corrections"]').innerText(),/Current accepted job-only facts/u);
+        await page.getByRole("button",{name:"Continue to documents",exact:true}).click();
+        await page.getByRole("button",{name:"Review cover letter",exact:true}).click();
+        if(theme!=="light") {
+          await page.emulateMedia({colorScheme:"dark"});
+          if(theme==="system")await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");
+          const contrasts=await page.locator('.application-review-top > p, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
+            let ancestor:Element|null=element,background="";
+            while(ancestor){background=getComputedStyle(ancestor).backgroundColor;if(background!=="rgba(0, 0, 0, 0)"&&background!=="transparent")break;ancestor=ancestor.parentElement;}
+            const [a,b]=[getComputedStyle(element).color,background].map(value=>value.match(/[\d.]+/g)!.slice(0,3).map(Number).map(channel=>{const s=channel/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i]!,0));
+            return(Math.max(a!,b!)+.05)/(Math.min(a!,b!)+.05);
+          }));
+          assert.equal(contrasts.length,2);assert.ok(contrasts.every(ratio=>ratio>=4.5),"Dark review metadata contrast: "+JSON.stringify(contrasts));
+        }
+        await page.waitForFunction(()=>document.activeElement?.matches('[data-selected-document="cover"] .application-document-title'));
+        const titleBounds=await page.locator('[data-selected-document="cover"] .application-document-title').boundingBox(),navBounds=await page.locator('.application-document-nav').boundingBox();
+        assert.ok(titleBounds&&navBounds&&titleBounds.y>=navBounds.y+navBounds.height,"The focused document title must clear the sticky document navigation: "+JSON.stringify({name,theme,titleBounds,navBounds}));
+        const opener=name==="desktop"?page.locator('[data-selected-document="cover"] svg text').filter({hasText:"I am applying"}).first():page.locator('[data-selected-document="cover"] [data-reading-content] p').filter({hasText:"I am applying"});
+        await page.screenshot({path:`${outputDir}/${name}-${theme}-letter.png`});
+        const opening=await opener.boundingBox();assert.ok(opening&&opening.y>=0&&opening.y+opening.height<=viewport.height,"The actual product document opening must be visible without manual scrolling: "+JSON.stringify({name,theme,opening}));
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      }
+    }
+    assert.deepEqual(api,[]);assert.deepEqual(errors,[]);
+    assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration);
+    await page.reload({waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
+    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
+    await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Edit document text$/}).click();
+    const draft=tailored.resumeText+"\nUnsaved synthetic owner edit";
+    await page.getByLabel("Tailored résumé text").fill(draft);
+    const beforeSwitchRequests=api.length;
+    await page.getByRole("button",{name:"Review cover letter",exact:true}).click();
+    await page.getByRole("button",{name:"Review résumé",exact:true}).click();
+    await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Edit document text$/}).click();
+    assert.equal(await page.getByLabel("Tailored résumé text").inputValue(),draft,"Switching documents must preserve an unsaved owner draft.");
+    assert.equal(api.length,beforeSwitchRequests,"Keeping a draft must not save or generate implicitly.");
+    assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
+    await page.getByRole("button",{name:"Discard unsaved edits",exact:true}).click();
+    assert.equal(await page.getByLabel("Tailored résumé text").inputValue(),tailored.resumeText);
+    for(const [type,id] of [["resumeVersionId",version.id],["documentId",coverDocument.id]] as const)for(const format of ["pdf","docx"] as const){
+      const exported=await page.request.post(origin+"/api/documents/export",{data:{[type]:id,format}});
+      assert.equal(exported.status(),200);await writeFile(`${outputDir}/${type==="resumeVersionId"?"resume":"cover-letter"}.${format}`,await exported.body());
+    }
+    for(const format of ["pdf","docx"] as const){const exported=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format}});assert.equal(exported.status(),200);await writeFile(`${outputDir}/custom-resume.${format}`,await exported.body());}
+    await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Selected version and formatting$/}).click();
+    await page.locator('[data-selected-document="resume"] select').selectOption(customVersion.id);
+    await page.getByText("DOCX preserves Georgia. The current PDF export uses Times.",{exact:true}).waitFor();
+    for(const [name,viewport] of [["desktop",{width:1440,height:1000}],["mobile",{width:390,height:844}]] as const){await page.setViewportSize(viewport);await page.screenshot({path:`${outputDir}/${name}-system-georgia-preview.png`});}
+    await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Selected version and formatting$/}).click();
+    await page.locator('[data-selected-document="resume"] select').selectOption(version.id);
+    let releaseDelayed!:()=>void,markDelayedSeen!:()=>void,markDelayedDone!:()=>void;
+    const delayed=new Promise<void>(resolve=>{releaseDelayed=resolve;}),seen=new Promise<void>(resolve=>{markDelayedSeen=resolve;}),done=new Promise<void>(resolve=>{markDelayedDone=resolve;});
+    await page.route("**/api/documents/export",async route=>{const result=await route.fetch();markDelayedSeen();await delayed;await route.fulfill({response:result}).catch(()=>undefined);markDelayedDone();});
+    await page.getByRole("button",{name:"Preview actual PDF",exact:true}).click();await seen;
+    await page.getByRole("button",{name:"Review cover letter",exact:true}).click();releaseDelayed();await done;
+    assert.equal(await page.locator("[data-actual-product-pdf]").count(),0,"A delayed résumé response cannot publish into a different selected document.");
+    await page.unroute("**/api/documents/export");
+    await page.getByRole("button",{name:"Preview actual PDF",exact:true}).click();await page.locator("[data-actual-product-pdf] iframe").waitFor();
+    await page.getByRole("button",{name:"2. Missing-fact corrections",exact:true}).click();await page.getByRole("button",{name:"Save reviewed evidence",exact:true}).click();
+    await page.getByText(/Saved reviewed snapshot/).waitFor();
+    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
+    assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
+    assert.equal(await page.locator("[data-actual-product-pdf]").count(),0);
+    let matchCalls=0;
+    await page.route(`**/api/jobs/${job.id}/match`,async route=>{matchCalls++;if(matchCalls===1){await route.fulfill({status:428,contentType:"application/json",body:JSON.stringify({code:"AI_COST_CONFIRMATION_REQUIRED",maximumCostMicros:72720})});return;}assert.equal(route.request().headers()["x-ai-cost-confirmed"],"true");await matcher(user.id,job.id,{force:true});await route.fulfill({status:200,contentType:"application/json",body:"{}"});});
+    page.on("dialog",dialog=>void dialog.accept());
+    await page.getByRole("button",{name:"2. Missing-fact corrections",exact:true}).click();await page.getByRole("button",{name:/Reassess/}).click();
+    await page.waitForFunction(()=>!document.querySelector('[data-product-review-stage="documents"] fieldset[disabled]'));
+    assert.equal(matchCalls,2);
+    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
+    const stale=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:version.id,format:"pdf"}});assert.equal(stale.status(),409);
+    assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
+    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,georgiaDisclosureReviewed:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
+    await page.close();
+  }finally{await browser.close();await nextServer?.stop();await client.user.delete({where:{id:user.id}});await client.$disconnect();}
+});
 
 test("linked synthetic correction journey persists reviewed facts into both generated and exported documents", async () => {
   const config = validatePostgresTestEnvironment(process.env);

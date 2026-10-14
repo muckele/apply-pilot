@@ -152,9 +152,17 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
     assert.equal(await page.getByText(/saved for this job only/i).isVisible(), true);
     assert.equal(await page.getByText(/Review changed.*Save a new reviewed snapshot/).isVisible(), true);
     const documents = page.locator("[data-synthetic-generated-documents]");
-    assert.equal(await documents.getByText("Bachelor of Arts in Business Administration", { exact: true }).isVisible(), true);
+    assert.equal(await documents.locator("[data-reading-content]").getByText("Bachelor of Arts in Business Administration", { exact: true }).isVisible(), true);
+    for(const label of ["Selected version and formatting","Edit document text"]) {
+      const summary=documents.locator("summary").filter({hasText:label});
+      if(!await summary.evaluate(element=>(element.parentElement as HTMLDetailsElement).open))await summary.click();
+    }
     assert.match(await documents.locator("textarea").nth(0).inputValue(), /cross-functional service portfolio reviews/u);
-    assert.match(await documents.locator("textarea").nth(1).inputValue(), /Dear Synthetic Employer Hiring Team/u);
+    await documents.getByRole("button",{name:"Review cover letter",exact:true}).click();
+    await documents.locator("summary").filter({hasText:"Edit document text"}).click();
+    assert.match(await documents.locator("textarea").inputValue(), /Dear Synthetic Employer Hiring Team/u);
+    await documents.getByRole("button",{name:"Review résumé",exact:true}).click();
+    for(const label of ["Selected version and formatting","Edit document text"])await documents.locator("summary").filter({hasText:label}).click();
     const controls = await documents.locator("select, textarea, button").evaluateAll((elements) => elements
       .filter((element) => {
         const rect = element.getBoundingClientRect();
@@ -164,7 +172,7 @@ test("rendered correction flow saves job-only evidence, reassesses, and invalida
         const rect = element.getBoundingClientRect();
         return { left: rect.left, right: rect.right, width: rect.width };
       }));
-    assert.ok(controls.length >= 10, `${width}px rendered ${controls.length} generated-document controls`);
+    assert.ok(controls.length >= 9, `${width}px rendered ${controls.length} selected-document controls`);
     assert.ok(
       controls.every((control) => control.left >= -1 && control.right <= width + 1),
       `${width}px controls exceed the viewport: ${JSON.stringify(controls)}`

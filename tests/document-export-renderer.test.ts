@@ -211,7 +211,7 @@ test("generic resume DOCX uses current resume formatting and excludes its title"
   assert.match(xml.styles, /w:ascii="Georgia"/);
   assert.match(xml.styles, /w:sz w:val="22"/);
   assert.match(xml.styles, /w:line="264"/);
-  assert.match(xml.document, /w:pgSz w:w="11909" w:h="16834"/);
+  assert.match(xml.document, /w:pgSz w:w="11900" w:h="16840"/);
   assert.match(xml.document, /w:color w:val="A1B2C3"/);
   assert.match(xml.document, /w:left w:val="single"/);
 });
@@ -271,7 +271,7 @@ test("export allows an artifact with an exact current non-null reviewed-evidence
   assert.equal(await response.text(), "SUMMARY\nResume body only");
 });
 
-test("generic generated-document DOCX prepends title and uses the current generic default format", async () => {
+test("ordinary generated-document DOCX exports the stored body without a duplicate version title", async () => {
   const { handlers } = route({ resume: null });
 
   const response = await handlers.POST(request({ documentId: DOCUMENT_ID, format: "docx" }));
@@ -283,14 +283,14 @@ test("generic generated-document DOCX prepends title and uses the current generi
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   );
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="Generated_Cover_Letter.docx"');
-  assert.deepEqual(docxParagraphs(xml.document), ["Generated Cover Letter", "", "Generated body only"]);
+  assert.deepEqual(docxParagraphs(xml.document), ["Generated body only"]);
   assert.match(xml.styles, /w:ascii="Arial"/);
   assert.match(xml.styles, /w:sz w:val="20"/);
   assert.match(xml.styles, /w:line="230"/);
   assert.match(xml.document, /w:pgSz w:w="12240" w:h="15840"/);
 });
 
-test("generic generated-document PDF prepends title and uses current generic PDF defaults", async () => {
+test("ordinary generated-document PDF exports the stored body without a duplicate version title", async () => {
   const { handlers } = route({ resume: null });
 
   const response = await handlers.POST(request({ documentId: DOCUMENT_ID, format: "pdf" }));
@@ -301,8 +301,8 @@ test("generic generated-document PDF prepends title and uses current generic PDF
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="Generated_Cover_Letter.pdf"');
   assert.match(pdf, /\/MediaBox \[0 0 612 792\]/);
   assert.match(pdf, /\/BaseFont \/Helvetica/);
-  assert.match(pdf, /\/F1 10 Tf/);
-  assert.match(pdf, /\(Generated Cover Letter\) Tj\nT\*\n\(\) Tj\nT\*\n\(Generated body only\) Tj/);
+  assert.match(pdf, /\(Generated body only\) Tj/);
+  assert.doesNotMatch(pdf, /\(Generated Cover Letter\) Tj/);
 });
 
 test("generic export keeps Markdown as the omitted-format default", async () => {
