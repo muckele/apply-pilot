@@ -127,7 +127,7 @@ test("application-document provider contracts keep refs server-side and close th
 
 test("application-document prompt/cache identity advances for the full deterministic writing contract", async () => {
   const version = await import("@/lib/ai/application-document-version");
-  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "10");
+  assert.equal(version.APPLICATION_DOCUMENT_PROMPT_VERSION, "11");
 });
 
 test("cover uncited-line projection collapses source whitespace into one physical line", async () => {

@@ -6,7 +6,7 @@ function source(path: string) {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
-test("resume tailoring uses prompt/cache v10 atomic fact IDs and the validator's exact grammar", () => {
+test("resume tailoring uses prompt/cache v11 atomic fact IDs and the validator's exact grammar", () => {
   const prompt = source("prompts/resumeTailorPrompt.ts");
   const implementation = source("lib/ai/resume.ts");
   const version = source("lib/ai/application-document-version.ts");
@@ -27,14 +27,14 @@ test("resume tailoring uses prompt/cache v10 atomic fact IDs and the validator's
   assert.match(prompt, /supporting factId/is);
   assert.match(prompt, /SUMMARY.*PROFILE.*SKILLS.*EXPERIENCE.*WORK EXPERIENCE.*PROJECTS.*EDUCATION.*CERTIFICATIONS.*ACHIEVEMENTS.*ADDITIONAL INFORMATION/is);
   assert.doesNotMatch(prompt, /atsCompatibilityScore|jobFitScore/);
-  assert.match(version, /APPLICATION_DOCUMENT_PROMPT_VERSION = "10"/);
+  assert.match(version, /APPLICATION_DOCUMENT_PROMPT_VERSION = "11"/);
   assert.match(implementation, /buildTailoredResumeSystemPrompt/);
   assert.match(implementation, /buildTailoredResumeGeminiJsonSchema/);
   assert.match(implementation, /feature: "RESUME_TAILOR",[\s\S]*promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION/);
   assert.match(implementation, /validateTailoredResumeClaims\(applicationPayload, value\)/);
 });
 
-test("cover generation uses an applicant-neutral v10 atomic fact contract", () => {
+test("cover generation uses an applicant-neutral v11 atomic fact contract", () => {
   const prompt = source("prompts/coverLetterPrompt.ts");
   const implementation = source("lib/ai/documents.ts");
   const version = source("lib/ai/application-document-version.ts");
@@ -57,9 +57,19 @@ test("cover generation uses an applicant-neutral v10 atomic fact contract", () =
   assert.doesNotMatch(prompt, /software engineering, sales, customer-facing, and operations/i);
   assert.match(prompt, /prioritize.*stated requirements/iu);
   assert.match(prompt, /evidence determine.*length/iu);
-  assert.match(version, /APPLICATION_DOCUMENT_PROMPT_VERSION = "10"/);
+  assert.match(version, /APPLICATION_DOCUMENT_PROMPT_VERSION = "11"/);
   assert.match(implementation, /buildCoverLetterSystemPrompt/);
   assert.match(implementation, /buildCoverLetterGeminiJsonSchema/);
   assert.match(implementation, /feature: "COVER_LETTER",[\s\S]*promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION/);
   assert.match(implementation, /validateCoverLetterClaims\(payload, value\)/);
+});
+
+test("cover paragraph planning selects relevant responsibility/result facts without composing new claims", () => {
+  const prompt = source("prompts/coverLetterPrompt.ts");
+  assert.match(prompt, /two distinct job priorities/iu);
+  assert.match(prompt, /one exact published context line/iu);
+  assert.match(prompt, /responsibility and.*result/iu);
+  assert.match(prompt, /Do not repeat.*whole claim.*different fact IDs/iu);
+  assert.match(prompt, /Each complete sentence.*own factId/iu);
+  assert.match(prompt, /Do not add an employer prefix/iu);
 });

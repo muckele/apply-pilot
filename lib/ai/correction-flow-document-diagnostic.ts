@@ -66,7 +66,7 @@ const FROZEN_SYNTHETIC_PAYLOAD_HASH =
 const FROZEN_SYNTHETIC_REVIEWED_EVIDENCE_HASH =
   "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708";
 const FROZEN_SYNTHETIC_FACT_CATALOG_HASH =
-  "db84af3ab4d60aae0250dc7eb827ce8521e24e7ac6b50ea1991379c37eb7550c";
+  "2660f5816077cae31a163ec83ad7dfd500611600dd856ffc243b7e2c3a96f906";
 const FROZEN_SYNTHETIC_FACT_COUNT = 70;
 
 const providerModeSchema = z.enum(["offline_stubbed", "live_synthetic"]);

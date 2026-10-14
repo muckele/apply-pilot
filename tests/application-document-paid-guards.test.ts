@@ -326,7 +326,7 @@ test("cached assembled output bypasses the incompatible provider-wire schema and
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("current document requests query only the v8 cache identity, not legacy versions", async (t) => {
+test("current document requests query only the current cache identity, not legacy versions", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t, null, { value: "cached-current" });
   let calls = 0;
@@ -340,6 +340,7 @@ test("current document requests query only the v8 cache identity, not legacy ver
   const where = ledger.cacheQueries[0].where as Record<string, unknown>;
   assert.equal(where.promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
   assert.notEqual(where.promptVersion, "7");
+  assert.notEqual(where.promptVersion, "10");
 });
 
 test("oversize document input fails before cache, reservation, or provider dispatch", async (t) => {

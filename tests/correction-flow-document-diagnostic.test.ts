@@ -97,7 +97,7 @@ function runnerFor({
   });
 }
 
-test("the two-document manifest freezes prompt v10, the 70-fact catalog, both wires, and the exact cap", () => {
+test("the two-document manifest freezes prompt v11, the 70-fact catalog, both wires, and the exact cap", () => {
   const value = manifest();
   assert.equal(value.contractVersion, "1");
   assert.equal(value.callCount, 2);
@@ -108,7 +108,7 @@ test("the two-document manifest freezes prompt v10, the 70-fact catalog, both wi
   assert.equal(value.rawOutputRetention, false);
   assert.equal(value.outputEmission, false);
   assert.equal(value.factCatalogCount, 70);
-  assert.equal(value.factCatalogHash, "db84af3ab4d60aae0250dc7eb827ce8521e24e7ac6b50ea1991379c37eb7550c");
+  assert.equal(value.factCatalogHash, "2660f5816077cae31a163ec83ad7dfd500611600dd856ffc243b7e2c3a96f906");
   assert.equal(value.payloadHash, "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae");
   assert.equal(value.reviewedEvidenceHash, "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708");
   assert.deepEqual(value.calls.map((call) => [
@@ -121,10 +121,10 @@ test("the two-document manifest freezes prompt v10, the 70-fact catalog, both wi
     call.maximumCostMicros,
     call.wireRequestHash
   ]), [
-    ["tailored_resume", "gemini-3.8-flash", "10", "LOW", 56_000, 6_000, 64_500,
+    ["tailored_resume", "gemini-3.8-flash", "11", "LOW", 56_000, 6_000, 64_500,
       "49247fbe57954a9a53b46b0c1a8fd49acaa834ea4e40311b8dda560b5a6b3f26"],
-    ["cover_letter", "gemini-3.8-flash", "10", "LOW", 56_000, 1_500, 47_625,
-      "111fda3d522f356f4357bd5692765d2fdfcf14a0d8244b4ea79dce47e4630b12"]
+    ["cover_letter", "gemini-3.8-flash", "11", "LOW", 56_000, 1_500, 47_625,
+      "537a435d1534024540cea2c13f770a350bcfacca334a09fa5413ba312619d4c1"]
   ]);
   assert.deepEqual(value.calls.map((call) => call.pricingSnapshot), [
     {

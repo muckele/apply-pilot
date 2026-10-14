@@ -1,4 +1,4 @@
-import { BorderStyle, Document, LineRuleType, Packer, Paragraph, TextRun } from "docx";
+import { BorderStyle, Document, HeadingLevel, LineRuleType, Packer, Paragraph, TextRun } from "docx";
 import { PublicApiError } from "@/lib/api-errors";
 import { buildProductDocumentLayout, type ProductDocumentInput, type ProductDocumentLayout } from "@/lib/documents/product-document-layout";
 
@@ -46,6 +46,8 @@ export async function renderProductDocument(input:ProductDocumentInput & {format
       emitted.add(block.paragraphId);
       const paragraph=page.blocks.filter(item=>item.paragraphId===block.paragraphId);
       children.push(new Paragraph({
+        ...(block.role==="section_heading"?{heading:HeadingLevel.HEADING_1}:block.role==="record_heading"?{heading:HeadingLevel.HEADING_2}: {}),
+        keepNext:["section_heading","record_heading"].includes(block.role),
         children:[new TextRun({text:block.sourceText,font:layout.fontFamily,size:Math.round(block.fontSize*2),bold:block.bold,color:block.color.slice(1)})],
         pageBreakBefore:pageIndex>0&&index===0,
         indent:{left:Math.round((block.x-layout.margin)*20)},

@@ -2,7 +2,7 @@ import { isResumeBullet, stripResumeBullet, type ResumeFormat } from "@/lib/docu
 
 import { pdfFontNames, type PdfFont } from "@/lib/documents/pdf-font";
 
-export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "2";
+export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "3";
 export type ProductDocumentInput = { content:string; artifactType:"RESUME"|"COVER_LETTER"; resumeFormat:ResumeFormat; pdfFont?:PdfFont };
 export type ProductDocumentBlock = { text:string; sourceText:string; paragraphId:number; role:string; x:number; y:number; width:number; height:number; fontSize:number; bold:boolean; color:string; headingRule?:"left"|"bottom" };
 export type ProductDocumentLayout = { version:string; pageWidth:number; pageHeight:number; margin:number; fontFamily:string; pdfFont:string; pdfBoldFont:string; pages:Array<{number:number;blocks:ProductDocumentBlock[]}> };
@@ -32,7 +32,8 @@ export function buildProductDocumentLayout(input:ProductDocumentInput):ProductDo
   if(input.pdfFont){layout.pdfFont=pdfFontNames[input.pdfFont].regular;layout.pdfBoldFont=pdfFontNames[input.pdfFont].bold;}
   let page=layout.pages[0]!,y=margin,index=0;
   const nextPage=()=>{page={number:layout.pages.length+1,blocks:[]};layout.pages.push(page);y=margin;};
-  for(const raw of input.content.split(/\r?\n/u)) {
+  const sourceLines=input.content.split(/\r?\n/u);
+  for(const [sourceIndex,raw] of sourceLines.entries()) {
     const line=raw.trim();if(!line){y+=f.template==="COMPACT"?4:7;continue;}
     const heading=input.artifactType==="RESUME"&&headings.test(line),bullet=isResumeBullet(line);
     const role=heading?"section_heading":index===0?"candidate_name":index===1&&/@|\||\+\d/u.test(line)?"contact":bullet?"bullet":line.includes("|")&&!line.includes("@")?"record_heading":/^Dear\b/iu.test(line)?"salutation":"body";
@@ -44,7 +45,21 @@ export function buildProductDocumentLayout(input:ProductDocumentInput):ProductDo
     const parts=wrap(text,width,size),height=size*f.lineSpacing/100;
     const before=heading?(f.template==="COMPACT"?7:11):role==="record_heading"?5:0;
     const after=heading?5:role==="candidate_name"?3:3;
-    if(y+before+parts.length*height+after+(heading?height*2:0)>pageHeight-margin&&page.blocks.length)nextPage();
+    // Keep a section/record heading with the following record and first details, including their spacing.
+    let keepNext=0;
+    if(heading||role==="record_heading") {
+      for(const nextRaw of sourceLines.slice(sourceIndex+1)) {
+        const next=nextRaw.trim();
+        if(!next){keepNext+=f.template==="COMPACT"?4:7;continue;}
+        if(headings.test(next))break;
+        const nextBullet=isResumeBullet(next),record=!nextBullet&&next.includes("|")&&!next.includes("@");
+        const nextWidth=pageWidth-margin*2-(nextBullet?12:0);
+        const nextText=nextBullet?"• "+stripResumeBullet(next):next;
+        keepNext+=(record?5:0)+wrap(nextText,nextWidth,f.fontSize).length*f.fontSize*f.lineSpacing/100+3;
+        if(!record)break;
+      }
+    }
+    if(y+before+parts.length*height+after+keepNext>pageHeight-margin&&page.blocks.length)nextPage();
     y+=before;
     for(const part of parts) {
       if(y+height>pageHeight-margin&&page.blocks.length)nextPage();

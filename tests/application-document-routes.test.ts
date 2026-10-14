@@ -3,6 +3,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { after, test, type TestContext } from "node:test";
 import type { NextRequest } from "next/server";
 import { buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
+import { syntheticCorrectionFlowDocumentPayload } from "@/evaluation/correction-flow-provider-stub";
+import { authoredDocumentQualityLetter } from "@/evaluation/authored-document-quality-samples";
 
 const priorDatabaseUrl = process.env.DATABASE_URL;
 const priorDirectUrl = process.env.DIRECT_URL;
@@ -242,7 +244,7 @@ test("both application-document routes require the private-data consent contract
     assert.equal(body.dataType, "application_packet");
     assert.equal(body.provider, "gemini");
     assert.equal(body.model, "gemini-3.8-flash");
-    assert.equal(body.promptVersion, "10");
+    assert.equal(body.promptVersion, "11");
   }
   assert.equal(providerCalls, 0);
   assert.equal(writes, 0);
@@ -302,9 +304,43 @@ test("a supported stubbed résumé result is persisted only after v8 atomic-fact
   assert.equal(persistedVersion.atsCompatibility, null);
   assert.equal(persistedVersion.jobFitScore, null);
   assert.equal(persistedAnalysis.confidence, null);
-  assert.equal(persistedAnalysis.promptVersion, "10");
+  assert.equal(persistedAnalysis.promptVersion, "11");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
+});
+
+test("C2 copy traverses the production cover transport, validators, ledger and assembled cache", async (t) => {
+  const prisma = await setup(t);
+  const ledger = installLedger(t, prisma);
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  const wire = authoredDocumentQualityLetter(payload);
+  let calls = 0;
+  stub(t, globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+    calls += 1;
+    const body = JSON.parse(String(init.body));
+    const prompt = body.systemInstruction.parts.map((part: { text: string }) => part.text).join("\n");
+    assert.match(prompt, /two distinct job priorities/iu);
+    assert.match(prompt, /Do not repeat.*whole claim.*different fact IDs/iu);
+    for (const fact of buildApplicationDocumentFactCatalog(payload)) {
+      assert.ok(prompt.includes(JSON.stringify(fact.excerpt)), "The full source catalog remains available.");
+      assert.ok(prompt.includes(JSON.stringify(fact.provenance)));
+    }
+    return geminiResponse(wire, 200);
+  });
+  const { draftCoverLetter } = await import("@/lib/ai/documents");
+  const result = await draftCoverLetter(payload, "demo-user", {
+    highCostConfirmed: true,
+    dataSharingConfirmed: true
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.coverLetter, wire.coverLetter);
+  assert.equal(result.promptVersion, "11");
+  assert.equal(result.claimsUsed.length, wire.claimsUsed.length);
+  assert.ok(result.claimsUsed.every(entry => entry.citations.length === 1));
+  assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
+  assert.equal(ledger.cacheWrites.length, 1);
+  assert.equal(ledger.cacheWrites[0].promptVersion, "11");
+  assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, wire.coverLetter);
 });
 
 test("an unsupported stubbed cover-letter claim is billed as failed and never persisted or cached", async (t) => {
