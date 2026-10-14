@@ -22,21 +22,43 @@ const preconsentFailureCodes = new Set([
   "LIVE_WORKTREE_DIRTY",
   "LIVE_HEAD_CHANGED",
   "LIVE_WORKTREE_CHANGED",
+  "LIVE_MANIFEST_BUILD_FAILED",
+  "LIVE_MANIFEST_DISPLAY_FAILED",
   "MANIFEST_CONSENT_INPUT_FAILED",
   "MANIFEST_CONSENT_MISMATCH"
 ]);
 
+const startupCauseCodes = new Set([
+  "AI_MODEL_PRICING_UNKNOWN", "AI_MODEL_PRICING_NOT_EFFECTIVE", "AI_MODEL_PRICING_EXPIRED",
+  "AI_INPUT_TOO_LARGE", "EIO", "ENOENT", "EACCES", "ENOSPC", "EPIPE"
+]);
+const startupCauseClasses = new Set(["Error", "TypeError", "RangeError", "ZodError", "PublicApiError"]);
+
+function startupCause(error: unknown) {
+  const value = error instanceof Error ? error as Error & {
+    code?: unknown;
+    details?: { code?: unknown };
+  } : null;
+  const code = value?.details?.code ?? value?.code;
+  return {
+    failureCauseClass: value && startupCauseClasses.has(value.name) ? value.name : "unknown",
+    failureCauseCode: typeof code === "string" && startupCauseCodes.has(code) ? code : null
+  };
+}
+
 class CorrectionFlowDocumentReviewPreconsentError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly startupCause: ReturnType<typeof startupCause> | null;
+  constructor(code: string, message: string, cause?: unknown) {
     super(message);
     this.name = "CorrectionFlowDocumentReviewPreconsentError";
     this.code = code;
+    this.startupCause = cause === undefined ? null : startupCause(cause);
   }
 }
 
-function preconsentError(code: string, message: string) {
-  return new CorrectionFlowDocumentReviewPreconsentError(code, message);
+function preconsentError(code: string, message: string, cause?: unknown) {
+  return new CorrectionFlowDocumentReviewPreconsentError(code, message, cause);
 }
 
 export function correctionFlowDocumentReviewPreconsentDiagnostic(error: unknown) {
@@ -50,7 +72,16 @@ export function correctionFlowDocumentReviewPreconsentDiagnostic(error: unknown)
         status: "stopped_before_provider" as const,
         failureStage: "preconsent_preflight" as const,
         failureCode: code,
-        providerCallsStarted: 0
+        providerCallsStarted: 0,
+        failureCauseClass: error instanceof CorrectionFlowDocumentReviewPreconsentError
+          ? error.startupCause?.failureCauseClass ?? null : null,
+        failureCauseCode: error instanceof CorrectionFlowDocumentReviewPreconsentError
+          ? error.startupCause?.failureCauseCode ?? null : null,
+        nextAction: code === "LIVE_MANIFEST_BUILD_FAILED"
+          ? "Do not retry. Share this bounded diagnostic for offline fixture, schema and pricing checks."
+          : code === "LIVE_MANIFEST_DISPLAY_FAILED"
+            ? "Do not retry. Share this bounded diagnostic for offline local terminal-output checks."
+            : "Stop and resolve this preflight condition before another launch."
       }
     : null;
 }
@@ -187,18 +218,27 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
     throw preconsentError("LIVE_WORKTREE_DIRTY", "Live document review requires a clean working tree.");
   }
 
-  const manifest = buildCorrectionFlowDocumentReviewManifest({
-    exactHead,
-    providerMode: "live_synthetic",
-    generatedAt: dependencies.now(),
-    payload: syntheticCorrectionFlowDocumentPayload(),
-    safeLabel: SYNTHETIC_CORRECTION_FLOW_FIXTURE.safeLabel
-  });
-  dependencies.write(JSON.stringify({
-    status: "awaiting_manifest_consent",
-    providerCallsStarted: 0,
-    safeManifest: manifest
-  }, null, 2));
+  let manifest: CorrectionFlowDocumentReviewManifest;
+  try {
+    manifest = buildCorrectionFlowDocumentReviewManifest({
+      exactHead,
+      providerMode: "live_synthetic",
+      generatedAt: dependencies.now(),
+      payload: syntheticCorrectionFlowDocumentPayload(),
+      safeLabel: SYNTHETIC_CORRECTION_FLOW_FIXTURE.safeLabel
+    });
+  } catch (error) {
+    throw preconsentError("LIVE_MANIFEST_BUILD_FAILED", "The review manifest could not be constructed.", error);
+  }
+  try {
+    dependencies.write(JSON.stringify({
+      status: "awaiting_manifest_consent",
+      providerCallsStarted: 0,
+      safeManifest: manifest
+    }, null, 2));
+  } catch (error) {
+    throw preconsentError("LIVE_MANIFEST_DISPLAY_FAILED", "The review manifest could not be displayed.", error);
+  }
 
   let approval: string;
   try {

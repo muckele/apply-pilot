@@ -179,6 +179,51 @@ test("a post-consent head change stops after one secret read and before provider
   assert.equal(executes, 0);
 });
 
+test("manifest construction failures stop with an actionable bounded diagnostic before any input", async () => {
+  let inputReads = 0;
+  let executes = 0;
+  await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    assertLocalInteractiveRuntime() {},
+    gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
+    now: () => new Date("invalid"),
+    write() { assert.fail("An invalid manifest must not be displayed."); },
+    async readVisible() { inputReads += 1; return ""; },
+    async readSecret() { inputReads += 1; return credential; },
+    async execute() { executes += 1; return safeReceipt(""); }
+  }), (error: unknown) => {
+    const diagnostic = correctionFlowDocumentReviewPreconsentDiagnostic(error);
+    assert.equal(diagnostic?.failureCode, "LIVE_MANIFEST_BUILD_FAILED");
+    assert.equal(diagnostic?.providerCallsStarted, 0);
+    assert.equal(diagnostic?.failureCauseClass, "RangeError");
+    assert.match(diagnostic?.nextAction ?? "", /Do not retry/u);
+    return true;
+  });
+  assert.equal(inputReads, 0);
+  assert.equal(executes, 0);
+});
+
+test("manifest display failures retain no raw exception and stop before consent or credentials", async () => {
+  const privateMessage = "private-terminal-value-that-must-never-be-emitted";
+  let inputReads = 0;
+  await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    assertLocalInteractiveRuntime() {},
+    gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
+    now: () => new Date("2026-10-14T05:00:00.000Z"),
+    write() { throw Object.assign(new Error(privateMessage), { code: "EPIPE" }); },
+    async readVisible() { inputReads += 1; return ""; },
+    async readSecret() { inputReads += 1; return credential; },
+    async execute() { assert.fail("Provider execution must remain unreachable."); }
+  }), (error: unknown) => {
+    const diagnostic = correctionFlowDocumentReviewPreconsentDiagnostic(error);
+    assert.equal(diagnostic?.failureCode, "LIVE_MANIFEST_DISPLAY_FAILED");
+    assert.equal(diagnostic?.providerCallsStarted, 0);
+    assert.equal(diagnostic?.failureCauseCode, "EPIPE");
+    assert.doesNotMatch(JSON.stringify(diagnostic), new RegExp(privateMessage, "u"));
+    return true;
+  });
+  assert.equal(inputReads, 0);
+});
+
 test("the supported command has no database, environment-key, auto-open, or screenshot path", () => {
   const script = readFileSync(fileURLToPath(
     new URL("../scripts/run-correction-flow-document-review-live.ts", import.meta.url)
