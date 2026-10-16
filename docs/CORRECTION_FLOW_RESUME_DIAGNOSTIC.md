@@ -1,5 +1,13 @@
 # Synthetic application-document diagnostics
 
+## Offline correction for alternate résumé evidence fields
+
+A review-only probe at `ff21e13e27cc1fc03c8ae3aa9e2d0248eb98351d` reproduced another marker-association false positive: moving the same synthetic fact from `resumeTextClaims` to `bulletRewrites` passed when the rewrite was marker-free, but adding its exact generated leading bullet failed assembly with `APPLICATION_DOCUMENT_EVIDENCE_REQUIRED` at `resumeText.line[14]`. This is a new offline reproduction, not recovered wording or proof of either historical paid failure.
+
+Assembly now applies the existing single-leading-marker normalization consistently to summary, skill, rewritten-bullet and emphasized-role/project projections and their evidence, as it already did for `resumeTextClaims`. It preserves the decoded provider value, rendered `resumeText`, server-resolved original excerpts, fact IDs, advisory reasons and original provider-field origins. Factual validation remains unchanged. No prompt/wire/cache, model/thinking, layout-4, spending, retention or database contract changes are needed.
+
+Regressions cover all five résumé evidence placements with independent field/rendered markers (including none), actual PDF/DOCX verification, the alternate rewritten-bullet path through stubbed transport, allowed leading-verb substitution, deduplication/origin alignment, and rejection of wrong sources, invented claims, changed quantities/identifiers, lost qualifiers and negation. `APPLICATION_DOCUMENT_EVIDENCE_REQUIRED` remains a bounded line-path diagnostic; this correction does not infer a source origin for absent associations. No provider call or paid retry is authorized by these offline checks.
+
 ## October 16 second stopped run and offline bullet correction
 
 The owner-supplied safe receipt for exact head `a88281954f6a550113c31a9c675b49a23a474472` stops at `tailored_resume` with `APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT`, field `output.resumeTextClaims[3].claim`. Its complete manifest reconciles with the approved head's construction: manifest `649448dcced907c9bac0af8855b0b8b1199d9a8097082d6e5cf5a60796d6b5dc`, generated `2026-10-16T19:35:31.294Z`. One call started and completed, with 5,565 input / 2,302 output tokens, zero cached input, estimated $0.012807 and no unknown billing, retry or fallback. No cover letter, visible review, envelope or review attestation followed. Neither document decision was recorded.

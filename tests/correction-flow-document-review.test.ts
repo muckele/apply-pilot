@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { TailoredResumeProviderOutput } from "@/lib/ai/application-document-facts";
 
 import {
   SYNTHETIC_CORRECTION_FLOW_FIXTURE
@@ -478,4 +479,39 @@ test("an unknown selected fact cannot gain assembly-failure provenance", async (
   assert.equal(receipt.failureFieldPath, "output.resumeTextClaims[3].factId");
   assert.equal(receipt.failureClaimSource, null);
   assert.doesNotMatch(JSON.stringify(receipt), /fact:9999|Absent private/u);
+});
+
+test("decorated bulletRewrites alone associate their lines through transport and actual exports", async () => {
+  for (const glyph of ["-", "*", "•", "▪", "◦", "–", "—"]) {
+    const value = manifest();
+    const wire: TailoredResumeProviderOutput = structuredClone(fixedResumeOutput);
+    const rawLine = wire.resumeText.split("\n").find(line => line.startsWith("• "))!;
+    const claim = rawLine.slice(2);
+    const association = wire.resumeTextClaims.find(item => item.claim === claim)!;
+    wire.resumeTextClaims = wire.resumeTextClaims.filter(item => item !== association);
+    wire.resumeText = wire.resumeText.replace(rawLine, `${glyph} ${claim}`);
+    wire.bulletRewrites = [{ factId: association.factId, rewrite: `${glyph} ${claim}`, reason: "Synthetic alternate-field association." }];
+    let calls = 0;
+    let reviews = 0;
+    const pdfs: Buffer[] = [];
+    const runner = createCorrectionFlowDocumentReviewRunner({
+      manifest: value, consent: consentFor(value), payload: syntheticCorrectionFlowDocumentPayload(),
+      credentials: { geminiApiKey: credential },
+      fetchImpl: async () => providerResponse([wire, fixedCoverLetterOutput][calls++]),
+      startReview: async (input) => {
+        reviews += 1;
+        pdfs.push(...input.renderedPdfs.map(pdf => pdf.bytes));
+        throw new Error("Synthetic review startup boundary; no owner window or listening socket.");
+      }
+    });
+    const receipt = await runner.run(new AbortController().signal);
+    assert.equal(calls, 2, JSON.stringify(receipt));
+    assert.equal(reviews, 1, glyph);
+    assert.equal(receipt.failureStage, "owner_review");
+    assert.equal(receipt.failureCode, "OWNER_REVIEW_INCOMPLETE");
+    assert.equal(pdfs.length, 2);
+    assert.ok(pdfs.every(pdf => pdf.every(byte => byte === 0)));
+    assert.equal(receipt.reviewAttestation, null);
+    assert.doesNotMatch(JSON.stringify(receipt), /"rewrite":|"claim":|"excerpt":|"resumeText":/u);
+  }
 });

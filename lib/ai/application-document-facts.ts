@@ -247,7 +247,9 @@ export function assembleTailoredResumeProviderOutput(
 ): AssembledTailoredResumeOutput {
   const resolve = factResolver(payload);
   const evidence: Array<{ claim: string; fact: ApplicationDocumentFact; originFieldPath: string }> = [];
-  const summary = wire.professionalSummary.trim();
+  // Typed projections and evidence use the same single-marker convention as
+  // resumeText line association. The rendered resume itself is preserved.
+  const summary = normalizeApplicationDocumentSourceLine(wire.professionalSummary);
   if (summary) {
     if (wire.professionalSummaryFactId === NO_APPLICATION_DOCUMENT_FACT_ID) {
       throw new PublicApiError("Application document summary is missing an applicant fact ID.", 422, {
@@ -257,7 +259,7 @@ export function assembleTailoredResumeProviderOutput(
       });
     }
     evidence.push({
-      claim: wire.professionalSummary,
+      claim: summary,
       originFieldPath: "professionalSummary",
       fact: resolve(wire.professionalSummaryFactId, "professionalSummaryFactId")
     });
@@ -270,21 +272,24 @@ export function assembleTailoredResumeProviderOutput(
   }
 
   const skillsSection = wire.skillsSection.map((item, index) => {
-    evidence.push({ claim: item.text, fact: resolve(item.factId, `skillsSection[${index}].factId`), originFieldPath: `skillsSection[${index}].text` });
-    return item.text;
+    const text = normalizeApplicationDocumentSourceLine(item.text);
+    evidence.push({ claim: text, fact: resolve(item.factId, `skillsSection[${index}].factId`), originFieldPath: `skillsSection[${index}].text` });
+    return text;
   });
   const bulletRewrites = wire.bulletRewrites.map((item, index) => {
     const fact = resolve(item.factId, `bulletRewrites[${index}].factId`);
-    evidence.push({ claim: item.rewrite, fact, originFieldPath: `bulletRewrites[${index}].rewrite` });
-    return { original: fact.excerpt, rewrite: item.rewrite, reason: item.reason };
+    const rewrite = normalizeApplicationDocumentSourceLine(item.rewrite);
+    evidence.push({ claim: rewrite, fact, originFieldPath: `bulletRewrites[${index}].rewrite` });
+    return { original: fact.excerpt, rewrite, reason: item.reason };
   });
   const rolesOrProjectsToEmphasize = wire.rolesOrProjectsToEmphasize.map((item, index) => {
+    const text = normalizeApplicationDocumentSourceLine(item.text);
     evidence.push({
-      claim: item.text,
+      claim: text,
       originFieldPath: `rolesOrProjectsToEmphasize[${index}].text`,
       fact: resolve(item.factId, `rolesOrProjectsToEmphasize[${index}].factId`)
     });
-    return item.text;
+    return text;
   });
   const resumeLines = new Set(wire.resumeText.split(/\r?\n/)
     .map((line) => comparable(normalizeApplicationDocumentSourceLine(line)))
@@ -325,7 +330,7 @@ export function assembleTailoredResumeProviderOutput(
   }
 
   return {
-    professionalSummary: wire.professionalSummary,
+    professionalSummary: summary,
     skillsSection,
     bulletRewrites,
     rolesOrProjectsToEmphasize,
