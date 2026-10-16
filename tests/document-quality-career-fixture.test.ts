@@ -21,14 +21,13 @@ test("the realistic three-job source retains every role, project, skill and educ
   validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, letter));
   assert.match(letter.coverLetter,/Northwind Service Cloud/u);
   assert.match(letter.coverLetter,/twelve years/u);
-  assert.match(letter.coverLetter,/demonstrated incident governance and service-level reporting improvement/u);
-  assert.match(letter.coverLetter,/experience coaching service operations professionals/u);
+  assert.doesNotMatch(letter.coverLetter,/Your posting highlights|The role calls for/u);
   const paragraphs = letter.coverLetter.split("\n\n");
-  const governance = paragraphs.find(paragraph => paragraph.includes("The role calls for demonstrated incident governance"));
-  const coaching = paragraphs.find(paragraph => paragraph.includes("experience coaching service operations professionals"));
+  const governance = paragraphs.find(paragraph => paragraph.includes("I built weekly operational governance"));
+  const coaching = paragraphs.find(paragraph => paragraph.includes("I directed service delivery"));
   assert.match(governance ?? "", /capacity dashboard/u);
   assert.match(coaching ?? "", /mentored six service coordinators/u);
   assert.doesNotMatch(coaching ?? "", /capacity dashboard|Quenby/u);
-  assert.match(paragraphs.find(paragraph => paragraph.includes("I am applying")) ?? "", /Quenby/u);
+  assert.match(governance ?? "", /Quenby/u);
   assert.equal(buildCanonicalApplicationDocumentLayoutV2({artifactType:"COVER_LETTER",content:letter.coverLetter}).pages.length,1);
 });

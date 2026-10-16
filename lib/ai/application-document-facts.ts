@@ -75,6 +75,11 @@ const actionWords = [
   "orchestrated", "partnered", "produced", "reduced", "resolved", "scaled", "streamlined", "strengthened",
   "supported", "transformed", "used", "utilized"
 ] as const;
+export function applicationDocumentFactStartsWithAction(value: string) {
+  const first = value.trim().replace(/^i\s+(?:have\s+)?/iu, "").split(/\s+/u)[0].toLocaleLowerCase();
+  return (actionWords as readonly string[]).includes(first) ||
+    ["directed", "prepared", "coached", "completed", "received", "recognized", "hold"].includes(first);
+}
 const actionClauseBoundary = new RegExp(
   `\\s*;\\s*|\\s*,\\s*(?:but|while|then)\\s+|\\s*,\\s*and\\s+(?=(?:${actionWords.join("|")})\\b)|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
   "i"

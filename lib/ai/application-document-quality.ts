@@ -1,4 +1,5 @@
 import { PublicApiError } from "@/lib/api-errors";
+import { validateCoverLetterWriting, validateResumePriorityOrder } from "@/lib/ai/application-document-writing-quality";
 import {
   buildApplicationDocumentFactCatalog
 } from "@/lib/ai/application-document-facts";
@@ -160,6 +161,7 @@ export function validateTailoredResumeQuality<T extends ResumeQualityOutput>(
       incomplete(fact.ref, "Tailored resume omitted an available source fact.");
     }
   }
+  validateResumePriorityOrder(payload, output.resumeText, output.claimEvidence);
   return output;
 }
 
@@ -212,5 +214,6 @@ export function validateCoverLetterQuality<T extends CoverLetterQualityOutput>(
       incomplete("coverLetter", `Cover letter omitted the target ${label}.`);
     }
   }
+  validateCoverLetterWriting(substantiveParagraphs, substantiveClaims);
   return output;
 }

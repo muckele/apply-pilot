@@ -79,6 +79,7 @@ test("the mocked launcher binds product rendering before simulated consent and e
   const exitCode = await runCorrectionFlowDocumentReviewLiveLauncher(
     [`--expected-head=${exactHead}`],
     {
+      async persistReceipt() { return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; },
       assertLocalInteractiveRuntime() { events.push("runtime"); },
       gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
       now: () => new Date("2026-10-10T05:00:00.000Z"),
@@ -87,6 +88,11 @@ test("the mocked launcher binds product rendering before simulated consent and e
         if (value.includes('"status": "awaiting_manifest_consent"')) {
           const parsed = JSON.parse(value);
           manifestHash = parsed.safeManifest.manifestHash;
+          assert.deepEqual(parsed.safeReceiptPersistence, {
+            enabled: true, contents: "sanitized_final_receipt_only",
+            location: "~/.apply-pilot-document-review-receipt-*/receipt.json",
+            directoryMode: "0700", fileMode: "0600"
+          });
           assert.equal(parsed.safeManifest.contractVersion, "3");
           assert.deepEqual(parsed.safeManifest.rendering, PRODUCT_DOCUMENT_REVIEW_RENDERING);
           assert.equal(parsed.safeManifest.validatedDocumentLifetimeMs, 900_000);
@@ -120,6 +126,7 @@ test("argument, runtime, head, dirty tree, consent mismatch, and cancellation st
     let manifestHash = "";
     const arguments_ = scenario === "argument" ? [] : [`--expected-head=${exactHead}`];
     await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher(arguments_, {
+      async persistReceipt() { return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; },
       assertLocalInteractiveRuntime() {
         if (scenario === "runtime") throw Object.assign(new Error("hosted"), { code: "LIVE_RUNTIME_UNAVAILABLE" });
       },
@@ -156,6 +163,7 @@ test("a post-consent head change stops after one secret read and before provider
   await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher(
     [`--expected-head=${exactHead}`],
     {
+      async persistReceipt() { return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; },
       assertLocalInteractiveRuntime() {},
       gitOutput(args) {
         if (args[0] === "rev-parse") {
@@ -187,6 +195,7 @@ test("manifest construction failures stop with an actionable bounded diagnostic 
   let inputReads = 0;
   let executes = 0;
   await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    async persistReceipt() { return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; },
     assertLocalInteractiveRuntime() {},
     gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
     now: () => new Date("invalid"),
@@ -210,6 +219,7 @@ test("manifest display failures retain no raw exception and stop before consent 
   const privateMessage = "private-terminal-value-that-must-never-be-emitted";
   let inputReads = 0;
   await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    async persistReceipt() { return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; },
     assertLocalInteractiveRuntime() {},
     gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
     now: () => new Date("2026-10-14T05:00:00.000Z"),
@@ -245,4 +255,101 @@ test("the supported command has no database, environment-key, auto-open, or scre
   assert.match(script, /\["-echo"\]/u);
   assert.match(script, /validatedDocumentPersistentRetention: false/u);
   assert.match(script, /rawProviderOutputRetention: false/u);
+});
+
+
+test("launcher saves before stdout and preserves safe original receipt when persistence fails", async () => {
+  for (const failure of [false, true]) {
+    let manifestHash = "";
+    const events: string[] = [];
+    const writes: string[] = [];
+    const exitCode = await runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+      assertLocalInteractiveRuntime() {},
+      gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
+      now: () => new Date("2026-10-16T22:00:00.000Z"),
+      write(value) {
+        writes.push(value);
+        if (value.includes('"awaiting_manifest_consent"')) manifestHash = JSON.parse(value).safeManifest.manifestHash;
+        else events.push("stdout");
+      },
+      async readVisible() { return manifestHash; },
+      async readSecret() { return credential; },
+      async execute() { events.push("execute"); return safeReceipt(manifestHash); },
+      async persistReceipt(receipt, options) {
+        events.push("persist");
+        assert.equal(receipt.manifestHash, manifestHash);
+        assert.deepEqual(options.forbiddenValues, [credential]);
+        if (failure) throw new Error("private-filesystem-detail-never-print");
+        return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) };
+      }
+    });
+    assert.equal(exitCode, failure ? 1 : 0);
+    assert.deepEqual(events, ["execute", "persist", "stdout"]);
+    const output = JSON.parse(writes.at(-1)!);
+    assert.deepEqual(output.receipt, safeReceipt(manifestHash));
+    assert.deepEqual(output.receiptPersistence, failure
+      ? { status: "failed", failureCode: "SAFE_RECEIPT_WRITE_FAILED" }
+      : { status: "saved", path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) });
+    assert.doesNotMatch(writes.join("\n"), /private-filesystem-detail-never-print|synthetic-visible-review-key-never-log/u);
+  }
+});
+
+test("Terminal hangup gracefully aborts execution, persists stopped receipt, and removes handlers", async () => {
+  let manifestHash = "";
+  let persisted: CorrectionFlowDocumentReviewReceipt | null = null;
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const initialCounts = signals.map((signal) => process.listenerCount(signal));
+  const exitCode = await runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    assertLocalInteractiveRuntime() {},
+    gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
+    now: () => new Date("2026-10-16T22:00:00.000Z"),
+    write(value) { if (value.includes('"awaiting_manifest_consent"')) manifestHash = JSON.parse(value).safeManifest.manifestHash; },
+    async readVisible() { return manifestHash; }, async readSecret() { return credential; },
+    async execute(input) {
+      process.emit("SIGHUP");
+      assert.equal(input.signal.aborted, true);
+      return { ...safeReceipt(manifestHash), status: "stopped", failureStage: "owner_review",
+        failureCode: "EXECUTION_CANCELLED", reviewAttestation: null };
+    },
+    async persistReceipt(receipt) { persisted = receipt; return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; }
+  });
+  assert.equal(exitCode, 1);
+  assert.equal((persisted as CorrectionFlowDocumentReviewReceipt | null)?.failureCode, "EXECUTION_CANCELLED");
+  assert.deepEqual(signals.map((signal) => process.listenerCount(signal)), initialCounts);
+});
+
+test("launcher rejects unallowlisted receipt fields before filesystem persistence or final output", async () => {
+  let manifestHash = "";
+  let saves = 0;
+  const writes: string[] = [];
+  await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    assertLocalInteractiveRuntime() {}, gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
+    now: () => new Date("2026-10-16T22:00:00.000Z"),
+    write(value) { writes.push(value); if (value.includes('"awaiting_manifest_consent"')) manifestHash = JSON.parse(value).safeManifest.manifestHash; },
+    async readVisible() { return manifestHash; }, async readSecret() { return credential; },
+    async execute() { return { ...safeReceipt(manifestHash), rawText: "private generated document" }; },
+    async persistReceipt() { saves++; return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; }
+  }), (error: unknown) => (error as { code?: string }).code === "SAFE_RECEIPT_INVALID");
+  assert.equal(saves, 0);
+  assert.equal(writes.length, 1);
+  assert.doesNotMatch(writes.join("\n"), /private generated document/u);
+});
+
+test("a final closed stdout cannot remove the receipt already saved before printing", async () => {
+  let manifestHash = "";
+  let saved: CorrectionFlowDocumentReviewReceipt | null = null;
+  const initialListeners = process.listenerCount("SIGHUP");
+  await assert.rejects(runCorrectionFlowDocumentReviewLiveLauncher([`--expected-head=${exactHead}`], {
+    assertLocalInteractiveRuntime() {}, gitOutput(args) { return args[0] === "rev-parse" ? exactHead : ""; },
+    now: () => new Date("2026-10-16T22:00:00.000Z"),
+    write(value) {
+      if (value.includes('"awaiting_manifest_consent"')) manifestHash = JSON.parse(value).safeManifest.manifestHash;
+      else throw Object.assign(new Error("stdout closed"), { code: "EPIPE" });
+    },
+    async readVisible() { return manifestHash; }, async readSecret() { return credential; },
+    async execute() { return safeReceipt(manifestHash); },
+    async persistReceipt(receipt) { saved = receipt; return { path: "/synthetic/private/receipt.json", sha256: "a".repeat(64) }; }
+  }), (error: unknown) => (error as { code?: string }).code === "EPIPE");
+  assert.deepEqual(saved, safeReceipt(manifestHash));
+  assert.equal(process.listenerCount("SIGHUP"), initialListeners);
 });

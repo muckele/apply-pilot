@@ -20,6 +20,9 @@ Rules:
 - Produce a complete professional resume, not a keyword excerpt. Preserve the source identity/contact header and every source section heading that has content.
 - Represent every available skills item, achievement, work record, project, education record, certification record, and current reviewed-evidence fact at least once. Relevance controls emphasis and ordering; it does not silently delete source records.
 - Keep record headers and their bullets together. Use bullet markers for accomplishment/detail lines and never emit an empty section heading.
+- Tailor through selection of emphasis and ordering, not cosmetic verb substitutions. Keep employment/project record chronology, dates, ownership, and every source fact intact. Within each record, put the strongest job-relevant responsibility or outcome first, followed by the remaining complete facts; do not move a bullet to another employer or project.
+- The server publishes conditional within-record priority opportunities below. For each listed record, make one leadingFactIds fact its first bullet, keeping that record header and all its other bullets. This transparent exact-word overlap proxy applies only where the source has a clear ordering opportunity; it is not a semantic match score. With no listed opportunity, already relevant source order is acceptable. Use semantic judgment for other emphasis without inventing missing qualifications.
+- For example, when a reporting role names SQL and service-level reporting, place the source reporting/SQL outcome before a general onboarding bullet in the same record. Preserve both facts exactly; never copy the outcome into another role. A source copy with only Built changed to Created is not evidence of job prioritization.
 - Return strict JSON only.
 
 JSON shape:

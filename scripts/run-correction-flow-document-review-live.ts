@@ -12,6 +12,11 @@ import {
   type CorrectionFlowDocumentReviewManifest,
   type CorrectionFlowDocumentReviewReceipt
 } from "@/lib/ai/correction-flow-document-review";
+import {
+  CORRECTION_FLOW_SAFE_RECEIPT_PERSISTENCE,
+  persistCorrectionFlowDocumentReviewReceipt,
+  serializeCorrectionFlowDocumentReviewReceipt
+} from "@/lib/ai/correction-flow-document-review-receipt";
 import { hasDirtyCorrectionFlowQualificationWorktree } from "@/lib/ai/correction-flow-qualification";
 
 const preconsentFailureCodes = new Set([
@@ -102,6 +107,10 @@ type LiveDependencies = Readonly<{
   readVisible(prompt: string): Promise<string>;
   readSecret(prompt: string): Promise<string>;
   execute(input: LiveExecutionInput): Promise<CorrectionFlowDocumentReviewReceipt>;
+  persistReceipt(
+    receipt: CorrectionFlowDocumentReviewReceipt,
+    options: Readonly<{ forbiddenValues: readonly string[] }>
+  ): Promise<Readonly<{ path: string; sha256: string }>>;
 }>;
 
 function expectedHeadArgument(arguments_: readonly string[]) {
@@ -182,6 +191,7 @@ const defaultDependencies: LiveDependencies = {
   write: (value) => process.stdout.write(`${value}\n`),
   readVisible: (prompt) => readTty(prompt, false),
   readSecret: (prompt) => readTty(prompt, true),
+  persistReceipt: persistCorrectionFlowDocumentReviewReceipt,
   execute: async ({ manifest, consent, credentials, signal, onReviewReady }) =>
     createCorrectionFlowDocumentReviewRunner({
       manifest,
@@ -234,7 +244,8 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
     dependencies.write(JSON.stringify({
       status: "awaiting_manifest_consent",
       providerCallsStarted: 0,
-      safeManifest: manifest
+      safeManifest: manifest,
+      safeReceiptPersistence: CORRECTION_FLOW_SAFE_RECEIPT_PERSISTENCE
     }, null, 2));
   } catch (error) {
     throw preconsentError("LIVE_MANIFEST_DISPLAY_FAILED", "The review manifest could not be displayed.", error);
@@ -288,6 +299,7 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
   }));
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
+  process.once("SIGHUP", cancel);
   let geminiApiKey = "";
   try {
     geminiApiKey = await dependencies.readSecret("Existing Gemini API key (input hidden): ");
@@ -326,14 +338,24 @@ export async function runCorrectionFlowDocumentReviewLiveLauncher(
         dependencies.write(review.reviewUrl);
       }
     });
-    const serialized = JSON.stringify({ status: receipt.status, receipt }, null, 2);
-    if (serialized.includes(geminiApiKey)) throw new Error("Document review receipt contained a credential.");
-    dependencies.write(serialized);
-    return receipt.status === "approved" || receipt.status === "needs_revision" ? 0 : 1;
+    const safeEnvelope = JSON.parse(serializeCorrectionFlowDocumentReviewReceipt(receipt, [geminiApiKey]));
+    let receiptPersistence: Readonly<{
+      status: "saved"; path: string; sha256: string;
+    }> | Readonly<{ status: "failed"; failureCode: "SAFE_RECEIPT_WRITE_FAILED" }>;
+    try {
+      // Save before stdout: a closed Terminal must not be the only copy of a completed safe receipt.
+      const saved = await dependencies.persistReceipt(receipt, { forbiddenValues: [geminiApiKey] });
+      receiptPersistence = { status: "saved", ...saved };
+    } catch {
+      receiptPersistence = { status: "failed", failureCode: "SAFE_RECEIPT_WRITE_FAILED" };
+    }
+    dependencies.write(JSON.stringify({ ...safeEnvelope, receiptPersistence }, null, 2));
+    return receiptPersistence.status === "saved" && (receipt.status === "approved" || receipt.status === "needs_revision") ? 0 : 1;
   } finally {
     geminiApiKey = "";
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
+    process.removeListener("SIGHUP", cancel);
   }
 }
 

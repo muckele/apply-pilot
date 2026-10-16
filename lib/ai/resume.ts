@@ -55,6 +55,7 @@ import {
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
+import { applicationDocumentPriorityOpportunities } from "@/lib/ai/application-document-priorities";
 import {
   NO_APPLICATION_DOCUMENT_FACT_ID,
   assembleTailoredResumeProviderOutput,
@@ -1347,7 +1348,8 @@ export const tailoredResumeProviderSchema: z.ZodType<
 }).strict();
 
 export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
-  return buildApplicationDocumentSystemPrompt(resumeTailorPrompt, payload);
+  const priorities = applicationDocumentPriorityOpportunities(payload).map(({ ref, leadingFactIds }) => ({ ref, leadingFactIds }));
+  return buildApplicationDocumentSystemPrompt(`${resumeTailorPrompt.trim()}\n\nConditional within-record priority opportunities: ${JSON.stringify(priorities)}`, payload);
 }
 
 export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {

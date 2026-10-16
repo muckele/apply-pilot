@@ -244,7 +244,7 @@ test("both application-document routes require the private-data consent contract
     assert.equal(body.dataType, "application_packet");
     assert.equal(body.provider, "gemini");
     assert.equal(body.model, "gemini-3.8-flash");
-    assert.equal(body.promptVersion, "11");
+    assert.equal(body.promptVersion, "12");
   }
   assert.equal(providerCalls, 0);
   assert.equal(writes, 0);
@@ -304,7 +304,7 @@ test("a supported stubbed résumé result is persisted only after v8 atomic-fact
   assert.equal(persistedVersion.atsCompatibility, null);
   assert.equal(persistedVersion.jobFitScore, null);
   assert.equal(persistedAnalysis.confidence, null);
-  assert.equal(persistedAnalysis.promptVersion, "11");
+  assert.equal(persistedAnalysis.promptVersion, "12");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });
@@ -334,12 +334,12 @@ test("C2 copy traverses the production cover transport, validators, ledger and a
   });
   assert.equal(calls, 1);
   assert.equal(result.coverLetter, wire.coverLetter);
-  assert.equal(result.promptVersion, "11");
+  assert.equal(result.promptVersion, "12");
   assert.equal(result.claimsUsed.length, wire.claimsUsed.length);
   assert.ok(result.claimsUsed.every(entry => entry.citations.length === 1));
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
-  assert.equal(ledger.cacheWrites[0].promptVersion, "11");
+  assert.equal(ledger.cacheWrites[0].promptVersion, "12");
   assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, wire.coverLetter);
 });
 

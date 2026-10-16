@@ -95,6 +95,12 @@ export function syntheticTailoredResumeOutput(payload = syntheticCorrectionFlowD
   const resumeText = payload.resume.rawText.replace(
     "Credential ID: CSOP-24017",
     `Credential ID: CSOP-24017\n${SYNTHETIC_CORRECTION_FLOW_FACT}`
+  ).replace(
+    "• Managed onboarding and support programs for enterprise customers across three product teams.\n• Improved monthly service-level reporting accuracy by 18% through documented SQL validation checks.",
+    "• Improved monthly service-level reporting accuracy by 18% through documented SQL validation checks.\n• Managed onboarding and support programs for enterprise customers across three product teams."
+  ).replace(
+    "• Maintained incident records and handoff notes for customer support and engineering teams.\n• Prepared service-level reports and checked underlying support records for completeness.",
+    "• Prepared service-level reports and checked underlying support records for completeness.\n• Maintained incident records and handoff notes for customer support and engineering teams."
   );
   const heading = /^(?:SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL INFORMATION)$/u;
   const resumeTextClaims = resumeText.split("\n")
@@ -149,13 +155,10 @@ export function syntheticCoverLetterOutput(payload = syntheticCorrectionFlowDocu
       "",
       "I am applying for the Service Operations Director position at Northwind Service Cloud.",
       claims[0],
-      claims[7],
       "",
-      `Your posting highlights experience leading enterprise service delivery across cross-functional teams. ${claims[1]} ${claims[2]}`,
+      `${claims[1]} ${claims[2]} ${claims[5]}`,
       "",
-      `The role calls for demonstrated incident governance and service-level reporting improvement. ${claims[3]} ${claims[4]} ${claims[6]}`,
-      "",
-      `Your posting highlights experience coaching service operations professionals. ${claims[5]}`,
+      `${claims[3]} ${claims[4]} ${claims[6]} ${claims[7]}`,
       "",
       "Thank you for your time and consideration.",
       "",

@@ -8,7 +8,7 @@ import { realisticDocumentQualityPayload } from "@/evaluation/document-quality-c
 import { authoredDocumentQualityLetter } from "@/evaluation/authored-document-quality-samples";
 import { syntheticCorrectionFlowDocumentPayload } from "@/evaluation/correction-flow-provider-stub";
 import { assembleCoverLetterProviderOutput } from "@/lib/ai/application-document-facts";
-import { getCoverLetterUncitedLines, validateCoverLetterClaims } from "@/lib/ai/application-document-claims";
+import { validateCoverLetterClaims } from "@/lib/ai/application-document-claims";
 import { validateCoverLetterQuality } from "@/lib/ai/application-document-quality";
 import { defaultResumeFormat } from "@/lib/documents/resume-format";
 
@@ -29,20 +29,13 @@ test("DOCX exposes semantic section and record headings without changing source 
 });
 
 
-test("the C2 authored letter organizes two supported examples around distinct published job priorities", () => {
+test("the authored letter develops delivery and reporting examples in connected first-person prose", () => {
   const wire=authoredDocumentQualityLetter();
-  const contexts=[
-    "Your posting highlights experience leading enterprise service delivery across cross-functional teams.",
-    "The role calls for demonstrated incident governance and service-level reporting improvement."
-  ];
-  const allowed=getCoverLetterUncitedLines(syntheticCorrectionFlowDocumentPayload());
-  for(const context of contexts) {
-    assert.ok(allowed.includes(context));
-    assert.equal(wire.coverLetter.split(context).length-1,1);
-    const paragraph=wire.coverLetter.split(/\n\s*\n/u).find(value=>value.startsWith(context));
-    assert.ok(paragraph,"Each evidence paragraph needs its published role context.");
+  assert.doesNotMatch(wire.coverLetter, /Your posting highlights|The role calls for/u);
+  for(const start of ["I directed service delivery", "I improved monthly service-level reporting"]) {
+    const paragraph=wire.coverLetter.split(/\n\s*\n/u).find(value=>value.startsWith(start));
+    assert.ok(paragraph,"Each evidence paragraph leads with a relevant applicant action.");
     assert.equal(wire.claimsUsed.filter(entry=>paragraph.includes(entry.claim)).length,2);
-    assert.ok(!wire.claimsUsed.some(entry=>entry.claim===context));
   }
   assert.equal(new Set(wire.claimsUsed.map(entry=>entry.claim)).size,wire.claimsUsed.length);
   assert.match(wire.coverLetter,/42 enterprise accounts/u);
