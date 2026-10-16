@@ -234,8 +234,37 @@ function evidenceContexts(source: string, excerpt: string) {
   return contexts;
 }
 
-function factualTokens(value: string) {
-  const normalized = value.toLocaleLowerCase()
+type SourceYearRange = readonly [string, string];
+
+function yearRangePattern([start, end]: SourceYearRange) {
+  // Only the final pipe-delimited header component qualifies; bare names/IDs never gain date semantics.
+  return new RegExp(`(\\|)\\s*${start}\\s*[-–—]\\s*${end}\\s*$`, "gi");
+}
+
+function sourceYearRanges(ref: string, resolved: unknown, excerpt: string): SourceYearRange[] {
+  if (!/^resume\.(?:workHistory|education|projects)\[\d+\]$/u.test(ref) ||
+    !resolved || typeof resolved !== "object" || Array.isArray(resolved)) return [];
+  const record = resolved as Record<string, unknown>;
+  const isYear = (value: unknown): value is string => typeof value === "string" && /^(?:19|20)\d{2}$/u.test(value);
+  const ranges: SourceYearRange[] = [];
+  if (isYear(record.startDate) && (isYear(record.endDate) ||
+    typeof record.endDate === "string" && /^present$/iu.test(record.endDate))) {
+    ranges.push([record.startDate, record.endDate]);
+  }
+  if (typeof record.date === "string") {
+    const date = record.date.match(/^((?:19|20)\d{2})\s*[-–—]\s*((?:19|20)\d{2}|present)$/iu);
+    if (date) ranges.push([date[1], date[2]]);
+  }
+  return ranges.filter(range => yearRangePattern(range).test(excerpt));
+}
+
+function factualTokens(value: string, yearRanges: readonly SourceYearRange[] = []) {
+  let dateComparable = value;
+  for (const range of yearRanges) {
+    dateComparable = dateComparable.replace(yearRangePattern(range), (_, boundary: string) =>
+      `${boundary}${range[0]} ${range[1]}`);
+  }
+  const normalized = dateComparable.toLocaleLowerCase()
     .replaceAll("’", "'")
     // A source fragment such as "No Kubernetes experience" and the explicit
     // first-person rendering "I do not have Kubernetes experience" express the
@@ -363,6 +392,7 @@ function validateClaimEvidence(
       contexts: string[];
       standalone: boolean;
       eligible: boolean;
+      yearRanges: SourceYearRange[];
     }> = [];
     for (const [citationIndex, citation] of entry.citations.entries()) {
       const resolved = resolveReference(payload, citation.ref);
@@ -388,7 +418,8 @@ function validateClaimEvidence(
           excerpt,
           contexts: sourceTexts.flatMap((sourceText) => evidenceContexts(sourceText, excerpt)),
           standalone: containsStandaloneEvidence(resolved, citation.excerpt),
-          eligible: referenceCanSupportApplicantClaim(citation.ref)
+          eligible: referenceCanSupportApplicantClaim(citation.ref),
+          yearRanges: sourceYearRanges(citation.ref, resolved, citation.excerpt)
         });
       }
     }
@@ -421,13 +452,15 @@ function validateClaimEvidence(
         });
       }
     }
-    const claimFacts = factualTokens(claim);
-    const relationPreserved = applicantEvidence.some(({ excerpt, standalone, eligible }) =>
-      eligible && standalone && sameTokens(factualTokens(excerpt), claimFacts));
+    const relationPreserved = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
+      eligible && standalone && sameTokens(factualTokens(excerpt, yearRanges), factualTokens(claim, yearRanges)));
     if (!relationPreserved) {
       throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
         code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
         failureClass: "source_relation_mismatch",
+        relationReason: !applicantEvidence.some(item => item.eligible) ? "ineligible_source"
+          : !applicantEvidence.some(item => item.eligible && item.standalone) ? "not_standalone"
+            : "ordered_token_mismatch",
         fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
         retryable: false
       });

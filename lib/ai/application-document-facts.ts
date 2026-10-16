@@ -16,6 +16,14 @@ export type ApplicationDocumentFact = Readonly<{
   }>;
 }>;
 
+export type ApplicationDocumentClaimOrigin = Readonly<{ factId: string; originFieldPath: string }>;
+
+// Ephemeral sidecar: neither persisted evidence nor its JSON serialization gains provider metadata.
+const claimOrigins = new WeakMap<readonly ApplicationDocumentClaimEvidence[], readonly ApplicationDocumentClaimOrigin[]>();
+export function getApplicationDocumentClaimOrigins(evidence: readonly ApplicationDocumentClaimEvidence[]) {
+  return claimOrigins.get(evidence) ?? [];
+}
+
 export type TailoredResumeProviderOutput = {
   professionalSummary: string;
   professionalSummaryFactId: string;
@@ -205,23 +213,27 @@ function factResolver(payload: ApplicationDocumentPayload) {
 }
 
 function assembleEvidence(
-  entries: Array<{ claim: string; fact: ApplicationDocumentFact }>
+  entries: Array<{ claim: string; fact: ApplicationDocumentFact; originFieldPath: string }>
 ): ApplicationDocumentClaimEvidence[] {
   const claims = new Map<string, ApplicationDocumentClaimEvidence>();
-  for (const { claim, fact } of entries) {
+  const origins: ApplicationDocumentClaimOrigin[] = [];
+  for (const { claim, fact, originFieldPath } of entries) {
     const key = `${comparable(claim)}\u0000${fact.factId}`;
     if (!key) continue;
     const citation = { ref: fact.ref, excerpt: fact.excerpt };
     const existing = claims.get(key);
     if (!existing) {
       claims.set(key, { claim, citations: [citation] });
+      origins.push(Object.freeze({ factId: fact.factId, originFieldPath }));
       continue;
     }
     if (!existing.citations.some((value) => value.ref === citation.ref && value.excerpt === citation.excerpt)) {
       existing.citations.push(citation);
     }
   }
-  return [...claims.values()];
+  const evidence = [...claims.values()];
+  claimOrigins.set(evidence, Object.freeze(origins));
+  return evidence;
 }
 
 export function assembleTailoredResumeProviderOutput(
@@ -229,7 +241,7 @@ export function assembleTailoredResumeProviderOutput(
   wire: TailoredResumeProviderOutput
 ): AssembledTailoredResumeOutput {
   const resolve = factResolver(payload);
-  const evidence: Array<{ claim: string; fact: ApplicationDocumentFact }> = [];
+  const evidence: Array<{ claim: string; fact: ApplicationDocumentFact; originFieldPath: string }> = [];
   const summary = wire.professionalSummary.trim();
   if (summary) {
     if (wire.professionalSummaryFactId === NO_APPLICATION_DOCUMENT_FACT_ID) {
@@ -241,6 +253,7 @@ export function assembleTailoredResumeProviderOutput(
     }
     evidence.push({
       claim: wire.professionalSummary,
+      originFieldPath: "professionalSummary",
       fact: resolve(wire.professionalSummaryFactId, "professionalSummaryFactId")
     });
   } else if (wire.professionalSummaryFactId !== NO_APPLICATION_DOCUMENT_FACT_ID) {
@@ -252,17 +265,18 @@ export function assembleTailoredResumeProviderOutput(
   }
 
   const skillsSection = wire.skillsSection.map((item, index) => {
-    evidence.push({ claim: item.text, fact: resolve(item.factId, `skillsSection[${index}].factId`) });
+    evidence.push({ claim: item.text, fact: resolve(item.factId, `skillsSection[${index}].factId`), originFieldPath: `skillsSection[${index}].text` });
     return item.text;
   });
   const bulletRewrites = wire.bulletRewrites.map((item, index) => {
     const fact = resolve(item.factId, `bulletRewrites[${index}].factId`);
-    evidence.push({ claim: item.rewrite, fact });
+    evidence.push({ claim: item.rewrite, fact, originFieldPath: `bulletRewrites[${index}].rewrite` });
     return { original: fact.excerpt, rewrite: item.rewrite, reason: item.reason };
   });
   const rolesOrProjectsToEmphasize = wire.rolesOrProjectsToEmphasize.map((item, index) => {
     evidence.push({
       claim: item.text,
+      originFieldPath: `rolesOrProjectsToEmphasize[${index}].text`,
       fact: resolve(item.factId, `rolesOrProjectsToEmphasize[${index}].factId`)
     });
     return item.text;
@@ -280,6 +294,7 @@ export function assembleTailoredResumeProviderOutput(
     }
     evidence.push({
       claim: item.claim,
+      originFieldPath: `resumeTextClaims[${index}].claim`,
       fact: resolve(item.factId, `resumeTextClaims[${index}].factId`)
     });
   });
@@ -320,6 +335,7 @@ export function assembleCoverLetterProviderOutput(
     angle: wire.angle,
     claimsUsed: assembleEvidence(wire.claimsUsed.map((entry, index) => ({
       claim: entry.claim,
+      originFieldPath: `claimsUsed[${index}].claim`,
       fact: resolve(entry.factId, `claimsUsed[${index}].factId`)
     })))
   };

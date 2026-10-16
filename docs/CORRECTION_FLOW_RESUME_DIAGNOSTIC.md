@@ -1,5 +1,13 @@
 # Synthetic application-document diagnostics
 
+## Offline date-separator correction
+
+A later safe receipt stopped after one résumé call with `APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM`, `source_relation_mismatch`, at `output.claimEvidence[32].claim` (5,565 input / 2,384 output tokens, estimated $0.013114). No cover letter, review or attestation followed. The rejected claim was not retained; its actual trigger remains unknown. Offline probes reproduced both a legitimate date-separator false positive and an invented-employer rejection at that same assembled field path.
+
+The bounded correction treats hyphen/en-dash/em-dash and spacing as equivalent only in the final pipe-delimited year-range header component, grounded in the cited work/education/project record's explicit `startDate`/`endDate` or `date`. It preserves endpoints, Present status, order, employers and qualifiers. It does not normalize bare names/IDs, raw-only ranges without typed date grounding, arbitrary internal punctuation, technologies, credentials or free paraphrase. The supported year range is 1900–2099; broader date-format interpretation is outside this fix.
+
+Optional additive `failureClaimSource` receipt metadata contains only server-resolved `factId`, the bounded original provider field path and a fixed relation-failure reason. Assembly keeps origins in an in-memory weak sidecar captured before Zod cloning; persisted evidence, provider wire and JSON output shapes are unchanged. No generated claim text or excerpt is added to diagnostics. Historical receipts can omit this field; contract versions, prompt/cache11, model/thinking, spending limits and retention policy are unchanged. This does not recover the lost claim or establish that the punctuation bug caused that run. No paid retry is authorized by this correction.
+
 ## Current offline rendering integrity correction
 
 The current two-document diagnostic uses contract `2`; visible review uses contract `3`, with application-document prompt/cache `11`. Both use the ordinary product renderer and layout `3` for PDFs, DOCX and on-screen pages. Manifests disclose the complete rendering plan: the existing 11 pt résumé option, default 10 pt letter, and Helvetica PDFs. Old rendering manifests cannot authorize this plan. See [C2 document quality](C2_DOCUMENT_QUALITY.md#diagnosticproduct-rendering-parity-correction). No new live consent, key input or paid execution is authorized. Earlier versions below describe historical runs.

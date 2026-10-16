@@ -396,3 +396,20 @@ test("the receipt type never exposes a document-output field", () => {
   assert.equal("coverLetter" in receipt, false);
   assert.equal("rawOutput" in receipt, false);
 });
+
+test("cover-letter rejection carries only the server-owned fact ID and bounded claim origin", async () => {
+  const cover = structuredClone(syntheticCoverLetterOutput());
+  const original = cover.claimsUsed[0].claim;
+  cover.claimsUsed[0].claim = original + " PRIVATE_DIAGNOSTIC_PROBE";
+  cover.coverLetter = cover.coverLetter.replace(original, cover.claimsUsed[0].claim);
+  const receipt = await runnerFor({ responses: [syntheticTailoredResumeOutput(), cover] }).run(new AbortController().signal);
+  assert.equal(receipt.failureStage, "cover_letter");
+  assert.equal(receipt.providerCallsStarted, 2);
+  assert.deepEqual(receipt.failureClaimSource, {
+    factId: cover.claimsUsed[0].factId,
+    originFieldPath: "claimsUsed[0].claim",
+    reason: "ordered_token_mismatch"
+  });
+  assert.doesNotMatch(JSON.stringify(receipt), /PRIVATE_DIAGNOSTIC_PROBE|service operations leader|"claim":|"excerpt":/u);
+  assert.equal(receipt.exportVerification, null);
+});

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  getApplicationDocumentClaimOrigins,
   assembleCoverLetterProviderOutput,
   assembleTailoredResumeProviderOutput,
   buildApplicationDocumentFactCatalog,
@@ -336,4 +337,18 @@ test("cover assembler resolves facts server-side and preserves negation and qual
     }),
     (error) => publicError(error, "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM", "claimsUsed[0].claim")
   );
+});
+
+
+test("claim origins follow deduplication and remain absent from persisted JSON and cloned evidence", () => {
+  const factId = factIdFor(quotedFact);
+  const output = assembleCoverLetterProviderOutput(payload, {
+    title: "Synthetic metadata", angle: "Synthetic metadata", coverLetter: quotedFact,
+    claimsUsed: [{ claim: quotedFact, factId }, { claim: quotedFact, factId }]
+  });
+  assert.equal(output.claimsUsed.length, 1);
+  assert.deepEqual(getApplicationDocumentClaimOrigins(output.claimsUsed), [{ factId, originFieldPath: "claimsUsed[0].claim" }]);
+  assert.deepEqual(Object.keys(output.claimsUsed[0]).sort(), ["citations", "claim"]);
+  assert.doesNotMatch(JSON.stringify(output), /originFieldPath|factId/);
+  assert.deepEqual(getApplicationDocumentClaimOrigins(structuredClone(output.claimsUsed)), []);
 });

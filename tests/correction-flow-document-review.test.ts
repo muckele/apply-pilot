@@ -375,3 +375,29 @@ test("obsolete or altered rendering manifests stop before mocked provider dispat
   }
   assert.equal(dispatches, 0);
 });
+
+test("a rejected generated claim emits bounded server-resolved fact and provider origin without prose", async () => {
+  const value = manifest();
+  const wire = structuredClone(fixedResumeOutput);
+  const header = "Contoso Service Systems | Senior Service Operations Manager | Remote | 2021–Present";
+  wire.resumeText = wire.resumeText.replace(header, header.replace("Contoso Service Systems", "Invented Employer"));
+  wire.resumeTextClaims.find(item => item.claim === header)!.claim = header.replace("Contoso Service Systems", "Invented Employer");
+  wire.resumeTextClaims.reverse();
+  const originIndex = wire.resumeTextClaims.findIndex(item => item.claim.includes("Invented Employer"));
+  let calls = 0;
+  const runner = createCorrectionFlowDocumentReviewRunner({
+    manifest: value, consent: consentFor(value), payload: syntheticCorrectionFlowDocumentPayload(),
+    credentials: { geminiApiKey: credential }, fetchImpl: async () => { calls += 1; return providerResponse(wire); },
+    startReview: async () => { throw new Error("A rejected resume must never start review."); }
+  });
+  const receipt = await runner.run(new AbortController().signal);
+  assert.equal(calls, 1);
+  assert.equal(receipt.failureFieldPath, "output.claimEvidence[32].claim");
+  assert.deepEqual((receipt as unknown as { failureClaimSource?: unknown }).failureClaimSource, {
+    factId: wire.resumeTextClaims[originIndex].factId,
+    originFieldPath: `resumeTextClaims[${originIndex}].claim`,
+    reason: "ordered_token_mismatch"
+  });
+  assert.doesNotMatch(JSON.stringify(receipt), /Invented Employer|Contoso Service Systems|Senior Service|"claim":|"excerpt":|"resumeText":/u);
+  assert.equal(receipt.reviewAttestation, null);
+});

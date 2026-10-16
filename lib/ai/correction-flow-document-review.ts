@@ -7,6 +7,7 @@ import {
   CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_CONTRACT_VERSION,
   CORRECTION_FLOW_DOCUMENT_VISIBLE_REVIEW_LIFETIME_MS,
   createCorrectionFlowDocumentReviewGenerationRunner,
+  type ApplicationDocumentClaimFailureSource,
   type CorrectionFlowDocumentDiagnosticReceipt,
   type CorrectionFlowDocumentReviewConsent,
   type CorrectionFlowDocumentReviewManifest
@@ -54,6 +55,7 @@ export type CorrectionFlowDocumentReviewReceipt = Readonly<{
   failureCode: string | null;
   failureClass: "unsupported_applicant_term" | "source_relation_mismatch" | null;
   failureFieldPath: string | null;
+  failureClaimSource?: ApplicationDocumentClaimFailureSource | null;
   envelopeHash: string | null;
   reviewAttestation: CorrectionFlowDocumentReviewAttestation | null;
 }>;
@@ -93,6 +95,7 @@ function reviewReceipt(
     failureCode: input.failureCode === undefined ? diagnostic.failureCode : input.failureCode,
     failureClass: diagnostic.failureClass,
     failureFieldPath: diagnostic.failureFieldPath,
+    failureClaimSource: diagnostic.failureClaimSource ?? null,
     envelopeHash: input.envelopeHash ?? null,
     reviewAttestation: input.reviewAttestation ?? null
   });

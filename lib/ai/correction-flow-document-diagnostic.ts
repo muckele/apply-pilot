@@ -5,6 +5,8 @@ import { z } from "zod";
 import { PublicApiError } from "@/lib/api-errors";
 import { PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
 import {
+  getApplicationDocumentClaimOrigins,
+  type ApplicationDocumentClaimOrigin,
   assembleCoverLetterProviderOutput,
   assembleTailoredResumeProviderOutput,
   buildApplicationDocumentFactCatalog,
@@ -511,9 +513,28 @@ function validatorFieldPath(value: unknown) {
   return outputFieldPath(parts);
 }
 
+export type ApplicationDocumentClaimFailureSource = Readonly<{
+  factId: string;
+  originFieldPath: string;
+  reason: "ineligible_source" | "not_standalone" | "ordered_token_mismatch";
+}>;
+
+function safeClaimFailureSource(error: unknown, origins: readonly ApplicationDocumentClaimOrigin[]): ApplicationDocumentClaimFailureSource | null {
+  if (!(error instanceof PublicApiError) || error.details?.failureClass !== "source_relation_mismatch") return null;
+  const path = typeof error.details.fieldPath === "string"
+    ? error.details.fieldPath.match(/^(?:claimEvidence|claimsUsed)\[(\d+)\]\.claim$/u) : null;
+  const origin = path ? origins[Number(path[1])] : undefined;
+  const reason = error.details.relationReason;
+  if (!origin || !/^fact:\d{4,6}$/u.test(origin.factId) || origin.originFieldPath.length > 160 ||
+    !/^(?:professionalSummary|(?:skillsSection|rolesOrProjectsToEmphasize)\[\d+\]\.text|bulletRewrites\[\d+\]\.rewrite|(?:resumeTextClaims|claimsUsed)\[\d+\]\.claim)$/u.test(origin.originFieldPath) ||
+    !["ineligible_source", "not_standalone", "ordered_token_mismatch"].includes(String(reason))) return null;
+  return Object.freeze({ ...origin, reason: reason as ApplicationDocumentClaimFailureSource["reason"] });
+}
+
 class DocumentDiagnosticError extends Error {
   readonly code: string;
   readonly fieldPath: string | null;
+  readonly claimSource: ApplicationDocumentClaimFailureSource | null;
   readonly failureClass: "unsupported_applicant_term" | "source_relation_mismatch" | null;
 
   constructor(
@@ -521,6 +542,7 @@ class DocumentDiagnosticError extends Error {
     message: string,
     options: {
       fieldPath?: string | null;
+      claimSource?: ApplicationDocumentClaimFailureSource | null;
       failureClass?: "unsupported_applicant_term" | "source_relation_mismatch" | null;
     } = {}
   ) {
@@ -528,6 +550,7 @@ class DocumentDiagnosticError extends Error {
     this.name = "DocumentDiagnosticError";
     this.code = code;
     this.fieldPath = options.fieldPath ?? null;
+    this.claimSource = options.claimSource ?? null;
     this.failureClass = options.failureClass ?? null;
   }
 }
@@ -555,6 +578,7 @@ export type CorrectionFlowDocumentDiagnosticReceipt = Readonly<{
   failureCode: string | null;
   failureClass: "unsupported_applicant_term" | "source_relation_mismatch" | null;
   failureFieldPath: string | null;
+  failureClaimSource?: ApplicationDocumentClaimFailureSource | null;
   validatedOutputHashes: Readonly<{
     tailoredResume: string | null;
     coverLetter: string | null;
@@ -607,6 +631,7 @@ function baseReceipt(
     failureCode: null,
     failureClass: null,
     failureFieldPath: null,
+    failureClaimSource: null,
     validatedOutputHashes: Object.freeze({ tailoredResume: null, coverLetter: null }),
     exportVerification: null
   };
@@ -806,11 +831,13 @@ function createCorrectionFlowDocumentRunnerCore({
               { fieldPath: outputFieldPath(providerParsed.error.issues[0]?.path ?? []) }
             );
           }
+          let origins: readonly ApplicationDocumentClaimOrigin[] = [];
           try {
             const assembled = assembleTailoredResumeProviderOutput(
               payload,
               providerParsed.data as TailoredResumeProviderOutput
             );
+            origins = getApplicationDocumentClaimOrigins(assembled.claimEvidence);
             return validateTailoredResumeQuality(
               payload,
               validateTailoredResumeClaims(payload, tailoredResumeSchema.parse(assembled))
@@ -826,6 +853,7 @@ function createCorrectionFlowDocumentRunnerCore({
               ? error.details.failureClass
               : null;
             throw new DocumentDiagnosticError(code, "Resume factual validation failed.", {
+              claimSource: safeClaimFailureSource(error, origins),
               fieldPath: error instanceof PublicApiError
                 ? validatorFieldPath(error.details?.fieldPath)
                 : null,
@@ -842,11 +870,13 @@ function createCorrectionFlowDocumentRunnerCore({
             { fieldPath: outputFieldPath(providerParsed.error.issues[0]?.path ?? []) }
           );
         }
+        let origins: readonly ApplicationDocumentClaimOrigin[] = [];
         try {
           const assembled = assembleCoverLetterProviderOutput(
             payload,
             providerParsed.data as CoverLetterProviderOutput
           );
+          origins = getApplicationDocumentClaimOrigins(assembled.claimsUsed);
           return validateCoverLetterQuality(
             payload,
             validateCoverLetterClaims(payload, coverLetterSchema.parse(assembled))
@@ -862,6 +892,7 @@ function createCorrectionFlowDocumentRunnerCore({
             ? error.details.failureClass
             : null;
           throw new DocumentDiagnosticError(code, "Cover-letter factual validation failed.", {
+            claimSource: safeClaimFailureSource(error, origins),
             fieldPath: error instanceof PublicApiError
               ? validatorFieldPath(error.details?.fieldPath)
               : null,
@@ -953,6 +984,7 @@ function createCorrectionFlowDocumentRunnerCore({
             failureCode: failure.code,
             failureClass: failure.failureClass,
             failureFieldPath: failure.fieldPath,
+            failureClaimSource: failure.claimSource,
             exportVerification: null
           }),
           bundle: null
