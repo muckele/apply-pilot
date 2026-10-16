@@ -20,8 +20,13 @@ export type ApplicationDocumentClaimOrigin = Readonly<{ factId: string; originFi
 
 // Ephemeral sidecar: neither persisted evidence nor its JSON serialization gains provider metadata.
 const claimOrigins = new WeakMap<readonly ApplicationDocumentClaimEvidence[], readonly ApplicationDocumentClaimOrigin[]>();
+const assemblyFailureOrigins = new WeakMap<PublicApiError, ApplicationDocumentClaimOrigin>();
 export function getApplicationDocumentClaimOrigins(evidence: readonly ApplicationDocumentClaimEvidence[]) {
   return claimOrigins.get(evidence) ?? [];
+}
+
+export function getApplicationDocumentAssemblyFailureOrigin(error: unknown) {
+  return error instanceof PublicApiError ? assemblyFailureOrigins.get(error) : undefined;
 }
 
 export type TailoredResumeProviderOutput = {
@@ -285,17 +290,24 @@ export function assembleTailoredResumeProviderOutput(
     .map((line) => comparable(normalizeApplicationDocumentSourceLine(line)))
     .filter(Boolean));
   wire.resumeTextClaims.forEach((item, index) => {
-    if (!resumeLines.has(comparable(item.claim))) {
-      throw new PublicApiError("Resume-text evidence describes text absent from the generated resume.", 422, {
+    const fact = resolve(item.factId, `resumeTextClaims[${index}].factId`);
+    const origin = Object.freeze({ factId: fact.factId, originFieldPath: `resumeTextClaims[${index}].claim` });
+    // The prompt permits the exact rendered bullet line. Both sides use the same
+    // existing single-marker normalization; factual words and resumeText stay intact.
+    const claim = normalizeApplicationDocumentSourceLine(item.claim);
+    if (!resumeLines.has(comparable(claim))) {
+      const error = new PublicApiError("Resume-text evidence describes text absent from the generated resume.", 422, {
         code: "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
-        fieldPath: `resumeTextClaims[${index}].claim`,
+        fieldPath: origin.originFieldPath,
         retryable: false
       });
+      assemblyFailureOrigins.set(error, origin);
+      throw error;
     }
     evidence.push({
-      claim: item.claim,
-      originFieldPath: `resumeTextClaims[${index}].claim`,
-      fact: resolve(item.factId, `resumeTextClaims[${index}].factId`)
+      claim,
+      originFieldPath: origin.originFieldPath,
+      fact
     });
   });
 

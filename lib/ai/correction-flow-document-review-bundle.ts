@@ -22,6 +22,7 @@ import { hashAiInput } from "@/lib/ai/input-hash";
 import { tailoredResumeSchema } from "@/lib/ai/resume";
 import { renderProductDocument } from "@/lib/documents/product-document-renderer";
 import { productDocumentReviewInput, PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
+import { isResumeBullet, stripResumeBullet } from "@/lib/documents/resume-format";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -88,7 +89,7 @@ function comparable(value: string) {
 }
 
 function normalizeBulletMarker(value: string, marker: "•" | "-") {
-  return value.replace(/^\s*[-*•]\s+/u, `${marker} `);
+  return isResumeBullet(value) ? `${marker} ${stripResumeBullet(value)}` : value;
 }
 
 function docxRoundTripComparable(value: string) {

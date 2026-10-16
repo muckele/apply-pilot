@@ -2,7 +2,7 @@ import { isResumeBullet, stripResumeBullet, type ResumeFormat } from "@/lib/docu
 
 import { pdfFontNames, type PdfFont } from "@/lib/documents/pdf-font";
 
-export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "3";
+export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "4";
 export type ProductDocumentInput = { content:string; artifactType:"RESUME"|"COVER_LETTER"; resumeFormat:ResumeFormat; pdfFont?:PdfFont };
 export type ProductDocumentBlock = { text:string; sourceText:string; paragraphId:number; role:string; x:number; y:number; width:number; height:number; fontSize:number; bold:boolean; color:string; headingRule?:"left"|"bottom" };
 export type ProductDocumentLayout = { version:string; pageWidth:number; pageHeight:number; margin:number; fontFamily:string; pdfFont:string; pdfBoldFont:string; pages:Array<{number:number;blocks:ProductDocumentBlock[]}> };

@@ -1,5 +1,17 @@
 # Synthetic application-document diagnostics
 
+## October 16 second stopped run and offline bullet correction
+
+The owner-supplied safe receipt for exact head `a88281954f6a550113c31a9c675b49a23a474472` stops at `tailored_resume` with `APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT`, field `output.resumeTextClaims[3].claim`. Its complete manifest reconciles with the approved head's construction: manifest `649448dcced907c9bac0af8855b0b8b1199d9a8097082d6e5cf5a60796d6b5dc`, generated `2026-10-16T19:35:31.294Z`. One call started and completed, with 5,565 input / 2,302 output tokens, zero cached input, estimated $0.012807 and no unknown billing, retry or fallback. No cover letter, visible review, envelope or review attestation followed. Neither document decision was recorded.
+
+This is an assembly-stage whole-line association failure, earlier than source-relation validation. The fourth provider evidence entry is not fact `0003` or source line 3. The selected fact and rejected wording were not retained and remain unknown. The previous date-separator correction is not evidence of this run's trigger.
+
+Offline reproduction found a separate definite false positive: the prompt permits the exact generated bullet line, but assembly stripped its leading marker only from `resumeText`, while the synthetic stub always pre-stripped evidence claims. Assembly now uses the existing single-leading-marker normalization on both sides and canonicalizes the associated evidence claim; rendered text, factual words and source bindings remain unchanged. Genuine absent, partial, joined and changed lines still fail. Catalog-resolved assembly failures now carry an ephemeral weak-sidecar origin so optional safe `failureClaimSource` can report only the known fact ID, original provider path and `not_in_output` reason. Unknown IDs and fabricated/cloned errors cannot acquire that provenance. No rejected wording, nearby lines or raw output is retained.
+
+The expanded end-to-end marker matrix also reproduced a downstream mismatch: rendering recognized only `-`, `*` and `•`, while claims accepted `▪`, `◦`, `–` and `—` too. Product layout `4` recognizes those same seven single leading markers, with whitespace required, and renders the existing canonical bullet. Export verification shares that recognition, preserving ordered substantive text and internal identifiers, technologies and punctuation. Unsupported inline glyphs still fail. Layout `3` manifest consent cannot authorize layout `4`; writing prompt/cache `11`, provider/model/thinking and spending limits are unchanged.
+
+Regressions exercise all seven markers through stubbed production transport, schema, assembly, factual/quality checks and actual PDF/DOCX verification before the review boundary, plus safe stopped receipts at the historical failure path. These are synthetic offline proofs, not recovered historical output or Gemini writing-quality acceptance. No paid retry is authorized or recommended by this correction.
+
 ## Offline date-separator correction
 
 A later safe receipt stopped after one résumé call with `APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM`, `source_relation_mismatch`, at `output.claimEvidence[32].claim` (5,565 input / 2,384 output tokens, estimated $0.013114). No cover letter, review or attestation followed. The rejected claim was not retained; its actual trigger remains unknown. Offline probes reproduced both a legitimate date-separator false positive and an invented-employer rejection at that same assembled field path.
@@ -10,7 +22,7 @@ Optional additive `failureClaimSource` receipt metadata contains only server-res
 
 ## Current offline rendering integrity correction
 
-The current two-document diagnostic uses contract `2`; visible review uses contract `3`, with application-document prompt/cache `11`. Both use the ordinary product renderer and layout `3` for PDFs, DOCX and on-screen pages. Manifests disclose the complete rendering plan: the existing 11 pt résumé option, default 10 pt letter, and Helvetica PDFs. Old rendering manifests cannot authorize this plan. See [C2 document quality](C2_DOCUMENT_QUALITY.md#diagnosticproduct-rendering-parity-correction). No new live consent, key input or paid execution is authorized. Earlier versions below describe historical runs.
+The current two-document diagnostic uses contract `2`; visible review uses contract `3`, with application-document prompt/cache `11`. Both use the ordinary product renderer and layout `4` for PDFs, DOCX and on-screen pages. Manifests disclose the complete rendering plan: the existing 11 pt résumé option, default 10 pt letter, and Helvetica PDFs. Old rendering manifests cannot authorize this plan. See [C2 document quality](C2_DOCUMENT_QUALITY.md#diagnosticproduct-rendering-parity-correction). No new live consent, key input or paid execution is authorized. Earlier versions below describe historical runs.
 
 ## October 14 review submission correction
 

@@ -11,7 +11,7 @@ import { buildCorrectionFlowDocumentReviewView } from "@/lib/ai/correction-flow-
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { createDocumentExportRouteHandlers } from "@/lib/documents/document-export-route";
 import { buildProductDocumentLayout, PRODUCT_DOCUMENT_LAYOUT_VERSION } from "@/lib/documents/product-document-layout";
-import { defaultResumeFormat } from "@/lib/documents/resume-format";
+import { defaultResumeFormat, isResumeBullet, stripResumeBullet } from "@/lib/documents/resume-format";
 import { PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
 import { defaultPdfFont } from "@/lib/documents/pdf-font";
 
@@ -92,4 +92,31 @@ test("product export verification preserves ordered WinAnsi text instead of norm
     tailoredResume: { ...input.tailoredResume, resumeText: text + "\nUnsupported 漢 glyph" },
     coverLetter: input.coverLetter
   }), /verification failed/i);
+});
+
+test("every accepted leading bullet marker renders and verifies without changing factual punctuation", async () => {
+  const input = fixture();
+  for (const glyph of ["-", "*", "•", "▪", "◦", "–", "—"]) {
+    const fact = "Maintained C# and .NET service-level tools; credential CSOP-24017.";
+    const text = `Taylor Boundary\nEXPERIENCE\n  ${glyph} ${fact}`;
+    assert.equal(isResumeBullet(`  ${glyph} ${fact}`), true);
+    assert.equal(stripResumeBullet(`  ${glyph} ${fact}`), fact);
+    const layout = buildProductDocumentLayout({ artifactType: "RESUME", content: text,
+      resumeFormat: rendering.resumeFormat, pdfFont: rendering.pdfFont });
+    assert.equal(layout.pages[0].blocks.find(block => block.role === "bullet")?.sourceText, `• ${fact}`);
+    const result = await verifyCorrectionFlowDocumentExports({
+      tailoredResume: { ...input.tailoredResume, resumeText: text }, coverLetter: input.coverLetter
+    });
+    assert.equal(result.resume.pdfCriticalFactsPresent, true, glyph);
+    assert.equal(result.resume.docxRoundTripExact, true, glyph);
+    assert.equal(result.resume.docxCriticalFactsPresent, true, glyph);
+  }
+  for (const text of ["service-level tools", "CSOP-24017", "—identifier", "− 12 accounts"]) {
+    assert.equal(isResumeBullet(text), false);
+    assert.equal(stripResumeBullet(text), text);
+  }
+  await assert.rejects(verifyCorrectionFlowDocumentExports({
+    tailoredResume: { ...input.tailoredResume, resumeText: "Taylor Boundary\nCredential ▪ CSOP-24017" },
+    coverLetter: input.coverLetter
+  }), /rendering failed|verification failed/i);
 });

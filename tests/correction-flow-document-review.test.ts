@@ -363,6 +363,7 @@ test("obsolete or altered rendering manifests stop before mocked provider dispat
   for (const changed of [
     { ...current, contractVersion: "2" },
     { ...current, rendering: { ...current.rendering, layoutVersion: "2" } },
+    { ...current, rendering: { ...current.rendering, layoutVersion: "3" } },
     { ...current, rendering: { ...current.rendering, resumeFormat: { ...current.rendering.resumeFormat, fontSize: 10 } } }
   ]) {
     assert.throws(() => createCorrectionFlowDocumentReviewRunner({
@@ -400,4 +401,81 @@ test("a rejected generated claim emits bounded server-resolved fact and provider
   });
   assert.doesNotMatch(JSON.stringify(receipt), /Invented Employer|Contoso Service Systems|Senior Service|"claim":|"excerpt":|"resumeText":/u);
   assert.equal(receipt.reviewAttestation, null);
+});
+
+test("exact generated bullet evidence traverses transport, validation and exports before review", async () => {
+  for (const glyph of ["-", "*", "•", "▪", "◦", "–", "—"]) {
+    const value = manifest();
+    const wire = structuredClone(fixedResumeOutput);
+    wire.resumeText = wire.resumeText.replace(/^[-*•▪◦–—]\s+/gmu, `${glyph} `);
+    const lines = wire.resumeText.split("\n");
+    for (const item of wire.resumeTextClaims) {
+      const generatedBullet = lines.find(line => /^[-*•▪◦–—]\s+/u.test(line.trim()) && line.trim().slice(2) === item.claim);
+      if (generatedBullet) item.claim = generatedBullet;
+    }
+    assert.ok(wire.resumeTextClaims.some(item => item.claim.startsWith(`${glyph} `)));
+    let calls = 0;
+    let reviews = 0;
+    const pdfs: Buffer[] = [];
+    const runner = createCorrectionFlowDocumentReviewRunner({
+      manifest: value, consent: consentFor(value), payload: syntheticCorrectionFlowDocumentPayload(),
+      credentials: { geminiApiKey: credential },
+      fetchImpl: async () => providerResponse([wire, fixedCoverLetterOutput][calls++]),
+      startReview: async (input) => {
+        reviews += 1;
+        pdfs.push(...input.renderedPdfs.map(pdf => pdf.bytes));
+        throw new Error("Synthetic review startup probe; no listening socket.");
+      }
+    });
+    const receipt = await runner.run(new AbortController().signal);
+    assert.equal(calls, 2, JSON.stringify(receipt));
+    assert.equal(reviews, 1, `${glyph}: ${JSON.stringify(receipt)}`);
+    assert.equal(receipt.failureStage, "owner_review");
+    assert.equal(receipt.failureCode, "OWNER_REVIEW_INCOMPLETE");
+    assert.equal(pdfs.length, 2);
+    assert.ok(pdfs.every(pdf => pdf.every(byte => byte === 0)));
+  }
+});
+
+test("absent resume evidence stops once with a known fact and original provider path before assembly completes", async () => {
+  const value = manifest();
+  const wire = structuredClone(fixedResumeOutput);
+  const item = wire.resumeTextClaims.pop()!;
+  item.claim = "Invented provider-only achievement absent from the generated resume.";
+  wire.resumeTextClaims.splice(3, 0, item);
+  let calls = 0;
+  const runner = createCorrectionFlowDocumentReviewRunner({
+    manifest: value, consent: consentFor(value), payload: syntheticCorrectionFlowDocumentPayload(),
+    credentials: { geminiApiKey: credential }, fetchImpl: async () => { calls += 1; return providerResponse(wire); },
+    startReview: async () => { throw new Error("Absent evidence must never start review."); }
+  });
+  const receipt = await runner.run(new AbortController().signal);
+  assert.equal(calls, 1);
+  assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT");
+  assert.equal(receipt.failureFieldPath, "output.resumeTextClaims[3].claim");
+  assert.deepEqual(receipt.failureClaimSource, {
+    factId: item.factId, originFieldPath: "resumeTextClaims[3].claim", reason: "not_in_output"
+  });
+  assert.equal(receipt.providerCallsCompleted, 1);
+  assert.equal(receipt.unknownBillingCallCount, 0);
+  assert.equal(receipt.envelopeHash, null);
+  assert.equal(receipt.reviewAttestation, null);
+  assert.doesNotMatch(JSON.stringify(receipt), /Invented provider-only|"claim":|"excerpt":|"resumeText":/u);
+});
+
+test("an unknown selected fact cannot gain assembly-failure provenance", async () => {
+  const value = manifest();
+  const wire = structuredClone(fixedResumeOutput);
+  wire.resumeTextClaims[3] = { claim: "Absent private provider prose.", factId: "fact:9999" };
+  let calls = 0;
+  const runner = createCorrectionFlowDocumentReviewRunner({
+    manifest: value, consent: consentFor(value), payload: syntheticCorrectionFlowDocumentPayload(),
+    credentials: { geminiApiKey: credential }, fetchImpl: async () => { calls += 1; return providerResponse(wire); }
+  });
+  const receipt = await runner.run(new AbortController().signal);
+  assert.equal(calls, 1);
+  assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_UNKNOWN_FACT_ID");
+  assert.equal(receipt.failureFieldPath, "output.resumeTextClaims[3].factId");
+  assert.equal(receipt.failureClaimSource, null);
+  assert.doesNotMatch(JSON.stringify(receipt), /fact:9999|Absent private/u);
 });
