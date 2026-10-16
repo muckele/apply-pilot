@@ -11,6 +11,14 @@ import {
   formatApplicationStatus,
   getApplicationAttention
 } from "@/lib/applications/pipeline";
+import {
+  CURRENT_JOB_MATCH_ANALYSES,
+  buildCurrentJobMatchContext,
+  currentJobMatchFields,
+  hasCurrentJobMatchAnalysis,
+  readCurrentJobMatchSources
+} from "@/lib/jobs/current-job-match";
+import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -78,13 +86,13 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
   }
 
   const applicationInclude = {
-    jobPosting: true,
+    jobPosting: { include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } } },
     emails: { orderBy: [{ receivedAt: "desc" }, { createdAt: "desc" }], take: 5 },
     interviews: { orderBy: { scheduledAt: "asc" } },
     tasks: { where: { status: "OPEN" }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }] }
   } satisfies Prisma.ApplicationInclude;
 
-  const [applications, metricApplications] = await Promise.all([
+  const [applications, metricApplications, sources] = await Promise.all([
     prisma.application.findMany({
       where,
       include: applicationInclude,
@@ -96,8 +104,17 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
       include: applicationInclude,
       orderBy: [{ updatedAt: "desc" }],
       take: 500
-    })
+    }),
+    readCurrentJobMatchSources(userId)
   ]);
+
+  const currentJob = (job: (typeof applications)[number]["jobPosting"]) => {
+    const context = buildCurrentJobMatchContext({ job, ...sources });
+    return currentJobMatchFields(job, hasCurrentJobMatchAnalysis({
+      ...job,
+      currentEvidenceSourceValid: context.currentEvidenceSourceValid
+    }, context.matchInput));
+  };
 
   const commandCenterApplications = applications
     .map((application) => ({
@@ -214,7 +231,7 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
                                 </Link>
                                 <p className="mt-0.5 text-xs leading-5 text-slate-500">{application.jobPosting.title}</p>
                               </div>
-                              <ScoreBadge score={application.jobPosting.overallFitScore} />
+                              <ScoreBadge score={currentJob(application.jobPosting).overallFitScore} />
                             </div>
 
                             <div className="mt-3 flex flex-wrap gap-2">
@@ -331,7 +348,7 @@ export default async function ApplicationsPage({ searchParams }: ApplicationsPag
                     <td className="px-5 py-4 text-slate-600">{formatDate(application.dateApplied)}</td>
                     <td className="px-5 py-4 text-slate-600">{formatDate(application.followUpDueAt)}</td>
                     <td className="px-5 py-4 text-slate-600">{attention?.label ?? "Clear"}</td>
-                    <td className="px-5 py-4"><ScoreBadge score={application.jobPosting.overallFitScore} /></td>
+                    <td className="px-5 py-4"><ScoreBadge score={currentJob(application.jobPosting).overallFitScore} /></td>
                   </tr>
                 ))
               ) : (

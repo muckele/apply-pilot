@@ -501,6 +501,7 @@ export function fillStatusPresentation(status: BrowserFillAttemptStatus): FillSt
 
 const STOPPED_ERROR_DESCRIPTIONS: Readonly<Partial<Record<FillErrorCode, string>>> = Object.freeze({
   FILL_POLICY_DENIED: "Fill stopped because the current automation policy does not permit it.",
+  FILL_STALE: "Fill stopped because the reviewed evidence changed before the next field.",
   FILL_TARGET_TRUST_LOST: "Fill stopped because trust in the employer page was lost.",
   FILL_UNEXPECTED_MUTATION: "Fill stopped because the employer field changed unexpectedly.",
   FILL_WRITE_FAILED: "Fill stopped because a protected field write could not be completed safely.",

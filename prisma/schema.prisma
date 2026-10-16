@@ -277,15 +277,16 @@ model User {
   aiBudgetLedgers        AIBudgetLedger[]
   aiBudgetReservations   AIBudgetReservation[]
   aiResponseCaches       AIResponseCache[]
+  evidenceSnapshots      EvidenceSnapshot[]
   jobDiscoveryPreference JobDiscoveryPreference?
 
-  applicationAutomationPolicy ApplicationAutomationPolicy?
-  applicationRuns             ApplicationRun[]
+  applicationAutomationPolicy   ApplicationAutomationPolicy?
+  applicationRuns               ApplicationRun[]
   applicationRunFormInspections ApplicationRunFormInspection[]
   applicationRunAnswerPackets   ApplicationRunAnswerPacket[]
-  applicationRunAnswers       ApplicationRunAnswer[]
-  applicationRunSteps         ApplicationRunStep[]
-  applicationExecutionTokens  ApplicationExecutionToken[]
+  applicationRunAnswers         ApplicationRunAnswer[]
+  applicationRunSteps           ApplicationRunStep[]
+  applicationExecutionTokens    ApplicationExecutionToken[]
 }
 
 model UserProfile {
@@ -346,42 +347,47 @@ model Resume {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  versions ResumeVersion[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions          ResumeVersion[]
+  evidenceSnapshots EvidenceSnapshot[]
 
   @@index([userId, isMaster])
 }
 
 model ResumeVersion {
-  id               String   @id @default(cuid())
-  userId           String
-  resumeId         String?
-  jobPostingId     String?
-  applicationId    String?
-  title            String
-  summary          String?
-  skills           String[]
-  bullets          Json?
-  fullText         String
-  changeNotes      String?
-  atsCompatibility Int?
-  jobFitScore      Int?
-  filePathDocx     String?
-  filePathPdf      String?
-  template         String   @default("CLASSIC")
-  pageSize         String   @default("LETTER")
-  fontFamily       String   @default("ARIAL")
-  accentColor      String   @default("#0F766E")
-  fontSize         Int      @default(10)
-  lineSpacing      Int      @default(115)
-  createdAt        DateTime @default(now())
+  id                 String   @id @default(cuid())
+  userId             String
+  resumeId           String?
+  jobPostingId       String?
+  applicationId      String?
+  evidenceSnapshotId String?
+  title              String
+  summary            String?
+  skills             String[]
+  bullets            Json?
+  fullText           String
+  changeNotes        String?
+  atsCompatibility   Int?
+  jobFitScore        Int?
+  filePathDocx       String?
+  filePathPdf        String?
+  template           String   @default("CLASSIC")
+  pageSize           String   @default("LETTER")
+  fontFamily         String   @default("ARIAL")
+  accentColor        String   @default("#0F766E")
+  fontSize           Int      @default(10)
+  lineSpacing        Int      @default(115)
+  createdAt          DateTime @default(now())
 
-  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  resume             Resume?          @relation(fields: [resumeId], references: [id], onDelete: SetNull)
-  jobPosting         JobPosting?      @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application        Application?     @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
-  usedByApplications Application[]    @relation("ApplicationResumeUsed")
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resume             Resume?           @relation(fields: [resumeId], references: [id], onDelete: SetNull)
+  jobPosting         JobPosting?       @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application        Application?      @relation("ResumeVersionsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
+  evidenceSnapshot   EvidenceSnapshot? @relation("ResumeVersionEvidenceSnapshot", fields: [evidenceSnapshotId], references: [id], onDelete: SetNull)
+  usedByApplications Application[]     @relation("ApplicationResumeUsed")
   applicationRuns    ApplicationRun[]
+
+  @@index([evidenceSnapshotId])
 }
 
 model StoredFile {
@@ -468,27 +474,32 @@ model JobPosting {
   suggestedResumeAngle      String?
   suggestedCoverLetterAngle String?
   concerns                  String[]
+  currentEvidenceSnapshotId String?
+  evidenceSnapshotGeneration Int                  @default(0)
   createdAt                 DateTime      @default(now())
   updatedAt                 DateTime      @updatedAt
 
-  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobSource          JobSource?          @relation(fields: [jobSourceId], references: [id], onDelete: SetNull)
-  applications       Application[]
-  contacts           Contact[]
-  emails             EmailMessage[]
-  interviews         Interview[]
-  resumeVersions     ResumeVersion[]
-  generatedDocs      GeneratedDocument[]
-  aiAnalyses         AIAnalysis[]
-  interviewQuestions InterviewQuestion[]
-  tasks              Task[]
-  reminders          FollowUpReminder[]
-  applicationRuns    ApplicationRun[]
+  user                    User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobSource               JobSource?          @relation(fields: [jobSourceId], references: [id], onDelete: SetNull)
+  applications            Application[]
+  contacts                Contact[]
+  emails                  EmailMessage[]
+  interviews              Interview[]
+  resumeVersions          ResumeVersion[]
+  generatedDocs           GeneratedDocument[]
+  aiAnalyses              AIAnalysis[]
+  interviewQuestions      InterviewQuestion[]
+  tasks                   Task[]
+  reminders               FollowUpReminder[]
+  applicationRuns         ApplicationRun[]
+  evidenceSnapshots       EvidenceSnapshot[]  @relation("EvidenceSnapshotJob")
+  currentEvidenceSnapshot EvidenceSnapshot?   @relation("JobCurrentEvidenceSnapshot", fields: [currentEvidenceSnapshotId], references: [id], onDelete: SetNull)
 
   @@unique([userId, normalizedCompany, normalizedTitle, normalizedLocation, normalizedApplyUrl], map: "job_dedupe_unique")
   @@index([userId, status])
   @@index([userId, overallFitScore])
   @@index([userId, datePosted])
+  @@index([currentEvidenceSnapshotId])
 }
 
 model Application {
@@ -653,50 +664,90 @@ model InterviewRecording {
 }
 
 model GeneratedDocument {
-  id            String       @id @default(cuid())
-  userId        String
-  jobPostingId  String?
-  applicationId String?
-  type          DocumentType
-  title         String
-  content       String
-  format        String       @default("markdown")
-  filePath      String?
-  versionLabel  String?
-  metadata      Json?
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  id                 String       @id @default(cuid())
+  userId             String
+  jobPostingId       String?
+  applicationId      String?
+  evidenceSnapshotId String?
+  type               DocumentType
+  title              String
+  content            String
+  format             String       @default("markdown")
+  filePath           String?
+  versionLabel       String?
+  metadata           Json?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
 
-  user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting           JobPosting?      @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  application          Application?     @relation("GeneratedDocumentsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
-  usedAsCoverLetterFor Application[]    @relation("ApplicationCoverLetter")
+  user                 User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting           JobPosting?       @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  application          Application?      @relation("GeneratedDocumentsForApplication", fields: [applicationId], references: [id], onDelete: SetNull)
+  evidenceSnapshot     EvidenceSnapshot? @relation("GeneratedDocumentEvidenceSnapshot", fields: [evidenceSnapshotId], references: [id], onDelete: SetNull)
+  usedAsCoverLetterFor Application[]     @relation("ApplicationCoverLetter")
   applicationRuns      ApplicationRun[]
 
   @@index([userId, type])
+  @@index([evidenceSnapshotId])
 }
 
 model AIAnalysis {
-  id            String         @id @default(cuid())
-  userId        String
-  jobPostingId  String?
-  interviewId   String?
-  type          AIAnalysisType
-  model         String
-  promptName    String
-  promptVersion String         @default("1")
-  inputHash     String?
-  input         Json
-  output        Json
-  confidence    Int?
-  createdAt     DateTime       @default(now())
+  id                 String         @id @default(cuid())
+  userId             String
+  jobPostingId       String?
+  interviewId        String?
+  evidenceSnapshotId String?
+  type               AIAnalysisType
+  model              String
+  promptName         String
+  promptVersion      String         @default("1")
+  inputHash          String?
+  input              Json
+  output             Json
+  confidence         Int?
+  createdAt          DateTime       @default(now())
 
-  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting JobPosting? @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
-  interview  Interview?  @relation(fields: [interviewId], references: [id], onDelete: SetNull)
+  user                      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting                JobPosting?        @relation(fields: [jobPostingId], references: [id], onDelete: SetNull)
+  interview                 Interview?         @relation(fields: [interviewId], references: [id], onDelete: SetNull)
+  evidenceSnapshot          EvidenceSnapshot?  @relation("AIAnalysisEvidenceSnapshot", fields: [evidenceSnapshotId], references: [id], onDelete: SetNull)
+  reviewedEvidenceSnapshots EvidenceSnapshot[] @relation("EvidenceSnapshotReviewedAnalysis")
 
   @@index([userId, type])
   @@index([userId, type, inputHash])
+  @@index([evidenceSnapshotId])
+}
+
+model EvidenceSnapshot {
+  id                    String   @id @default(cuid())
+  userId                String
+  jobPostingId          String
+  resumeId              String
+  reviewedAnalysisId    String
+  requestId             String
+  requestHash           String
+  schemaVersion         Int      @default(1)
+  sourceResumeUpdatedAt DateTime
+  snapshotHash          String
+  sourceProjectionHash  String
+  gapProjectionHash     String
+  reviewPayload         Json
+  createdAt             DateTime @default(now())
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting         JobPosting          @relation("EvidenceSnapshotJob", fields: [jobPostingId], references: [id], onDelete: Cascade)
+  resume             Resume              @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  reviewedAnalysis   AIAnalysis          @relation("EvidenceSnapshotReviewedAnalysis", fields: [reviewedAnalysisId], references: [id], onDelete: Cascade)
+  currentForJobs     JobPosting[]        @relation("JobCurrentEvidenceSnapshot")
+  analyses           AIAnalysis[]        @relation("AIAnalysisEvidenceSnapshot")
+  resumeVersions     ResumeVersion[]     @relation("ResumeVersionEvidenceSnapshot")
+  generatedDocuments GeneratedDocument[] @relation("GeneratedDocumentEvidenceSnapshot")
+
+  @@unique([userId, requestId])
+  @@index([userId, jobPostingId, snapshotHash])
+  @@index([userId, jobPostingId, createdAt])
+  @@index([jobPostingId])
+  @@index([resumeId, sourceResumeUpdatedAt])
+  @@index([reviewedAnalysisId])
 }
 
 model BrowserCaptureToken {
@@ -952,13 +1003,13 @@ model ApplicationRun {
   createdAt                      DateTime            @default(now())
   updatedAt                      DateTime            @updatedAt
 
-  user               User                        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobPosting         JobPosting                  @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
-  application        Application                 @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  resumeVersion      ResumeVersion?              @relation(fields: [resumeVersionId], references: [id], onDelete: SetNull)
-  coverLetterVersion GeneratedDocument?          @relation(fields: [coverLetterVersionId], references: [id], onDelete: SetNull)
-  formInspections   ApplicationRunFormInspection[]
-  answerPackets     ApplicationRunAnswerPacket[]
+  user               User                           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobPosting         JobPosting                     @relation(fields: [jobPostingId], references: [id], onDelete: Cascade)
+  application        Application                    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  resumeVersion      ResumeVersion?                 @relation(fields: [resumeVersionId], references: [id], onDelete: SetNull)
+  coverLetterVersion GeneratedDocument?             @relation(fields: [coverLetterVersionId], references: [id], onDelete: SetNull)
+  formInspections    ApplicationRunFormInspection[]
+  answerPackets      ApplicationRunAnswerPacket[]
   answers            ApplicationRunAnswer[]
   steps              ApplicationRunStep[]
   executionTokens    ApplicationExecutionToken[]
@@ -982,8 +1033,8 @@ model ApplicationRunFormInspection {
   normalizedSnapshot Json
   createdAt          DateTime @default(now())
 
-  run           ApplicationRun             @relation(fields: [runId], references: [id], onDelete: Cascade)
-  user          User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  run           ApplicationRun               @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user          User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
   answerPackets ApplicationRunAnswerPacket[]
 
   @@unique([runId, version])
@@ -991,7 +1042,7 @@ model ApplicationRunFormInspection {
 }
 
 model ApplicationRunAnswerPacket {
-  id               String   @id @default(cuid())
+  id               String    @id @default(cuid())
   runId            String
   userId           String
   version          Int
@@ -1002,7 +1053,7 @@ model ApplicationRunAnswerPacket {
   inputHash        String
   packetHash       String
   reviewedAt       DateTime?
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
 
   run            ApplicationRun               @relation(fields: [runId], references: [id], onDelete: Cascade)
   user           User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1015,7 +1066,7 @@ model ApplicationRunAnswerPacket {
 }
 
 model ApplicationRunAnswer {
-  id                 String                       @id @default(cuid())
+  id                 String                              @id @default(cuid())
   runId              String
   userId             String
   answerPacketId     String?
@@ -1030,22 +1081,22 @@ model ApplicationRunAnswer {
   dispositionReason  ApplicationAnswerDispositionReason?
   proposedValue      String?
   proposal           Json?
-  valueRedacted      Boolean                      @default(false)
+  valueRedacted      Boolean                             @default(false)
   sourceType         ApplicationAnswerSourceType?
-  sourceIds          String[]                     @default([])
-  evidenceIds        String[]                     @default([])
+  sourceIds          String[]                            @default([])
+  evidenceIds        String[]                            @default([])
   sourceFingerprint  String?
-  confidence         Int                          @default(0)
-  sensitive          Boolean                      @default(false)
-  required           Boolean                      @default(false)
-  requiresReview     Boolean                      @default(true)
-  status             ApplicationRunAnswerStatus   @default(PENDING)
-  reviewedByUser     Boolean                      @default(false)
+  confidence         Int                                 @default(0)
+  sensitive          Boolean                             @default(false)
+  required           Boolean                             @default(false)
+  requiresReview     Boolean                             @default(true)
+  status             ApplicationRunAnswerStatus          @default(PENDING)
+  reviewedByUser     Boolean                             @default(false)
   reviewedAt         DateTime?
   finalValueHash     String?
   reviewHashVersion  ApplicationAnswerReviewHashVersion?
-  createdAt          DateTime                     @default(now())
-  updatedAt          DateTime                     @updatedAt
+  createdAt          DateTime                            @default(now())
+  updatedAt          DateTime                            @updatedAt
 
   run          ApplicationRun              @relation(fields: [runId], references: [id], onDelete: Cascade)
   user         User                        @relation(fields: [userId], references: [id], onDelete: Cascade)

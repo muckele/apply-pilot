@@ -4,7 +4,7 @@ import test from "node:test";
 import JSZip from "jszip";
 import { NextRequest } from "next/server";
 
-import { createDocumentExportRouteHandlers } from "@/app/api/documents/export/route";
+import { createDocumentExportRouteHandlers } from "@/lib/documents/document-export-route";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   CANONICAL_APPLICATION_DOCUMENT_PROFILE_V1,
@@ -16,11 +16,26 @@ const USER_ID = "user-export-test";
 const DOCUMENT_ID = "document-export-test";
 const RESUME_VERSION_ID = "resume-export-test";
 
+type ExportJobEvidence = {
+  currentEvidenceSnapshotId: string | null;
+  evidenceSnapshotGeneration: number;
+  currentEvidenceSnapshot: {
+    id: string;
+    resumeId: string;
+    sourceResumeUpdatedAt: Date;
+    snapshotHash: string;
+    reviewPayload: unknown;
+  } | null;
+  user: { resumes: Array<{ id: string; updatedAt: Date }> };
+};
+
 type GeneratedDocumentRow = {
   id: string;
   userId: string;
   title: string;
   content: string;
+  evidenceSnapshotId?: string | null;
+  jobPosting?: ExportJobEvidence | null;
 };
 
 type ResumeVersionRow = {
@@ -34,7 +49,25 @@ type ResumeVersionRow = {
   accentColor: string;
   fontSize: number;
   lineSpacing: number;
+  evidenceSnapshotId?: string | null;
+  jobPosting?: ExportJobEvidence | null;
 };
+
+function exportJobEvidence(snapshotId: string): ExportJobEvidence {
+  const updatedAt = new Date("2026-10-08T12:00:00.000Z");
+  return {
+    currentEvidenceSnapshotId: snapshotId,
+    evidenceSnapshotGeneration: 1,
+    currentEvidenceSnapshot: {
+      id: snapshotId,
+      resumeId: "resume-master",
+      sourceResumeUpdatedAt: updatedAt,
+      snapshotHash: "a".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    },
+    user: { resumes: [{ id: "resume-master", updatedAt }] }
+  };
+}
 
 function generatedDocument(overrides: Partial<GeneratedDocumentRow> = {}): GeneratedDocumentRow {
   return {
@@ -178,7 +211,7 @@ test("generic resume DOCX uses current resume formatting and excludes its title"
   assert.match(xml.styles, /w:ascii="Georgia"/);
   assert.match(xml.styles, /w:sz w:val="22"/);
   assert.match(xml.styles, /w:line="264"/);
-  assert.match(xml.document, /w:pgSz w:w="11909" w:h="16834"/);
+  assert.match(xml.document, /w:pgSz w:w="11900" w:h="16840"/);
   assert.match(xml.document, /w:color w:val="A1B2C3"/);
   assert.match(xml.document, /w:left w:val="single"/);
 });
@@ -212,7 +245,33 @@ test("generic generated-document Markdown returns exact content without prependi
   assert.deepEqual(calls.document, [{ id: DOCUMENT_ID, userId: USER_ID }]);
 });
 
-test("generic generated-document DOCX prepends title and uses the current generic default format", async () => {
+test("export rejects an artifact bound to older reviewed evidence", async () => {
+  const { handlers } = route({
+    document: null,
+    resume: resumeVersion({
+      evidenceSnapshotId: "snapshot-old",
+      jobPosting: exportJobEvidence("snapshot-current")
+    })
+  });
+  const response = await handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "markdown" }));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).code, "APPLICATION_DOCUMENT_EVIDENCE_STALE");
+});
+
+test("export allows an artifact with an exact current non-null reviewed-evidence binding", async () => {
+  const { handlers } = route({
+    document: null,
+    resume: resumeVersion({
+      evidenceSnapshotId: "snapshot-current",
+      jobPosting: exportJobEvidence("snapshot-current")
+    })
+  });
+  const response = await handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "markdown" }));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "SUMMARY\nResume body only");
+});
+
+test("ordinary generated-document DOCX exports the stored body without a duplicate version title", async () => {
   const { handlers } = route({ resume: null });
 
   const response = await handlers.POST(request({ documentId: DOCUMENT_ID, format: "docx" }));
@@ -224,14 +283,14 @@ test("generic generated-document DOCX prepends title and uses the current generi
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
   );
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="Generated_Cover_Letter.docx"');
-  assert.deepEqual(docxParagraphs(xml.document), ["Generated Cover Letter", "", "Generated body only"]);
+  assert.deepEqual(docxParagraphs(xml.document), ["Generated body only"]);
   assert.match(xml.styles, /w:ascii="Arial"/);
   assert.match(xml.styles, /w:sz w:val="20"/);
   assert.match(xml.styles, /w:line="230"/);
   assert.match(xml.document, /w:pgSz w:w="12240" w:h="15840"/);
 });
 
-test("generic generated-document PDF prepends title and uses current generic PDF defaults", async () => {
+test("ordinary generated-document PDF exports the stored body without a duplicate version title", async () => {
   const { handlers } = route({ resume: null });
 
   const response = await handlers.POST(request({ documentId: DOCUMENT_ID, format: "pdf" }));
@@ -242,8 +301,8 @@ test("generic generated-document PDF prepends title and uses current generic PDF
   assert.equal(response.headers.get("content-disposition"), 'attachment; filename="Generated_Cover_Letter.pdf"');
   assert.match(pdf, /\/MediaBox \[0 0 612 792\]/);
   assert.match(pdf, /\/BaseFont \/Helvetica/);
-  assert.match(pdf, /\/F1 10 Tf/);
-  assert.match(pdf, /\(Generated Cover Letter\) Tj\nT\*\n\(\) Tj\nT\*\n\(Generated body only\) Tj/);
+  assert.match(pdf, /\(Generated body only\) Tj/);
+  assert.doesNotMatch(pdf, /\(Generated Cover Letter\) Tj/);
 });
 
 test("generic export keeps Markdown as the omitted-format default", async () => {
@@ -384,4 +443,27 @@ test("canonical DOCX is semantically deterministic except for exact created and 
   const secondXml = await docxXml(second);
   assert.deepEqual(docxParagraphs(firstXml.document), [input.content]);
   assert.deepEqual(docxParagraphs(secondXml.document), [input.content]);
+});
+
+for (const [field, id] of [["resumeVersionId", RESUME_VERSION_ID], ["documentId", DOCUMENT_ID]] as const) {
+  for (const [pdfFont, baseFont] of [["HELVETICA", "Helvetica"], ["TIMES", "Times-Roman"]] as const) {
+    test(`ordinary ${field} explicitly selects ${pdfFont} without changing DOCX fonts`, async () => {
+      const { handlers } = route(field === "resumeVersionId" ? { document: null } : { resume: null });
+      const response = await handlers.POST(request({ [field]: id, format: "pdf", pdfFont }));
+      assert.equal(response.status, 200);
+      assert.match((await responseBytes(response)).toString("latin1"), new RegExp(`/BaseFont /${baseFont}\\b`));
+      const word = await handlers.POST(request({ [field]: id, format: "docx", pdfFont }));
+      assert.equal(word.status, 200);
+      assert.match((await docxXml(await responseBytes(word))).styles, field === "resumeVersionId" ? /w:ascii="Georgia"/ : /w:ascii="Arial"/);
+    });
+  }
+}
+
+test("ordinary PDF rejects unsupported font choices and still rejects stale evidence for either supported font", async () => {
+  const current = route({ document: null });
+  assert.equal((await current.handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "pdf", pdfFont: "GEORGIA" }))).status, 422);
+  const stale = route({ document: null, resume: resumeVersion({ evidenceSnapshotId: "snapshot-old", jobPosting: exportJobEvidence("snapshot-current") }) });
+  for (const pdfFont of ["HELVETICA", "TIMES"]) {
+    assert.equal((await stale.handlers.POST(request({ resumeVersionId: RESUME_VERSION_ID, format: "pdf", pdfFont }))).status, 409);
+  }
 });

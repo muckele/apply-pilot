@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { applicationPlanPrompt } from "@/prompts/applicationPlanPrompt";
 import { generateJson, type AiInvocationOptions } from "@/lib/ai/client";
+import type { JobMatchReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 import { uniqueStrings } from "@/lib/normalize";
 
 export const APPLICATION_PLAN_PROMPT_VERSION = "1";
@@ -15,6 +16,7 @@ export type EvidenceSourceType =
   | "EDUCATION"
   | "CERTIFICATION"
   | "RAW_SOURCE"
+  | "REVIEWED_EVIDENCE"
   | "PROFILE";
 
 export type EvidenceCatalogEntry = {
@@ -64,6 +66,7 @@ export type ApplicationPlanInput = {
     skillsToEmphasize?: string[];
     skillsNotToExaggerate?: string[];
   } | null;
+  reviewedEvidence?: JobMatchReviewedEvidence | null;
 };
 
 // The immutable planner payload snapshot. Evidence IDs are deterministic, position-based,
@@ -133,7 +136,9 @@ const BOUNDS = {
   preferredLocations: 6,
   skillsToEmphasize: 12,
   doNotExaggerate: 12,
-  rawSourceChars: 2_500
+  rawSourceChars: 2_500,
+  reviewedEvidence: 20,
+  reviewedEvidenceChars: 500
 } as const;
 
 function boundedText(value: unknown, maxChars: number): string | null {
@@ -468,6 +473,15 @@ export function buildApplicationPlanPayload(input: ApplicationPlanInput): Applic
       recordProjectionOmission(projectionOmissions, "resume.rawText", [], ["raw-source-1"]);
     }
   }
+
+  projectedStringArray(
+    input.reviewedEvidence?.facts.map((fact) => `${fact.provenance}: ${fact.fact}`),
+    BOUNDS.reviewedEvidence,
+    BOUNDS.reviewedEvidenceChars,
+    "reviewed-evidence",
+    "reviewedEvidence.facts",
+    projectionOmissions
+  ).forEach((text, index) => addEvidence(`reviewed-evidence-${index + 1}`, "REVIEWED_EVIDENCE", text));
 
   const profile = input.profile ?? null;
   if (profile) {

@@ -218,9 +218,10 @@ test("closed terminal presentation preserves the Human-Submit boundary", () => {
   }
 });
 
-test("stopped-error presentation maps only the five closed human descriptions", () => {
+test("stopped-error presentation maps only the six closed human descriptions", () => {
   for (const code of [
     "FILL_POLICY_DENIED",
+    "FILL_STALE",
     "FILL_TARGET_TRUST_LOST",
     "FILL_UNEXPECTED_MUTATION",
     "FILL_WRITE_FAILED",
@@ -235,8 +236,7 @@ test("stopped-error presentation maps only the five closed human descriptions", 
     null,
     "FILL_REVIEW_REQUIRED",
     "FILL_ALREADY_IN_PROGRESS",
-    "FILL_NO_ELIGIBLE_FIELDS",
-    "FILL_STALE"
+    "FILL_NO_ELIGIBLE_FIELDS"
   ] as const) {
     assert.equal(stoppedFillErrorDescription(code), null, String(code));
   }

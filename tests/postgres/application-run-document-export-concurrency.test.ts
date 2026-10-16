@@ -36,6 +36,224 @@ const APPLY_HOST = "jobs.example.test";
 const AUTOMATION_ENV = { APPLICATION_AUTOMATION_ENABLED: "true" } as const;
 const REVIEW_REASONS = ["evidence_gaps_present"] as const;
 
+test("PR35 independent reproduction: prepared-run export must reject a document after the current evidence changes", {
+  timeout: TEST_TIMEOUT_MS
+}, async () => {
+  await runScenario("independent-evidence-export", async (scenario) => {
+    const fixture = await createAuthorizedFixture(scenario, "RESUME", "stale-evidence");
+    const client = scenario.observer.client;
+    const resume = await client.resume.create({ data: { userId: fixture.userId, isMaster: true,
+      title: "Independent synthetic source", rawText: "Synthetic business experience.", skills: [],
+      achievements: [] } });
+    const analysis = await client.aIAnalysis.create({ data: { userId: fixture.userId,
+      jobPostingId: fixture.jobPostingId, type: "JOB_MATCH", model: "gemini-3.8-flash",
+      promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {} } });
+    async function installSnapshot() {
+      return client.$transaction(async (tx) => {
+        const snapshot = await tx.evidenceSnapshot.create({ data: { userId: fixture.userId,
+          jobPostingId: fixture.jobPostingId, resumeId: resume.id, reviewedAnalysisId: analysis.id,
+          requestId: randomUUID(), requestHash: "a".repeat(64), sourceResumeUpdatedAt: resume.updatedAt,
+          snapshotHash: "b".repeat(64), sourceProjectionHash: "c".repeat(64), gapProjectionHash: "d".repeat(64),
+          reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] } } });
+        await tx.jobPosting.update({ where: { id: fixture.jobPostingId }, data: {
+          currentEvidenceSnapshotId: snapshot.id, evidenceSnapshotGeneration: { increment: 1 } } });
+        return snapshot;
+      });
+    }
+    const first = await installSnapshot();
+    await client.resumeVersion.update({ where: { id: fixture.sourceId }, data: { evidenceSnapshotId: first.id } });
+    const service = documentExportService(client);
+    const control = await service.exportApprovedApplicationRunDocument(exportRequest(fixture));
+    assert.ok(control.bytes.length > 0);
+    const second = await installSnapshot();
+    assert.notEqual(second.id, first.id);
+    const document = await client.resumeVersion.findUniqueOrThrow({ where: { id: fixture.sourceId } });
+    assert.equal(document.evidenceSnapshotId, first.id);
+    await assert.rejects(() => service.exportApprovedApplicationRunDocument(exportRequest(fixture)),
+      "The prepared-run export returned a document bound to the superseded evidence snapshot");
+  });
+});
+
+for (const invalidation of ["snapshot deletion", "source revision"] as const) {
+  test(`reviewed-evidence authority rejects export after ${invalidation}`, { timeout: TEST_TIMEOUT_MS }, async () => {
+    await runScenario(`evidence-${invalidation.replace(" ", "-")}`, async (scenario) => {
+      const fixture = await createAuthorizedFixture(scenario, "RESUME", invalidation.replace(" ", "-"));
+      const installed = await installEvidenceSnapshot(scenario.observer.client, fixture);
+      await scenario.observer.client.resumeVersion.update({
+        where: { id: fixture.sourceId },
+        data: { evidenceSnapshotId: installed.snapshot.id }
+      });
+      const service = documentExportService(scenario.observer.client);
+      assert.ok((await service.exportApprovedApplicationRunDocument(exportRequest(fixture))).bytes.length > 0);
+      if (invalidation === "snapshot deletion") {
+        await scenario.observer.client.evidenceSnapshot.delete({ where: { id: installed.snapshot.id } });
+      } else {
+        await scenario.observer.client.resume.update({
+          where: { id: installed.resume.id },
+          data: { title: "Revised synthetic reviewed source" }
+        });
+      }
+      await assert.rejects(
+        service.exportApprovedApplicationRunDocument(exportRequest(fixture)),
+        (error) => {
+          assertPublicError(error, "RUN_DOCUMENT_EVIDENCE_STALE");
+          return true;
+        }
+      );
+    });
+  });
+}
+
+test("current evidence replacement waits for an in-flight approved export and stales the next export", {
+  timeout: TEST_TIMEOUT_MS
+}, async () => {
+  await runScenario("evidence-replacement-lock", async (scenario) => {
+    const fixture = await createAuthorizedFixture(scenario, "RESUME", "evidence-lock");
+    const first = await installEvidenceSnapshot(scenario.observer.client, fixture);
+    await scenario.observer.client.resumeVersion.update({
+      where: { id: fixture.sourceId },
+      data: { evidenceSnapshotId: first.snapshot.id }
+    });
+    const jobLocked = deferred("export job evidence locked");
+    const releaseExport = trackRelease(scenario, deferred("release export evidence lock"));
+    const exportHooks = hookedActor(scenario.actorA, [{
+      name: "current evidence JobPosting FOR SHARE",
+      match: { kind: "queryRaw", includes: ['FROM "JobPosting"', '"currentEvidenceSnapshotId"', "FOR SHARE"] },
+      expectedMatches: 1,
+      after: async () => {
+        jobLocked.resolve();
+        await releaseExport.wait();
+      }
+    }]);
+    const exporting = trackOperation(scenario,
+      documentExportService(exportHooks.prismaClient)
+        .exportApprovedApplicationRunDocument(exportRequest(fixture)));
+    await jobLocked.wait();
+    const replacing = trackOperation(scenario,
+      installEvidenceSnapshot(scenario.actorB.client, fixture, first.resume));
+    await observeWait(scenario, scenario.actorB, scenario.actorA);
+    releaseExport.resolve();
+    const [exportSettled, replaceSettled] = await settlePair(exporting, replacing, "evidence export versus replacement");
+    assert.ok(fulfilled(exportSettled, scenario.actorA, "evidence-current export").bytes.length > 0);
+    fulfilled(replaceSettled, scenario.actorB, "evidence replacement");
+    exportHooks.assertExpectedHooksReached();
+    await assert.rejects(
+      documentExportService(scenario.observer.client)
+        .exportApprovedApplicationRunDocument(exportRequest(fixture)),
+      (error) => {
+        assertPublicError(error, "RUN_DOCUMENT_EVIDENCE_STALE");
+        return true;
+      }
+    );
+  });
+});
+
+for (const deletion of ["snapshot", "master source"] as const) {
+  test(`concurrent ${deletion} deletion fails the in-flight export closed without deadlock`, {
+    timeout: TEST_TIMEOUT_MS
+  }, async () => {
+    await runScenario(`evidence-${deletion.replace(" ", "-")}-delete-lock`, async (scenario) => {
+      const fixture = await createAuthorizedFixture(scenario, "RESUME", `${deletion.replace(" ", "-")}-delete`);
+      const installed = await installEvidenceSnapshot(scenario.observer.client, fixture);
+      await scenario.observer.client.resumeVersion.update({
+        where: { id: fixture.sourceId },
+        data: { evidenceSnapshotId: installed.snapshot.id }
+      });
+      const jobLocked = deferred("export job evidence locked before concurrent deletion");
+      const releaseExport = trackRelease(scenario, deferred("release export after concurrent deletion waits"));
+      const exportHooks = hookedActor(scenario.actorA, [{
+        name: "current evidence JobPosting FOR SHARE before deletion",
+        match: { kind: "queryRaw", includes: ['FROM "JobPosting"', '"currentEvidenceSnapshotId"', "FOR SHARE"] },
+        expectedMatches: 1,
+        after: async () => {
+          jobLocked.resolve();
+          await releaseExport.wait();
+        }
+      }]);
+      const exporting = trackOperation(scenario,
+        documentExportService(exportHooks.prismaClient)
+          .exportApprovedApplicationRunDocument(exportRequest(fixture)));
+      await jobLocked.wait();
+      const deleting = trackOperation(scenario, Promise.resolve(deletion === "snapshot"
+        ? scenario.actorB.client.evidenceSnapshot.delete({ where: { id: installed.snapshot.id } })
+        : scenario.actorB.client.resume.delete({ where: { id: installed.resume.id } })));
+      await observeWait(scenario, scenario.actorB, scenario.actorA);
+      releaseExport.resolve();
+      const [exportSettled, deleteSettled] = await settlePair(
+        exporting,
+        deleting,
+        `evidence export versus ${deletion} deletion`
+      );
+      assert.equal(exportSettled.status, "rejected");
+      if (exportSettled.status === "rejected") {
+        assertPublicError(exportSettled.reason, "RUN_DOCUMENT_EVIDENCE_STALE");
+      }
+      fulfilled(deleteSettled, scenario.actorB, `${deletion} deletion`);
+      exportHooks.assertExpectedHooksReached();
+      await assert.rejects(
+        documentExportService(scenario.observer.client)
+          .exportApprovedApplicationRunDocument(exportRequest(fixture)),
+        (error) => {
+          assertPublicError(error, "RUN_DOCUMENT_EVIDENCE_STALE");
+          return true;
+        }
+      );
+      await assertHealthy(scenario, `${deletion.replace(" ", "-")}-delete-complete`);
+    });
+  });
+}
+
+test("master source revision waits for in-flight evidence authority and stales the next export", {
+  timeout: TEST_TIMEOUT_MS
+}, async () => {
+  await runScenario("evidence-master-source-revision-lock", async (scenario) => {
+    const fixture = await createAuthorizedFixture(scenario, "RESUME", "master-source-revision");
+    const installed = await installEvidenceSnapshot(scenario.observer.client, fixture);
+    await scenario.observer.client.resumeVersion.update({
+      where: { id: fixture.sourceId },
+      data: { evidenceSnapshotId: installed.snapshot.id }
+    });
+    const resumeLocked = deferred("export master Resume FOR SHARE");
+    const releaseExport = trackRelease(scenario, deferred("release export master Resume lock"));
+    const exportHooks = hookedActor(scenario.actorA, [{
+      name: "master Resume FOR SHARE",
+      match: { kind: "queryRaw", includes: ['FROM "Resume"', '"updatedAt"', "FOR SHARE"] },
+      expectedMatches: 1,
+      after: async () => {
+        resumeLocked.resolve();
+        await releaseExport.wait();
+      }
+    }]);
+    const exporting = trackOperation(scenario,
+      documentExportService(exportHooks.prismaClient)
+        .exportApprovedApplicationRunDocument(exportRequest(fixture)));
+    await resumeLocked.wait();
+    const revising = trackOperation(scenario, Promise.resolve(scenario.actorB.client.resume.update({
+      where: { id: installed.resume.id },
+      data: { title: "Concurrent revised synthetic reviewed source" }
+    })));
+    await observeWait(scenario, scenario.actorB, scenario.actorA);
+    releaseExport.resolve();
+    const [exportSettled, reviseSettled] = await settlePair(
+      exporting,
+      revising,
+      "evidence export versus master source revision"
+    );
+    assert.ok(fulfilled(exportSettled, scenario.actorA, "current evidence export").bytes.length > 0);
+    fulfilled(reviseSettled, scenario.actorB, "master source revision");
+    exportHooks.assertExpectedHooksReached();
+    await assert.rejects(
+      documentExportService(scenario.observer.client)
+        .exportApprovedApplicationRunDocument(exportRequest(fixture)),
+      (error) => {
+        assertPublicError(error, "RUN_DOCUMENT_EVIDENCE_STALE");
+        return true;
+      }
+    );
+    await assertHealthy(scenario, "master-source-revision-complete");
+  });
+});
+
 type ArtifactType = "RESUME" | "COVER_LETTER";
 
 type Scenario = {
@@ -303,6 +521,52 @@ function documentExportService(
       return Buffer.from(`rendered:${input.artifactType}:${input.content}`, "utf8");
     }
   });
+}
+
+async function installEvidenceSnapshot(
+  client: PostgresTestActor["client"],
+  fixture: AuthorizedFixture,
+  source?: { id: string; updatedAt: Date }
+) {
+  const resume = source ?? await client.resume.create({ data: {
+    userId: fixture.userId,
+    isMaster: true,
+    title: "Synthetic reviewed source",
+    rawText: "Synthetic business experience.",
+    skills: [],
+    achievements: []
+  }, select: { id: true, updatedAt: true } });
+  const analysis = await client.aIAnalysis.create({ data: {
+    userId: fixture.userId,
+    jobPostingId: fixture.jobPostingId,
+    type: "JOB_MATCH",
+    model: "gemini-3.8-flash",
+    promptName: "jobMatchPrompt",
+    promptVersion: "3.4",
+    input: {},
+    output: {}
+  } });
+  const snapshot = await client.$transaction(async (tx) => {
+    const created = await tx.evidenceSnapshot.create({ data: {
+      userId: fixture.userId,
+      jobPostingId: fixture.jobPostingId,
+      resumeId: resume.id,
+      reviewedAnalysisId: analysis.id,
+      requestId: randomUUID(),
+      requestHash: "a".repeat(64),
+      sourceResumeUpdatedAt: resume.updatedAt,
+      snapshotHash: "b".repeat(64),
+      sourceProjectionHash: "c".repeat(64),
+      gapProjectionHash: "d".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    } });
+    await tx.jobPosting.update({ where: { id: fixture.jobPostingId }, data: {
+      currentEvidenceSnapshotId: created.id,
+      evidenceSnapshotGeneration: { increment: 1 }
+    } });
+    return created;
+  });
+  return { resume, snapshot };
 }
 
 async function createAuthorizedFixture(

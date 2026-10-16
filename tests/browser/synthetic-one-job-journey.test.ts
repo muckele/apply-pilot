@@ -101,18 +101,18 @@ test("rendered one-page journey approves exact documents then invalidates the ap
         dimensions.scrollHeight <= dimensions.clientHeight + 1,
         `${title} clips at ${width}px: ${JSON.stringify(dimensions)}`
       );
-      await preview.getByText(/Full document preview/i).waitFor();
+      await preview.getByText(/Full document text/i).waitFor();
     }
-    const resume = page.locator('[data-document-preview="Formatted resume"]');
+    const resume = page.locator('[data-document-preview="Formatted resume"] [data-reading-content]');
     for (const text of [
       "Built source-backed workflows with TypeScript and SQL.",
       "PROJECTS",
       "EDUCATION",
       "CERTIFICATIONS"
     ]) {
-      assert.equal(await resume.getByText(text, { exact: true }).isVisible(), true, `${text} is hidden at ${width}px`);
+      assert.equal(await resume.getByText(text).isVisible(), true, `${text} is hidden at ${width}px`);
     }
-    const cover = page.locator('[data-document-preview="Formatted cover letter"]');
+    const cover = page.locator('[data-document-preview="Formatted cover letter"] [data-reading-content]');
     assert.equal(await cover.getByText("Sincerely,", { exact: true }).isVisible(), true);
     assert.equal(await cover.getByText("Synthetic Candidate", { exact: true }).isVisible(), true);
   }

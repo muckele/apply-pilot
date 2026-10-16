@@ -2,7 +2,9 @@
 
 Status: **offline runner and local owner-review workflow implemented; public corpus frozen; private review not completed; provider execution not authorized**
 
-Candidate: Gemini `gemini-3.8-flash`, medium thinking, JOB_MATCH result contract `3`, prompt/cache `3.2`
+Candidate: Gemini `gemini-3.8-flash`, medium thinking, JOB_MATCH result contract `3`, prompt/cache `3.4`
+
+The earlier reviewed qualification artifacts were produced for prompt/cache `3.3`; they are historical evidence only and do not qualify `3.4`. This change does not authorize or perform another paid qualification run.
 
 Current source baseline: `d60354297bba1919a63309b8c305f28f7d660ab0`
 
@@ -65,7 +67,7 @@ The normal review view presents the exact frozen job projection in owner-readabl
 
 Private applicant input lives in the loopback server process and the current case is rendered in the review tab's DOM; the app creates no persistent browser copy. An acknowledged Cancel releases workflow references and clears the rendered view. Navigation clears the DOM synchronously and sends best-effort cancellation; if delivery fails, the server's 30-minute session timeout or process exit is the fallback. After final readiness, only the optional real-mode execution session retains the reviewed preparation; the public synthetic preview releases it. JavaScript cannot promise physical memory zeroization or control browser/runtime internals. The bridge never reconstructs private input from hashes and never performs a later database read. A timeout or navigation/cancel signal closes the workflow, prevents later calls, and requires a fresh exact-equality recapture and review. An already in-flight request may finish at the transport boundary, but it cannot be retried or advance to another case after closure.
 
-The real-mode consent screen now accepts a separate explicit approval bound to the displayed final manifest and this exact running process. It displays and validates Google Gemini as recipient, `gemini-3.8-flash`, prompt/cache `3.2`, the frozen four-case order, no retries, the 290,880-micro maximum reservation, sharing the displayed private applicant/job inputs, use of the existing credential, no database/routing writes, and no employer interaction. Only an exact accepted consent activates the credential callback. The existing runner then makes one call at a time and pauses after each normalized response for local human disagreement review; no later call starts until that review is valid. Completion or failure retains only the bounded safe report. Exiting first invalidates the in-memory handoff and requires recapture.
+The real-mode consent screen now accepts a separate explicit approval bound to the displayed final manifest and this exact running process. It displays and validates Google Gemini as recipient, `gemini-3.8-flash`, prompt/cache `3.4`, the frozen four-case order, no retries, the 290,880-micro maximum reservation, sharing the displayed private applicant/job inputs, use of the existing credential, no database/routing writes, and no employer interaction. Only an exact accepted consent activates the credential callback. The existing runner then makes one call at a time and pauses after each normalized response for local human disagreement review; no later call starts until that review is valid. Completion or failure retains only the bounded safe report. Exiting first invalidates the in-memory handoff and requires recapture.
 
 ## Frozen human rubric
 
@@ -95,7 +97,7 @@ Qualification-level acceptance requires all four cases to pass structural/factua
 
 - Calls: exactly four maximum, sequential, in the frozen Laserfiche/Sentry/Flint/Roku order.
 - Retry: none. Any transport uncertainty, schema rejection, unsupported evidence, or privacy mismatch stops the run.
-- Model/prompt: `gemini-3.8-flash`, medium thinking, contract `3`, prompt/cache `3.2`.
+- Model/prompt: `gemini-3.8-flash`, medium thinking, contract `3`, prompt/cache `3.4`.
 - Per-call policy ceiling: 56,000 input tokens and 8,192 total output/thinking tokens.
 - Per-call maximum reservation: 72,720 micros (`$0.072720`).
 - Four-call maximum reservation: 290,880 micros (`$0.290880`).

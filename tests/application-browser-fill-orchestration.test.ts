@@ -785,6 +785,30 @@ test("policy revocation during awaited currentness creates a PRE_FIELD stop", as
   assert.equal(value.finalizations[0].steps[0].result, "NOT_ATTEMPTED");
 });
 
+test("evidence invalidation after a safe prefix stops every remaining writer as FILL_STALE", async () => {
+  const evidenceStale = liveStatus({
+    fieldOperationAllowed: false,
+    errorCode: "FILL_STALE"
+  });
+  const value = harness({
+    acquired: acquisition(3),
+    statuses: [liveStatus(), evidenceStale],
+    writes: [{ status: "FILLED" }]
+  });
+
+  const result = await value.execute();
+
+  assert.equal(result.disposition, "FINALIZED");
+  assert.equal(value.writeRequests.length, 1);
+  assert.equal(value.finalizations.length, 1);
+  assert.equal(String(value.finalizations[0].errorCode), "FILL_STALE");
+  assert.deepEqual(value.finalizations[0].steps.map((step) => step.result), [
+    "FILLED",
+    "NOT_ATTEMPTED",
+    "NOT_ATTEMPTED"
+  ]);
+});
+
 test("expired recovery during awaited currentness is observed before any writer begins", async () => {
   let status = liveStatus();
   const expired = liveStatus({

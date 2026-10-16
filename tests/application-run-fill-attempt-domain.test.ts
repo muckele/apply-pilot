@@ -69,6 +69,7 @@ test("Fill constants expose only the frozen lease, field, result, outcome, and e
   ]);
   assert.deepEqual(STOPPED_EARLY_FILL_ERRORS, [
     "FILL_POLICY_DENIED",
+    "FILL_STALE",
     "FILL_TARGET_TRUST_LOST",
     "FILL_UNEXPECTED_MUTATION",
     "FILL_WRITE_FAILED",
@@ -361,6 +362,18 @@ test("terminal outcome derivation accepts completed, both stopped shapes, and re
       { stepKey: stepKey(3), status: "SKIPPED", redactedValueSummary: "NOT_ATTEMPTED", errorCategory: null }
     ]
   }), { outcome: "STOPPED_EARLY", errorCode: "FILL_UNEXPECTED_MUTATION" });
+
+  assert.deepEqual(deriveTerminalFillAttemptOutcome({
+    state: "READY_FOR_USER_SUBMISSION",
+    fillAttemptId: ATTEMPT_ID,
+    errorCategory: "FILL_STALE",
+    canonicalStepKeys: [stepKey(1), stepKey(2), stepKey(3)],
+    steps: [
+      { stepKey: stepKey(1), status: "SUCCEEDED", redactedValueSummary: "FILLED", errorCategory: null },
+      { stepKey: stepKey(2), status: "SKIPPED", redactedValueSummary: "NOT_ATTEMPTED", errorCategory: null },
+      { stepKey: stepKey(3), status: "SKIPPED", redactedValueSummary: "NOT_ATTEMPTED", errorCategory: null }
+    ]
+  }), { outcome: "STOPPED_EARLY", errorCode: "FILL_STALE" });
 
   assert.deepEqual(deriveTerminalFillAttemptOutcome({
     state: "READY_FOR_USER_SUBMISSION",

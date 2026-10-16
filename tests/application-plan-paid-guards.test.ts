@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
-import type OpenAI from "openai";
-
-import { callApplicationPlanProvider, generateJson } from "@/lib/ai/client";
-import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
+import { generateJson, getOpenAIClient } from "@/lib/ai/client";
+import { planApplication } from "@/lib/ai/application-plan";
+import { prisma } from "@/lib/prisma";
 
 const controlledKeys = [
   "AI_ENABLED",
@@ -15,43 +14,59 @@ const controlledKeys = [
   "OPENAI_MOCK_MODE"
 ] as const;
 
-test("a stored key cannot activate paid application planning while AI is local", async () => {
+function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
+  const methods = owner as Record<string, unknown>;
+  const original = methods[name];
+  methods[name] = replacement;
+  t.after(() => { methods[name] = original; });
+}
+
+test("application planning stays local even when provider overrides and a key are configured", async (t) => {
   const previous = Object.fromEntries(controlledKeys.map((key) => [key, process.env[key]]));
   try {
     process.env.AI_PROVIDER = "openai";
-    process.env.AI_PROVIDER_OVERRIDES = "";
+    process.env.AI_PROVIDER_OVERRIDES = "APPLICATION_PLAN:openai";
     process.env.OPENAI_API_KEY = "synthetic-never-call";
     process.env.OPENAI_MOCK_MODE = "false";
-
-    for (const [enabled, mock] of [
-      ["false", "false"],
-      ["true", "true"]
-    ] as const) {
-      process.env.AI_ENABLED = enabled;
-      process.env.AI_MOCK_MODE = mock;
-      const result = await generateJson({
-        promptName: "applicationPlanPrompt",
-        systemPrompt: "Return only supported evidence.",
-        payload: { job: "synthetic" },
-        fallback: { safe: true },
-        context: { userId: "synthetic-user", feature: "APPLICATION_PLAN" }
-      });
-      assert.deepEqual(result.data, { safe: true });
-      assert.equal(result.meta.provider, "local");
-      assert.equal(result.meta.mocked, true);
-    }
-
-    delete process.env.AI_PROVIDER;
     process.env.AI_ENABLED = "true";
     process.env.AI_MOCK_MODE = "false";
-    const noProviderOptIn = await generateJson({
+    const client = getOpenAIClient();
+    assert.ok(client);
+    let providerCalls = 0;
+    let budgetReads = 0;
+    stub(t, client.chat.completions, "create", async () => {
+      providerCalls++;
+      throw new Error("OpenAI must not be called for local rule-based planning");
+    });
+    stub(t, prisma.aISettings, "upsert", async () => {
+      budgetReads++;
+      throw new Error("Local rule-based planning must not read the AI budget");
+    });
+
+    const result = await generateJson({
       promptName: "applicationPlanPrompt",
       systemPrompt: "Return only supported evidence.",
       payload: { job: "synthetic" },
       fallback: { safe: true },
       context: { userId: "synthetic-user", feature: "APPLICATION_PLAN" }
     });
-    assert.equal(noProviderOptIn.meta.provider, "local");
+    assert.deepEqual(result.data, { safe: true });
+    assert.equal(result.meta.provider, "local");
+    assert.equal(result.meta.model, "heuristic-local");
+    assert.equal(result.meta.mocked, true);
+
+    const plan = await planApplication({
+      job: {
+        title: "Synthetic Engineer",
+        company: "Synthetic Co",
+        description: "Build verified TypeScript services.",
+        requirements: ["TypeScript"]
+      },
+      resume: { skills: ["TypeScript"] }
+    });
+    assert.equal(plan.provider, "local");
+    assert.equal(plan.model, "heuristic-local");
+    assert.deepEqual({ providerCalls, budgetReads }, { providerCalls: 0, budgetReads: 0 });
   } finally {
     for (const key of controlledKeys) {
       const value = previous[key];
@@ -59,36 +74,4 @@ test("a stored key cannot activate paid application planning while AI is local",
       else process.env[key] = value;
     }
   }
-});
-
-test("the mocked planner client receives the priced output-token cap", async () => {
-  let sent: unknown;
-  const mockClient = {
-    chat: {
-      completions: {
-        create: async (request: unknown) => {
-          sent = request;
-          return { choices: [] };
-        }
-      }
-    }
-  } as unknown as Pick<OpenAI, "chat">;
-
-  await callApplicationPlanProvider(mockClient, {
-    model: "gpt-4o-mini",
-    promptName: "applicationPlanPrompt",
-    systemPrompt: "Return an evidence-backed plan.",
-    payload: { job: "synthetic" },
-    maxOutputTokens: AI_FEATURE_POLICIES.APPLICATION_PLAN.maxOutputTokens
-  });
-
-  const request = sent as {
-    model: string;
-    max_tokens: number;
-    messages: Array<{ role: string; content: string }>;
-  };
-  assert.equal(request.model, "gpt-4o-mini");
-  assert.equal(request.max_tokens, 4_000);
-  assert.equal(request.messages[1]?.role, "user");
-  assert.equal(request.messages[1]?.content, '{"job":"synthetic"}');
 });

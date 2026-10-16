@@ -17,6 +17,7 @@ import {
   buildConservativeQualificationReviewGuides,
   createQualificationReviewArtifact
 } from "@/lib/ai/job-match-qualification-owner-review";
+import { fixedSyntheticProviderRecommendation } from "@/tests/fixtures/job-match-qualification-provider-results";
 
 function privatePayload() {
   return {
@@ -205,7 +206,7 @@ test("the execution bridge keeps the exact handoff in memory through review, con
       calls += 1;
       assert.match(request.payload.resume?.rawText ?? "", /PRIVATE RAW RESUME/);
       return {
-        value: validOutput(request.expectedRecommendation),
+        value: validOutput(fixedSyntheticProviderRecommendation(request.caseId)),
         usage: {
           inputTokens: 100,
           outputTokens: 100,

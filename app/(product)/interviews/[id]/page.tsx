@@ -46,7 +46,7 @@ export default async function InterviewDetailPage({ params }: Props) {
           <Panel>
             <PanelHeader title="Prep brief" />
             <div className="space-y-4 p-5 text-sm leading-6 text-slate-700">
-              <p>{interview.prepBrief ?? "Generate prep from a linked job or application to populate this brief."}</p>
+              <p>{interview.prepBrief ?? "AI interview preparation is deferred for this MVP. Review the linked job and add your own notes."}</p>
               <div className="flex flex-wrap gap-2">
                 {interview.likelyQuestions.slice(0, 6).map((item) => (
                   <StatusBadge key={item} status={item} />
@@ -69,12 +69,12 @@ export default async function InterviewDetailPage({ params }: Props) {
           </Panel>
 
           <Panel>
-            <PanelHeader title="Feedback" />
+            <PanelHeader title="Follow-up notes" />
             <div className="p-5 text-sm leading-6 text-slate-700">
               {interview.followUpEmailDraft ? (
                 <p>{interview.followUpEmailDraft}</p>
               ) : (
-                "Generate feedback after saving notes or a consented transcript."
+                "AI interview feedback and thank-you drafting are deferred for this MVP. Add and review follow-up notes manually."
               )}
             </div>
           </Panel>
@@ -100,7 +100,7 @@ export default async function InterviewDetailPage({ params }: Props) {
               {interview.likelyQuestions.length ? (
                 interview.likelyQuestions.map((question) => <p key={question}>{question}</p>)
               ) : (
-                <p>No questions generated yet.</p>
+                <p>No saved questions yet. AI question generation is deferred for this MVP.</p>
               )}
             </div>
           </Panel>

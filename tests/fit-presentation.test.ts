@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -93,6 +94,7 @@ test("v3 fit presentation labels confidence as uncalibrated and explains unknown
     },
     {
       contractVersion: "3",
+      promptVersion: "3.4",
       compensationAssessment: { score: null, reason: "missing_applicant_salary_target" },
       confidenceAssessment: {
         score: 79,
@@ -120,9 +122,59 @@ test("v3 fit presentation labels confidence as uncalibrated and explains unknown
   assert.equal(presentation.factualMatches[0].claim, "TypeScript evidence matches the requirement.");
   assert.equal(presentation.requirementGaps[0].requirement, "Kubernetes");
   assert.equal(presentation.isLegacyAnalysis, false);
+  assert.equal(presentation.isCurrentAnalysis, true);
 });
 
-test("legacy fit presentation stays readable without inventing evidence links or confidence basis", async () => {
+test("no current analysis does not present denormalized legacy scores or gaps as current", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation({
+    overallFitScore: 91,
+    compensationScore: 88,
+    confidenceScore: 90,
+    keyMatchReason: "Stale match reason",
+    concerns: ["Stale requirement gap"],
+    suggestedResumeAngle: null,
+    suggestedCoverLetterAngle: null
+  }, null);
+
+  assert.equal(presentation.hasFitAnalysis, false);
+  assert.equal(presentation.fitScore, null);
+  assert.equal(presentation.confidence, null);
+  assert.equal(presentation.compensation.score, null);
+  assert.deepEqual(presentation.factualMatches, []);
+  assert.deepEqual(presentation.requirementGaps, []);
+  assert.equal(presentation.isCurrentAnalysis, false);
+});
+
+test("a stale prompt analysis cannot leak denormalized document advice", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation({
+    overallFitScore: 91,
+    compensationScore: 88,
+    confidenceScore: 90,
+    keyMatchReason: "Stale match reason",
+    concerns: ["Stale requirement gap"],
+    suggestedResumeAngle: "STALE PRIVATE RESUME ANGLE",
+    suggestedCoverLetterAngle: "STALE PRIVATE COVER ANGLE"
+  }, {
+    contractVersion: "3",
+    promptVersion: "3.2"
+  });
+
+  assert.equal(presentation.fitScore, null);
+  assert.equal(presentation.hasFitAnalysis, false);
+  assert.match(presentation.suggestedResumeAngle, /actual experience/i);
+  assert.match(presentation.suggestedCoverLetterAngle, /verified experience/i);
+  assert.doesNotMatch(JSON.stringify(presentation), /STALE PRIVATE/);
+});
+
+test("client-used fit presentation depends only on the lightweight version module", () => {
+  const source = readFileSync("lib/jobs/fit-presentation.ts", "utf8");
+  assert.match(source, /@\/lib\/ai\/job-match-version/);
+  assert.doesNotMatch(source, /@\/lib\/ai\/job-match["']/);
+});
+
+test("legacy analysis is isolated instead of presenting stale denormalized fields", async () => {
   const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
   const presentation = getJobMatchAnalysisPresentation(
     {
@@ -137,14 +189,14 @@ test("legacy fit presentation stays readable without inventing evidence links or
     { overallFitScore: 0, confidenceScore: 0 }
   );
 
-  assert.equal(presentation.fitScore, 0);
-  assert.equal(presentation.compensation.score, 0);
+  assert.equal(presentation.fitScore, null);
+  assert.equal(presentation.compensation.score, null);
   assert.match(presentation.compensation.explanation, /legacy analysis/i);
-  assert.equal(presentation.confidence?.score, 0);
-  assert.equal(presentation.confidence?.label, "Uncalibrated model self-assessment");
-  assert.match(presentation.confidence?.basis ?? "", /legacy analysis did not record/i);
-  assert.deepEqual(presentation.factualMatches, [{ claim: "Legacy recorded reason", applicantEvidence: [], jobEvidence: [] }]);
-  assert.deepEqual(presentation.requirementGaps, [{ requirement: "Legacy recorded concern", jobRequirement: null }]);
+  assert.equal(presentation.confidence, null);
+  assert.deepEqual(presentation.factualMatches, []);
+  assert.deepEqual(presentation.requirementGaps, []);
+  assert.match(presentation.suggestedResumeAngle, /actual experience/i);
+  assert.match(presentation.suggestedCoverLetterAngle, /verified experience/i);
   assert.equal(presentation.isLegacyAnalysis, true);
 });
 
@@ -178,7 +230,7 @@ test("apply packet renders unknown resume metrics without fake percentages and k
       },
       resumeVersions: [{
         id: "resume-1", title: "Resume", atsCompatibility: resumeScore,
-        jobFitScore: resumeScore, createdAt: "2026-09-22T00:00:00.000Z"
+        jobFitScore: resumeScore, evidenceCurrent: true, createdAt: "2026-09-22T00:00:00.000Z"
       }],
       coverLetters: [], application: null
     }));

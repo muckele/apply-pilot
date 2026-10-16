@@ -28,8 +28,18 @@ import {
   qualificationSourceOriginLabel,
   startJobMatchQualificationOwnerReview
 } from "@/lib/ai/job-match-qualification-owner-review";
+import { ownerReviewSecurityHeaders as qualificationSecurityHeaders } from "@/lib/ai/job-match-qualification-owner-review-http";
+import { ownerReviewSecurityHeaders as sharedSecurityHeaders } from "@/lib/ai/local-owner-review-http";
+import { fixedSyntheticProviderRecommendation } from "@/tests/fixtures/job-match-qualification-provider-results";
 
 const now = new Date("2026-10-05T17:00:00.000Z");
+
+test("qualification review preserves the shared closed owner-review headers", () => {
+  assert.deepEqual(
+    qualificationSecurityHeaders("application/json; charset=utf-8"),
+    sharedSecurityHeaders("application/json; charset=utf-8")
+  );
+});
 
 test("provider evidence labels name every supported source section without machine paths or indexes", () => {
   const expected = new Map<string, string>([
@@ -125,6 +135,18 @@ function startStreamingCapture(
     request.on("error", reject);
   });
   return { request, response };
+}
+
+async function assertTimedOutPrivateBodyRejected(
+  response: Promise<{ status: number; body: string }>
+) {
+  const settled = await response.then(
+    (value) => ({ kind: "response" as const, value }),
+    () => ({ kind: "transport_rejected" as const })
+  );
+  if (settled.kind === "response") {
+    assert.equal(settled.value.status, 409);
+  }
 }
 
 function decisionForGuides(
@@ -1153,7 +1175,7 @@ test("same-process execution validates exact consent before credential activatio
     await Promise.resolve();
     active -= 1;
     return {
-      value: validModelOutput(request.expectedRecommendation),
+      value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
       finishReason: "STOP",
       responseBytes: 500,
       elapsedMs: 10,
@@ -1314,7 +1336,7 @@ test("repeatable owner-review and provider-review submissions are serialized aga
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1517,7 +1539,7 @@ test("timeout or owner cancellation before and during execution clears state and
         releaseTransport();
         await blocked;
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1582,7 +1604,7 @@ test("cancellation receipt retains only known completed-call cost metadata", asy
       activateTransport: async () => async (request) => {
         calls += 1;
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1744,7 +1766,7 @@ test("cancellation receipt preserves a known subtotal while a later call remains
           await secondBlocked;
         }
         return {
-          value: validModelOutput(request.expectedRecommendation),
+          value: validModelOutput(fixedSyntheticProviderRecommendation(request.caseId)),
           finishReason: "STOP",
           responseBytes: 500,
           elapsedMs: 10,
@@ -1838,7 +1860,7 @@ test("capture admission is one-shot and a timed-out partial body cannot repopula
   const late = startStreamingCapture(expiring.captureUrl, allowedOrigin, body);
   late.request.write(body.slice(0, 1));
   assert.equal((await expiring.closed).reason, "session_timeout");
-  await assert.rejects(late.response);
+  await assertTimedOutPrivateBodyRejected(late.response);
   assert.equal(expiring.phase(), "closed");
   assert.equal(expiring.hasPrivateInput(), false);
 
@@ -1858,7 +1880,7 @@ test("capture admission is one-shot and a timed-out partial body cannot repopula
   );
   lateReview.request.write(reviewBody.slice(0, 1));
   assert.equal((await reviewExpiring.closed).reason, "session_timeout");
-  await assert.rejects(lateReview.response);
+  await assertTimedOutPrivateBodyRejected(lateReview.response);
   assert.equal(reviewExpiring.phase(), "closed");
   assert.equal(reviewExpiring.hasPrivateInput(), false);
 });

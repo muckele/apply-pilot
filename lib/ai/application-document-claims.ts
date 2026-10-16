@@ -1,4 +1,8 @@
 import { PublicApiError } from "@/lib/api-errors";
+import {
+  buildApplicationDocumentFactCatalog,
+  normalizeApplicationDocumentSourceLine
+} from "@/lib/ai/application-document-facts";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -14,6 +18,7 @@ export type ApplicationDocumentPayload = {
   job?: Record<string, unknown> | null;
   resume?: Record<string, unknown> | null;
   profile?: Record<string, unknown> | null;
+  reviewedEvidence?: Record<string, unknown> | null;
 };
 
 type TailoredResumeClaimsOutput = {
@@ -48,7 +53,96 @@ function present(value: unknown) {
   return typeof value === "string" ? value.trim().length > 0 : value !== null && value !== undefined;
 }
 
+function exactReferences(
+  root: "job" | "resume" | "profile",
+  record: Record<string, unknown> | null | undefined,
+  fields: readonly string[]
+) {
+  return fields.flatMap((field) => present(record?.[field]) ? [`${root}.${field}`] : []);
+}
+
+function indexedReferences(
+  root: "job" | "resume" | "profile",
+  record: Record<string, unknown> | null | undefined,
+  fields: readonly string[]
+) {
+  return fields.flatMap((field) => {
+    const values = record?.[field];
+    return Array.isArray(values)
+      ? values.flatMap((value, index) => present(value) ? [`${root}.${field}[${index}]`] : [])
+      : [];
+  });
+}
+
+export function getApplicationDocumentEvidenceReferences(payload: ApplicationDocumentPayload) {
+  const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
+    ? payload.reviewedEvidence.facts.flatMap((value, index) =>
+        value && typeof value === "object" && !Array.isArray(value) && present(value.fact)
+          ? [`reviewedEvidence.facts[${index}].fact`]
+          : [])
+    : [];
+  const applicant = [
+    ...exactReferences("resume", payload.resume, exactReferenceFields.resume),
+    ...indexedReferences("resume", payload.resume, indexedReferenceFields.resume),
+    ...indexedReferences("profile", payload.profile, ["skillsToEmphasize"]),
+    ...reviewedFacts
+  ];
+  const job = [
+    ...exactReferences("job", payload.job, exactReferenceFields.job),
+    ...indexedReferences("job", payload.job, indexedReferenceFields.job)
+  ];
+  return Object.freeze({
+    applicant: Object.freeze(applicant),
+    job: Object.freeze(job),
+    all: Object.freeze([...applicant, ...job])
+  });
+}
+
+export function buildApplicationDocumentSystemPrompt(
+  basePrompt: string,
+  payload: ApplicationDocumentPayload
+) {
+  const references = getApplicationDocumentEvidenceReferences(payload);
+  const facts = buildApplicationDocumentFactCatalog(payload).map(({ factId, excerpt, provenance }) => ({
+    factId,
+    text: excerpt,
+    provenance
+  }));
+  return `${basePrompt.trim()}\n\n` +
+    `Allowed applicant atomic facts (select factId only): ${JSON.stringify(facts)}\n` +
+    `Contextual job references (never applicant evidence): ${JSON.stringify(references.job)}\n` +
+    "For each generated applicant claim, return exactly one listed factId. " +
+    "Never return source references, excerpts, citations, or evidence objects; the server resolves them. " +
+    "A contextual job value cannot support an applicant claim. " +
+    "If the applicant fact catalog is empty, return no generated applicant claims.";
+}
+
+export function buildApplicationDocumentCitationJsonSchema(payload: ApplicationDocumentPayload) {
+  const references = getApplicationDocumentEvidenceReferences(payload);
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      ref: {
+        type: "string",
+        enum: references.all.length
+          ? [...references.all]
+          : ["__NO_SUBMITTED_APPLICATION_DOCUMENT_REFERENCE__"]
+      },
+      excerpt: { type: "string" }
+    },
+    required: ["ref", "excerpt"]
+  } as const;
+}
+
 function resolveReference(payload: ApplicationDocumentPayload, ref: string) {
+  const reviewedFact = ref.match(/^reviewedEvidence\.facts\[(\d+)\]\.fact$/u);
+  if (reviewedFact && Array.isArray(payload.reviewedEvidence?.facts)) {
+    const value = payload.reviewedEvidence.facts[Number(reviewedFact[1])];
+    if (value && typeof value === "object" && !Array.isArray(value) && present(value.fact)) {
+      return value.fact;
+    }
+  }
   for (const [root, fields] of Object.entries(exactReferenceFields)) {
     const record = payload[root as keyof ApplicationDocumentPayload];
     for (const field of fields) {
@@ -70,10 +164,13 @@ function resolveReference(payload: ApplicationDocumentPayload, ref: string) {
   return undefined;
 }
 
-function evidenceText(value: unknown) {
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-    ? String(value)
-    : JSON.stringify(value);
+function primitiveEvidenceTexts(value: unknown): string[] {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return [String(value)];
+  }
+  if (Array.isArray(value)) return value.flatMap(primitiveEvidenceTexts);
+  if (value && typeof value === "object") return Object.values(value).flatMap(primitiveEvidenceTexts);
+  return [];
 }
 
 function comparable(value: string) {
@@ -103,9 +200,11 @@ const actionWords = [
 ] as const;
 const actionWordSet = new Set<string>(actionWords);
 const creationActionWords = new Set(["built", "created", "developed", "engineered"]);
+const improvementActionWords = new Set(["improved", "enhanced"]);
+const reductionActionWords = new Set(["reduced", "decreased"]);
 const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
 const actionClauseBoundary = new RegExp(
-  `\\s*;\\s*|\\s*,\\s*(?:and|but|while|then)\\s+|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
+  `\\s*;\\s*|\\s*,\\s*(?:but|while|then)\\s+|\\s*,\\s*and\\s+(?=(?:${actionWords.join("|")})\\b)|\\s+(?:and|but|while|then)\\s+(?=(?:${actionWords.join("|")})\\b)`,
   "i"
 );
 
@@ -135,25 +234,62 @@ function evidenceContexts(source: string, excerpt: string) {
   return contexts;
 }
 
-function factualTokens(value: string) {
-  const normalized = value.toLocaleLowerCase()
+type SourceYearRange = readonly [string, string];
+
+function yearRangePattern([start, end]: SourceYearRange) {
+  // Only the final pipe-delimited header component qualifies; bare names/IDs never gain date semantics.
+  return new RegExp(`(\\|)\\s*${start}\\s*[-–—]\\s*${end}\\s*$`, "gi");
+}
+
+function sourceYearRanges(ref: string, resolved: unknown, excerpt: string): SourceYearRange[] {
+  if (!/^resume\.(?:workHistory|education|projects)\[\d+\]$/u.test(ref) ||
+    !resolved || typeof resolved !== "object" || Array.isArray(resolved)) return [];
+  const record = resolved as Record<string, unknown>;
+  const isYear = (value: unknown): value is string => typeof value === "string" && /^(?:19|20)\d{2}$/u.test(value);
+  const ranges: SourceYearRange[] = [];
+  if (isYear(record.startDate) && (isYear(record.endDate) ||
+    typeof record.endDate === "string" && /^present$/iu.test(record.endDate))) {
+    ranges.push([record.startDate, record.endDate]);
+  }
+  if (typeof record.date === "string") {
+    const date = record.date.match(/^((?:19|20)\d{2})\s*[-–—]\s*((?:19|20)\d{2}|present)$/iu);
+    if (date) ranges.push([date[1], date[2]]);
+  }
+  return ranges.filter(range => yearRangePattern(range).test(excerpt));
+}
+
+function factualTokens(value: string, yearRanges: readonly SourceYearRange[] = []) {
+  let dateComparable = value;
+  for (const range of yearRanges) {
+    dateComparable = dateComparable.replace(yearRangePattern(range), (_, boundary: string) =>
+      `${boundary}${range[0]} ${range[1]}`);
+  }
+  const normalized = dateComparable.toLocaleLowerCase()
     .replaceAll("’", "'")
     // A source fragment such as "No Kubernetes experience" and the explicit
     // first-person rendering "I do not have Kubernetes experience" express the
     // same negative fact. Keep this equivalence narrow so tense/status changes
     // (was/am, had/have) remain material everywhere else.
     .replace(/\b(?:do|does)\s+not\s+have\b/g, " not ");
-  return (normalized.match(/[a-z0-9][a-z0-9+#.'-]*%?/g) ?? [])
-    .map((token) => token.replace(/^[.'-]+|[.'-]+$/g, ""))
-    .map((token) => {
+  const tokens = (normalized.match(/[a-z0-9][a-z0-9+#.'-]*%?/g) ?? [])
+    .map((token) => token.replace(/^[.'-]+|[.'-]+$/g, ""));
+  const actionIndex = tokens[0] === "i" ? 1 : 0;
+  return tokens
+    .map((token, index) => {
       if (negationWords.has(token) || /^(?:cannot|can't|don't|doesn't|didn't|haven't|hasn't|hadn't)$/.test(token)) {
         return "__negated__";
       }
-      return creationActionWords.has(token) ? "__creation_action__" : token;
+      if (index !== actionIndex) return token;
+      if (creationActionWords.has(token)) return "__creation_action__";
+      if (improvementActionWords.has(token)) return "__improvement_action__";
+      if (reductionActionWords.has(token)) return "__reduction_action__";
+      return token;
     })
     .filter((token) =>
       token === "__negated__" ||
       token === "__creation_action__" ||
+      token === "__improvement_action__" ||
+      token === "__reduction_action__" ||
       actionWordSet.has(token) ||
       !nonFactualWords.has(token));
 }
@@ -171,14 +307,27 @@ function standaloneKey(value: string) {
 
 function containsStandaloneEvidence(value: unknown, excerpt: string): boolean {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    const target = standaloneKey(excerpt);
+    const target = standaloneKey(normalizeApplicationDocumentSourceLine(excerpt));
     return String(value).split(/\r?\n/)
-      .flatMap((line) => semanticClauses(line))
+      .flatMap((line) => semanticClauses(normalizeApplicationDocumentSourceLine(line)))
       .some((clause) => standaloneKey(clause) === target);
   }
   if (Array.isArray(value)) return value.some((item) => containsStandaloneEvidence(item, excerpt));
   if (value && typeof value === "object") {
     return Object.values(value).some((item) => containsStandaloneEvidence(item, excerpt));
+  }
+  return false;
+}
+
+function containsExactEvidenceLine(value: unknown, line: string): boolean {
+  const target = comparable(normalizeApplicationDocumentSourceLine(line));
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value).split(/\r?\n/).some((sourceLine) =>
+      comparable(normalizeApplicationDocumentSourceLine(sourceLine)) === target);
+  }
+  if (Array.isArray(value)) return value.some((item) => containsExactEvidenceLine(item, line));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => containsExactEvidenceLine(item, line));
   }
   return false;
 }
@@ -189,6 +338,7 @@ function sameTokens(left: string[], right: string[]) {
 
 function referenceCanSupportApplicantClaim(ref: string) {
   return ref.startsWith("resume.") ||
+    /^reviewedEvidence\.facts\[\d+\]\.fact$/.test(ref) ||
     /^profile\.skillsToEmphasize\[\d+\]$/.test(ref);
 }
 
@@ -212,6 +362,7 @@ function unsupportedApplicantTerms(payload: ApplicationDocumentPayload) {
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
   const qualificationEvidence = {
     resume: payload.resume ?? {},
+    reviewedEvidence: payload.reviewedEvidence ?? {},
     skillsToEmphasize: Array.isArray(payload.profile?.skillsToEmphasize)
       ? payload.profile.skillsToEmphasize
       : []
@@ -241,6 +392,7 @@ function validateClaimEvidence(
       contexts: string[];
       standalone: boolean;
       eligible: boolean;
+      yearRanges: SourceYearRange[];
     }> = [];
     for (const [citationIndex, citation] of entry.citations.entries()) {
       const resolved = resolveReference(payload, citation.ref);
@@ -252,9 +404,9 @@ function validateClaimEvidence(
           retryable: false
         });
       }
-      const haystack = comparable(evidenceText(resolved));
       const excerpt = comparable(citation.excerpt);
-      if (!excerpt || !haystack.includes(excerpt)) {
+      const sourceTexts = primitiveEvidenceTexts(resolved).map(comparable);
+      if (!excerpt || !sourceTexts.some((sourceText) => sourceText.includes(excerpt))) {
         throw new PublicApiError(`Application document returned an unsupported ${source} evidence excerpt.`, 422, {
           code: "APPLICATION_DOCUMENT_UNSUPPORTED_EXCERPT",
           fieldPath: `${fieldPrefix}[${claimIndex}].citations[${citationIndex}].excerpt`,
@@ -264,9 +416,10 @@ function validateClaimEvidence(
       if (!citation.ref.startsWith("job.")) {
         applicantEvidence.push({
           excerpt,
-          contexts: evidenceContexts(haystack, excerpt),
+          contexts: sourceTexts.flatMap((sourceText) => evidenceContexts(sourceText, excerpt)),
           standalone: containsStandaloneEvidence(resolved, citation.excerpt),
-          eligible: referenceCanSupportApplicantClaim(citation.ref)
+          eligible: referenceCanSupportApplicantClaim(citation.ref),
+          yearRanges: sourceYearRanges(citation.ref, resolved, citation.excerpt)
         });
       }
     }
@@ -293,17 +446,21 @@ function validateClaimEvidence(
       if (containsWhole(claim, term) && !negatesTerm(claim, term)) {
         throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
           code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
+          failureClass: "unsupported_applicant_term",
           fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
           retryable: false
         });
       }
     }
-    const claimFacts = factualTokens(claim);
-    const relationPreserved = applicantEvidence.some(({ excerpt, standalone, eligible }) =>
-      eligible && standalone && sameTokens(factualTokens(excerpt), claimFacts));
+    const relationPreserved = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
+      eligible && standalone && sameTokens(factualTokens(excerpt, yearRanges), factualTokens(claim, yearRanges)));
     if (!relationPreserved) {
       throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
         code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
+        failureClass: "source_relation_mismatch",
+        relationReason: !applicantEvidence.some(item => item.eligible) ? "ineligible_source"
+          : !applicantEvidence.some(item => item.eligible && item.standalone) ? "not_standalone"
+            : "ordered_token_mismatch",
         fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
         retryable: false
       });
@@ -350,11 +507,26 @@ export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutpu
     }))
   ];
   requireClaims(supportedClaims, requiredClaims);
+  for (const [rewriteIndex, rewrite] of output.bulletRewrites.entries()) {
+    const originalMatchesCitation = output.claimEvidence.some((entry) =>
+      comparable(entry.claim) === comparable(rewrite.rewrite) &&
+      entry.citations.some((citation) =>
+        referenceCanSupportApplicantClaim(citation.ref) &&
+        citation.excerpt.trim() === rewrite.original.trim()));
+    if (!originalMatchesCitation) {
+      throw new PublicApiError("Application document bullet source does not match its cited excerpt.", 422, {
+        code: "APPLICATION_DOCUMENT_BULLET_SOURCE_MISMATCH",
+        fieldPath: `bulletRewrites[${rewriteIndex}].original`,
+        retryable: false
+      });
+    }
+  }
 
-  const sourceText = comparable(evidenceText(payload.resume ?? {}));
   for (const [lineIndex, rawLine] of output.resumeText.split(/\r?\n/).entries()) {
-    const line = rawLine.trim().replace(/^[-•]\s*/, "");
-    if (!line || isHeading(line) || sourceText.includes(comparable(line))) continue;
+    const line = normalizeApplicationDocumentSourceLine(rawLine);
+    if (!line || isHeading(line) ||
+      containsExactEvidenceLine(payload.resume ?? {}, line) ||
+      containsStandaloneEvidence(payload.resume ?? {}, line)) continue;
     if (!supportedClaims.has(comparable(line))) {
       throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
         code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
@@ -370,10 +542,15 @@ function sentenceKey(value: string) {
   return comparable(value).replace(/[.!?]+$/, "");
 }
 
-function exactCoverBoilerplate(payload: ApplicationDocumentPayload) {
-  const title = typeof payload.job?.title === "string" ? payload.job.title.trim() : "";
-  const company = typeof payload.job?.company === "string" ? payload.job.company.trim() : "";
+export function getCoverLetterUncitedLines(payload: ApplicationDocumentPayload) {
+  const title = typeof payload.job?.title === "string"
+    ? payload.job.title.trim().replace(/\s+/g, " ")
+    : "";
+  const company = typeof payload.job?.company === "string"
+    ? payload.job.company.trim().replace(/\s+/g, " ")
+    : "";
   const values = [
+    "My experience most relevant to this role includes the following.",
     "I am interested in learning more about the role and how I might contribute to your team.",
     "I would welcome the opportunity to discuss the role further.",
     "I would welcome the opportunity to discuss this position further.",
@@ -394,19 +571,35 @@ function exactCoverBoilerplate(payload: ApplicationDocumentPayload) {
     );
   }
   if (company) values.push(`Dear ${company} Hiring Team,`);
+  if (title && company) values.push(`I am applying for the ${title} position at ${company}.`);
+  if (Array.isArray(payload.job?.requirements)) {
+    for (const requirement of payload.job.requirements.slice(0, 30)) {
+      if (typeof requirement !== "string" || !requirement.trim()) continue;
+      const clean = requirement.trim().replace(/[.!?]+$/u, "");
+      values.push(`The role calls for ${clean.slice(0, 1).toLocaleLowerCase()}${clean.slice(1)}.`);
+      values.push(`Your posting highlights ${clean.slice(0, 1).toLocaleLowerCase()}${clean.slice(1)}.`);
+    }
+  }
   values.push("Dear Hiring Team,", "Sincerely,", "Best,", "Best regards,", "Regards,", "Thank you,");
-  return new Set(values.map(sentenceKey));
+  if (typeof payload.resume?.rawText === "string") {
+    for (const rawLine of payload.resume.rawText.split(/\r?\n/u)) {
+      const line = rawLine.trim();
+      if (isHeading(line)) break;
+      if (line) values.push(line);
+    }
+  }
+  values.push("[Your name]");
+  return Object.freeze(values);
 }
 
 function coverSentencesRequiringEvidence(payload: ApplicationDocumentPayload, text: string) {
-  const exempt = exactCoverBoilerplate(payload);
-  const firstResumeLine = typeof payload.resume?.rawText === "string"
-    ? payload.resume.rawText.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-    : undefined;
-  if (firstResumeLine) exempt.add(sentenceKey(firstResumeLine));
-  exempt.add(sentenceKey("[Your name]"));
+  const exempt = new Set(getCoverLetterUncitedLines(payload).map(sentenceKey));
   return text.split(/\r?\n/)
-    .flatMap((line) => [...sentenceSegmenter.segment(line)].map(({ segment }) => segment.trim()))
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || exempt.has(sentenceKey(trimmed))) return [];
+      return [...sentenceSegmenter.segment(trimmed)].map(({ segment }) => segment.trim());
+    })
     .filter((sentence) => sentence && !exempt.has(sentenceKey(sentence)));
 }
 

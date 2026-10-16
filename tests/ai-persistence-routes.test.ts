@@ -88,14 +88,28 @@ test("unavailable resume parsing fails closed and cannot persist heuristic outpu
 test("application document routes use one explicit projection and never persist model self-scores", () => {
   const resumeRoute = route("app/api/jobs/[id]/tailored-resume/route.ts");
   const coverRoute = route("app/api/jobs/[id]/cover-letter/route.ts");
-  assert.match(resumeRoute, /buildApplicationDocumentPayload\(job, resume, profile\)/);
-  assert.match(coverRoute, /buildApplicationDocumentPayload\(job, resume, profile\)/);
-  assert.doesNotMatch(coverRoute, /draftCoverLetter\(\{ job, resume, profile \}/);
-  assert.match(resumeRoute, /atsCompatibility: null/);
-  assert.match(resumeRoute, /jobFitScore: null/);
-  assert.match(coverRoute, /confidence: null/);
-  assert.match(route("app/api/interviews/route.ts"), /confidence: prep\.usage\.mocked \? null : 76/);
-  assert.match(route("app/api/interviews/[id]/feedback/route.ts"), /confidence: feedback\.usage\.mocked \? null : 76/);
+  const handlers = route("lib/jobs/application-document-generation-routes.ts");
+  assert.match(handlers, /dependencies\.readApplicationDocumentEvidence\(dependencies\.prismaClient, userId, id\)/);
+  assert.match(resumeRoute, /createTailoredResumeRouteHandler\(\{/);
+  assert.match(coverRoute, /createCoverLetterRouteHandler\(\{/);
+  assert.match(resumeRoute, /createTailoredResumeRouteHandler\(\{[\s\S]*prismaClient: prisma,[\s\S]*readApplicationDocumentEvidence/);
+  assert.match(coverRoute, /createCoverLetterRouteHandler\(\{[\s\S]*prismaClient: prisma,[\s\S]*readApplicationDocumentEvidence/);
+  assert.match(handlers, /evidenceSnapshotId: fresh\.job\.currentEvidenceSnapshotId/);
+  assert.match(handlers, /APPLICATION_DOCUMENT_INPUT_STALE/);
+  assert.match(handlers, /PrismaClientKnownRequestError[\s\S]*P2034[\s\S]*APPLICATION_DOCUMENT_INPUT_STALE/);
+  assert.doesNotMatch(handlers, /draftCoverLetter\(\{ job, resume, profile \}/);
+  assert.match(handlers, /atsCompatibility: null/);
+  assert.match(handlers, /jobFitScore: null/);
+  assert.match(handlers, /confidence: null/);
+  const interviewCreateRoute = route("app/api/interviews/route.ts");
+  const interviewFeedbackRoute = route("app/api/interviews/[id]/feedback/route.ts");
+  const emailDraftRoute = route("app/api/email/draft-reply/route.ts");
+  const interviewCreateForm = route("components/interview-create-form.tsx");
+  assert.doesNotMatch(interviewCreateRoute, /generateInterviewPrep|aIAnalysis|interviewQuestion|starStory/);
+  assert.doesNotMatch(interviewFeedbackRoute, /generateInterviewFeedback|aIAnalysis|interviewQuestion/);
+  assert.doesNotMatch(emailDraftRoute, /draftEmailReply|generatedDocument|emailMessage\.(?:find|update)/);
+  assert.doesNotMatch(interviewCreateForm, /generatePrep|Generate an interview prep brief/);
+  assert.match(interviewCreateForm, /AI interview preparation is deferred for this MVP/);
 });
 
 test("unavailable personalized match writes no job scores or AI analysis", async (t) => {
@@ -137,12 +151,30 @@ test("unavailable personalized match writes no job scores or AI analysis", async
 
 test("unavailable tailoring returns 503 without a resume version or AI analysis", async (t) => {
   const prisma = await localRouteSetup(t);
-  const job = { id: "job-1", title: "Engineer", company: "Acme" };
+  const reviewedAt = new Date("2026-10-08T12:00:00.000Z");
+  const job = {
+    id: "job-1",
+    title: "Engineer",
+    company: "Acme",
+    currentEvidenceSnapshotId: "snapshot-1",
+    evidenceSnapshotGeneration: 1,
+    currentEvidenceSnapshot: {
+      id: "snapshot-1",
+      resumeId: "resume-1",
+      sourceResumeUpdatedAt: reviewedAt,
+      snapshotHash: "a".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    }
+  };
   let versions = 0;
   let analyses = 0;
   let audits = 0;
   stub(t, prisma.jobPosting, "findFirstOrThrow", async () => job);
-  stub(t, prisma.resume, "findFirst", async () => ({ id: "resume-1", rawText: "Alice Example\nExcel" }));
+  stub(t, prisma.resume, "findFirst", async () => ({
+    id: "resume-1",
+    updatedAt: reviewedAt,
+    rawText: "Alice Example\nExcel"
+  }));
   stub(t, prisma.userProfile, "findUnique", async () => null);
   stub(t, prisma.resumeVersion, "create", async () => { versions++; return { id: "version-1" }; });
   stub(t, prisma.aIAnalysis, "create", async () => { analyses++; return { id: "analysis-1" }; });
@@ -157,32 +189,127 @@ test("unavailable tailoring returns 503 without a resume version or AI analysis"
   assert.deepEqual({ versions, analyses, audits }, { versions: 0, analyses: 0, audits: 0 });
 });
 
-test("unavailable email reply returns 503 without updating or creating generated output", async (t) => {
+test("deferred email drafting cannot call OpenAI or persist output even when a key is configured", async (t) => {
   const prisma = await localRouteSetup(t);
+  setEnv(t, {
+    AI_ENABLED: "true",
+    AI_MOCK_MODE: "false",
+    OPENAI_API_KEY: "synthetic-never-call",
+    OPENAI_MOCK_MODE: "false"
+  });
+  const { getOpenAIClient } = await import("@/lib/ai/client");
+  const client = getOpenAIClient();
+  assert.ok(client);
+  let providerCalls = 0;
+  stub(t, client.chat.completions, "create", async () => {
+    providerCalls++;
+    throw new Error("OpenAI must not be called for deferred email drafting");
+  });
+  let emailReads = 0;
   let emailUpdates = 0;
   let documents = 0;
   let audits = 0;
-  stub(t, prisma.emailMessage, "findFirst", async () => ({
-    id: "email-1", body: "Your application was rejected.", applicationId: null
-  }));
+  stub(t, prisma.emailMessage, "findFirst", async () => { emailReads++; return null; });
   stub(t, prisma.emailMessage, "update", async () => { emailUpdates++; return { id: "email-1" }; });
   stub(t, prisma.generatedDocument, "create", async () => { documents++; return { id: "document-1" }; });
   stub(t, prisma.auditLog, "create", async () => { audits++; return { id: "audit-1" }; });
   const { POST } = await import("../app/api/email/draft-reply/route");
-  const request = new Request("http://localhost/api/email/draft-reply", {
+
+  const response = await invokeRoute("/api/email/draft-reply", () => POST());
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    error: "AI email drafting is deferred for this MVP.",
+    code: "AI_FEATURE_DEFERRED",
+    feature: "EMAIL_REPLY",
+    retryable: false
+  });
+  assert.deepEqual({ providerCalls, emailReads, emailUpdates, documents, audits }, {
+    providerCalls: 0, emailReads: 0, emailUpdates: 0, documents: 0, audits: 0
+  });
+});
+
+test("deferred interview feedback cannot call OpenAI or read interview data even when a key is configured", async (t) => {
+  const prisma = await localRouteSetup(t);
+  setEnv(t, {
+    AI_ENABLED: "true",
+    AI_MOCK_MODE: "false",
+    OPENAI_API_KEY: "synthetic-never-call",
+    OPENAI_MOCK_MODE: "false"
+  });
+  const { getOpenAIClient } = await import("@/lib/ai/client");
+  const client = getOpenAIClient();
+  assert.ok(client);
+  let providerCalls = 0;
+  let interviewReads = 0;
+  let transactions = 0;
+  stub(t, client.chat.completions, "create", async () => {
+    providerCalls++;
+    throw new Error("OpenAI must not be called for deferred interview feedback");
+  });
+  stub(t, prisma.interview, "findFirstOrThrow", async () => { interviewReads++; return {}; });
+  stub(t, prisma, "$transaction", async () => { transactions++; return null; });
+  const { POST } = await import("../app/api/interviews/[id]/feedback/route");
+
+  const response = await invokeRoute("/api/interviews/interview-1/feedback", () => POST());
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), {
+    error: "AI interview feedback is deferred for this MVP.",
+    code: "AI_FEATURE_DEFERRED",
+    feature: "INTERVIEW_FEEDBACK",
+    retryable: false
+  });
+  assert.deepEqual({ providerCalls, interviewReads, transactions }, {
+    providerCalls: 0, interviewReads: 0, transactions: 0
+  });
+});
+
+test("interview scheduling remains usable while prep generation is server-disabled", async (t) => {
+  const prisma = await localRouteSetup(t);
+  setEnv(t, {
+    AI_ENABLED: "true",
+    AI_MOCK_MODE: "false",
+    OPENAI_API_KEY: "synthetic-never-call",
+    OPENAI_MOCK_MODE: "false"
+  });
+  const { getOpenAIClient } = await import("@/lib/ai/client");
+  const client = getOpenAIClient();
+  assert.ok(client);
+  let providerCalls = 0;
+  let profileReads = 0;
+  let resumeReads = 0;
+  let interviewWrites = 0;
+  let audits = 0;
+  stub(t, client.chat.completions, "create", async () => {
+    providerCalls++;
+    throw new Error("OpenAI must not be called for deferred interview prep");
+  });
+  stub(t, prisma.jobPosting, "findFirstOrThrow", async () => ({ id: "job-1" }));
+  stub(t, prisma.userProfile, "findUnique", async () => { profileReads++; return null; });
+  stub(t, prisma.resume, "findFirst", async () => { resumeReads++; return null; });
+  stub(t, prisma, "$transaction", async (action: (tx: unknown) => Promise<unknown>) => action({
+    interview: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        interviewWrites++;
+        return { id: "interview-1", ...data };
+      }
+    },
+    auditLog: { create: async () => { audits++; return { id: "audit-1" }; } }
+  }));
+  const { POST } = await import("../app/api/interviews/route");
+  const request = new Request("http://localhost/api/interviews", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      emailMessageId: "email-1",
-      emailText: "Your application was rejected.",
-      tone: "professional"
-    })
+    body: JSON.stringify({ jobPostingId: "job-1", type: "RECRUITER", generatePrep: true })
   });
 
-  const response = await invokeRoute("/api/email/draft-reply", () => POST(request as NextRequest));
-  assert.equal(response.status, 503);
-  assert.match((await response.json()).error, /unavailable in local mode/);
-  assert.deepEqual({ emailUpdates, documents, audits }, {
-    emailUpdates: 0, documents: 0, audits: 0
+  const response = await invokeRoute("/api/interviews", () => POST(request as NextRequest));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.interview.id, "interview-1");
+  assert.equal(body.prep, null);
+  assert.deepEqual(body.aiGeneration, { status: "deferred", feature: "INTERVIEW_PREP" });
+  assert.deepEqual({ providerCalls, profileReads, resumeReads, interviewWrites, audits }, {
+    providerCalls: 0, profileReads: 0, resumeReads: 0, interviewWrites: 1, audits: 1
   });
 });

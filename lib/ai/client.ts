@@ -4,14 +4,22 @@ import type { z } from "zod";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   getAiFinancialPolicy,
-  getAiProviderForFeature,
   getAiRuntimeMode
 } from "@/lib/ai/config";
+import {
+  APPLICATION_DOCUMENT_MODEL,
+  APPLICATION_DOCUMENT_THINKING_LEVEL
+} from "@/lib/ai/application-document-version";
+import {
+  buildGeminiJsonRequest,
+  callGeminiJsonProvider,
+  GeminiProviderError,
+  type GeminiUsage
+} from "@/lib/ai/gemini";
 import { AI_FEATURE_POLICIES, assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros as estimatePricedCost, getModelPricing } from "@/lib/ai/pricing";
 import {
   findCachedAiResponse,
-  getOrCreateAiSettings,
   reconcileAiReservation,
   reconcileStaleAiReservations,
   reserveAiBudget
@@ -92,6 +100,9 @@ type GenerateJsonInput<T> = {
   payload: unknown;
   fallback?: T;
   schema?: z.ZodType<T, z.ZodTypeDef, unknown>;
+  providerSchema?: z.ZodType<unknown, z.ZodTypeDef, unknown>;
+  decodeProvider?: (value: unknown) => T;
+  responseJsonSchema?: Record<string, unknown>;
   context?: AiCallContext;
   validate?: (value: T) => T;
 };
@@ -109,16 +120,20 @@ export async function generateJson<T>({
   payload,
   fallback,
   schema,
+  providerSchema,
+  decodeProvider,
+  responseJsonSchema,
   context,
   validate
 }: GenerateJsonInput<T>): Promise<GeneratedJsonResult<T>> {
-  if (context?.feature === "APPLICATION_PLAN") {
+  if (context?.feature === "APPLICATION_PLAN" || promptName === "applicationPlanPrompt") {
     return generateApplicationPlanJson({ promptName, systemPrompt, payload, fallback, schema, context, validate });
   }
   if (context && isGuardedApplicationDocumentFeature(context.feature)) {
     const documentContext = { ...context, feature: context.feature };
     return generateGuardedApplicationDocumentJson({
-      promptName, systemPrompt, payload, fallback, schema, context: documentContext, validate
+      promptName, systemPrompt, payload, fallback, schema, responseJsonSchema,
+      providerSchema, decodeProvider, context: documentContext, validate
     });
   }
 
@@ -232,20 +247,20 @@ export async function generateJson<T>({
   }
 }
 
-type OpenAiUsage = {
+type ApplicationDocumentUsage = {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
 };
 
 class ApplicationDocumentProviderError extends Error {
-  usage: OpenAiUsage | null;
+  usage: ApplicationDocumentUsage | null;
   billingDisposition: "known" | "not_charged" | "uncertain";
 
   constructor(
     message: string,
     options: {
-      usage?: OpenAiUsage | null;
+      usage?: ApplicationDocumentUsage | null;
       billingDisposition?: "known" | "not_charged" | "uncertain";
     } = {}
   ) {
@@ -256,8 +271,6 @@ class ApplicationDocumentProviderError extends Error {
   }
 }
 
-const definitelyRejectedOpenAiStatuses = new Set([400, 401, 403, 404, 409, 413, 422, 429]);
-
 function applicationDocumentMaximumCost(model: string, feature: GuardedApplicationDocumentFeature) {
   const policy = AI_FEATURE_POLICIES[feature];
   return estimatePricedCost({
@@ -267,19 +280,15 @@ function applicationDocumentMaximumCost(model: string, feature: GuardedApplicati
   });
 }
 
-function assertConservativeOpenAiWireBound(
+export function assertConservativeApplicationDocumentWireBound(
   feature: GuardedApplicationDocumentFeature,
   maxInputTokens: number,
   requestBody: unknown
 ) {
-  // Every OpenAI token represents at least one encoded byte. Counting every
-  // serialized request byte as a token, plus fixed chat-framing headroom, is a
-  // deliberately conservative upper bound that includes the structured-output
-  // schema instead of relying on the ordinary bytes/3 admission estimate.
   const conservativeInputTokens = Buffer.byteLength(JSON.stringify(requestBody), "utf8") + 1_024;
   if (conservativeInputTokens > maxInputTokens) {
     throw new PublicApiError(
-      `This ${feature.toLowerCase().replaceAll("_", " ")} request exceeds its conservative OpenAI input bound.`,
+      `This ${feature.toLowerCase().replaceAll("_", " ")} request exceeds its conservative Gemini input bound.`,
       413,
       { code: "AI_INPUT_TOO_LARGE" }
     );
@@ -296,26 +305,26 @@ function applicationDocumentPublicError(
     return new PublicApiError(error.message, error.status, {
       ...error.details,
       feature,
-      provider: "openai",
+      provider: "gemini",
       billingStatus,
       actualCostMicros
     });
   }
-  if (!(error instanceof ApplicationDocumentProviderError)) {
-    return new PublicApiError("OpenAI returned an application document that could not be accepted.", 502, {
+  if (!(error instanceof ApplicationDocumentProviderError) && !(error instanceof GeminiProviderError)) {
+    return new PublicApiError("Gemini returned an application document that could not be accepted.", 502, {
       code: "APPLICATION_DOCUMENT_PROVIDER_INVALID",
       feature,
-      provider: "openai",
+      provider: "gemini",
       billingStatus,
       actualCostMicros,
       retryable: false
     });
   }
   if (billingStatus === "not_charged") {
-    return new PublicApiError("OpenAI rejected application-document generation before completion.", 502, {
+    return new PublicApiError("Gemini rejected application-document generation before completion.", 502, {
       code: "APPLICATION_DOCUMENT_PROVIDER_REJECTED",
       feature,
-      provider: "openai",
+      provider: "gemini",
       billingStatus,
       actualCostMicros: 0,
       retryable: true
@@ -323,22 +332,22 @@ function applicationDocumentPublicError(
   }
   if (billingStatus === "uncertain") {
     return new PublicApiError(
-      "Application-document generation reached OpenAI, but the outcome is uncertain. Review AI usage instead of retrying.",
+      "Application-document generation reached Gemini, but the outcome is uncertain. Review AI usage instead of retrying.",
       503,
       {
         code: "APPLICATION_DOCUMENT_PROVIDER_UNCERTAIN",
         feature,
-        provider: "openai",
+        provider: "gemini",
         billingStatus,
         actualCostMicros: null,
         retryable: false
       }
     );
   }
-  return new PublicApiError("OpenAI returned an application document that could not be accepted.", 502, {
+  return new PublicApiError("Gemini returned an application document that could not be accepted.", 502, {
     code: "APPLICATION_DOCUMENT_PROVIDER_INVALID",
     feature,
-    provider: "openai",
+    provider: "gemini",
     billingStatus,
     actualCostMicros,
     retryable: false
@@ -349,42 +358,33 @@ async function generateGuardedApplicationDocumentJson<T>({
   promptName,
   systemPrompt,
   payload,
-  fallback,
   schema,
+  providerSchema,
+  decodeProvider,
+  responseJsonSchema,
   context,
   validate
 }: GenerateJsonInput<T> & { context: AiCallContext & { feature: GuardedApplicationDocumentFeature } }) {
   const feature = context.feature;
-  const { policy } = assertAiInputWithinLimits(feature, systemPrompt, payload);
+  if (!responseJsonSchema) {
+    throw new PublicApiError("Application-document Gemini schema is missing.", 503, {
+      code: "APPLICATION_DOCUMENT_SCHEMA_MISSING",
+      feature
+    });
+  }
+  const { policy } = assertAiInputWithinLimits(feature, systemPrompt, {
+    payload,
+    responseJsonSchema
+  });
   const promptVersion = context.promptVersion ?? "1";
   const requestHash = hashAiInput(promptName, promptVersion, payload);
-  // These two routes predate provider-neutral routing and are explicitly
-  // OpenAI-backed. Preserve that contract instead of inheriting the global
-  // Gemini default used by newer AI features.
-  const client = process.env.OPENAI_MOCK_MODE !== "true" ? getOpenAIClient() : null;
-
-  if (!client) {
-    if (fallback === undefined) throw new LocalAiUnavailableError();
-    return {
-      data: validateGeneratedJson(fallback, schema, promptName, validate),
-      meta: {
-        provider: "local" as const,
-        model: "heuristic-local",
-        promptVersion,
-        requestHash,
-        inputTokens: 0,
-        outputTokens: 0,
-        cachedInputTokens: 0,
-        estimatedCostMicros: 0,
-        mocked: true
-      }
-    };
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (getAiRuntimeMode("gemini") !== "gemini" || !apiKey) {
+    throw new LocalAiUnavailableError();
   }
-
-  const settings = await getOrCreateAiSettings(context.userId);
-  const model = getOpenAIModel(settings.modelOverride);
-  if (getModelPricing(model).provider !== "openai") {
-    throw new PublicApiError("Application-document generation requires registered OpenAI pricing.", 503, {
+  const model = APPLICATION_DOCUMENT_MODEL;
+  if (getModelPricing(model).provider !== "gemini") {
+    throw new PublicApiError("Application-document generation requires registered Gemini pricing.", 503, {
       code: "AI_MODEL_PRICING_UNKNOWN"
     });
   }
@@ -396,23 +396,18 @@ async function generateGuardedApplicationDocumentJson<T>({
       maximumCostMicros
     });
   }
-  const requestBody = {
-    model,
-    temperature: 0.2,
-    max_tokens: policy.maxOutputTokens,
-    response_format: schema
-      ? zodResponseFormat(schema, promptName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64))
-      : { type: "json_object" as const },
-    messages: [
-      { role: "system" as const, content: systemPrompt },
-      { role: "user" as const, content: JSON.stringify(payload) }
-    ]
-  };
-  assertConservativeOpenAiWireBound(feature, policy.maxInputTokens, requestBody);
+  const requestBody = buildGeminiJsonRequest({
+    systemPrompt,
+    payload,
+    responseJsonSchema,
+    maxOutputTokens: policy.maxOutputTokens,
+    thinkingLevel: APPLICATION_DOCUMENT_THINKING_LEVEL
+  });
+  assertConservativeApplicationDocumentWireBound(feature, policy.maxInputTokens, requestBody);
 
   const cached = await findCachedAiResponse({
     userId: context.userId,
-    provider: "openai",
+    provider: "gemini",
     model,
     promptName,
     promptVersion,
@@ -422,7 +417,7 @@ async function generateGuardedApplicationDocumentJson<T>({
     return {
       data: validateGeneratedJson(cached.output, schema, promptName, validate),
       meta: {
-        provider: "openai" as const,
+        provider: "gemini" as const,
         model,
         promptVersion,
         requestHash,
@@ -442,7 +437,7 @@ async function generateGuardedApplicationDocumentJson<T>({
       {
         code: "AI_COST_CONFIRMATION_REQUIRED",
         maximumCostMicros,
-        provider: "openai",
+        provider: "gemini",
         dataType: "application_packet",
         feature,
         model,
@@ -455,7 +450,7 @@ async function generateGuardedApplicationDocumentJson<T>({
   const activePriorAttempt = await prisma.aIBudgetReservation.findFirst({
     where: {
       userId: context.userId,
-      provider: "openai",
+      provider: "gemini",
       model,
       feature,
       promptName,
@@ -467,7 +462,7 @@ async function generateGuardedApplicationDocumentJson<T>({
   });
   if (activePriorAttempt?.status === "UNCERTAIN") {
     throw new PublicApiError(
-      "An identical application-document request already reached OpenAI with an uncertain outcome. Review AI usage instead of retrying.",
+      "An identical application-document request already reached Gemini with an uncertain outcome. Review AI usage instead of retrying.",
       409,
       { code: "APPLICATION_DOCUMENT_PRIOR_OUTCOME_UNCERTAIN", retryable: false }
     );
@@ -482,7 +477,7 @@ async function generateGuardedApplicationDocumentJson<T>({
 
   const reservation = await reserveAiBudget({
     userId: context.userId,
-    provider: "openai",
+    provider: "gemini",
     model,
     feature,
     promptName,
@@ -491,57 +486,48 @@ async function generateGuardedApplicationDocumentJson<T>({
     maximumCostMicros,
     automation: context.automation ?? false
   });
-  let usage: OpenAiUsage | null = null;
+  let usage: GeminiUsage | null = null;
   let actualCostMicros: number | undefined;
+  let requestDispatched = false;
   let reconciled = false;
 
   try {
-    let response;
-    try {
-      response = await client.chat.completions.create(requestBody, { maxRetries: 0 });
-    } catch (error) {
-      if (error instanceof OpenAI.APIError &&
-        typeof error.status === "number" &&
-        definitelyRejectedOpenAiStatuses.has(error.status)) {
-        throw new ApplicationDocumentProviderError("OpenAI rejected the request.", {
-          billingDisposition: "not_charged"
-        });
-      }
-      throw new ApplicationDocumentProviderError("OpenAI application-document outcome is uncertain.");
-    }
-
-    const responseUsage = response.usage;
-    if (!responseUsage) {
-      throw new ApplicationDocumentProviderError("OpenAI returned no usage metadata.");
-    }
-    usage = {
-      inputTokens: responseUsage.prompt_tokens,
-      outputTokens: responseUsage.completion_tokens,
-      cachedInputTokens: responseUsage.prompt_tokens_details?.cached_tokens ?? 0
-    };
+    requestDispatched = true;
+    const response = await callGeminiJsonProvider({
+      apiKey,
+      model,
+      systemPrompt,
+      payload,
+      responseJsonSchema,
+      maxOutputTokens: policy.maxOutputTokens,
+      thinkingLevel: APPLICATION_DOCUMENT_THINKING_LEVEL
+    });
+    usage = response.usage;
     actualCostMicros = estimatePricedCost({ model, ...usage });
     if (
       usage.inputTokens > policy.maxInputTokens ||
       usage.outputTokens > policy.maxOutputTokens ||
       actualCostMicros > reservation.maximumCostMicros
     ) {
-      throw new ApplicationDocumentProviderError("OpenAI usage exceeded the reserved document bounds.", { usage });
+      throw new GeminiProviderError("Gemini usage exceeded the reserved document bounds.", {
+        providerResponded: true,
+        usage
+      });
     }
-    const choice = response.choices[0];
-    if (choice?.finish_reason !== "stop") {
-      throw new ApplicationDocumentProviderError("OpenAI did not complete the application document.", { usage });
-    }
-    const content = choice.message.content;
-    if (!content) {
-      throw new ApplicationDocumentProviderError("OpenAI returned an empty application document.", { usage });
-    }
-    let parsed: unknown;
+    let data: T;
     try {
-      parsed = JSON.parse(content);
-    } catch {
-      throw new ApplicationDocumentProviderError("OpenAI returned invalid application-document JSON.", { usage });
+      const providerValue = providerSchema
+        ? validateGeneratedJson(response.value, providerSchema, promptName)
+        : response.value;
+      const decoded = decodeProvider ? decodeProvider(providerValue) : providerValue as T;
+      data = validateGeneratedJson(decoded, schema, promptName, validate);
+    } catch (error) {
+      if (error instanceof PublicApiError) throw error;
+      throw new ApplicationDocumentProviderError("Gemini returned an unsupported application document.", {
+        usage,
+        billingDisposition: "known"
+      });
     }
-    const data = validateGeneratedJson(parsed, schema, promptName, validate);
     await reconcileAiReservation({
       reservationId: reservation.id,
       status: "SUCCEEDED",
@@ -555,7 +541,7 @@ async function generateGuardedApplicationDocumentJson<T>({
     return {
       data,
       meta: {
-        provider: "openai" as const,
+        provider: "gemini" as const,
         model,
         promptVersion,
         requestHash,
@@ -567,11 +553,19 @@ async function generateGuardedApplicationDocumentJson<T>({
       }
     };
   } catch (error) {
-    const providerUsage = error instanceof ApplicationDocumentProviderError ? error.usage : usage;
-    const billingStatus = error instanceof ApplicationDocumentProviderError
+    const providerUsage = error instanceof GeminiProviderError
+      ? error.usage
+      : error instanceof ApplicationDocumentProviderError ? error.usage : usage;
+    const providerDisposition = error instanceof GeminiProviderError
       ? error.billingDisposition
-      : providerUsage ? "known" as const : "uncertain" as const;
+      : error instanceof ApplicationDocumentProviderError
+        ? error.billingDisposition
+        : providerUsage ? "known" as const : "uncertain" as const;
     const knownCost = providerUsage ? estimatePricedCost({ model, ...providerUsage }) : undefined;
+    const billingStatus = requestDispatched && (
+      providerDisposition === "uncertain" ||
+      (knownCost !== undefined && knownCost > reservation.maximumCostMicros)
+    ) ? "uncertain" as const : providerDisposition;
     if (!reconciled) {
       try {
         await reconcileAiReservation({
@@ -590,7 +584,7 @@ async function generateGuardedApplicationDocumentJson<T>({
           {
             code: "APPLICATION_DOCUMENT_RECONCILIATION_UNCERTAIN",
             feature,
-            provider: "openai",
+            provider: "gemini",
             billingStatus: "uncertain",
             actualCostMicros: knownCost ?? null,
             retryable: false
@@ -607,167 +601,34 @@ async function generateGuardedApplicationDocumentJson<T>({
   }
 }
 
-// Kept separate so the priced maximum output is verifiably present in the
-// exact payload sent to OpenAI.
-type ApplicationPlanChatRequestInput<T> = {
-  model: string;
-  promptName: string;
-  systemPrompt: string;
-  payload: unknown;
-  schema?: z.ZodType<T, z.ZodTypeDef, unknown>;
-  maxOutputTokens: number;
-};
-
-export function buildApplicationPlanChatRequest<T>({
-  model,
-  promptName,
-  systemPrompt,
-  payload,
-  schema,
-  maxOutputTokens
-}: ApplicationPlanChatRequestInput<T>) {
-  return {
-    model,
-    temperature: 0.2,
-    max_tokens: maxOutputTokens,
-    response_format: schema
-      ? zodResponseFormat(schema, promptName.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64))
-      : { type: "json_object" as const },
-    messages: [
-      { role: "system" as const, content: systemPrompt },
-      { role: "user" as const, content: JSON.stringify(payload) }
-    ]
-  };
-}
-
-export function callApplicationPlanProvider<T>(
-  client: Pick<OpenAI, "chat">,
-  input: ApplicationPlanChatRequestInput<T>
-) {
-  return client.chat.completions.create(buildApplicationPlanChatRequest(input));
-}
-
-// Application planning is the new paid AI surface. It retains main's OpenAI routing
-// while applying the accepted engine's input, price, confirmation, and reservation fences.
 async function generateApplicationPlanJson<T>({
   promptName,
   systemPrompt,
   payload,
   fallback,
   schema,
-  context
-}: GenerateJsonInput<T> & { context: AiCallContext }): Promise<GeneratedJsonResult<T>> {
-  const { policy } = assertAiInputWithinLimits("APPLICATION_PLAN", systemPrompt, payload);
-  const promptVersion = context.promptVersion ?? "1";
+  context,
+  validate
+}: GenerateJsonInput<T>): Promise<GeneratedJsonResult<T>> {
+  assertAiInputWithinLimits("APPLICATION_PLAN", systemPrompt, payload);
+  const promptVersion = context?.promptVersion ?? "1";
   const requestHash = hashAiInput(promptName, promptVersion, payload);
-  // The new planner requires explicit provider opt-in as well as the accepted
-  // AI_ENABLED/mock gates; a stored key alone must never start a paid call.
-  const plannerProvider = getAiProviderForFeature("APPLICATION_PLAN");
-  const client = plannerProvider === "openai" && getAiRuntimeMode("openai") === "openai"
-    ? getOpenAIClient()
-    : null;
+  if (fallback === undefined) throw new LocalAiUnavailableError();
 
-  if (!client) {
-    if (fallback === undefined) throw new LocalAiUnavailableError();
-    return {
-      data: validateGeneratedJson(fallback, schema, promptName),
-      meta: {
-        provider: "local", model: "heuristic-local", promptVersion, requestHash,
-        inputTokens: 0, outputTokens: 0, cachedInputTokens: 0,
-        estimatedCostMicros: 0, mocked: true
-      }
-    };
-  }
-
-  const budget = await assertAiBudgetAvailable(context.userId);
-  const model = getOpenAIModel(budget.settings.modelOverride);
-  if (getModelPricing(model).provider !== "openai") {
-    throw new PublicApiError("Application planning requires a registered OpenAI model.", 503, {
-      code: "AI_MODEL_PRICING_UNKNOWN"
-    });
-  }
-  const financial = getAiFinancialPolicy();
-  const maximumCostMicros = estimatePricedCost({
-    model, inputTokens: policy.maxInputTokens, outputTokens: policy.maxOutputTokens
-  });
-  const maximumRequestMicros = financial.maximumRequestCents * 10_000;
-  if (maximumCostMicros > maximumRequestMicros) {
-    throw new PublicApiError("This request exceeds the configured per-request AI limit.", 429, {
-      code: "AI_REQUEST_COST_LIMIT", maximumCostMicros
-    });
-  }
-
-  const cached = await findCachedAiResponse({
-    userId: context.userId, provider: "openai", model, promptName, promptVersion, requestHash
-  });
-  if (cached) {
-    return {
-      data: validateGeneratedJson(cached.output, schema, promptName),
-      meta: {
-        provider: "openai", model, promptVersion, requestHash,
-        inputTokens: 0, outputTokens: 0, cachedInputTokens: 0,
-        estimatedCostMicros: 0, mocked: false
-      }
-    };
-  }
-
-  if (maximumCostMicros > financial.confirmationThresholdCents * 10_000 && !context.highCostConfirmed) {
-    throw new PublicApiError("Confirm this AI request's maximum cost before continuing.", 428, {
-      code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros
-    });
-  }
-
-  const reservation = await reserveAiBudget({
-    userId: context.userId, provider: "openai", model, feature: "APPLICATION_PLAN",
-    promptName, promptVersion, requestHash, maximumCostMicros: maximumRequestMicros,
-    automation: context.automation ?? false
-  });
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cachedInputTokens = 0;
-  let actualCostMicros: number | undefined;
-  let providerReturned = false;
-  let reconciled = false;
-
-  try {
-    const response = await callApplicationPlanProvider(client, {
-      model, promptName, systemPrompt, payload, schema, maxOutputTokens: policy.maxOutputTokens
-    });
-    providerReturned = true;
-    inputTokens = response.usage?.prompt_tokens ?? 0;
-    outputTokens = response.usage?.completion_tokens ?? 0;
-    cachedInputTokens = response.usage?.prompt_tokens_details?.cached_tokens ?? 0;
-    actualCostMicros = response.usage
-      ? estimatePricedCost({ model, inputTokens, outputTokens, cachedInputTokens })
-      : reservation.maximumCostMicros;
-    const content = response.choices[0]?.message.content;
-    if (!content) throw new Error(`${promptName} returned an empty response.`);
-    const data = validateGeneratedJson<T>(JSON.parse(content), schema, promptName);
-    await reconcileAiReservation({
-      reservationId: reservation.id, status: "SUCCEEDED", actualCostMicros,
-      inputTokens, outputTokens, cachedInputTokens, cacheOutput: data
-    });
-    reconciled = true;
-    return {
-      data,
-      meta: {
-        provider: "openai", model, promptVersion, requestHash,
-        inputTokens, outputTokens, cachedInputTokens,
-        estimatedCostMicros: actualCostMicros, mocked: false
-      }
-    };
-  } catch (error) {
-    if (!reconciled) {
-      await reconcileAiReservation({
-        reservationId: reservation.id,
-        status: providerReturned ? "FAILED" : "UNCERTAIN",
-        actualCostMicros,
-        inputTokens, outputTokens, cachedInputTokens,
-        errorCode: error instanceof Error ? error.name : "UnknownError"
-      }).catch(() => undefined);
+  return {
+    data: validateGeneratedJson(fallback, schema, promptName, validate),
+    meta: {
+      provider: "local",
+      model: "heuristic-local",
+      promptVersion,
+      requestHash,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      estimatedCostMicros: 0,
+      mocked: true
     }
-    throw error;
-  }
+  };
 }
 
 function validateGeneratedJson<T>(

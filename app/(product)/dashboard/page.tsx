@@ -1,7 +1,18 @@
 import { CalendarClock, Mail, Plus, TrendingUp } from "lucide-react";
 
 import { JobCard } from "@/components/job-card";
+import { JobMatchOmissionNotice } from "@/components/job-match-omission-notice";
 import { ButtonLink, MetricCard, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import {
+  CURRENT_JOB_MATCH_ANALYSES,
+  CURRENT_JOB_MATCH_ANALYSIS_WHERE,
+  JOB_MATCH_LIST_CANDIDATE_LIMIT,
+  buildCurrentJobMatchContext,
+  currentJobMatchFields,
+  hasCurrentJobMatchAnalysis,
+  readCurrentJobMatchSources
+} from "@/lib/jobs/current-job-match";
+import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { formatAverageFit } from "@/lib/jobs/fit-presentation";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -25,25 +36,40 @@ export default async function DashboardPage() {
     bestJobs,
     applicationsNeedingFollowUp,
     recruiterEmails,
-    openTasks
+    openTasks,
+    matchSources
   ] = await Promise.all([
     prisma.application.count({ where: { userId, dateSaved: { gte: weekStart } } }),
     prisma.application.count({ where: { userId, dateApplied: { gte: weekStart } } }),
     prisma.interview.count({ where: { userId, scheduledAt: { gte: now } } }),
     prisma.followUpReminder.count({ where: { userId, completedAt: null, dueAt: { lte: followUpWindowEnd } } }),
     prisma.resumeVersion.count({ where: { userId, createdAt: { gte: weekStart } } }),
-    prisma.jobPosting.aggregate({ where: { userId, overallFitScore: { not: null } }, _avg: { overallFitScore: true } }),
     prisma.jobPosting.findMany({
-      where: { userId, status: { in: ["ACTIVE", "APPLIED", "INTERVIEW", "OFFER"] }, overallFitScore: { not: null } },
+      where: {
+        userId,
+        overallFitScore: { not: null },
+        aiAnalyses: { some: CURRENT_JOB_MATCH_ANALYSIS_WHERE }
+      },
+      include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } },
+      take: JOB_MATCH_LIST_CANDIDATE_LIMIT + 1
+    }),
+    prisma.jobPosting.findMany({
+      where: {
+        userId,
+        status: { in: ["ACTIVE", "APPLIED", "INTERVIEW", "OFFER"] },
+        overallFitScore: { not: null },
+        aiAnalyses: { some: CURRENT_JOB_MATCH_ANALYSIS_WHERE }
+      },
+      include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } },
       orderBy: [{ overallFitScore: "desc" }, { datePosted: "desc" }, { firstDiscoveredAt: "desc" }],
-      take: 2
+      take: JOB_MATCH_LIST_CANDIDATE_LIMIT + 1
     }),
     prisma.application.findMany({
       where: {
         userId,
         status: { in: ["SAVED", "INTERESTED", "APPLIED", "RECRUITER_SCREEN", "HIRING_MANAGER_SCREEN"] }
       },
-      include: { jobPosting: true },
+      include: { jobPosting: { include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } } } },
       orderBy: [{ followUpDueAt: "asc" }, { updatedAt: "desc" }],
       take: 4
     }),
@@ -56,10 +82,30 @@ export default async function DashboardPage() {
       where: { userId, status: "OPEN" },
       orderBy: [{ dueAt: "asc" }, { priority: "desc" }],
       take: 5
-    })
+    }),
+    readCurrentJobMatchSources(userId)
   ]);
 
-  const jobCards = bestJobs.map((job) => ({
+  const currentJob = <T extends (typeof avgFit)[number]>(job: T) => {
+    const context = buildCurrentJobMatchContext({ job, ...matchSources });
+    return currentJobMatchFields(job, hasCurrentJobMatchAnalysis({
+      ...job,
+      currentEvidenceSourceValid: context.currentEvidenceSourceValid
+    }, context.matchInput));
+  };
+  const candidateLimitReached = avgFit.length > JOB_MATCH_LIST_CANDIDATE_LIMIT ||
+    bestJobs.length > JOB_MATCH_LIST_CANDIDATE_LIMIT;
+  const currentFitScores = avgFit.slice(0, JOB_MATCH_LIST_CANDIDATE_LIMIT).flatMap((job) => {
+    const score = currentJob(job).overallFitScore;
+    return score === null ? [] : [score];
+  });
+  const averageFit = currentFitScores.length
+    ? currentFitScores.reduce((total, score) => total + score, 0) / currentFitScores.length
+    : null;
+
+  const jobCards = bestJobs.slice(0, JOB_MATCH_LIST_CANDIDATE_LIMIT).map((job) => {
+    const presentedJob = currentJob(job);
+    return {
     id: job.id,
     title: job.title,
     company: job.company,
@@ -70,11 +116,12 @@ export default async function DashboardPage() {
         ? `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`
         : "Salary not listed",
     datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-    fitScore: job.overallFitScore,
+    fitScore: presentedJob.overallFitScore,
     status: job.status,
     sourceType: job.sourceType,
-    keyReason: job.keyMatchReason ?? "Run fit scoring to generate a targeted match summary."
-  }));
+    keyReason: presentedJob.keyMatchReason ?? "Run fit scoring to generate a targeted match summary."
+    };
+  }).filter((job) => job.fitScore !== null).slice(0, 2);
 
   return (
     <div className="product-page product-page-themed">
@@ -96,7 +143,12 @@ export default async function DashboardPage() {
         <MetricCard label="Interviews" value={upcomingInterviews} detail="Upcoming" tone="branded" />
         <MetricCard label="Follow-ups" value={followUpsDue} detail="Need action" tone="branded" />
         <MetricCard label="Resume versions" value={resumeVersions} detail="Created" tone="branded" />
-        <MetricCard label="Avg. fit" value={formatAverageFit(avgFit._avg.overallFitScore)} detail="Scored jobs" tone="branded" />
+        <MetricCard
+          label="Avg. fit"
+          value={formatAverageFit(averageFit)}
+          detail={candidateLimitReached ? `Bounded to ${JOB_MATCH_LIST_CANDIDATE_LIMIT} candidates` : "Scored jobs"}
+          tone="branded"
+        />
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.8fr)]">
@@ -105,6 +157,12 @@ export default async function DashboardPage() {
             <h2 className="product-themed-title text-sm font-semibold tracking-[-0.01em]">Best scored matches</h2>
             <ButtonLink href="/jobs" variant="secondary" tone="branded">View jobs</ButtonLink>
           </div>
+          <JobMatchOmissionNotice
+            evaluatedCandidateCount={JOB_MATCH_LIST_CANDIDATE_LIMIT}
+            omittedCandidateCount={candidateLimitReached ? 1 : 0}
+            omittedCountIsLowerBound
+            viewLabel="dashboard view"
+          />
           {jobCards.length ? (
             jobCards.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
@@ -130,7 +188,10 @@ export default async function DashboardPage() {
                         <p className="product-themed-title text-sm font-semibold">{application.jobPosting.company}</p>
                         <p className="product-themed-muted text-xs">{application.jobPosting.title}</p>
                       </div>
-                      <ScoreBadge score={application.jobPosting.overallFitScore} tone="branded" />
+                      <ScoreBadge
+                        score={currentJob(application.jobPosting).overallFitScore}
+                        tone="branded"
+                      />
                     </div>
                     <p className="product-themed-copy mt-2 text-sm">{application.nextAction ?? "Review next step."}</p>
                     <p className="product-themed-muted mt-1 text-xs">Due {formatDate(application.followUpDueAt)}</p>

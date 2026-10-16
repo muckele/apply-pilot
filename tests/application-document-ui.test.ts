@@ -18,7 +18,8 @@ test("all paid packet actions use the existing consent-aware browser request", (
 test("the existing formatted preview component is reused for cover review", () => {
   const workspace = source("components/job-document-workspace.tsx");
   assert.match(workspace, /import \{ FormattedDocumentPreview \}/);
-  assert.match(workspace, /<FormattedDocumentPreview text=\{coverText\} title="Cover letter preview"/);
+  assert.match(workspace, /<FormattedDocumentPreview text=\{text\}/);
+  assert.match(workspace, /artifactType=\{kind==="resume"\?"RESUME":"COVER_LETTER"\}/);
 });
 
 test("packet errors surface only bounded validation and billing diagnostics", () => {

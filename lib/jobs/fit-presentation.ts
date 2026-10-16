@@ -1,3 +1,5 @@
+import { JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
+
 export function validFitScore(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
     ? value
@@ -101,43 +103,48 @@ function compensationExplanation(reason: unknown) {
 }
 
 export function getJobMatchAnalysisPresentation(job: AnalysisJob, analysisOutput: unknown) {
-  const base = getJobFitPresentation(job);
   const output = isRecord(analysisOutput) ? analysisOutput : null;
   const isV3 = output?.contractVersion === "3";
-  const confidenceAssessment = isV3 && isRecord(output.confidenceAssessment)
+  const isCurrentAnalysis = isV3 && output.promptVersion === JOB_MATCH_PROMPT_VERSION;
+  const base = getJobFitPresentation(isCurrentAnalysis ? job : {
+    ...job,
+    overallFitScore: null,
+    suggestedResumeAngle: null,
+    suggestedCoverLetterAngle: null
+  });
+  const confidenceAssessment = isCurrentAnalysis && isRecord(output.confidenceAssessment)
     ? output.confidenceAssessment
     : null;
-  const compensation = isV3 && isRecord(output.compensationAssessment)
+  const compensation = isCurrentAnalysis && isRecord(output.compensationAssessment)
     ? output.compensationAssessment
     : null;
   const v3ConfidenceScore = validFitScore(confidenceAssessment?.score);
-  const legacyConfidenceScore = validFitScore(job.confidenceScore);
-  const compensationScore = validFitScore(isV3 ? compensation?.score : job.compensationScore);
-  const legacyReason = job.keyMatchReason?.trim();
+  const compensationScore = validFitScore(isCurrentAnalysis ? compensation?.score : null);
 
   return {
     ...base,
+    fitScore: isCurrentAnalysis ? base.fitScore : null,
+    hasFitAnalysis: isCurrentAnalysis && base.hasFitAnalysis,
     compensation: {
       score: compensationScore,
-      explanation: compensationExplanation(isV3 ? compensation?.reason : undefined)
+      explanation: compensationExplanation(isCurrentAnalysis ? compensation?.reason : undefined)
     },
-    confidence: (isV3 ? v3ConfidenceScore : legacyConfidenceScore) === null
+    confidence: v3ConfidenceScore === null
       ? null
       : {
-          score: (isV3 ? v3ConfidenceScore : legacyConfidenceScore) as number,
+          score: v3ConfidenceScore,
           label: "Uncalibrated model self-assessment" as const,
-          basis: isV3 && typeof confidenceAssessment?.basis === "string" && confidenceAssessment.basis.trim()
+          basis: isCurrentAnalysis && typeof confidenceAssessment?.basis === "string" && confidenceAssessment.basis.trim()
             ? confidenceAssessment.basis
             : "Legacy analysis did not record a confidence basis."
         },
-    factualMatches: isV3
+    factualMatches: isCurrentAnalysis
       ? readV3FactualMatches(output)
-      : legacyReason
-        ? [{ claim: legacyReason, applicantEvidence: [], jobEvidence: [] }]
-        : [],
-    requirementGaps: isV3
+      : [],
+    requirementGaps: isCurrentAnalysis
       ? readV3RequirementGaps(output)
-      : job.concerns.map((requirement) => ({ requirement, jobRequirement: null })),
-    isLegacyAnalysis: !isV3
+      : [],
+    isCurrentAnalysis,
+    isLegacyAnalysis: !isCurrentAnalysis
   };
 }

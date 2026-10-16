@@ -2912,7 +2912,7 @@ test("Task 3 mounted resolve reason presentation preserves server order and exac
 
   const empty = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse(validRunAuthority({ reviewReasons: [] })));
   try {
-    assert.match(empty.container.textContent ?? "", /No planner review reasons require acknowledgment\./);
+    assert.match(empty.container.textContent ?? "", /No local rule-based planning review reasons require acknowledgment\./);
   } finally {
     await empty.cleanup();
   }

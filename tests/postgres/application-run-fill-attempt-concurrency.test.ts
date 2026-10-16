@@ -66,6 +66,115 @@ const RUN_ROW_LOCK = {
   includes: ['FROM "ApplicationRun"', "FOR UPDATE"]
 } as const satisfies PrismaHookMatcher;
 
+for (const invalidation of ["source revision", "snapshot deletion"] as const) {
+  test(`PR35 replacement independent reproduction: active Fill permission closes after ${invalidation}`, async () => {
+    await runScenario(`review-active-fill-${invalidation.replace(" ", "-")}`, async (scenario) => {
+      const fixture = await createReadyFixture(scenario, "active-evidence");
+      const client = scenario.observer.client;
+      const run = await client.applicationRun.findUniqueOrThrow({ where: { id: fixture.runId } });
+      const resume = await client.resume.create({ data: {
+        userId: fixture.userId, isMaster: true, title: "Independent synthetic source",
+        rawText: "Synthetic business experience.", skills: [], achievements: []
+      } });
+      const analysis = await client.aIAnalysis.create({ data: {
+        userId: fixture.userId, jobPostingId: run.jobPostingId, type: "JOB_MATCH",
+        model: "gemini-3.8-flash", promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {}
+      } });
+      const snapshot = await client.$transaction(async (tx) => {
+        const created = await tx.evidenceSnapshot.create({ data: {
+          userId: fixture.userId, jobPostingId: run.jobPostingId, resumeId: resume.id,
+          reviewedAnalysisId: analysis.id, requestId: randomUUID(), requestHash: "a".repeat(64),
+          sourceResumeUpdatedAt: resume.updatedAt, snapshotHash: "b".repeat(64),
+          sourceProjectionHash: "c".repeat(64), gapProjectionHash: "d".repeat(64),
+          reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+        } });
+        await tx.jobPosting.update({ where: { id: run.jobPostingId }, data: {
+          currentEvidenceSnapshotId: created.id, evidenceSnapshotGeneration: { increment: 1 }
+        } });
+        return created;
+      });
+      const service = fillService(client);
+      const statusService = repeatableReadFillService(scenario.actorB).service;
+      const acquired = await service.acquireFillAttempt({
+        userId: fixture.userId, runId: fixture.runId, expectedStateVersion: fixture.stateVersion
+      });
+      assert.ok(acquired.eligibleFields.length > 0);
+      assert.equal((await statusService.getFillAttemptStatus({
+        userId: fixture.userId, runId: fixture.runId
+      })).fieldOperationAllowed, true);
+      if (invalidation === "source revision") {
+        await client.resume.update({ where: { id: resume.id }, data: { title: "Synthetic revised source" } });
+      } else {
+        await client.evidenceSnapshot.delete({ where: { id: snapshot.id } });
+      }
+      const status = await statusService.getFillAttemptStatus({ userId: fixture.userId, runId: fixture.runId });
+      assert.equal(status.fillAttemptId, acquired.attemptId, "The permanent consumed Fill fence must remain intact");
+      assert.equal(status.fieldOperationAllowed, false,
+        "The per-field status still permits pending writes after evidence authority becomes stale");
+    });
+  });
+}
+
+test("active Fill status holds evidence authority while a concurrent source revision waits", async () => {
+  await runScenario("active-fill-evidence-status-lock", async (scenario) => {
+    const fixture = await createReadyFixture(scenario, "active-evidence-lock");
+    const client = scenario.observer.client;
+    const run = await client.applicationRun.findUniqueOrThrow({ where: { id: fixture.runId } });
+    const resume = await client.resume.create({ data: {
+      userId: fixture.userId, isMaster: true, title: "Concurrent synthetic source",
+      rawText: "Synthetic business experience.", skills: [], achievements: []
+    } });
+    const analysis = await client.aIAnalysis.create({ data: {
+      userId: fixture.userId, jobPostingId: run.jobPostingId, type: "JOB_MATCH",
+      model: "gemini-3.8-flash", promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {}
+    } });
+    const snapshot = await client.evidenceSnapshot.create({ data: {
+      userId: fixture.userId, jobPostingId: run.jobPostingId, resumeId: resume.id,
+      reviewedAnalysisId: analysis.id, requestId: randomUUID(), requestHash: "a".repeat(64),
+      sourceResumeUpdatedAt: resume.updatedAt, snapshotHash: "b".repeat(64),
+      sourceProjectionHash: "c".repeat(64), gapProjectionHash: "d".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    } });
+    await client.jobPosting.update({ where: { id: run.jobPostingId }, data: {
+      currentEvidenceSnapshotId: snapshot.id, evidenceSnapshotGeneration: { increment: 1 }
+    } });
+    const acquired = await fillService(client).acquireFillAttempt({
+      userId: fixture.userId, runId: fixture.runId, expectedStateVersion: fixture.stateVersion
+    });
+    const resumeLocked = deferred("active Fill status master Resume FOR SHARE");
+    const releaseStatus = trackRelease(scenario, deferred("release active Fill evidence status"));
+    const statusReader = repeatableReadFillService(scenario.actorA, [{
+      name: "active Fill master Resume FOR SHARE",
+      match: { kind: "queryRaw", includes: ['FROM "Resume"', '"updatedAt"', "FOR SHARE"] },
+      expectedMatches: 1,
+      after: async () => {
+        resumeLocked.resolve();
+        await releaseStatus.wait();
+      }
+    }]);
+    const reading = trackOperation(scenario, statusReader.service.getFillAttemptStatus({
+      userId: fixture.userId, runId: fixture.runId
+    }));
+    await resumeLocked.wait();
+    const revising = trackOperation(scenario, Promise.resolve(scenario.actorB.client.resume.update({
+      where: { id: resume.id }, data: { title: "Concurrent revised synthetic source" }
+    })));
+    await waitForActorLockWait(scenario.observer, scenario.actorB, scenario.actorA);
+    releaseStatus.resolve();
+    const [readSettled, reviseSettled] = await settlePair(reading, revising, "status read versus source revision");
+    const beforeRevision = fulfilled(readSettled, scenario.actorA, "active Fill status read");
+    fulfilled(reviseSettled, scenario.actorB, "queued master source revision");
+    assert.equal(beforeRevision.fieldOperationAllowed, true);
+    statusReader.controlled.assertExpectedHooksReached();
+    const afterRevision = await repeatableReadFillService(scenario.observer).service.getFillAttemptStatus({
+      userId: fixture.userId, runId: fixture.runId
+    });
+    assert.equal(afterRevision.fillAttemptId, acquired.attemptId);
+    assert.equal(afterRevision.fieldOperationAllowed, false);
+    assert.equal(afterRevision.errorCode, "FILL_STALE");
+  });
+});
+
 type Scenario = {
   label: string;
   observer: PostgresTestActor;

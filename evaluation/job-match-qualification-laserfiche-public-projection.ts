@@ -3,7 +3,7 @@
 export const LASERFICHE_SYNTHETIC_QUALIFICATION = Object.freeze({
   caseId: "laserfiche-presales-engineer-i",
   expectedJobProjectionHash: "52031f913656015dc6f2b790f2532f0e1f046e949b389e2d0c7c5ef49e2db3bc",
-  expectedInputHash: "edbc88e878c1e847832cbcef3553128b21c6772563f8f1b3f16688c986a6cad0",
+  expectedInputHash: "a1e45cd7b41059e4b37de61c7256cfa435b9b234deb84d992397bc0abc7a2ef9",
   job: Object.freeze({
     title: "Presales Engineer I",
     company: "Laserfiche",
