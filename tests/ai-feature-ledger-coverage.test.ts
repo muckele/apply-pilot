@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import { test, type TestContext } from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
+import { AI_MAX_REQUEST_COST_CENTS } from "@/lib/ai/config";
 import { activeAiFeatures, AI_FEATURE_REGISTRY } from "@/lib/ai/feature-registry";
 import { AI_FEATURE_POLICIES, type AiFeature } from "@/lib/ai/policy";
 import { prisma } from "@/lib/prisma";
@@ -228,11 +229,27 @@ for (const feature of Object.keys(FEATURE_INVOKERS)) {
     assert.equal(reservation.provider, "gemini");
     assert.equal(reservation.userId, "ledger-user");
     assert.ok(Number(reservation.maximumCostMicros) > 0);
-    assert.ok(Number(reservation.maximumCostMicros) <= 100_000, "per-request maximum is ten cents");
+    assert.ok(Number(reservation.maximumCostMicros) <= AI_MAX_REQUEST_COST_CENTS * 10_000, "within the per-request maximum");
     assert.equal(ledger.dispatches(), 1);
     assert.match(ledger.requests[0], /^https:\/\/generativelanguage\.googleapis\.com\//u);
     assert.deepEqual(ledger.events.slice(0, 3), ["reserve", "dispatch", "reconcile"]);
     assert.equal(ledger.reconciliations.length, 1);
+  });
+
+  // Google's Standard price for Gemini 3.8 Flash doubles on 2027-01-01 (decision D032).
+  test(`${feature} still reserves and dispatches at Google's January 2027 price`, async (t) => {
+    paidEnvironment(t);
+    t.mock.timers.enable({ apis: ["Date"], now: new Date("2027-01-01T00:00:00.000Z") });
+    const ledger = installLedger(t, "allow");
+
+    await FEATURE_INVOKERS[feature]("ledger-user").catch(() => undefined);
+
+    assert.equal(ledger.reservations.length, 1, `${feature} must reserve exactly once`);
+    assert.ok(
+      Number(ledger.reservations[0].maximumCostMicros) <= AI_MAX_REQUEST_COST_CENTS * 10_000,
+      "within the per-request maximum"
+    );
+    assert.equal(ledger.dispatches(), 1);
   });
 
   test(`${feature} makes no provider call when the hard ledger refuses the reservation`, async (t) => {

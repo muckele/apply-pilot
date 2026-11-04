@@ -502,7 +502,7 @@ test("stored session JSON is parsed defensively", async () => {
   assert.deepEqual(Object.keys(parseMockAnswers({ q1: { answer: "x" }, q2: { answer: "ok", feedback: feedbackFixture({ structure: 3, specificity: 3, relevance: 3, evidence: 3 }), answeredAt: "2026-11-03T10:00:00.000Z", attempts: 1, savedStoryId: null, requestHash: "c".repeat(64) } })), ["q2"]);
 });
 
-test("worst-case mock interview payloads stay inside their input-token limits and the ten-cent ceiling", async () => {
+test("worst-case mock interview payloads stay inside their input-token limits and the per-request ceiling", async () => {
   const { buildGeminiJsonRequest } = await import("@/lib/ai/gemini");
   const { guardedGeminiMaximumCostMicros } = await import("@/lib/ai/guarded-gemini");
   // With 120 résumé facts the worst case can exceed the bytes-as-tokens bound, which the
@@ -512,6 +512,7 @@ test("worst-case mock interview payloads stay inside their input-token limits an
   const withinInputLimit = (maxInputTokens: number, body: unknown) =>
     assert.ok(Buffer.byteLength(JSON.stringify(body)) / 2 + 1_024 <= maxInputTokens);
   const { AI_FEATURE_POLICIES } = await import("@/lib/ai/policy");
+  const { AI_MAX_REQUEST_COST_CENTS } = await import("@/lib/ai/config");
   const {
     buildMockFeedbackPayload,
     buildMockFeedbackResponseJsonSchema,
@@ -566,6 +567,6 @@ test("worst-case mock interview payloads stay inside their input-token limits an
   }));
 
   for (const feature of ["MOCK_INTERVIEW_QUESTIONS", "MOCK_INTERVIEW_FEEDBACK"] as const) {
-    assert.ok(guardedGeminiMaximumCostMicros(feature) <= 50_000, `${feature} worst case is at most five cents`);
+    assert.ok(guardedGeminiMaximumCostMicros(feature) <= AI_MAX_REQUEST_COST_CENTS * 10_000, `${feature} worst case fits the per-request ceiling`);
   }
 });

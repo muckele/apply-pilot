@@ -82,7 +82,7 @@ Open `http://localhost:3000/dashboard`.
 - `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini` (or leave `AI_PROVIDER` unset), and `false` respectively for live Gemini flows. Gemini is the only AI provider; any other `AI_PROVIDER` value turns every AI feature off.
 - `GEMINI_API_KEY`: Gemini API key for every AI feature. Without it, AI features show an explicit "AI unavailable" state and never fall back to another provider or to template output.
 - `GEMINI_FAST_MODEL`, `GEMINI_QUALITY_MODEL`, and `AI_ALLOWED_MODELS`: optional resume-parse model choices and the user-selectable override allowlist; each model must be in the compiled Gemini price registry.
-- `AI_HARD_CAP_CENTS`, `AI_AUTOMATION_CAP_CENTS`, `AI_MAX_REQUEST_COST_CENTS`, and `AI_CONFIRMATION_THRESHOLD_CENTS`: optional values that can lower, never raise, the compiled $5.00 monthly hard cap, $1.50 automation allowance, $0.10 per-request maximum, and $0.05 confirmation threshold.
+- `AI_HARD_CAP_CENTS`, `AI_AUTOMATION_CAP_CENTS`, `AI_MAX_REQUEST_COST_CENTS`, and `AI_CONFIRMATION_THRESHOLD_CENTS`: optional values that can lower, never raise, the compiled $5.00 monthly hard cap, $1.50 automation allowance, $0.15 per-request maximum, and $0.05 confirmation threshold.
 - `OPENAI_*`, `MOONSHOT_API_KEY`, `KIMI_*`, and `AI_PROVIDER_OVERRIDES` are retired; no feature reads them.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
 - `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.

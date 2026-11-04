@@ -10,7 +10,9 @@ const DEFAULT_QUALITY_MODEL = "gemini-3.5-flash-lite";
 // Compiled ceilings. Environment variables may lower these values but never raise them.
 export const AI_HARD_CAP_CENTS = 500;
 export const AI_AUTOMATION_CAP_CENTS = 150;
-export const AI_MAX_REQUEST_COST_CENTS = 10;
+// Raised from 10 to 15 so every feature still fits at Google's January 2027 Gemini 3.8
+// Flash price (decision D032); the largest worst case is JOB_MATCH at about 14.5 cents.
+export const AI_MAX_REQUEST_COST_CENTS = 15;
 export const AI_CONFIRMATION_THRESHOLD_CENTS = 5;
 
 function readPositiveInteger(name: string, fallback: number) {

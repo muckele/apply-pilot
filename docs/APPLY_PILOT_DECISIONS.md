@@ -111,7 +111,7 @@ Users may edit tailored resumes and cover letters and export them. AI-generated 
 ### D032 — Stay on Gemini 3.8 Flash through the January 2027 price increase
 **Status:** owner-approved 2026-11-04.
 
-Google's Standard price for Gemini 3.8 Flash doubles on 2027-01-01, from $0.75/$3.75/$0.075 to $1.50/$7.50/$0.15 per million input/output/cached tokens. Apply Pilot keeps using Gemini 3.8 Flash, and the compiled price registry records both prices. After the increase takes effect, the owner revisits the model choice, including whether to stay on Gemini or move to another AI platform. This confirms D029 until then. It does not change any budget cap or per-request ceiling.
+Google's Standard price for Gemini 3.8 Flash doubles on 2027-01-01, from $0.75/$3.75/$0.075 to $1.50/$7.50/$0.15 per million input/output/cached tokens. Apply Pilot keeps using Gemini 3.8 Flash, and the compiled price registry records both prices. After the increase takes effect, the owner revisits the model choice, including whether to stay on Gemini or move to another AI platform. This confirms D029 until then. So that every feature still fits at the new price, the compiled per-request maximum rises from 10¢ to 15¢ (the largest worst case, `JOB_MATCH`, is about 14.5¢). The $5 monthly hard cap, $1.50 automation allowance and 5¢ confirmation threshold are unchanged.
 
 ## 3. Still requires an explicit decision
 
