@@ -103,6 +103,11 @@ All MVP AI features run on Gemini through the hard budget ledger. OpenAI and Kim
 
 Agents may commit to feature branches, push them and open draft pull requests. Only the owner merges to `main`. Agents do not deploy, spend money, interact with live employer pages or submit applications.
 
+### D031 — Edited documents: allow edits, mark them
+**Status:** owner-approved 2026-11-03.
+
+Users may edit tailored resumes and cover letters and export them. AI-generated lines keep their fact citations; user-authored edits are marked as the user's own; an edit that changes a factual claim is flagged for the user's review before export. This relaxes the PR #35 rule that any manual edit blocks export permanently. It does not allow AI-generated text without citations.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
