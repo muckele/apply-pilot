@@ -1,0 +1,520 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  ExternalLink,
+  FileText,
+  Loader2,
+  ShieldAlert,
+  Sparkles
+} from "lucide-react";
+
+import { CopyButton } from "@/components/apply-kit/copy-button";
+import { DocumentReviewPanel } from "@/components/document-review-panel";
+import { Panel, PanelHeader, PrimaryButton, SecondaryButton } from "@/components/ui";
+import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+import type { ApplyKitDocument, ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
+
+// Apply Kit (WP1.5): everything needed to apply to this job by hand, with no browser companion.
+// Apply Pilot never opens, fills or submits the employer's form here; the user does, then records
+// "I applied", which freezes exactly which document versions were sent.
+
+const ANSWER_VAULT_HREF = "/settings/application-answers";
+
+type ExportFormat = "docx" | "pdf";
+type Busy = { action: "export" | "generate" | "applied"; key: string } | null;
+
+function shortHash(hash: string) {
+  return hash.slice(0, 12);
+}
+
+function isoDate(value: string | null) {
+  return value ? value.slice(0, 10) : "not recorded";
+}
+
+function statusTone(document: ApplyKitDocument) {
+  if (document.exportReady) return "border-emerald-200 bg-emerald-50 text-emerald-800";
+  return "border-amber-300 bg-amber-50 text-amber-900";
+}
+
+async function readJson(response: Response) {
+  return (await response.json().catch(() => null)) as { error?: string; code?: string } | null;
+}
+
+async function downloadDocument(document: ApplyKitDocument, format: ExportFormat) {
+  const response = await fetch("/api/documents/export", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...(document.kind === "RESUME" ? { resumeVersionId: document.id } : { documentId: document.id }),
+      format
+    })
+  });
+  if (!response.ok) {
+    const json = await readJson(response);
+    throw new Error(json?.error ?? "Download failed.");
+  }
+  const blob = await response.blob();
+  const filename = response.headers.get("content-disposition")?.match(/filename="([^"]+)"/u)?.[1] ?? `document.${format}`;
+  const url = URL.createObjectURL(blob);
+  const link = window.document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  window.document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function appliedErrorMessage(code: string | undefined, fallback: string) {
+  switch (code) {
+    case "APPLICATION_DOCUMENT_EVIDENCE_STALE":
+      return "Apply Pilot could not record this application: your master résumé or reviewed evidence changed after a selected document was written. Generate a new version or pick a current one, then record it again.";
+    case "APPLICATION_DOCUMENT_REVIEW_REQUIRED":
+      return "Apply Pilot could not record this application: a selected document needs your review first. Review it below, then record it again.";
+    case "APPLICATION_SENT_DOCUMENT_CHANGED":
+      return "A document changed after this page loaded. The kit now shows the latest version; check it is the one you sent, then confirm again.";
+    default:
+      return fallback;
+  }
+}
+
+function ReadableLines({ document }: { document: ApplyKitDocument }) {
+  return (
+    <div className="max-h-96 space-y-1 overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-800" data-kit-document-text>
+      {document.review.segments.map((segment) => (
+        <p key={segment.lineIndex} data-line-origin={segment.origin}>
+          {segment.text}
+          {segment.origin === "USER_EDIT" ? (
+            <span data-edit-marker className="ml-2 inline-block rounded border border-dashed border-slate-400 px-1.5 align-middle text-xs text-slate-600">your edit</span>
+          ) : null}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function DocumentSlot({
+  kind,
+  documents,
+  selectedId,
+  onSelect,
+  jobId,
+  generation,
+  busy,
+  onDownload,
+  onGenerate,
+  includeControl
+}: {
+  kind: "RESUME" | "COVER_LETTER";
+  documents: ApplyKitDocument[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  jobId: string;
+  generation: ApplyKitView["generation"];
+  busy: Busy;
+  onDownload: (document: ApplyKitDocument, format: ExportFormat) => void;
+  onGenerate: (kind: "RESUME" | "COVER_LETTER") => void;
+  includeControl?: React.ReactNode;
+}) {
+  const label = kind === "RESUME" ? "Résumé" : "Cover letter";
+  const slug = kind === "RESUME" ? "resume" : "cover-letter";
+  const document = documents.find((item) => item.id === selectedId) ?? null;
+  const generating = busy?.action === "generate" && busy.key === kind;
+  const generateButton = (text: string) => (
+    <SecondaryButton type="button" onClick={() => onGenerate(kind)} disabled={!generation.available || Boolean(busy)} data-generate={slug}>
+      {generating ? <Loader2 className="mr-2 animate-spin" size={15} aria-hidden="true" /> : <Sparkles className="mr-2" size={15} aria-hidden="true" />}
+      {text}
+    </SecondaryButton>
+  );
+
+  return (
+    <section className="space-y-3 rounded-lg border border-slate-200 p-4" data-kit-document={slug} aria-labelledby={`kit-${slug}-title`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 id={`kit-${slug}-title`} className="text-sm font-semibold text-slate-950">{label}</h3>
+        {document ? (
+          <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${statusTone(document)}`} data-document-status={document.status}>
+            {document.statusLabel}
+          </span>
+        ) : null}
+      </div>
+
+      {!document ? (
+        <div className="space-y-2 text-sm text-slate-700" data-empty-document={slug}>
+          <p>No tailored {kind === "RESUME" ? "résumé" : "cover letter"} for this job yet.</p>
+          {generateButton(kind === "RESUME" ? "Generate tailored résumé" : "Generate cover letter")}
+          {generation.reason ? <p className="text-xs leading-5 text-slate-500" data-generation-reason>{generation.reason}</p> : null}
+          {!generation.hasMasterResume ? <Link href="/resumes" className="text-xs font-semibold text-brand-700 underline">Upload your master résumé</Link> : null}
+          {kind === "COVER_LETTER" ? <p className="text-xs text-slate-500">A cover letter is optional for many applications.</p> : null}
+        </div>
+      ) : (
+        <>
+          {documents.length > 1 ? (
+            <label className="block text-xs font-medium text-slate-600">
+              Version
+              <select
+                value={document.id}
+                onChange={(event) => onSelect(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+              >
+                {documents.map((item) => (
+                  <option key={item.id} value={item.id}>v{item.versionNumber} · {item.statusLabel} · {isoDate(item.createdAt)}</option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+          <p className="text-sm text-slate-800">
+            <span className="font-semibold">v{document.versionNumber}</span> · {document.title}
+          </p>
+          <p className="text-xs leading-5 text-slate-600">{document.statusDetail}</p>
+          <p className="font-mono text-xs text-slate-500">hash {shortHash(document.contentHash)}…</p>
+
+          <div className="flex flex-wrap gap-2">
+            {(["docx", "pdf"] as const).map((format) => (
+              <SecondaryButton
+                key={format}
+                type="button"
+                onClick={() => onDownload(document, format)}
+                disabled={!document.exportReady || Boolean(busy)}
+                data-download={`${slug}-${format}`}
+              >
+                {busy?.action === "export" && busy.key === `${document.id}:${format}`
+                  ? <Loader2 className="mr-2 animate-spin" size={15} aria-hidden="true" />
+                  : <Download className="mr-2" size={15} aria-hidden="true" />}
+                Download {format.toUpperCase()}
+              </SecondaryButton>
+            ))}
+            <Link href={document.editorHref} className="inline-flex items-center rounded-lg px-2 py-2 text-sm font-semibold text-brand-700 underline">
+              Open in editor
+            </Link>
+          </div>
+
+          {document.readinessState === "EDITED_NEEDS_REVIEW" || document.readinessState === "LEGACY_REVIEW_REQUIRED" ? (
+            <details open id={`review-${slug}`} className="rounded-lg border border-amber-200 bg-amber-50 p-3 [&_button]:mt-2 [&_button]:rounded-lg [&_button]:border [&_button]:border-amber-300 [&_button]:bg-white [&_button]:px-3 [&_button]:py-1.5 [&_button]:text-sm [&_button]:font-semibold" data-inline-review={slug}>
+              <summary className="cursor-pointer text-sm font-semibold text-amber-900">Review now</summary>
+              <div className="mt-3 space-y-3">
+                {document.readinessState === "LEGACY_REVIEW_REQUIRED" ? <ReadableLines document={document} /> : null}
+                <DocumentReviewPanel kind={kind === "RESUME" ? "resume" : "cover"} documentId={document.id} review={document.review} disabled={Boolean(busy)} />
+              </div>
+            </details>
+          ) : null}
+          {document.readinessState === "REVIEW_OUTDATED" ? (
+            <p className="text-sm text-amber-900" id={`review-${slug}`}>
+              <Link href={document.editorHref} className="font-semibold underline">Open the editor and save it again</Link> to refresh its review.
+            </p>
+          ) : null}
+          {document.status === "NEEDS_REGENERATION" ? (
+            <div className="space-y-2" id={`review-${slug}`}>
+              {generateButton("Generate a new version")}
+              {generation.reason ? <p className="text-xs leading-5 text-slate-500" data-generation-reason>{generation.reason}</p> : null}
+              <p className="text-xs text-slate-500">
+                Or <Link href={`/jobs/${jobId}`} className="underline">review the evidence on the job page</Link> first.
+              </p>
+            </div>
+          ) : null}
+          {includeControl}
+        </>
+      )}
+    </section>
+  );
+}
+
+export function ApplyKit({ view }: { view: ApplyKitView }) {
+  const router = useRouter();
+  const [resumeId, setResumeId] = useState(view.selectedResumeId);
+  const [coverId, setCoverId] = useState(view.selectedCoverLetterId ?? view.coverLetters[0]?.id ?? null);
+  const [includeCover, setIncludeCover] = useState(view.selectedCoverLetterId !== null);
+  const [busy, setBusy] = useState<Busy>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [attested, setAttested] = useState(false);
+  const [appliedError, setAppliedError] = useState<{ text: string; fixHref: string | null } | null>(null);
+
+  const resume = view.resumes.find((item) => item.id === resumeId) ?? null;
+  const cover = includeCover ? view.coverLetters.find((item) => item.id === coverId) ?? null : null;
+  const blockers = [
+    resume && !resume.exportReady ? { text: `Résumé v${resume.versionNumber} needs attention before it can be recorded as sent.`, href: "#review-resume" } : null,
+    cover && !cover.exportReady ? { text: `Cover letter v${cover.versionNumber} needs attention. Review it, or untick "Include this cover letter".`, href: "#review-cover-letter" } : null
+  ].filter((item): item is { text: string; href: string } => item !== null);
+
+  async function handleDownload(document: ApplyKitDocument, format: ExportFormat) {
+    setBusy({ action: "export", key: `${document.id}:${format}` });
+    setMessage(null);
+    try {
+      await downloadDocument(document, format);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Download failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleGenerate(kind: "RESUME" | "COVER_LETTER") {
+    setBusy({ action: "generate", key: kind });
+    setMessage(null);
+    try {
+      const response = await fetchWithAiCostConfirmation(
+        `/api/jobs/${view.job.id}/${kind === "RESUME" ? "tailored-resume" : "cover-letter"}`,
+        { method: "POST" }
+      );
+      if (!response.ok) {
+        const json = await readJson(response);
+        throw new Error(json?.error ?? "Generation failed. Nothing was saved.");
+      }
+      setMessage(kind === "RESUME" ? "Tailored résumé saved. Review it before you use it." : "Cover letter saved. Review it before you use it.");
+      router.refresh();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Generation failed. Nothing was saved.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function recordApplied() {
+    if (!attested || blockers.length || busy) return;
+    setBusy({ action: "applied", key: "applied" });
+    setAppliedError(null);
+    try {
+      const response = await fetch("/api/applications", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jobPostingId: view.job.id,
+          status: "APPLIED",
+          ...(resume ? { resumeVersionId: resume.id, expectedResumeContentHash: resume.contentHash } : {}),
+          coverLetterVersionId: cover ? cover.id : null,
+          ...(cover ? { expectedCoverLetterContentHash: cover.contentHash } : {})
+        })
+      });
+      if (!response.ok) {
+        const json = await readJson(response);
+        const text = appliedErrorMessage(json?.code, json?.error ?? "Could not record this application.");
+        setAppliedError({ text, fixHref: response.status === 409 ? "#documents" : null });
+        if (response.status === 409) router.refresh();
+        return;
+      }
+      setConfirming(false);
+      setMessage("Recorded as applied. Your tracker now shows exactly which documents you sent.");
+      router.refresh();
+    } catch {
+      setAppliedError({ text: "Could not reach Apply Pilot. Nothing was recorded; try again.", fixHref: null });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const sentLine = (summary: NonNullable<ApplyKitView["sent"]>["resume"], noun: string) =>
+    summary ? `${noun} v${summary.versionNumber} (${summary.shortHash}…)` : `no ${noun}`;
+
+  return (
+    <div className="space-y-6" data-apply-kit>
+      {view.job.notice ? (
+        <p
+          role="status"
+          className={`flex gap-2 rounded-lg border px-3 py-2 text-sm ${view.job.notice.tone === "warning" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}
+          data-job-notice
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          {view.job.notice.text}
+        </p>
+      ) : null}
+      {message ? <p role="status" className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-700" data-kit-message>{message}</p> : null}
+
+      <Panel>
+        <PanelHeader title="1. Documents" description="Download the exact files you will upload. Edited documents are used only after you confirm their changed facts." />
+        <div id="documents" className="grid gap-4 p-5 lg:grid-cols-2">
+          <DocumentSlot
+            kind="RESUME"
+            documents={view.resumes}
+            selectedId={resumeId}
+            onSelect={setResumeId}
+            jobId={view.job.id}
+            generation={view.generation}
+            busy={busy}
+            onDownload={handleDownload}
+            onGenerate={handleGenerate}
+          />
+          <DocumentSlot
+            kind="COVER_LETTER"
+            documents={view.coverLetters}
+            selectedId={coverId}
+            onSelect={(id) => { setCoverId(id); setIncludeCover(true); }}
+            jobId={view.job.id}
+            generation={view.generation}
+            busy={busy}
+            onDownload={handleDownload}
+            onGenerate={handleGenerate}
+            includeControl={
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                <input type="checkbox" checked={includeCover} onChange={(event) => setIncludeCover(event.target.checked)} className="h-4 w-4 rounded border-slate-300" data-include-cover />
+                Include this cover letter in my application
+              </label>
+            }
+          />
+        </div>
+      </Panel>
+
+      <Panel>
+        <PanelHeader title="2. Answers" description="Copy your saved answers into the employer's form. Edit them in your Answer Vault." />
+        <div className="space-y-5 p-5" data-kit-answers>
+          <p className="flex gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700">
+            <ShieldAlert size={15} className="mt-0.5 shrink-0" aria-hidden="true" />
+            Apply Pilot never answers work authorization, sponsorship, salary, demographic, disability, veteran, criminal history or legal questions for you, and never sends them to an AI model.
+          </p>
+          <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+            {view.answers.common.map((question) => (
+              <li key={question.id} className="space-y-2 px-4 py-3" data-common-question={question.id} data-answer-status={question.status}>
+                <p className="text-sm font-medium text-slate-950">{question.question}</p>
+                {question.status === "SAVED" ? question.answers.map((answer) => (
+                  <div key={answer.id} className="flex items-start justify-between gap-3">
+                    <p className="min-w-0 whitespace-pre-wrap break-words text-sm text-slate-700">{answer.answer}</p>
+                    <CopyButton value={answer.answer} label={question.question} />
+                  </div>
+                )) : null}
+                {question.status === "NOT_SAVED" ? (
+                  <p className="text-xs text-slate-500">
+                    Not in your Answer Vault. <Link href={ANSWER_VAULT_HREF} className="font-semibold text-brand-700 underline">Add it</Link> to reuse it next time.
+                  </p>
+                ) : null}
+                {question.status === "ANSWER_YOURSELF" ? (
+                  <p className="text-xs leading-5 text-slate-600">
+                    <span className="mr-1 rounded-md border border-slate-300 bg-white px-1.5 py-0.5 font-semibold text-slate-800">Answer this yourself</span>
+                    {question.reason}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+
+          {view.answers.otherSaved.length ? (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950">Other saved answers</h3>
+              <ul className="mt-2 divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {view.answers.otherSaved.map((answer) => (
+                  <li key={answer.id} className="space-y-1 px-4 py-3" data-saved-answer={answer.id}>
+                    <p className="text-xs text-slate-500">{answer.categoryLabel} · {answer.question}</p>
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="min-w-0 whitespace-pre-wrap break-words text-sm text-slate-700">{answer.answer}</p>
+                      <CopyButton value={answer.answer} label={answer.question} />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {view.answers.answerYourself.length ? (
+            <div>
+              <h3 className="text-sm font-semibold text-slate-950">Saved sensitive questions</h3>
+              <ul className="mt-2 space-y-2">
+                {view.answers.answerYourself.map((entry) => (
+                  <li key={entry.id} className="rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-700" data-answer-yourself={entry.id}>
+                    <p className="font-medium text-slate-950">{entry.question}</p>
+                    <p className="mt-1 text-xs text-slate-600"><span className="font-semibold">Answer this yourself.</span> {entry.reason}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <Link href={ANSWER_VAULT_HREF} className="text-sm font-semibold text-brand-700 underline">Manage your Answer Vault</Link>
+        </div>
+      </Panel>
+
+      <Panel>
+        <PanelHeader title="3. Open the application" description="You fill in and submit the employer's form yourself." />
+        <div className="space-y-3 p-5 text-sm text-slate-700" data-open-application>
+          {view.applyLink ? (
+            <>
+              <a
+                href={view.applyLink.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                data-apply-link
+              >
+                <ExternalLink className="mr-2" size={16} aria-hidden="true" />
+                Open application
+              </a>
+              <p>Opens <strong data-apply-host>{view.applyLink.hostname}</strong> in a new tab.</p>
+              {!view.applyLink.secure ? <p className="text-amber-900">This link does not use HTTPS. Check the address before you enter personal details.</p> : null}
+            </>
+          ) : (
+            <p data-no-apply-link>
+              No application link is saved for this job. Find the posting on {view.job.company}&apos;s careers site, apply there, then come back to record it.
+            </p>
+          )}
+          <p className="text-xs leading-5 text-slate-500">
+            Apply Pilot never clicks the employer&apos;s Submit button. Some employers flag or block applications they believe are AI-assisted, so read every answer before you submit.
+          </p>
+        </div>
+      </Panel>
+
+      <Panel>
+        <PanelHeader title="4. I applied" description="Record the application once you have submitted it on the employer's site." />
+        <div className="space-y-3 p-5 text-sm text-slate-700" data-record-applied>
+          {view.sent ? (
+            <p data-sent-summary>
+              Sent: {sentLine(view.sent.resume, "résumé")}, {sentLine(view.sent.coverLetter, "cover letter")}.{" "}
+              <Link href={view.sent.href} className="font-semibold text-brand-700 underline">View what you sent</Link>
+            </p>
+          ) : null}
+          {!view.canRecordApplied && view.application ? (
+            <p>
+              Recorded as <strong>{view.application.statusLabel}</strong>
+              {view.application.dateApplied ? ` · applied ${isoDate(view.application.dateApplied)}` : ""}.{" "}
+              <Link href={`/applications/${view.application.id}`} className="font-semibold text-brand-700 underline">Open in tracker</Link>
+            </p>
+          ) : !confirming ? (
+            <PrimaryButton type="button" onClick={() => { setConfirming(true); setAttested(false); setAppliedError(null); }} data-start-applied>
+              <CheckCircle2 className="mr-2" size={15} aria-hidden="true" />
+              I applied
+            </PrimaryButton>
+          ) : (
+            <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4" data-applied-confirmation>
+              <p className="font-semibold text-slate-950">Record this application as submitted</p>
+              <ul className="space-y-1 text-sm">
+                <li data-confirm-resume>
+                  {resume
+                    ? <>Résumé: <strong>v{resume.versionNumber}</strong> · {resume.statusLabel} · <span className="font-mono text-xs">hash {shortHash(resume.contentHash)}…</span></>
+                    : "Résumé: none from Apply Pilot will be recorded."}
+                </li>
+                <li data-confirm-cover>
+                  {cover
+                    ? <>Cover letter: <strong>v{cover.versionNumber}</strong> · {cover.statusLabel} · <span className="font-mono text-xs">hash {shortHash(cover.contentHash)}…</span></>
+                    : "Cover letter: none."}
+                </li>
+              </ul>
+              {blockers.map((blocker) => (
+                <p key={blocker.href} className="text-sm text-amber-900" data-applied-blocker>
+                  {blocker.text} <a href={blocker.href} className="font-semibold underline">Fix it</a>
+                </p>
+              ))}
+              <label className="flex items-start gap-2 text-sm text-slate-800">
+                <input type="checkbox" checked={attested} onChange={(event) => setAttested(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-slate-300" data-attest />
+                I submitted this application on the employer&apos;s site.
+              </label>
+              {appliedError ? (
+                <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-applied-error>
+                  {appliedError.text}{" "}
+                  {appliedError.fixHref ? <a href={appliedError.fixHref} className="font-semibold underline">Fix it</a> : null}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <PrimaryButton type="button" onClick={recordApplied} disabled={!attested || blockers.length > 0 || Boolean(busy)} data-confirm-applied>
+                  {busy?.action === "applied" ? <Loader2 className="mr-2 animate-spin" size={15} aria-hidden="true" /> : <FileText className="mr-2" size={15} aria-hidden="true" />}
+                  Record as applied
+                </PrimaryButton>
+                <SecondaryButton type="button" onClick={() => setConfirming(false)} disabled={Boolean(busy)}>Cancel</SecondaryButton>
+              </div>
+            </div>
+          )}
+        </div>
+      </Panel>
+    </div>
+  );
+}
