@@ -241,7 +241,8 @@ test("a failed save rolls the card back and announces the server error", async (
     error: "Regenerate documents from the current reviewed evidence before saving this packet."
   }, 409));
   try {
-    await board.drag("app-saved", "INTERESTED");
+    // Entering APPLIED with documents built from outdated evidence is still refused by the PATCH route.
+    await board.drag("app-saved", "APPLIED");
     assert.equal(board.fetchCalls.length, 1);
     assert.equal(board.columnOf("app-saved"), "SAVED");
     assert.match(board.cardElement("app-saved")?.textContent ?? "", /Follow-up 2026-11-08/, "previous follow-up restored");
