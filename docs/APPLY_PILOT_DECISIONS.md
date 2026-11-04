@@ -78,6 +78,31 @@ The active next product milestone is a genuine intended P0.4 application. Its te
 
 Current unscored candidate flow needs production-quality `JOB_MATCH` scoring before useful P0.4 preparation. `GEMINI_JOB_MATCH_QUALIFICATION` may compare Gemini 3.8 Flash on a small frozen corpus against the existing conceptual rubric and approved applicant evidence. It is an evaluation inside Application Intelligence, not a roadmap phase. It grants no production routing, schema, provider commitment, database mutation, DBeaver re-score, ApplicationRun change, or employer interaction.
 
+### D026 — MVP Bible defines MVP scope and order
+**Status:** owner-requested 2026-11-03.
+
+[`docs/APPLY_PILOT_MVP_BIBLE.md`](APPLY_PILOT_MVP_BIBLE.md) defines the MVP as six pillars (master resume, job discovery, tailored documents, apply, tracker, interview prep) delivered through milestones M0–M3. It supersedes the scope and ordering parts of D024 and D025: P0.4 browser-fill acceptance is one part of the Apply pillar rather than the whole critical path, and the pending `JOB_MATCH` qualification becomes a short task rather than a gate. Every safety boundary in this log and in `AGENTS.md` remains.
+
+### D027 — MVP apply mode: the user clicks Submit
+**Status:** owner-approved 2026-11-03.
+
+Apply Pilot prepares documents and answers and fills supported fields; the user activates the employer's Submit. Automatic submission is outside the MVP. This confirms D003 for the MVP.
+
+### D028 — Review and land the PR #31–#35 stack
+**Status:** owner-approved 2026-11-03.
+
+The evidence-bound generation stack (`codex/job-match-gap-evidence-v33` and its base PRs) is reviewed, repaired to green CI and offered for owner merge.
+
+### D029 — Gemini as the single MVP AI provider
+**Status:** owner-approved 2026-11-03.
+
+All MVP AI features run on Gemini through the hard budget ledger. OpenAI and Kimi paths leave the MVP critical path. Model IDs and prices are still recorded per call; this is not a claim about any model's quality.
+
+### D030 — Agent git authority
+**Status:** owner-approved 2026-11-03.
+
+Agents may commit to feature branches, push them and open draft pull requests. Only the owner merges to `main`. Agents do not deploy, spend money, interact with live employer pages or submit applications.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.

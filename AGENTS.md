@@ -16,6 +16,8 @@ Repository guards protect approved workflows, but they cannot intercept a person
 <!-- APPLY_PILOT_ROADMAP_REFERENCE_V2_START -->
 ## Apply Pilot project direction and references
 
+**Read `docs/APPLY_PILOT_MVP_BIBLE.md` first.** Since 2026-11-03 it defines MVP scope, order, current status and the agent working agreement (decisions D026–D030). Where it conflicts with older roadmap sequencing below, the Bible wins; the database rules above and the safety boundaries below still apply.
+
 Read `PRODUCT_ROADMAP.md`, `docs/APPLY_PILOT_PROJECT_STATE.md`, and `docs/APPLY_PILOT_DECISIONS.md` before roadmap-sensitive work. Read the relevant specialist brief and `prompts/APPLY_PILOT_MASTER_PROMPT.md` for a fresh architectural task. The state ledger distinguishes planned, implemented, independently reviewed, committed, pushed, merged, deployed, and verified in the intended user flow; historic SHAs are not reset instructions. Its current reference checkpoint is PR #11 (`4644e4f`) and its active milestone is P0.4, not yet passed.
 
 The approved delivery direction is **web-first**: no required Chrome extension for core public value. P2 is **Managed Application Workspace / Browser Copilot**, with provider/architecture validation before real hosted execution. The current local Chromium companion remains the self-beta baseline; extensions/desktop surfaces are optional. Technical Human-Submit acceptance and no-download public-release acceptance are separate gates.
