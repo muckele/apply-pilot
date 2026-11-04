@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { createBoardListingCache } from "@/lib/job-sources/board-sync";
+import { complianceDisabledSourceTypes } from "@/lib/job-sources/compliance";
 import {
   combineDiscoveryScoringSummaries,
   isSystemicDiscoveryScoringStopReason,
+  runScheduledBoardDiscovery,
   type DiscoveryScoringStopReason,
   type DiscoveryScoringSummary
 } from "@/lib/job-sources/discovery";
@@ -14,6 +17,88 @@ import { writeAuditLog } from "@/lib/security/audit-log";
 import { cronJobDiscoverySchema } from "@/lib/validators";
 
 export const dynamic = "force-dynamic";
+
+// Upper bound on users whose saved preferences run board discovery in one cron invocation.
+const maxPreferenceUsersPerRun = 25;
+
+type PreferenceRunResult = {
+  userId: string;
+  status: "success" | "error" | "skipped";
+  imported: number;
+  boards?: { followed: number; directory: number; deferred: number };
+  scoring?: DiscoveryScoringSummary;
+  error?: string;
+};
+
+/**
+ * Preference discovery over public ATS boards for every user with saved discovery preferences:
+ * followed boards plus matching directory boards, one fetch per board per invocation. Followed
+ * boards synced here get a fresh lastSyncedAt, so the per-source phase below skips them.
+ */
+async function runPreferenceBoardPhase(
+  privateUserFilter: Record<string, unknown>,
+  scoringStopReasonsByUser: Map<string, DiscoveryScoringStopReason>
+) {
+  const preferences = await prisma.jobDiscoveryPreference.findMany({
+    where: privateUserFilter,
+    include: { user: { include: { profile: true } } },
+    orderBy: [{ updatedAt: "asc" }, { userId: "asc" }],
+    take: maxPreferenceUsersPerRun
+  });
+  const listingCache = createBoardListingCache();
+  const results: PreferenceRunResult[] = [];
+
+  for (const preference of preferences) {
+    if (!isEmailAllowedForAuth(preference.user.email)) {
+      results.push({
+        userId: preference.userId,
+        status: "skipped",
+        imported: 0,
+        error: "User is not approved for this private deployment."
+      });
+      continue;
+    }
+
+    try {
+      const result = await runScheduledBoardDiscovery({
+        userId: preference.userId,
+        profile: preference.user.profile,
+        preference,
+        listingCache,
+        scoringStopReason: scoringStopReasonsByUser.get(preference.userId)
+      });
+
+      results.push({
+        userId: preference.userId,
+        status: "success",
+        imported: result.imported.length,
+        boards: result.boards,
+        scoring: result.scoring
+      });
+
+      if (isSystemicDiscoveryScoringStopReason(result.scoring.stopReason)) {
+        scoringStopReasonsByUser.set(preference.userId, result.scoring.stopReason);
+      }
+
+      await writeAuditLog({
+        userId: preference.userId,
+        action: "job.discovery.cron.preferences",
+        resource: "JobPosting",
+        metadata: { imported: result.imported.length, boards: result.boards, scoring: result.scoring }
+      });
+    } catch (error) {
+      results.push({
+        userId: preference.userId,
+        status: "error",
+        imported: 0,
+        error: error instanceof Error ? error.message : "Preference board discovery failed."
+      });
+      captureException(error, { source: "cron.job-discovery.preferences", userId: preference.userId });
+    }
+  }
+
+  return results;
+}
 
 class CronAuthError extends Error {
   constructor(message: string) {
@@ -69,10 +154,12 @@ async function runCron(request: NextRequest) {
   const privateUserFilter = requiresEmailAllowlist()
     ? { user: { email: { in: getAllowedAuthEmails() } } }
     : {};
+  const scoringStopReasonsByUser = new Map<string, DiscoveryScoringStopReason>();
+  const preferenceResults = await runPreferenceBoardPhase(privateUserFilter, scoringStopReasonsByUser);
   const sources = await prisma.jobSource.findMany({
     where: {
       syncEnabled: true,
-      type: { not: "MANUAL" },
+      type: { notIn: ["MANUAL", ...complianceDisabledSourceTypes()] },
       ...privateUserFilter,
       AND: [
         {
@@ -106,7 +193,6 @@ async function runCron(request: NextRequest) {
     scoring?: DiscoveryScoringSummary;
     error?: string;
   }> = [];
-  const scoringStopReasonsByUser = new Map<string, DiscoveryScoringStopReason>();
 
   for (const source of sources) {
     if (!isEmailAllowedForAuth(source.user.email)) {
@@ -177,13 +263,15 @@ async function runCron(request: NextRequest) {
     }
   }
 
-  const imported = results.reduce((total, result) => total + result.imported, 0);
-  const failed = results.filter((result) => result.status === "error").length;
+  const allResults = [...preferenceResults, ...results];
+  const imported = allResults.reduce((total, result) => total + result.imported, 0);
+  const failed = allResults.filter((result) => result.status === "error").length;
   const scoring = combineDiscoveryScoringSummaries(
-    results.flatMap((result) => result.scoring ? [result.scoring] : [])
+    allResults.flatMap((result) => result.scoring ? [result.scoring] : [])
   );
 
   logger.info("cron.job_discovery.completed", {
+    preferenceUsers: preferenceResults.length,
     sources: sources.length,
     imported,
     failed,
@@ -194,6 +282,8 @@ async function runCron(request: NextRequest) {
 
   return NextResponse.json({
     ok: failed === 0,
+    preferenceUsers: preferenceResults.length,
+    preferenceResults,
     sources: sources.length,
     imported,
     failed,

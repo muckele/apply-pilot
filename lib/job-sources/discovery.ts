@@ -3,16 +3,33 @@ import type { JobPosting, JobSource, JobSourceType, UserProfile } from "@prisma/
 import { PublicApiError } from "@/lib/api-errors";
 import { LocalAiUnavailableError } from "@/lib/ai/client";
 import { getJobSourceProvider } from "@/lib/job-sources";
-import { resolveDiscoveryLocation, resolveDiscoveryQueries } from "@/lib/job-sources/discovery-preferences";
-import { locationPreferenceMatch, preferredLocationsFromProfile } from "@/lib/job-sources/location-match";
-import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
-import { isRemoteLikeText } from "@/lib/job-sources/remote";
+import { runBoardDiscovery, type BoardDiscoveryResult } from "@/lib/job-sources/board-discovery";
+import type { JobBoardDirectoryEntry } from "@/lib/job-sources/board-directory";
+import { normalizeBoardTokenInput } from "@/lib/job-sources/board-fetch";
+import { syncBoard, type BoardListingCache } from "@/lib/job-sources/board-sync";
+import { isBoardAts } from "@/lib/job-sources/board-url";
+import { complianceDisabledMessage, isSourceTypeComplianceEnabled } from "@/lib/job-sources/compliance";
+import {
+  resolveDiscoveryLocation,
+  resolveDiscoveryQueries,
+  type JobDiscoveryPreferences
+} from "@/lib/job-sources/discovery-preferences";
+import {
+  createRunDedupeIndex,
+  normalizedJobFromPosting,
+  persistCandidates,
+  type RunDedupeIndex
+} from "@/lib/job-sources/ingestion";
+import { evaluateForImport, normalizedJobKey, readPositiveIntegerEnv } from "@/lib/job-sources/prefilter";
+import { scoreJobRelevance } from "@/lib/job-sources/relevance";
 import { assertSourceCanSync, buildCriteriaFromSource } from "@/lib/job-sources/source-policy";
-import type { JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { upsertNormalizedJob, runJobMatch } from "@/lib/jobs";
-import { normalizeText, normalizeUrl } from "@/lib/normalize";
+import type { DiscoverySourceReport, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
+import { runJobMatch } from "@/lib/jobs";
 import { prisma } from "@/lib/prisma";
 import { getOrCreateAiSettings } from "@/lib/ai/usage";
+
+export { getPreImportRejectionReason } from "@/lib/job-sources/prefilter";
+export type { DiscoverySourceReport } from "@/lib/job-sources/types";
 
 export type AutomatedDiscoveryOptions = {
   userId: string;
@@ -22,16 +39,9 @@ export type AutomatedDiscoveryOptions = {
   limitPerQuery?: number;
   scoreImported?: boolean;
   maxJobsToScore?: number;
-};
-
-export type DiscoverySourceReport = {
-  name: string;
-  type: string;
-  status: "imported" | "skipped" | "blocked" | "error";
-  imported: number;
-  skipped?: number;
-  bestRelevanceScore?: number;
-  details: string;
+  /** Overrides the reviewed seed directory (tests). */
+  boardDirectory?: readonly JobBoardDirectoryEntry[];
+  maxBoards?: number;
 };
 
 export type RestrictedBoardPolicy = {
@@ -44,9 +54,14 @@ export type RestrictedBoardPolicy = {
 
 type ProviderSearchResult = {
   imported: JobPosting[];
+  unchanged: JobPosting[];
   skipped: number;
+  duplicates: number;
+  closed?: number;
   bestRelevanceScore: number;
 };
+
+const defaultMaxJobsToScore = 8;
 
 export type DiscoveryAiScoreResult = {
   jobId: string;
@@ -131,14 +146,8 @@ export function combineDiscoveryScoringSummaries(
   );
 }
 
-const sourceTypesForConfiguredSync: JobSourceType[] = [
-  "GREENHOUSE",
-  "LEVER",
-  "ASHBY",
-  "WORKABLE",
-  "RSS",
-  "COMPANY_CAREERS"
-];
+// Greenhouse, Lever and Ashby sources are synced by board discovery (runBoardDiscovery).
+const sourceTypesForConfiguredSync: JobSourceType[] = ["WORKABLE", "RSS", "COMPANY_CAREERS"];
 
 export const restrictedJobBoardPolicies: RestrictedBoardPolicy[] = [
   {
@@ -184,165 +193,42 @@ function formatJob(job: JobPosting) {
   };
 }
 
-function normalizedJobKey(job: NormalizedJob) {
-  return [
-    normalizeText(job.company),
-    normalizeText(job.title),
-    normalizeText(job.location),
-    normalizeUrl(job.applyUrl ?? job.sourceUrl)
-  ].join("|");
+/** Tracks written postings for the run summary, and every surviving posting for capped AI scoring. */
+type RunTracker = {
+  imported: Map<string, JobPosting>;
+  scoringPool: Map<string, JobPosting>;
+};
+
+function createRunTracker(): RunTracker {
+  return { imported: new Map(), scoringPool: new Map() };
 }
 
-function queryMatchesJob(job: NormalizedJob, query?: string) {
-  if (!query) {
-    return true;
-  }
-
-  const tokens = normalizeText(query)
-    .split(" ")
-    .filter((token) => token.length > 2);
-
-  if (!tokens.length) {
-    return true;
-  }
-
-  const haystack = normalizeText(
-    [job.title, job.company, job.location, job.description, ...job.requirements, ...job.detectedTechStack].join(" ")
-  );
-  const matchedTokens = tokens.filter((token) => haystack.includes(token));
-
-  return matchedTokens.length >= Math.max(1, Math.ceil(tokens.length * 0.6));
-}
-
-function matchesRemoteOnly(job: NormalizedJob, remoteOnly?: boolean) {
-  if (!remoteOnly) {
-    return true;
-  }
-
-  return isRemoteLikeText(job.remoteStatus) || isRemoteLikeText(job.location) || isRemoteLikeText(job.description);
-}
-
-function maxPostedAgeDays() {
-  return readPositiveIntegerEnv("JOB_SOURCE_MAX_POSTED_AGE_DAYS", 30);
-}
-
-function readPositiveIntegerEnv(name: string, fallback: number) {
-  const value = Number(process.env[name]);
-  return Number.isInteger(value) && value > 0 ? value : fallback;
-}
-
-function jobPostedAgeDays(job: NormalizedJob) {
-  if (!job.datePosted || Number.isNaN(job.datePosted.getTime())) {
-    return null;
-  }
-
-  return (Date.now() - job.datePosted.getTime()) / 86_400_000;
-}
-
-function isRemoteOrHybrid(job: NormalizedJob) {
-  const workStyleText = normalizeText([job.remoteStatus, job.location, job.description].join(" "));
-
-  return (
-    isRemoteLikeText(job.remoteStatus) ||
-    isRemoteLikeText(job.location) ||
-    workStyleText.includes("hybrid") ||
-    workStyleText.includes("remote")
-  );
-}
-
-function locationMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {
-  const location = normalizeText(job.location);
-
-  if (!location || isRemoteOrHybrid(job)) {
-    return true;
-  }
-
-  // Driven by this user's own preferred and home locations; no locale is built in.
-  const preferredLocations = preferredLocationsFromProfile(profile);
-
-  if (!preferredLocations.length) {
-    return true;
-  }
-
-  if (location.includes("united states") || location === "us" || location === "usa") {
-    return true;
-  }
-
-  return locationPreferenceMatch(job.location, preferredLocations) !== "none";
-}
-
-function salaryMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {
-  if (!profile?.salaryTargetMin || (!job.salaryMin && !job.salaryMax)) {
-    return true;
-  }
-
-  const jobMax = job.salaryMax ?? job.salaryMin ?? 0;
-
-  return jobMax >= profile.salaryTargetMin * 0.85;
-}
-
-export function getPreImportRejectionReason({
-  job,
-  profile,
-  relevance,
-  remoteOnly
-}: {
-  job: NormalizedJob;
-  profile: UserProfile | null;
-  relevance: JobRelevanceResult;
-  remoteOnly?: boolean;
-}) {
-  const ageDays = jobPostedAgeDays(job);
-
-  if (ageDays !== null && ageDays > maxPostedAgeDays()) {
-    return `Posting is older than ${maxPostedAgeDays()} days.`;
-  }
-
-  if (remoteOnly && !matchesRemoteOnly(job, true)) {
-    return "Posting does not match remote-only filter.";
-  }
-
-  if (profile?.remotePreference === "REMOTE" && !isRemoteOrHybrid(job)) {
-    return "Work style does not match remote preference.";
-  }
-
-  if (!locationMatchesProfile(job, profile)) {
-    return "Location does not match preferred locations or remote/hybrid preferences.";
-  }
-
-  if (!salaryMatchesProfile(job, profile)) {
-    return "Salary range is below the target range.";
-  }
-
-  if (relevance.hardExcluded) {
-    return "Role contains a hard-excluded title, role type, or deal-breaker.";
-  }
-
-  if (relevance.breakdown.seniorityScore === 0) {
-    return "Role appears too senior for the current search target.";
-  }
-
-  if (relevance.breakdown.roleTitleScore < 45 && relevance.breakdown.bodyEvidenceScore < 70) {
-    return "Role title and body evidence are too weak for the target profile.";
-  }
-
-  if (relevance.decision === "skip") {
-    return "Overall relevance score is below the save threshold.";
-  }
-
-  return null;
-}
-
-function trackImportedJobs(target: Map<string, JobPosting>, result: ProviderSearchResult) {
-  result.imported.forEach((job) => target.set(job.id, job));
+function trackImportedJobs(tracker: RunTracker, result: Pick<ProviderSearchResult, "imported" | "unchanged">) {
+  result.imported.forEach((job) => {
+    tracker.imported.set(job.id, job);
+    tracker.scoringPool.set(job.id, job);
+  });
+  // Unchanged postings are not rewritten, but they stay eligible for the same capped scoring
+  // step they reached before (already-scored ones return the cached match).
+  result.unchanged.forEach((job) => tracker.scoringPool.set(job.id, job));
 }
 
 function reportDetails(base: string, result: ProviderSearchResult) {
-  if (!result.imported.length && result.skipped) {
-    return `${base} No jobs passed the current relevance filter.`;
+  const notes = [
+    result.unchanged.length ? `${result.unchanged.length} unchanged.` : "",
+    result.duplicates ? `${result.duplicates} already found through another source.` : "",
+    result.closed ? `${result.closed} no longer listed and marked expired.` : ""
+  ].filter(Boolean);
+
+  if (!result.imported.length && !result.unchanged.length && result.skipped) {
+    notes.push("No jobs passed the current relevance filter.");
   }
 
-  return base;
+  return [base, ...notes].join(" ");
+}
+
+function freshnessFields(result: ProviderSearchResult) {
+  return { unchanged: result.unchanged.length, duplicates: result.duplicates, closed: result.closed ?? 0 };
 }
 
 async function getOrCreateJobSource({
@@ -382,7 +268,8 @@ async function importRawJobs({
   rawJobs,
   query,
   remoteOnly,
-  profile
+  profile,
+  index
 }: {
   userId: string;
   source: JobSource;
@@ -390,10 +277,11 @@ async function importRawJobs({
   query?: string;
   remoteOnly?: boolean;
   profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
-}) {
+  index: RunDedupeIndex;
+}): Promise<ProviderSearchResult> {
   const provider = getJobSourceProvider(source.type);
   const seen = new Set<string>();
-  const imported: JobPosting[] = [];
+  const candidates: NormalizedJob[] = [];
   let skipped = 0;
   let bestRelevanceScore = 0;
 
@@ -405,84 +293,97 @@ async function importRawJobs({
     };
     const key = normalizedJobKey(job);
 
-    if (
-      !job.title ||
-      !job.sourceUrl ||
-      seen.has(key) ||
-      !queryMatchesJob(job, query) ||
-      !matchesRemoteOnly(job, remoteOnly)
-    ) {
+    if (seen.has(key)) {
       skipped += 1;
       continue;
     }
 
-    const relevance = scoreJobRelevance({ job, profile, query });
-    bestRelevanceScore = Math.max(bestRelevanceScore, relevance.score);
-    const rejectionReason = getPreImportRejectionReason({ job, profile, relevance, remoteOnly });
-
-    if (rejectionReason) {
+    const evaluation = evaluateForImport({ job, profile, queries: query ? [query] : [], remoteOnly });
+    if (evaluation.relevance) {
+      bestRelevanceScore = Math.max(bestRelevanceScore, evaluation.relevance.score);
+    }
+    if (!evaluation.passed) {
       skipped += 1;
       continue;
     }
 
     seen.add(key);
-    imported.push(await upsertNormalizedJob({ userId, jobSourceId: source.id, job }));
+    candidates.push(job);
   }
 
-  return { imported, skipped, bestRelevanceScore };
+  const persisted = await persistCandidates({ userId, jobSourceId: source.id, candidates, index });
+
+  return {
+    imported: [...persisted.created, ...persisted.updated],
+    unchanged: persisted.unchanged,
+    skipped,
+    duplicates: persisted.duplicates,
+    bestRelevanceScore
+  };
 }
 
 async function runProviderSearch({
   userId,
   source,
   criteria,
-  profile
+  profile,
+  index
 }: {
   userId: string;
   source: JobSource;
   criteria: JobSearchCriteria;
   profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
+  index: RunDedupeIndex;
 }) {
   const provider = getJobSourceProvider(source.type);
   const rawJobs = await provider.searchJobs(criteria);
 
-  return importRawJobs({ userId, source, rawJobs, query: criteria.query, remoteOnly: criteria.remote, profile });
+  return importRawJobs({ userId, source, rawJobs, query: criteria.query, remoteOnly: criteria.remote, profile, index });
 }
 
 export async function importJobsFromSource({
   userId,
   source,
   criteria,
-  profile
+  profile,
+  index = createRunDedupeIndex()
 }: {
   userId: string;
   source: JobSource;
   criteria: JobSearchCriteria;
   profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
-}) {
-  return runProviderSearch({ userId, source, criteria, profile });
-}
+  index?: RunDedupeIndex;
+}): Promise<ProviderSearchResult> {
+  if (isBoardAts(source.type) && criteria.boardToken) {
+    // A board sync reads the whole public listing so postings that left the board can be closed.
+    const result = await syncBoard({
+      userId,
+      target: {
+        ats: source.type,
+        token: normalizeBoardTokenInput(source.type, criteria.boardToken),
+        baseUrl: criteria.url,
+        company: source.name,
+        jobSourceId: source.id,
+        closureScopes: [{ jobSourceId: source.id }]
+      },
+      queries: criteria.query ? [criteria.query] : [],
+      remoteOnly: criteria.remote,
+      profile,
+      maxImports: criteria.limit ?? 25,
+      index
+    });
 
-function normalizedJobFromPosting(job: JobPosting): NormalizedJob {
-  return {
-    title: job.title,
-    company: job.company,
-    location: job.location ?? undefined,
-    remoteStatus: job.remoteStatus ?? undefined,
-    salaryMin: job.salaryMin ?? undefined,
-    salaryMax: job.salaryMax ?? undefined,
-    datePosted: job.datePosted ?? undefined,
-    sourceUrl: job.sourceUrl,
-    applyUrl: job.applyUrl ?? undefined,
-    description: job.description,
-    requirements: job.requirements,
-    preferredQualifications: job.preferredQualifications,
-    benefits: job.benefits,
-    detectedTechStack: job.detectedTechStack,
-    seniorityLevel: job.seniorityLevel ?? undefined,
-    companySize: job.companySize ?? undefined,
-    sourceType: job.sourceType
-  };
+    return {
+      imported: result.imported,
+      unchanged: result.unchanged,
+      skipped: result.skipped,
+      duplicates: result.duplicates,
+      closed: result.closed,
+      bestRelevanceScore: result.bestRelevanceScore
+    };
+  }
+
+  return runProviderSearch({ userId, source, criteria, profile, index });
 }
 
 export async function scoreTopImportedJobs({
@@ -566,11 +467,21 @@ export async function scoreTopImportedJobs({
   return { jobs: results, summary };
 }
 
+function sumReports(reports: DiscoverySourceReport[], field: "unchanged" | "duplicates" | "closed") {
+  return reports.reduce((total, report) => total + (report[field] ?? 0), 0);
+}
+
+function trackBoardDiscovery(tracker: RunTracker, reports: DiscoverySourceReport[], boardRun: BoardDiscoveryResult) {
+  trackImportedJobs(tracker, boardRun);
+  reports.push(...boardRun.reports);
+}
+
 export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOptions) {
   const aiSettings = await getOrCreateAiSettings(options.userId);
-  const maxJobsToScore = Math.min(options.maxJobsToScore ?? 8, aiSettings.maxAnalysesPerSync);
+  const maxJobsToScore = Math.min(options.maxJobsToScore ?? defaultMaxJobsToScore, aiSettings.maxAnalysesPerSync);
   const reports: DiscoverySourceReport[] = [];
-  const importedJobs = new Map<string, JobPosting>();
+  const tracker = createRunTracker();
+  const index = createRunDedupeIndex();
   const [profile, savedPreference] = await Promise.all([
     prisma.userProfile.findUnique({ where: { userId: options.userId } }),
     prisma.jobDiscoveryPreference.findUnique({ where: { userId: options.userId } })
@@ -589,41 +500,68 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
   const remoteOnly = options.remoteOnly ?? savedPreference?.remoteOnly ?? false;
   const scoreImported = options.scoreImported ?? savedPreference?.scoreImported ?? false;
 
-  const remotiveSource = await getOrCreateJobSource({
+  // Employer ATS boards run first so their postings (fresh, with the real apply URL) win the
+  // cross-source dedupe against aggregator copies of the same job.
+  const boardRun = await runBoardDiscovery({
     userId: options.userId,
-    name: "Remotive public API",
-    type: "REMOTIVE",
-    notes: "Automated remote-job discovery from Remotive public API."
+    profile,
+    queries,
+    location,
+    remoteOnly,
+    limitPerBoard: limitPerQuery,
+    maxBoards: options.maxBoards,
+    index,
+    directory: options.boardDirectory
   });
+  trackBoardDiscovery(tracker, reports, boardRun);
 
-  for (const query of queries) {
-    try {
-      const jobs = await runProviderSearch({
-        userId: options.userId,
-        source: remotiveSource,
-        criteria: { query, remote: true, limit: limitPerQuery },
-        profile
-      });
+  if (isSourceTypeComplianceEnabled("REMOTIVE")) {
+    const remotiveSource = await getOrCreateJobSource({
+      userId: options.userId,
+      name: "Remotive public API",
+      type: "REMOTIVE",
+      notes: "Automated remote-job discovery from Remotive public API."
+    });
 
-      trackImportedJobs(importedJobs, jobs);
-      reports.push({
-        name: `Remotive: ${query}`,
-        type: "REMOTIVE",
-        status: "imported",
-        imported: jobs.imported.length,
-        skipped: jobs.skipped,
-        bestRelevanceScore: jobs.bestRelevanceScore,
-        details: reportDetails("Pulled through Remotive's public remote jobs API.", jobs)
-      });
-    } catch (error) {
-      reports.push({
-        name: `Remotive: ${query}`,
-        type: "REMOTIVE",
-        status: "error",
-        imported: 0,
-        details: error instanceof Error ? error.message : "Remotive sync failed."
-      });
+    for (const query of queries) {
+      try {
+        const jobs = await runProviderSearch({
+          userId: options.userId,
+          source: remotiveSource,
+          criteria: { query, remote: true, limit: limitPerQuery },
+          profile,
+          index
+        });
+
+        trackImportedJobs(tracker, jobs);
+        reports.push({
+          name: `Remotive: ${query}`,
+          type: "REMOTIVE",
+          status: "imported",
+          imported: jobs.imported.length,
+          skipped: jobs.skipped,
+          ...freshnessFields(jobs),
+          bestRelevanceScore: jobs.bestRelevanceScore,
+          details: reportDetails("Pulled through Remotive's public remote jobs API.", jobs)
+        });
+      } catch (error) {
+        reports.push({
+          name: `Remotive: ${query}`,
+          type: "REMOTIVE",
+          status: "error",
+          imported: 0,
+          details: error instanceof Error ? error.message : "Remotive sync failed."
+        });
+      }
     }
+  } else {
+    reports.push({
+      name: "Remotive public API",
+      type: "REMOTIVE",
+      status: "skipped",
+      imported: 0,
+      details: complianceDisabledMessage("REMOTIVE")
+    });
   }
 
   if (process.env.USAJOBS_API_KEY && process.env.USAJOBS_USER_AGENT) {
@@ -645,16 +583,18 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             remote: remoteOnly,
             limit: limitPerQuery
           },
-          profile
+          profile,
+          index
         });
 
-        trackImportedJobs(importedJobs, jobs);
+        trackImportedJobs(tracker, jobs);
         reports.push({
           name: `USAJOBS: ${query}`,
           type: "USAJOBS",
           status: "imported",
           imported: jobs.imported.length,
           skipped: jobs.skipped,
+          ...freshnessFields(jobs),
           bestRelevanceScore: jobs.bestRelevanceScore,
           details: reportDetails("Pulled through the official USAJOBS API.", jobs)
         });
@@ -678,7 +618,8 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
     });
   }
 
-  if (process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY) {
+  const adzunaConfigured = Boolean(process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY);
+  if (adzunaConfigured && isSourceTypeComplianceEnabled("ADZUNA")) {
     const adzunaSource = await getOrCreateJobSource({
       userId: options.userId,
       name: "Adzuna API",
@@ -697,16 +638,18 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             remote: remoteOnly,
             limit: limitPerQuery
           },
-          profile
+          profile,
+          index
         });
 
-        trackImportedJobs(importedJobs, jobs);
+        trackImportedJobs(tracker, jobs);
         reports.push({
           name: `Adzuna: ${query}`,
           type: "ADZUNA",
           status: "imported",
           imported: jobs.imported.length,
           skipped: jobs.skipped,
+          ...freshnessFields(jobs),
           bestRelevanceScore: jobs.bestRelevanceScore,
           details: reportDetails("Pulled through the Adzuna jobs API.", jobs)
         });
@@ -726,7 +669,9 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
       type: "ADZUNA",
       status: "skipped",
       imported: 0,
-      details: "Set ADZUNA_APP_ID and ADZUNA_APP_KEY to enable broad job API discovery."
+      details: adzunaConfigured
+        ? complianceDisabledMessage("ADZUNA")
+        : "Set ADZUNA_APP_ID and ADZUNA_APP_KEY, and JOB_SOURCE_ADZUNA_ENABLED=true after licence review, to enable Adzuna discovery."
     });
   }
 
@@ -749,16 +694,18 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             remote: remoteOnly,
             limit: limitPerQuery
           },
-          profile
+          profile,
+          index
         });
 
-        trackImportedJobs(importedJobs, jobs);
+        trackImportedJobs(tracker, jobs);
         reports.push({
           name: `TheirStack: ${query}`,
           type: "THEIRSTACK",
           status: "imported",
           imported: jobs.imported.length,
           skipped: jobs.skipped,
+          ...freshnessFields(jobs),
           bestRelevanceScore: jobs.bestRelevanceScore,
           details: reportDetails("Pulled through TheirStack's licensed jobs API. This may consume provider credits.", jobs)
         });
@@ -806,16 +753,18 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
             remote: remoteOnly,
             limit: Math.min(limitPerQuery, 10)
           },
-          profile
+          profile,
+          index
         });
 
-        trackImportedJobs(importedJobs, jobs);
+        trackImportedJobs(tracker, jobs);
         reports.push({
           name: `SerpApi Google Jobs: ${query}`,
           type: "SERPAPI",
           status: "imported",
           imported: jobs.imported.length,
           skipped: jobs.skipped,
+          ...freshnessFields(jobs),
           bestRelevanceScore: jobs.bestRelevanceScore,
           details: reportDetails("Pulled through SerpApi's Google Jobs API. This may consume provider credits.", jobs)
         });
@@ -872,7 +821,8 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
           remoteOnly,
           limit: limitPerQuery
         }),
-        profile
+        profile,
+        index
       });
 
       await prisma.jobSource.update({
@@ -884,13 +834,14 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
         }
       });
 
-      trackImportedJobs(importedJobs, jobs);
+      trackImportedJobs(tracker, jobs);
       reports.push({
         name: source.name,
         type: source.type,
         status: "imported",
         imported: jobs.imported.length,
         skipped: jobs.skipped,
+        ...freshnessFields(jobs),
         bestRelevanceScore: jobs.bestRelevanceScore,
         details: reportDetails("Synced from a configured allowed source.", jobs)
       });
@@ -915,7 +866,7 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
 
   const scoring = await scoreTopImportedJobs({
     userId: options.userId,
-    jobs: [...importedJobs.values()],
+    jobs: [...tracker.scoringPool.values()],
     profile,
     limit: maxJobsToScore,
     enabled: scoreImported && aiSettings.aiDiscoveryEnabled,
@@ -925,11 +876,74 @@ export async function runAutomatedJobDiscovery(options: AutomatedDiscoveryOption
   return {
     queries,
     location,
-    imported: importedJobs.size,
-    jobs: [...importedJobs.values()].map(formatJob),
+    imported: tracker.imported.size,
+    unchanged: sumReports(reports, "unchanged"),
+    duplicates: sumReports(reports, "duplicates"),
+    closed: sumReports(reports, "closed"),
+    boards: boardRun.boards,
+    jobs: [...tracker.imported.values()].map(formatJob),
     scoredJobs: scoring.jobs,
     scoring: scoring.summary,
     reports,
     restrictedBoards: restrictedJobBoardPolicies
+  };
+}
+
+/**
+ * Scheduled preference discovery for the daily cron: the user's followed boards and matching
+ * directory boards only. Query aggregators (some paid, some compliance-gated) are never called
+ * from the cron. Scoring follows the user's saved scoreImported choice and the same cap.
+ */
+export async function runScheduledBoardDiscovery({
+  userId,
+  profile,
+  preference,
+  listingCache,
+  scoringStopReason,
+  maxBoards,
+  boardDirectory
+}: {
+  userId: string;
+  profile: UserProfile | null;
+  preference: Pick<JobDiscoveryPreferences, "targetSearches" | "location" | "limitPerQuery" | "remoteOnly" | "scoreImported">;
+  listingCache?: BoardListingCache;
+  scoringStopReason?: DiscoveryScoringStopReason | null;
+  maxBoards?: number;
+  boardDirectory?: readonly JobBoardDirectoryEntry[];
+}) {
+  const aiSettings = await getOrCreateAiSettings(userId);
+  const tracker = createRunTracker();
+  const queries = resolveDiscoveryQueries({ savedPreference: preference, profilePreferredRoles: profile?.preferredRoles });
+  const location = resolveDiscoveryLocation({ savedPreference: preference, profile });
+  const boardRun = await runBoardDiscovery({
+    userId,
+    profile,
+    queries,
+    location,
+    remoteOnly: preference.remoteOnly,
+    limitPerBoard: preference.limitPerQuery,
+    maxBoards,
+    index: createRunDedupeIndex(),
+    listingCache,
+    directory: boardDirectory
+  });
+  trackImportedJobs(tracker, boardRun);
+
+  const scoring = await scoreTopImportedJobs({
+    userId,
+    jobs: [...tracker.scoringPool.values()],
+    profile,
+    limit: Math.min(defaultMaxJobsToScore, aiSettings.maxAnalysesPerSync),
+    enabled: preference.scoreImported && aiSettings.aiDiscoveryEnabled && !scoringStopReason,
+    disabledReason: scoringStopReason ?? (preference.scoreImported ? "DISABLED_BY_POLICY" : "NOT_REQUESTED")
+  });
+
+  return {
+    queries,
+    imported: [...tracker.imported.values()],
+    boards: boardRun.boards,
+    reports: boardRun.reports,
+    scoredJobs: scoring.jobs,
+    scoring: scoring.summary
   };
 }
