@@ -11,6 +11,7 @@ const productPagePaths = [
   "applications/page.tsx",
   "application-runs/[id]/browser/page.tsx",
   "dashboard/page.tsx",
+  "insights/page.tsx",
   "interviews/[id]/page.tsx",
   "interviews/library/page.tsx",
   "interviews/mock/[sessionId]/page.tsx",

@@ -94,6 +94,18 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add tables, columns or constraints, and must be deployed before #45 reaches `main`. One Playwright journey test needs `npm run browser:install` locally.
 
+**WP1.9 measurement** (draft PR against `integration/mvp-m1`, no migration). A new `/insights` page shows weekly counts: jobs added to the feed, jobs saved, Apply Kits prepared, applications, and interviews. It also shows the supporting metrics: share sent with tailored documents, complete tracking, interview rate, feed save rate, AI spend, and AI cost per application. Every number comes from existing tables and is scoped to the signed-in user. The page says how each number is computed. Where a number can't be computed it says "Not enough data" or "Not measured yet" instead of showing a zero.
+
+These §11 metrics can't be measured honestly from current data:
+- **Interviews per applicant-hour (the primary metric) and minutes of active effort per application.** Nothing records time spent applying. One way to fix this without a migration: ask for self-reported minutes on the "I applied" step and keep them in that timeline event's metadata. Timing Apply Kit sessions would need a new event, probably a new table. This is the owner's choice.
+- **Jobs seen.** Nothing records which feed jobs the user opened, so the page counts jobs *added* to the feed instead.
+- **Factual-error rate in reviewed documents.** There is no log of errors found in review.
+- **Weekly active users.** This is a beta-wide number, so it is not on a per-user page.
+
+Approximations to know about:
+- Interviews come from interview records and from status-change timeline titles. Older events store the raw status name, and both forms are read.
+- Weeks are fixed to Pacific time because the profile has no time-zone field.
+
 ## 4. What changes from the old roadmap
 
 The September roadmap (`PRODUCT_ROADMAP.md`, P0–P5) remains the long-range safety and architecture plan. Its weakness in practice: since late September the work narrowed to the browser-fill engine and repeated resume-contract and qualification iterations (V5 through V9 diagnostics, a qualification run prepared but never executed), while the user-facing product that the owner wants stood still.

@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   BriefcaseBusiness,
   BrainCircuit,
+  ChartColumn,
   ClipboardList,
   DatabaseZap,
   FileText,
@@ -19,6 +20,7 @@ import {
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: Gauge },
+  { href: "/insights", label: "Insights", icon: ChartColumn },
   { href: "/jobs", label: "Jobs", icon: BriefcaseBusiness },
   { href: "/jobs/review", label: "Review Queue", icon: ListFilter },
   { href: "/applications", label: "Applications", icon: ClipboardList },
