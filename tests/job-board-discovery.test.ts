@@ -199,7 +199,7 @@ test("board discovery syncs followed boards first, then matching directory board
   assert.equal(db.closures.length, 3, "each synced board checks for vanished postings");
   assert.ok(db.closures.every((closure) => closure.where.userId === "user-1" && closure.where.status === "ACTIVE"));
 
-  assert.deepEqual(result.boards, { followed: 1, directory: 2, deferred: 0 });
+  assert.deepEqual(result.boards, { followed: 1, directory: 2, deferred: 0, timeDeferred: 0 });
   const acmeReport = result.reports.find((report) => report.name === "Acme (Greenhouse)");
   assert.equal(acmeReport?.status, "imported");
   assert.equal(acmeReport?.imported, 1);
@@ -224,7 +224,7 @@ test("boards beyond the cap are deferred and reported", async (t) => {
   });
 
   assert.equal(db.fetches.length, 2);
-  assert.deepEqual(result.boards, { followed: 0, directory: 2, deferred: 3 });
+  assert.deepEqual(result.boards, { followed: 0, directory: 2, deferred: 3, timeDeferred: 0 });
   const deferred = result.reports.find((report) => report.status === "skipped");
   assert.match(deferred?.details ?? "", /3 more boards/);
 });
@@ -253,6 +253,69 @@ test("a failing board is reported, marks a followed source as errored and does n
   assert.equal(db.sourceUpdates[0].data.lastSyncStatus, "ERROR");
   assert.equal(result.imported.length, 2, "the two directory boards still import");
   assert.equal(db.closures.length, 2, "a failed fetch never expires postings");
+});
+
+test("followed boards skip the target-search keyword filter; directory boards keep it", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  const accountManagerJob = (token: string, location = "Remote") => ({
+    id: 7,
+    title: "Technical Account Manager",
+    absolute_url: `https://boards.greenhouse.io/${token}/jobs/7`,
+    location: { name: location },
+    content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
+  });
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async (criteria: JobSearchCriteria) => {
+    db.fetches.push({ type: "GREENHOUSE", criteria });
+    return [accountManagerJob(criteria.boardToken ?? "")];
+  });
+  const run = (remoteOnly: boolean) => runBoardDiscovery({
+    userId: "user-1",
+    profile,
+    queries: ["Data Scientist"],
+    location: "",
+    remoteOnly,
+    limitPerBoard: 5,
+    maxBoards: 5,
+    index: createRunDedupeIndex(),
+    directory: [entry({ company: "SaaS Co", token: "saasco", industries: ["SaaS"] })],
+    now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  const result = await run(false);
+
+  assert.deepEqual(db.upserts.map((upsert) => upsert.create.company), ["Acme"], "the followed board ignores the keywords");
+  assert.equal(result.reports.find((report) => report.name === "SaaS Co (Greenhouse)")?.skipped, 1, "the directory board keeps them");
+  assert.match(result.reports.find((report) => report.name === "Acme (Greenhouse)")?.details ?? "", /follow/i);
+
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => [accountManagerJob("acme", "New York, NY")]);
+  const remoteOnly = await run(true);
+  assert.equal(remoteOnly.imported.length, 0, "followed boards still honour the remote-only preference and prefilter");
+});
+
+test("no board is scheduled once the run's time budget has passed, and the deferral is reported", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const optedOut = sourceRow({ id: "optout", name: "Opted Out", type: "LEVER", boardToken: "optedout", syncEnabled: false });
+  const db = setup(t, [followed, optedOut]);
+
+  const result = await runBoardDiscovery({
+    userId: "user-1",
+    profile,
+    queries: ["Solutions Engineer"],
+    location: "",
+    remoteOnly: false,
+    limitPerBoard: 5,
+    maxBoards: 3,
+    index: createRunDedupeIndex(),
+    directory,
+    deadline: Date.now() - 1,
+    now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.equal(db.fetches.length, 0);
+  assert.equal(db.sourceUpdates.length, 0, "a deferred followed board keeps its old lastSyncedAt so it goes first next run");
+  assert.equal(result.boards.timeDeferred, 3);
+  assert.match(result.reports.find((report) => report.status === "skipped")?.details ?? "", /time budget/i);
 });
 
 test("a shared listing cache fetches each board once across users in one run", async (t) => {

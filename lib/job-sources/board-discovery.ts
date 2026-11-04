@@ -47,7 +47,8 @@ export type BoardDiscoveryResult = {
   reports: DiscoverySourceReport[];
   imported: JobPosting[];
   unchanged: JobPosting[];
-  boards: { followed: number; directory: number; deferred: number };
+  /** deferred: over the per-run cap; timeDeferred: not started because the run's time budget ran out. */
+  boards: { followed: number; directory: number; deferred: number; timeDeferred: number };
 };
 
 type PlannedBoard =
@@ -93,7 +94,7 @@ function boardReport(planned: PlannedBoard, result: BoardSyncResult): DiscoveryS
   const { target } = planned;
   const origin =
     planned.origin === "followed"
-      ? "Synced a company board you follow."
+      ? "Synced a company board you follow (target-search keywords are not required; your location, remote and relevance filters still apply)."
       : `Matched from the Apply Pilot board directory. ${planned.match.reasons.join(" ")}`;
   const notes = [
     result.unchanged.length ? `${result.unchanged.length} unchanged.` : "",
@@ -128,6 +129,7 @@ export async function runBoardDiscovery({
   index,
   listingCache = createBoardListingCache(),
   directory = loadJobBoardDirectory(),
+  deadline,
   now = new Date()
 }: {
   userId: string;
@@ -140,6 +142,8 @@ export async function runBoardDiscovery({
   index: RunDedupeIndex;
   listingCache?: BoardListingCache;
   directory?: readonly JobBoardDirectoryEntry[];
+  /** Epoch ms after which no new board is started (checked with Date.now()). */
+  deadline?: number;
   now?: Date;
 }): Promise<BoardDiscoveryResult> {
   const rows = await prisma.jobSource.findMany({ where: { userId, type: { in: [...boardAtsTypes] } } });
@@ -213,11 +217,17 @@ export async function runBoardDiscovery({
   ];
 
   const outcomes = await mapWithConcurrency(planned, boardFetchConcurrency, async (board) => {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      return { board, timeDeferred: true as const };
+    }
+
     try {
       const result = await syncBoard({
         userId,
         target: board.target,
-        queries,
+        // A company the user chose to follow shows every relevant role, not only keyword
+        // matches; location, remote-only and the relevance prefilter still apply.
+        queries: board.origin === "followed" ? [] : queries,
         remoteOnly,
         profile,
         maxImports: limitPerBoard,
@@ -247,8 +257,13 @@ export async function runBoardDiscovery({
   const reports: DiscoverySourceReport[] = [];
   const imported: JobPosting[] = [];
   const unchanged: JobPosting[] = [];
+  let timeDeferred = 0;
 
   for (const outcome of outcomes) {
+    if ("timeDeferred" in outcome) {
+      timeDeferred += 1;
+      continue;
+    }
     if ("error" in outcome) {
       reports.push({
         name: `${outcome.board.target.company} (${atsLabels[outcome.board.target.ats]})`,
@@ -264,13 +279,23 @@ export async function runBoardDiscovery({
     reports.push(boardReport(outcome.board, outcome.result));
   }
 
+  if (timeDeferred > 0) {
+    reports.push({
+      name: "Company boards (time budget)",
+      type: "BOARDS",
+      status: "skipped",
+      imported: 0,
+      details: `Stopped scheduling ${timeDeferred} boards because this run reached its time budget; they are checked in later runs.`
+    });
+  }
+
   if (selection.deferred > 0) {
     reports.push({
       name: "Company boards",
       type: "BOARDS",
       status: "skipped",
       imported: 0,
-      details: `Checked ${planned.length} boards this run; ${selection.deferred} more boards rotate into later runs (JOB_DISCOVERY_MAX_BOARDS_PER_RUN is ${maxBoards}).`
+      details: `Checked ${planned.length - timeDeferred} boards this run; ${selection.deferred} more boards rotate into later runs (JOB_DISCOVERY_MAX_BOARDS_PER_RUN is ${maxBoards}).`
     });
   } else if (!planned.length) {
     reports.push({
@@ -286,6 +311,11 @@ export async function runBoardDiscovery({
     reports,
     imported,
     unchanged,
-    boards: { followed: selection.followed.length, directory: selection.directory.length, deferred: selection.deferred }
+    boards: {
+      followed: selection.followed.length,
+      directory: selection.directory.length,
+      deferred: selection.deferred,
+      timeDeferred
+    }
   };
 }

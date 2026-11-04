@@ -901,7 +901,8 @@ export async function runScheduledBoardDiscovery({
   listingCache,
   scoringStopReason,
   maxBoards,
-  boardDirectory
+  boardDirectory,
+  deadline
 }: {
   userId: string;
   profile: UserProfile | null;
@@ -910,6 +911,8 @@ export async function runScheduledBoardDiscovery({
   scoringStopReason?: DiscoveryScoringStopReason | null;
   maxBoards?: number;
   boardDirectory?: readonly JobBoardDirectoryEntry[];
+  /** Epoch ms after which no new board is started. */
+  deadline?: number;
 }) {
   const aiSettings = await getOrCreateAiSettings(userId);
   const tracker = createRunTracker();
@@ -925,7 +928,8 @@ export async function runScheduledBoardDiscovery({
     maxBoards,
     index: createRunDedupeIndex(),
     listingCache,
-    directory: boardDirectory
+    directory: boardDirectory,
+    deadline
   });
   trackImportedJobs(tracker, boardRun);
 

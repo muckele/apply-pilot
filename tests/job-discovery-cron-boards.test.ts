@@ -4,6 +4,12 @@ import type { AISettings, JobSource } from "@prisma/client";
 import { NextRequest } from "next/server";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
+import {
+  directoryBoardKey,
+  directoryPreferencesFrom,
+  loadJobBoardDirectory,
+  matchDirectoryBoards
+} from "@/lib/job-sources/board-directory";
 import type { JobSearchCriteria } from "@/lib/job-sources/types";
 import { prisma } from "@/lib/prisma";
 
@@ -42,7 +48,7 @@ function followed(userId: string): JobSource {
   };
 }
 
-function preference(userId: string, email: string) {
+function preference(userId: string, email: string, industries = ["Synthetic test industry"]) {
   return {
     id: `preference-${userId}`,
     userId,
@@ -59,7 +65,7 @@ function preference(userId: string, email: string) {
       email,
       profile: {
         userId,
-        industriesOfInterest: ["Synthetic test industry"],
+        industriesOfInterest: industries,
         preferredLocations: [],
         location: "",
         remotePreference: "FLEXIBLE",
@@ -81,7 +87,13 @@ function forbidNetwork(t: TestContext) {
   t.after(() => { globalThis.fetch = original; });
 }
 
-function setup(t: TestContext) {
+type SetupOptions = {
+  industries?: string[];
+  perSourceRows?: JobSource[];
+  onGreenhouseFetch?: () => void;
+};
+
+function setup(t: TestContext, options: SetupOptions = {}) {
   setEnv(t, {
     CRON_SECRET: "synthetic-cron-secret",
     AUTH_ALLOWED_EMAILS: "owner@example.test,second@example.test",
@@ -100,10 +112,17 @@ function setup(t: TestContext) {
   const perSourceQueries: Array<Record<string, unknown>> = [];
   const upserts: Array<{ create: Record<string, unknown> }> = [];
   const audits: Array<{ data: { userId: string; action: string; metadata?: Record<string, unknown> } }> = [];
+  const boardFetchKeys: string[] = [];
+  const preferenceTouches: string[] = [];
   let aggregatorCalls = 0;
 
   stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async (criteria: JobSearchCriteria) => {
     fetches.push(criteria);
+    boardFetchKeys.push(`GREENHOUSE:${criteria.boardToken}`);
+    options.onGreenhouseFetch?.();
+    if (criteria.boardToken !== "acme") {
+      return [];
+    }
     return [{
       id: 1,
       title: "Solutions Engineer",
@@ -112,15 +131,25 @@ function setup(t: TestContext) {
       content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
     }];
   });
+  for (const type of ["LEVER", "ASHBY"] as const) {
+    stub(t, getJobSourceProvider(type), "searchJobs", async (criteria: JobSearchCriteria) => {
+      boardFetchKeys.push(`${type}:${criteria.boardToken}`);
+      return [];
+    });
+  }
   for (const type of ["REMOTIVE", "ADZUNA", "THEIRSTACK", "SERPAPI", "USAJOBS"] as const) {
     stub(t, getJobSourceProvider(type), "searchJobs", async () => { aggregatorCalls += 1; return []; });
   }
   stub(t, prisma.jobDiscoveryPreference, "findMany", async (args: { where: Record<string, unknown> }) => {
     preferenceQueries.push(args.where);
     return [
-      preference("user-1", "owner@example.test"),
-      preference("user-2", "second@example.test")
+      preference("user-1", "owner@example.test", options.industries),
+      preference("user-2", "second@example.test", options.industries)
     ];
+  });
+  stub(t, prisma.jobDiscoveryPreference, "update", async ({ where }: { where: { userId: string } }) => {
+    preferenceTouches.push(where.userId);
+    return {};
   });
   stub(t, prisma.jobSource, "findMany", async (args: { where: Record<string, unknown> }) => {
     const userId = args.where.userId as string | undefined;
@@ -128,9 +157,16 @@ function setup(t: TestContext) {
       return [followed(userId)];
     }
     perSourceQueries.push(args.where);
-    return [];
+    return options.perSourceRows ?? [];
   });
   stub(t, prisma.jobSource, "findFirst", async () => null);
+  stub(t, prisma.jobSource, "create", async ({ data }: { data: Partial<JobSource> }) => ({
+    ...followed(data.userId ?? "user"),
+    ...data,
+    id: `directory-${data.userId}-${data.type}`,
+    boardToken: null
+  }));
+  stub(t, prisma.jobSource, "updateMany", async () => ({ count: 1 }));
   stub(t, prisma.jobSource, "update", async ({ where }: { where: { id: string } }) => ({ id: where.id }));
   stub(t, prisma.jobPosting, "findMany", async () => []);
   stub(t, prisma.jobPosting, "upsert", async (args: { create: Record<string, unknown> }) => {
@@ -148,7 +184,16 @@ function setup(t: TestContext) {
     return { id: `audit-${audits.length}` };
   });
 
-  return { fetches, preferenceQueries, perSourceQueries, upserts, audits, get aggregatorCalls() { return aggregatorCalls; } };
+  return {
+    fetches,
+    preferenceQueries,
+    perSourceQueries,
+    upserts,
+    audits,
+    boardFetchKeys,
+    preferenceTouches,
+    get aggregatorCalls() { return aggregatorCalls; }
+  };
 }
 
 async function runCron() {
@@ -209,4 +254,69 @@ test("a user removed from the allowlist is skipped by the preference phase", asy
     ["user-2", "skipped"]
   ]);
   assert.deepEqual(state.upserts.map((upsert) => upsert.create.userId), ["user-1"]);
+});
+
+test("the cron route declares a 300 second maxDuration", async () => {
+  const route = await import("@/app/api/cron/job-discovery/route");
+
+  assert.equal(route.maxDuration, 300);
+});
+
+test("directory boards are fetched once per cron run and shared by every user", async (t) => {
+  const industries = ["Healthcare"];
+  const expectedDirectoryBoards = matchDirectoryBoards(
+    loadJobBoardDirectory(),
+    directoryPreferencesFrom({
+      profile: { industriesOfInterest: industries, preferredLocations: [], location: "", remotePreference: "FLEXIBLE" },
+      location: "",
+      remoteOnly: false
+    })
+  ).map((match) => directoryBoardKey(match.entry));
+  assert.ok(expectedDirectoryBoards.length >= 3, "the reviewed directory has several healthcare boards");
+  const state = setup(t, { industries });
+
+  const response = await runCron();
+  const result = await response.json();
+
+  assert.equal(result.preferenceResults.filter((entry: { status: string }) => entry.status === "success").length, 2);
+  assert.equal(state.boardFetchKeys.length, new Set(state.boardFetchKeys).size, "no board is fetched twice in one run");
+  assert.deepEqual(
+    [...new Set(state.boardFetchKeys.map((key) => key.toLowerCase()))].sort(),
+    ["greenhouse:acme", ...expectedDirectoryBoards.map((key) => key.toLowerCase())].sort()
+  );
+});
+
+test("the cron stops scheduling users, boards and sources at 80% of maxDuration and reports the deferral", async (t) => {
+  let clock = Date.parse("2026-11-04T14:00:00.000Z");
+  t.mock.method(Date, "now", () => clock);
+  const perSource = { ...followed("user-1"), id: "per-source-1", name: "Workable source", type: "WORKABLE" } as JobSource;
+  const state = setup(t, {
+    perSourceRows: [{ ...perSource, user: { email: "owner@example.test", profile: null } } as JobSource],
+    // The first board takes longer than the time budget.
+    onGreenhouseFetch: () => { clock += 250_000; }
+  });
+
+  const response = await runCron();
+  const result = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(result.ok, true, "a deferral is not a failure");
+  assert.deepEqual(
+    result.preferenceResults.map((entry: { userId: string; status: string }) => [entry.userId, entry.status]),
+    [["user-1", "success"], ["user-2", "deferred"]]
+  );
+  assert.match(result.preferenceResults[1].error, /time budget/i);
+  assert.deepEqual(result.results.map((entry: { sourceId: string; status: string }) => [entry.sourceId, entry.status]), [
+    ["per-source-1", "deferred"]
+  ]);
+  assert.deepEqual(result.timeBudget, {
+    maxDurationSeconds: 300,
+    budgetSeconds: 240,
+    exhausted: true,
+    deferredUsers: 1,
+    deferredBoards: 0,
+    deferredSources: 1
+  });
+  assert.deepEqual(state.preferenceTouches, ["user-1"], "only users that ran move to the back of the queue");
+  assert.equal(state.fetches.length, 1);
 });

@@ -17,28 +17,38 @@ import { writeAuditLog } from "@/lib/security/audit-log";
 import { cronJobDiscoverySchema } from "@/lib/validators";
 
 export const dynamic = "force-dynamic";
+// Fits Vercel Pro. The route stops scheduling new work at timeBudgetRatio of this so that
+// in-flight boards, scoring and the response can finish inside the limit.
+export const maxDuration = 300;
+
+const timeBudgetRatio = 0.8;
+const timeBudgetMessage = "Deferred to the next run: this cron run reached its time budget.";
 
 // Upper bound on users whose saved preferences run board discovery in one cron invocation.
 const maxPreferenceUsersPerRun = 25;
 
 type PreferenceRunResult = {
   userId: string;
-  status: "success" | "error" | "skipped";
+  status: "success" | "error" | "skipped" | "deferred";
   imported: number;
-  boards?: { followed: number; directory: number; deferred: number };
+  boards?: { followed: number; directory: number; deferred: number; timeDeferred: number };
   scoring?: DiscoveryScoringSummary;
   error?: string;
 };
 
 /**
  * Preference discovery over public ATS boards for every user with saved discovery preferences:
- * followed boards plus matching directory boards, one fetch per board per invocation. Followed
+ * followed boards plus matching directory boards. One listing cache serves the whole
+ * invocation, so each board is fetched at most once however many users match it. Followed
  * boards synced here get a fresh lastSyncedAt, so the per-source phase below skips them.
  */
 async function runPreferenceBoardPhase(
   privateUserFilter: Record<string, unknown>,
-  scoringStopReasonsByUser: Map<string, DiscoveryScoringStopReason>
+  scoringStopReasonsByUser: Map<string, DiscoveryScoringStopReason>,
+  deadline: number
 ) {
+  // Least recently run first: each completed user's preference row is touched below, so users
+  // deferred by the time budget lead the next run.
   const preferences = await prisma.jobDiscoveryPreference.findMany({
     where: privateUserFilter,
     include: { user: { include: { profile: true } } },
@@ -59,13 +69,23 @@ async function runPreferenceBoardPhase(
       continue;
     }
 
+    if (Date.now() >= deadline) {
+      results.push({ userId: preference.userId, status: "deferred", imported: 0, error: timeBudgetMessage });
+      continue;
+    }
+
     try {
       const result = await runScheduledBoardDiscovery({
         userId: preference.userId,
         profile: preference.user.profile,
         preference,
         listingCache,
-        scoringStopReason: scoringStopReasonsByUser.get(preference.userId)
+        scoringStopReason: scoringStopReasonsByUser.get(preference.userId),
+        deadline
+      });
+      await prisma.jobDiscoveryPreference.update({
+        where: { userId: preference.userId },
+        data: { updatedAt: new Date() }
       });
 
       results.push({
@@ -144,6 +164,8 @@ function readPositiveIntEnv(name: string, fallback: number, min: number, max: nu
 }
 
 async function runCron(request: NextRequest) {
+  const startedAt = Date.now();
+  const deadline = startedAt + maxDuration * 1000 * timeBudgetRatio;
   assertCronAuthorized(request);
   const options = await readCronOptions(request);
   const maxSources = options.maxSources ?? readPositiveIntEnv("CRON_MAX_SOURCES_PER_RUN", 10, 1, 100);
@@ -155,7 +177,7 @@ async function runCron(request: NextRequest) {
     ? { user: { email: { in: getAllowedAuthEmails() } } }
     : {};
   const scoringStopReasonsByUser = new Map<string, DiscoveryScoringStopReason>();
-  const preferenceResults = await runPreferenceBoardPhase(privateUserFilter, scoringStopReasonsByUser);
+  const preferenceResults = await runPreferenceBoardPhase(privateUserFilter, scoringStopReasonsByUser, deadline);
   const sources = await prisma.jobSource.findMany({
     where: {
       syncEnabled: true,
@@ -187,7 +209,7 @@ async function runCron(request: NextRequest) {
     sourceId: string;
     sourceName: string;
     userId: string;
-    status: "success" | "error" | "skipped";
+    status: "success" | "error" | "skipped" | "deferred";
     imported: number;
     skipped?: number;
     scoring?: DiscoveryScoringSummary;
@@ -195,6 +217,19 @@ async function runCron(request: NextRequest) {
   }> = [];
 
   for (const source of sources) {
+    // Sources are ordered by lastSyncedAt, so a deferred source leads the next run.
+    if (Date.now() >= deadline) {
+      results.push({
+        sourceId: source.id,
+        sourceName: source.name,
+        userId: source.userId,
+        status: "deferred",
+        imported: 0,
+        error: timeBudgetMessage
+      });
+      continue;
+    }
+
     if (!isEmailAllowedForAuth(source.user.email)) {
       results.push({
         sourceId: source.id,
@@ -269,6 +304,17 @@ async function runCron(request: NextRequest) {
   const scoring = combineDiscoveryScoringSummaries(
     allResults.flatMap((result) => result.scoring ? [result.scoring] : [])
   );
+  const deferredUsers = preferenceResults.filter((result) => result.status === "deferred").length;
+  const deferredSources = results.filter((result) => result.status === "deferred").length;
+  const deferredBoards = preferenceResults.reduce((total, result) => total + (result.boards?.timeDeferred ?? 0), 0);
+  const timeBudget = {
+    maxDurationSeconds: maxDuration,
+    budgetSeconds: maxDuration * timeBudgetRatio,
+    exhausted: Date.now() >= deadline || deferredUsers + deferredSources + deferredBoards > 0,
+    deferredUsers,
+    deferredBoards,
+    deferredSources
+  };
 
   logger.info("cron.job_discovery.completed", {
     preferenceUsers: preferenceResults.length,
@@ -276,6 +322,8 @@ async function runCron(request: NextRequest) {
     imported,
     failed,
     scoring,
+    timeBudget,
+    elapsedMs: Date.now() - startedAt,
     maxSources,
     minSourceIntervalMinutes
   });
@@ -288,6 +336,7 @@ async function runCron(request: NextRequest) {
     imported,
     failed,
     scoring,
+    timeBudget,
     results
   });
 }
