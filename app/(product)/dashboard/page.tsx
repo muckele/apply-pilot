@@ -1,7 +1,9 @@
 import { CalendarClock, Mail, Plus, TrendingUp } from "lucide-react";
+import { cookies } from "next/headers";
 
 import { JobCard } from "@/components/job-card";
 import { JobMatchOmissionNotice } from "@/components/job-match-omission-notice";
+import { OnboardingChecklist, OnboardingSetupHint } from "@/components/onboarding-checklist";
 import { ButtonLink, MetricCard, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import {
   CURRENT_JOB_MATCH_ANALYSES,
@@ -14,8 +16,12 @@ import {
 } from "@/lib/jobs/current-job-match";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { formatAverageFit } from "@/lib/jobs/fit-presentation";
+import { loadOnboardingChecklist } from "@/lib/onboarding-loader";
+import { ONBOARDING_HIDDEN_COOKIE, isOnboardingHiddenForUser } from "@/lib/onboarding-preference";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
+
+import { hideOnboardingChecklist, showOnboardingChecklist } from "./onboarding-actions";
 
 function formatDate(value: Date | null | undefined) {
   return value ? value.toISOString().slice(0, 10) : "Not scheduled";
@@ -37,7 +43,9 @@ export default async function DashboardPage() {
     applicationsNeedingFollowUp,
     recruiterEmails,
     openTasks,
-    matchSources
+    matchSources,
+    onboarding,
+    cookieStore
   ] = await Promise.all([
     prisma.application.count({ where: { userId, dateSaved: { gte: weekStart } } }),
     prisma.application.count({ where: { userId, dateApplied: { gte: weekStart } } }),
@@ -83,8 +91,11 @@ export default async function DashboardPage() {
       orderBy: [{ dueAt: "asc" }, { priority: "desc" }],
       take: 5
     }),
-    readCurrentJobMatchSources(userId)
+    readCurrentJobMatchSources(userId),
+    loadOnboardingChecklist(userId),
+    cookies()
   ]);
+  const onboardingHidden = isOnboardingHiddenForUser(cookieStore.get(ONBOARDING_HIDDEN_COOKIE)?.value, userId);
 
   const currentJob = <T extends (typeof avgFit)[number]>(job: T) => {
     const context = buildCurrentJobMatchContext({ job, ...matchSources });
@@ -137,6 +148,13 @@ export default async function DashboardPage() {
         }
       />
 
+      <OnboardingChecklist
+        checklist={onboarding}
+        hidden={onboardingHidden}
+        hideAction={hideOnboardingChecklist}
+        showAction={showOnboardingChecklist}
+      />
+
       <div className="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
         <MetricCard label="Saved" value={savedThisWeek} detail="This week" tone="branded" />
         <MetricCard label="Applied" value={appliedThisWeek} detail="This week" tone="branded" />
@@ -167,7 +185,12 @@ export default async function DashboardPage() {
             jobCards.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
           ) : (
             <Panel tone="branded">
-              <div className="product-themed-muted p-5 text-sm">No scored jobs yet. Review a job and run fit scoring when available.</div>
+              <div className="product-themed-muted p-5 text-sm">
+                {onboarding.isComplete
+                  ? "No scored jobs yet. Review a job and run fit scoring when available."
+                  : "No scored jobs yet."}
+                <OnboardingSetupHint checklist={onboarding} />
+              </div>
             </Panel>
           )}
         </section>
@@ -198,7 +221,10 @@ export default async function DashboardPage() {
                   </div>
                 ))
               ) : (
-                <div className="product-themed-muted px-5 py-4 text-sm">No follow-ups need attention.</div>
+                <div className="product-themed-muted px-5 py-4 text-sm">
+                  No follow-ups need attention.
+                  <OnboardingSetupHint checklist={onboarding} />
+                </div>
               )}
             </div>
           </Panel>
