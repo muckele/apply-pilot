@@ -1,5 +1,6 @@
 import type { JobSource } from "@prisma/client";
 
+import { assertSourceTypeComplianceEnabled } from "@/lib/job-sources/compliance";
 import type { JobSearchCriteria } from "@/lib/job-sources/types";
 
 const urlRequiredSourceTypes = new Set<JobSource["type"]>(["RSS", "COMPANY_CAREERS"]);
@@ -33,6 +34,8 @@ export function assertSourceCanSync(source: JobSource) {
   if (source.type === "MANUAL") {
     throw new Error("Manual sources are saved through manual job import and cannot be synced.");
   }
+
+  assertSourceTypeComplianceEnabled(source.type);
 
   if (sourceRequiresUserReview(source.type) && !source.allowlisted) {
     throw new Error("Review and approve this source before testing or syncing it.");
