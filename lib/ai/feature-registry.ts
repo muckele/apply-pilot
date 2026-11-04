@@ -124,6 +124,30 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeature, AiFeatureRegistrati
     outputNoun: "an application plan",
     confirmationMessage: "Confirm this AI request's maximum cost before continuing."
   }),
+  MOCK_INTERVIEW_QUESTIONS: registration("MOCK_INTERVIEW_QUESTIONS", {
+    status: "active",
+    entryPoint: "lib/ai/mock-interview.ts#generateMockInterviewQuestions",
+    confirmation: "data_and_cost",
+    dataType: "mock_interview_questions_packet",
+    errorCodePrefix: "MOCK_INTERVIEW_QUESTIONS",
+    label: "Mock interview questions",
+    requestNoun: "mock-interview-question",
+    outputNoun: "mock interview questions",
+    confirmationMessage:
+      "Confirm sending your master-resume facts and lines from the linked job post, and this AI request's maximum cost, before continuing."
+  }),
+  MOCK_INTERVIEW_FEEDBACK: registration("MOCK_INTERVIEW_FEEDBACK", {
+    status: "active",
+    entryPoint: "lib/ai/mock-interview.ts#generateMockAnswerFeedback",
+    confirmation: "data_and_cost",
+    dataType: "mock_interview_answer_packet",
+    errorCodePrefix: "MOCK_INTERVIEW_FEEDBACK",
+    label: "Mock interview feedback",
+    requestNoun: "mock-interview-feedback",
+    outputNoun: "mock interview feedback",
+    confirmationMessage:
+      "Confirm sending your practice answer, the question, and your master-resume facts, and this AI request's maximum cost, before continuing."
+  }),
   JOB_PARSE: registration("JOB_PARSE", {
     status: "unused",
     entryPoint: null,

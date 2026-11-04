@@ -10,7 +10,9 @@ export type AiFeature =
   | "EMAIL_REPLY"
   | "INTERVIEW_PREP"
   | "INTERVIEW_FEEDBACK"
-  | "APPLICATION_PLAN";
+  | "APPLICATION_PLAN"
+  | "MOCK_INTERVIEW_QUESTIONS"
+  | "MOCK_INTERVIEW_FEEDBACK";
 
 export type AiModelTier = "fast" | "quality";
 
@@ -36,7 +38,13 @@ export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
   // Advisory application planning only. The worst-case Gemini 3.8 Flash request
   // (12,000 uncached input + 4,000 output = $0.024) stays well under the compiled
   // ten-cent per-request ceiling. Do not raise these limits without re-pricing.
-  APPLICATION_PLAN: { maxOutputTokens: 4_000, maxInputTokens: 12_000, modelTier: "quality" }
+  APPLICATION_PLAN: { maxOutputTokens: 4_000, maxInputTokens: 12_000, modelTier: "quality" },
+  // Text mock interviews (WP1.8). Payloads are byte-bounded in lib/ai/mock-interview.ts
+  // so the conservative wire bound holds. Worst case per request on Gemini 3.8 Flash:
+  // questions 40,000 in + 4,000 out = $0.045; one answer's feedback 44,000 in +
+  // 4,000 out = $0.048. Both stay under the ten-cent per-request ceiling.
+  MOCK_INTERVIEW_QUESTIONS: { maxOutputTokens: 4_000, maxInputTokens: 40_000, modelTier: "quality" },
+  MOCK_INTERVIEW_FEEDBACK: { maxOutputTokens: 4_000, maxInputTokens: 44_000, modelTier: "quality" }
 };
 
 const FIELD_LIMITS = {

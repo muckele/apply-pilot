@@ -3,8 +3,14 @@ import { ShieldCheck } from "lucide-react";
 
 import { InterviewFeedbackAction, InterviewPrepAction } from "@/components/interview-ai-actions";
 import { InterviewAudioUpload } from "@/components/interview-audio-upload";
+import {
+  MockInterviewPracticeNotice,
+  MockInterviewSessionList,
+  MockInterviewStartButton
+} from "@/components/mock-interview";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { getAiAvailability } from "@/lib/ai/config";
+import { mockSessionListItem } from "@/lib/ai/mock-interview-records";
 import { directAudioMaxBytes, directAudioUploadsEnabled, serverAudioMaxBytes } from "@/lib/interviews/audio-storage";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -92,6 +98,13 @@ export default async function InterviewDetailPage({ params }: Props) {
     notFound();
   }
 
+  const mockSessions = await prisma.mockInterviewSession.findMany({
+    where: { userId, interviewId: interview.id },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { id: true, title: true, questions: true, answers: true, completedAt: true, createdAt: true }
+  });
+
   const job = interview.jobPosting ?? interview.application?.jobPosting;
   const availability = getAiAvailability();
   const aiAvailable = availability.available;
@@ -151,6 +164,29 @@ export default async function InterviewDetailPage({ params }: Props) {
               )) : (
                 <p className="p-5 text-sm text-slate-600">No STAR stories yet.</p>
               )}
+            </div>
+          </Panel>
+
+          <Panel>
+            <PanelHeader
+              title="Mock interview practice"
+              description="Answer practice questions from this job post one at a time and get feedback on structure, specificity, relevance, and evidence from your resume."
+            />
+            <div className="space-y-4 p-5 text-sm leading-6 text-slate-700">
+              <MockInterviewPracticeNotice />
+              <MockInterviewStartButton
+                source={{ interviewId: interview.id }}
+                aiAvailable={aiAvailable}
+                unavailableMessage={unavailableMessage}
+                disabledReason={job ? null : "Link a job post to this interview to practise with questions from it."}
+              />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Saved practice sessions</p>
+                <MockInterviewSessionList
+                  sessions={mockSessions.map(mockSessionListItem)}
+                  emptyMessage="No practice sessions yet."
+                />
+              </div>
             </div>
           </Panel>
 
