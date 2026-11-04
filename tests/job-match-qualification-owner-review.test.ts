@@ -1468,7 +1468,7 @@ test("expired pricing rejects exact consent before credential activation", async
     now,
     sessionTimeoutMs: 10_000,
     execution: {
-      clock: () => new Date("2027-01-01T00:00:00.000Z"),
+      clock: () => new Date("2027-04-01T00:00:00.000Z"),
       activateTransport: async () => {
         activations += 1;
         throw new Error("must not activate after pricing expiry");

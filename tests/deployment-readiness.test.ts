@@ -163,22 +163,22 @@ test("readiness reports registered AI pricing expiry without extending it", () =
   const flash = current.aiPricing.find((entry) => entry.model === "gemini-3.8-flash");
   assert.deepEqual(flash, {
     model: "gemini-3.8-flash",
-    validUntil: "2027-01-01T00:00:00.000Z",
+    validUntil: "2027-04-01T00:00:00.000Z",
     status: "current",
-    daysRemaining: 78
+    daysRemaining: 168
   });
   assert.deepEqual(current.warnings, []);
   assert.equal(current.ready, true);
 
-  const soon = checkDeploymentReadiness(productionEnv(), productionOrigin, new Date("2026-11-03T00:00:00.000Z"));
-  assert.deepEqual(soon.warnings, ["ai_pricing_expires_soon:gemini-3.8-flash:2027-01-01T00:00:00.000Z"]);
+  const soon = checkDeploymentReadiness(productionEnv(), productionOrigin, new Date("2027-02-01T00:00:00.000Z"));
+  assert.deepEqual(soon.warnings, ["ai_pricing_expires_soon:gemini-3.8-flash:2027-04-01T00:00:00.000Z"]);
   assert.equal(soon.ready, true, "an approaching expiry is a warning, not an outage");
 
   const expired = checkDeploymentReadiness(productionEnv({
     AI_PROVIDER_OVERRIDES: "APPLICATION_PLAN:kimi"
-  }), productionOrigin, new Date("2027-01-02T00:00:00.000Z"));
+  }), productionOrigin, new Date("2027-04-02T00:00:00.000Z"));
   assert.deepEqual(expired.warnings, [
-    "ai_pricing_expired:gemini-3.8-flash:2027-01-01T00:00:00.000Z",
+    "ai_pricing_expired:gemini-3.8-flash:2027-04-01T00:00:00.000Z",
     "ai_provider_overrides_retired"
   ]);
 });
