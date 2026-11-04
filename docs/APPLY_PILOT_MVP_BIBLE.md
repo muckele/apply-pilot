@@ -75,6 +75,23 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 **Repository hygiene:** `/Users/Matt/Projects/apply-pilot` is checked out on the stale `feature/form-inspection-answer-packet` (`2e697b0`, 93 commits behind `main`), with older copies of the roadmap docs uncommitted. All new work branches from `origin/main`. Nineteen old worktrees exist; almost all of their branches are already merged.
 
+### In flight (draft PRs opened 2026-11-03, none merged)
+
+| PR | Work package | Base | Migration | Notes |
+|---|---|---|---|---|
+| #35 (+#31–#34) | WP0.2 evidence-bound generation stack | `main` (via #31–#34) | **A:** `20261008120000_add_evidence_snapshots` | Reviewed; critical tracker-freeze bug fixed in `7027ee4` |
+| #36 | WP0.1 this Bible and D026–D031 | `main` | — | Docs only |
+| #40 | WP1.3 Discovery v2 | `main` | — | 59 verified boards; Remotive/Adzuna off by default |
+| #37 | WP1.2 onboarding checklist | #35 | — | |
+| #38 | WP0.3 hygiene | #35 | — | Env examples, demo persona, budget default |
+| #39 | WP1.7 tracker board + CSV | #35 | — | |
+| #41 | D031 editable documents | #35 | **B:** `ResumeVersion.metadata` (nullable JSONB) | |
+| #44 | WP1.5 Apply Kit + D031 for assisted Fill | #41 | — | Touches protected run currentness check only; review carefully |
+| #42 | WP1.1 single Gemini path | #35 | — | Restores interview prep and email on Gemini; removes OpenAI |
+| #43 | WP1.8 mock interview | #42 | **C:** `20261103120000_add_mock_interview_sessions` | |
+
+Production migrations are applied by hand (`DEPLOYMENT.md`); all three are additive and must be deployed before the PR that needs them reaches `main`. Several PRs edit the API route-inventory test, so expect small merge conflicts there. One Playwright journey test needs `npm run browser:install` locally.
+
 ## 4. What changes from the old roadmap
 
 The September roadmap (`PRODUCT_ROADMAP.md`, P0–P5) remains the long-range safety and architecture plan. Its weakness in practice: since late September the work narrowed to the browser-fill engine and repeated resume-contract and qualification iterations (V5 through V9 diagnostics, a qualification run prepared but never executed), while the user-facing product that the owner wants stood still.
