@@ -35,6 +35,18 @@ import {
   toApplicationRunDto
 } from "@/lib/application-runs/service";
 import { assertRunTransition } from "@/lib/application-runs/state-machine";
+import {
+  CURRENT_JOB_MATCH_ANALYSES,
+  JOB_MATCH_PROFILE_SELECT,
+  JOB_MATCH_RESUME_SELECT,
+  buildCurrentJobMatchContext,
+  currentJobMatchInputHash,
+  hasCurrentJobMatchAnalysis
+} from "@/lib/jobs/current-job-match";
+import {
+  CURRENT_EVIDENCE_SNAPSHOT_SELECT,
+  isEvidenceBindingCurrent
+} from "@/lib/jobs/evidence-snapshot-contracts";
 import { prisma } from "@/lib/prisma";
 
 const PREPARATION_RUN_SELECT = {
@@ -55,6 +67,7 @@ const PREPARATION_RUN_SELECT = {
           id: true,
           userId: true,
           jobPostingId: true,
+          evidenceSnapshotId: true,
           summary: true,
           skills: true,
           fullText: true,
@@ -78,6 +91,7 @@ const PREPARATION_RUN_SELECT = {
           id: true,
           userId: true,
           jobPostingId: true,
+          evidenceSnapshotId: true,
           type: true,
           content: true
         }
@@ -99,21 +113,23 @@ const PREPARATION_RUN_SELECT = {
       preferredQualifications: true,
       detectedTechStack: true,
       overallFitScore: true,
-      confidenceScore: true
+      confidenceScore: true,
+      currentEvidenceSnapshotId: true,
+      evidenceSnapshotGeneration: true,
+      currentEvidenceSnapshot: {
+        select: CURRENT_EVIDENCE_SNAPSHOT_SELECT
+      },
+      aiAnalyses: CURRENT_JOB_MATCH_ANALYSES
     }
   },
   user: {
     select: {
-      profile: {
-        select: {
-          careerGoals: true,
-          preferredRoles: true,
-          preferredLocations: true,
-          remotePreference: true,
-          salaryTargetMin: true,
-          skillsToEmphasize: true,
-          skillsNotToExaggerate: true
-        }
+      profile: { select: JOB_MATCH_PROFILE_SELECT },
+      resumes: {
+        where: { isMaster: true },
+        orderBy: { updatedAt: "desc" },
+        take: 1,
+        select: JOB_MATCH_RESUME_SELECT
       }
     }
   }
@@ -154,6 +170,9 @@ type CapturedPreparationAttempt = {
   minimumConfidenceScore: number;
   fitScore: number;
   matchConfidenceScore: number;
+  evidenceSnapshotId: string;
+  jobMatchAnalysisId: string;
+  jobMatchInputHash: string;
   resumeVersionId: string;
   resumeContentHash: string;
   coverLetterVersionId: string | null;
@@ -474,6 +493,17 @@ export function createApplicationRunOrchestrator(
         SELECT "id" FROM "ApplicationRun" WHERE "id" = ${input.runId} AND "userId" = ${input.userId} FOR UPDATE
       `;
       if (lockedRuns.length !== 1) throw runNotFound();
+      const initialRun = await tx.applicationRun.findFirst({
+        where: { id: input.runId, userId: input.userId },
+        select: PREPARATION_RUN_SELECT
+      });
+      if (!initialRun) throw runNotFound();
+      const lockedJobs = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "JobPosting"
+        WHERE "id" = ${initialRun.jobPostingId} AND "userId" = ${input.userId}
+        FOR UPDATE
+      `;
+      if (lockedJobs.length !== 1) throw runNotFound();
       const run = await tx.applicationRun.findFirst({
         where: { id: input.runId, userId: input.userId },
         select: PREPARATION_RUN_SELECT
@@ -505,12 +535,22 @@ export function createApplicationRunOrchestrator(
       const hostBlocked =
         target === null || target.host !== run.applyHost || isHostBlocked(run.applyHost, policy);
       const assignedResume = run.application.resumeVersion;
+      const evidenceContext = buildCurrentJobMatchContext({
+        job: run.jobPosting,
+        resume: run.user.resumes?.[0] ?? null,
+        profile: run.user.profile
+      });
       const resumeSelectable = Boolean(
         run.application.resumeVersionId &&
         assignedResume &&
         assignedResume.id === run.application.resumeVersionId &&
         assignedResume.userId === input.userId &&
         assignedResume.jobPostingId === run.jobPostingId &&
+        isEvidenceBindingCurrent({
+          currentEvidenceSnapshotId: run.jobPosting.currentEvidenceSnapshotId,
+          currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid,
+          artifactEvidenceSnapshotId: assignedResume.evidenceSnapshotId
+        }) &&
         (assignedResume.resume === null || assignedResume.resume.userId === input.userId)
       );
       const assignedCoverLetter = run.application.coverLetterVersion;
@@ -520,12 +560,23 @@ export function createApplicationRunOrchestrator(
         assignedCoverLetter.id === run.application.coverLetterVersionId &&
         assignedCoverLetter.userId === input.userId &&
         assignedCoverLetter.jobPostingId === run.jobPostingId &&
+        isEvidenceBindingCurrent({
+          currentEvidenceSnapshotId: run.jobPosting.currentEvidenceSnapshotId,
+          currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid,
+          artifactEvidenceSnapshotId: assignedCoverLetter.evidenceSnapshotId
+        }) &&
         assignedCoverLetter.type === "COVER_LETTER"
       );
+      const reviewedEvidence = evidenceContext.reviewedEvidence;
+      const currentMatchInput = evidenceContext.matchInput;
+      const hasCurrentMatch = hasCurrentJobMatchAnalysis({
+        ...run.jobPosting,
+        currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid
+      }, currentMatchInput);
       const gate = evaluatePreparationGates({
         hostBlocked,
-        fitScore: run.jobPosting.overallFitScore,
-        matchConfidence: run.jobPosting.confidenceScore,
+        fitScore: hasCurrentMatch ? run.jobPosting.overallFitScore : null,
+        matchConfidence: hasCurrentMatch ? run.jobPosting.confidenceScore : null,
         minimumFitScore: policy.minimumFitScore,
         minimumConfidenceScore: policy.minimumConfidenceScore,
         resumeSelectable,
@@ -599,6 +650,9 @@ export function createApplicationRunOrchestrator(
       // The gate guarantees these values. Keeping the post-gate assertions local
       // prevents nullable database fields from leaking into the captured contract.
       if (
+        !hasCurrentMatch ||
+        !run.jobPosting.currentEvidenceSnapshotId ||
+        !run.jobPosting.aiAnalyses[0]?.id ||
         run.jobPosting.overallFitScore === null ||
         run.jobPosting.confidenceScore === null ||
         !assignedResume ||
@@ -642,7 +696,8 @@ export function createApplicationRunOrchestrator(
               skillsToEmphasize: [...run.user.profile.skillsToEmphasize],
               skillsNotToExaggerate: [...run.user.profile.skillsNotToExaggerate]
             }
-          : null
+          : null,
+        reviewedEvidence
       };
       const payload = buildApplicationPlanPayload(plannerInput);
       const snapshot = policySnapshot(policyValues(policy));
@@ -660,6 +715,9 @@ export function createApplicationRunOrchestrator(
           minimumConfidenceScore: policy.minimumConfidenceScore,
           fitScore: run.jobPosting.overallFitScore,
           matchConfidenceScore: run.jobPosting.confidenceScore,
+          evidenceSnapshotId: run.jobPosting.currentEvidenceSnapshotId,
+          jobMatchAnalysisId: run.jobPosting.aiAnalyses[0].id,
+          jobMatchInputHash: currentJobMatchInputHash(currentMatchInput),
           resumeVersionId: assignedResume.id,
           resumeContentHash: hashText(assignedResume.fullText),
           coverLetterVersionId: selectedCoverLetter?.id ?? null,
@@ -692,14 +750,55 @@ export function createApplicationRunOrchestrator(
         SELECT "id" FROM "ApplicationRun" WHERE "id" = ${captured.runId} AND "userId" = ${captured.userId} FOR UPDATE
       `;
       if (lockedRuns.length !== 1) return { kind: "stale" };
+      const lockedJobs = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "JobPosting"
+        WHERE "id" = ${captured.jobPostingId} AND "userId" = ${captured.userId}
+        FOR UPDATE
+      `;
+      if (lockedJobs.length !== 1) return { kind: "stale" };
       const run = await tx.applicationRun.findFirst({
         where: { id: captured.runId, userId: captured.userId },
-        select: PREPARATION_FENCE_SELECT
+        select: PREPARATION_RUN_SELECT
       });
       if (!run || !canCommitPreparation(run, {
         prepareAttemptId: captured.attemptId,
         stateVersion: captured.acquiredStateVersion
       })) {
+        return { kind: "stale" };
+      }
+
+      const currentEvidence = buildCurrentJobMatchContext({
+        job: run.jobPosting,
+        resume: run.user.resumes?.[0] ?? null,
+        profile: run.user.profile
+      });
+      const currentAnalysis = run.jobPosting.aiAnalyses[0];
+      const assignedResume = run.application.resumeVersion;
+      const assignedCoverLetter = run.application.coverLetterVersion;
+      if (
+        !currentEvidence.currentEvidenceSourceValid ||
+        run.jobPosting.currentEvidenceSnapshotId !== captured.evidenceSnapshotId ||
+        currentAnalysis?.id !== captured.jobMatchAnalysisId ||
+        currentJobMatchInputHash(currentEvidence.matchInput) !== captured.jobMatchInputHash ||
+        !hasCurrentJobMatchAnalysis({
+          ...run.jobPosting,
+          currentEvidenceSourceValid: currentEvidence.currentEvidenceSourceValid
+        }, currentEvidence.matchInput) ||
+        run.jobPosting.overallFitScore !== captured.fitScore ||
+        run.jobPosting.confidenceScore !== captured.matchConfidenceScore ||
+        run.application.resumeVersionId !== captured.resumeVersionId ||
+        !assignedResume ||
+        assignedResume.id !== captured.resumeVersionId ||
+        hashText(assignedResume.fullText) !== captured.resumeContentHash ||
+        assignedResume.evidenceSnapshotId !== captured.evidenceSnapshotId ||
+        run.application.coverLetterVersionId !== captured.coverLetterVersionId ||
+        (captured.coverLetterVersionId !== null && (
+          !assignedCoverLetter ||
+          assignedCoverLetter.id !== captured.coverLetterVersionId ||
+          hashText(assignedCoverLetter.content) !== captured.coverLetterContentHash ||
+          assignedCoverLetter.evidenceSnapshotId !== captured.evidenceSnapshotId
+        ))
+      ) {
         return { kind: "stale" };
       }
 

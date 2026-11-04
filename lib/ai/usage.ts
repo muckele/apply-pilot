@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
-
 import { PublicApiError } from "@/lib/api-errors";
+export { hashAiInput } from "@/lib/ai/input-hash";
 import { prisma } from "@/lib/prisma";
 
 const DEFAULT_MONTHLY_BUDGET_CENTS = 1000;
@@ -18,12 +17,6 @@ function readNonNegativeNumber(name: string) {
 
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
-
-export function hashAiInput(promptName: string, promptVersion: string, payload: unknown) {
-  return createHash("sha256")
-    .update(`${promptName}:${promptVersion}:${JSON.stringify(payload)}`)
-    .digest("hex");
 }
 
 export function estimateAiCostMicros({

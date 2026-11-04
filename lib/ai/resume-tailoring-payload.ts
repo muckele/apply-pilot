@@ -1,8 +1,11 @@
-export function buildResumeTailoringPayload(
+import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
+
+export function buildApplicationDocumentPayload(
   job: unknown,
   resume: unknown,
-  profile: unknown
-) {
+  profile: unknown,
+  reviewedEvidence: unknown = null
+): ApplicationDocumentPayload {
   const pick = (value: unknown, keys: string[]) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const source = value as Record<string, unknown>;
@@ -47,6 +50,15 @@ export function buildResumeTailoringPayload(
     ], ["details"]);
   }
 
+  const projectedEvidence = pick(reviewedEvidence, ["schema", "snapshotId", "snapshotHash", "unresolvedGapIds"]);
+  if (projectedEvidence) {
+    const source = reviewedEvidence as Record<string, unknown>;
+    projectedEvidence.unresolvedGapIds = strings(projectedEvidence.unresolvedGapIds);
+    projectedEvidence.facts = pickRecords(source.facts, [
+      "gapId", "fact", "provenance", "sourceRef"
+    ], []);
+  }
+
   return {
     job: pick(job, [
       "title", "company", "location", "remoteStatus", "salaryMin", "salaryMax",
@@ -56,6 +68,11 @@ export function buildResumeTailoringPayload(
     profile: pick(profile, [
       "careerGoals", "preferredRoles", "preferredLocations", "remotePreference",
       "salaryTargetMin", "salaryTargetMax", "skillsToEmphasize", "skillsNotToExaggerate"
-    ])
+    ]),
+    reviewedEvidence: projectedEvidence
   };
 }
+
+// Compatibility name for callers that have not yet moved to the shared
+// application-document projection.
+export const buildResumeTailoringPayload = buildApplicationDocumentPayload;

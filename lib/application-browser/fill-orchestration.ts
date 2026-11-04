@@ -417,6 +417,7 @@ type ActiveStatus =
   | Readonly<{ kind: "LOCAL_DEADLINE" }>
   | Readonly<{ kind: "EXPIRED" }>
   | Readonly<{ kind: "CANCELLED" }>
+  | Readonly<{ kind: "EVIDENCE_STALE" }>
   | Readonly<{ kind: "POLICY_DENIED" }>;
 
 function classifyKnownActiveStatus(
@@ -435,7 +436,7 @@ function classifyKnownActiveStatus(
     status.fillAttemptId !== acquired.attemptId ||
     status.fillLeaseExpiresAt !== acquired.leaseExpiresAt ||
     status.outcome !== null ||
-    status.errorCode !== null ||
+    (status.errorCode !== null && status.errorCode !== "FILL_STALE") ||
     status.steps.length !== 0
   ) {
     throw failure("FILL_INTERNAL");
@@ -449,6 +450,10 @@ function classifyKnownActiveStatus(
   }
   if (!status.leaseLive || status.expiredRecoveryRequired) throw failure("FILL_INTERNAL");
   if (now >= Date.parse(acquired.leaseExpiresAt)) return { kind: "LOCAL_DEADLINE" };
+  if (status.errorCode === "FILL_STALE") {
+    if (status.fieldOperationAllowed) throw failure("FILL_INTERNAL");
+    return { kind: "EVIDENCE_STALE" };
+  }
   if (requireFieldPermission && !status.fieldOperationAllowed) return { kind: "POLICY_DENIED" };
   return { kind: "LIVE" };
 }
@@ -842,6 +847,8 @@ export function createGuardedFillOrchestrationService(dependencies: Dependencies
           assertActiveTarget();
           if (statusClassification.kind === "POLICY_DENIED") {
             preFieldError = "FILL_POLICY_DENIED";
+          } else if (statusClassification.kind === "EVIDENCE_STALE") {
+            preFieldError = "FILL_STALE";
           } else if (now() >= Date.parse(acquired.leaseExpiresAt)) {
             return result("RECOVERY_PENDING", status);
           }

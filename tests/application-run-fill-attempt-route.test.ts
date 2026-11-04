@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { NextRequest } from "next/server";
 
 import * as routeModule from "@/app/api/application-runs/[id]/fill-attempt/route";
-import { createApplicationRunFillAttemptRouteHandlers } from "@/app/api/application-runs/[id]/fill-attempt/route";
+import { createApplicationRunFillAttemptRouteHandlers } from "@/lib/application-runs/http/fill-attempt";
 import { PublicApiError } from "@/lib/api-errors";
 import { createApplicationRunFillAttemptService } from "@/lib/application-runs/fill-attempt";
 import { UnauthorizedError } from "@/lib/user-context";

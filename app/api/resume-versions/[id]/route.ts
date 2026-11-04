@@ -30,10 +30,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const input = resumeVersionPatchSchema.parse(await request.json());
     const existing = await prisma.resumeVersion.findFirstOrThrow({ where: { id, userId } });
+    const invalidatesEvidenceBinding = ["summary", "fullText", "skills"].some((key) => Object.hasOwn(input, key));
     const version = await prisma.$transaction(async (tx) => {
       const updated = await tx.resumeVersion.update({
         where: { id: existing.id },
-        data: input
+        data: {
+          ...input,
+          ...(invalidatesEvidenceBinding ? { evidenceSnapshotId: null } : {})
+        }
       });
 
       await tx.auditLog.create({
@@ -42,7 +46,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           action: "resume-version.update",
           resource: "ResumeVersion",
           resourceId: updated.id,
-          metadata: {}
+          metadata: { evidenceBindingInvalidated: invalidatesEvidenceBinding }
         }
       });
 

@@ -25,8 +25,9 @@ function aiCapability(env: DeploymentEnv): AiCapability {
   }
 
   // Legacy OpenAI features predate the guarded provider switch and still use
-  // their own key/mock gate. JOB_MATCH uses the guarded Gemini runtime. Report
-  // both when configured, but never infer provider reachability from key presence.
+  // their own key/mock gate. Resume parsing, JOB_MATCH, and guarded application
+  // documents use Gemini. Report both when configured, but never infer provider
+  // reachability from key presence.
   const openAiConfigured = Boolean(env.OPENAI_API_KEY?.trim()) && env.OPENAI_MOCK_MODE !== "true";
   const geminiConfigured =
     env.AI_ENABLED === "true" &&

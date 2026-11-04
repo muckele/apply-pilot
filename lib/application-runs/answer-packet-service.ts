@@ -25,6 +25,7 @@ import {
   type PacketInspectionContext
 } from "@/lib/application-runs/answer-packet-domain";
 import { revokeUsableExecutionTokensForRunInTransaction } from "@/lib/application-runs/execution-token";
+import { assertCurrentApplicationRunEvidenceInTransaction } from "@/lib/application-runs/evidence-authority";
 import {
   FIELD_FINGERPRINT_VERSION,
   FORM_INSPECTION_SCHEMA_VERSION,
@@ -207,6 +208,7 @@ export type ApplicationRunAnswerPacketServiceDependencies = {
   env?: AutomationEnv;
   clock?: () => Date;
   assertTransition?: typeof assertRunTransition;
+  assertCurrentApplicationRunEvidenceInTransaction?: typeof assertCurrentApplicationRunEvidenceInTransaction;
 };
 
 type OwnerSafeAnswer = {
@@ -1348,6 +1350,8 @@ export function createApplicationRunAnswerPacketService(
   const env = dependencies.env ?? process.env;
   const clock = dependencies.clock ?? (() => new Date());
   const assertTransition = dependencies.assertTransition ?? assertRunTransition;
+  const assertCurrentEvidence = dependencies.assertCurrentApplicationRunEvidenceInTransaction ??
+    assertCurrentApplicationRunEvidenceInTransaction;
 
   async function publishFormInspectionAndAnswerPacket(input: unknown): Promise<MaterialResult> {
     const parsed = publicationInputSchema.parse(input);
@@ -1363,6 +1367,7 @@ export function createApplicationRunAnswerPacketService(
       const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
       assertOperationalRun(run, parsed.expectedStateVersion);
       assertAuthoritativeTarget(run, policy, observedTarget);
+      await assertCurrentEvidence(tx, run);
       const pointers = await loadPointerRows(tx, parsed.userId, run);
 
       let reusedInspection: StoredInspection | null = null;
@@ -1448,6 +1453,7 @@ export function createApplicationRunAnswerPacketService(
       const run = await lockOwnedRun(tx, parsed.userId, parsed.runId);
       assertOperationalRun(run, parsed.expectedStateVersion);
       assertAuthoritativeTarget(run, policy);
+      await assertCurrentEvidence(tx, run);
       const pointers = await loadPointerRows(tx, parsed.userId, run);
       if (!pointers) throw inspectionInvalid();
       if (!isSupportedInspection(pointers.inspection)) throw inspectionStale();

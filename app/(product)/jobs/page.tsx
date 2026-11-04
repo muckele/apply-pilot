@@ -4,8 +4,21 @@ import type { Prisma } from "@prisma/client";
 import { AutomatedJobDiscoveryPanel } from "@/components/automated-job-discovery-panel";
 import { JobCard } from "@/components/job-card";
 import { ManualJobImportForm } from "@/components/manual-job-import-form";
+import {
+  JobMatchOmissionNotice,
+  summarizeBoundedJobResults
+} from "@/components/job-match-omission-notice";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
 import { resolveInitialJobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
+import {
+  CURRENT_JOB_MATCH_ANALYSES,
+  JOB_MATCH_LIST_CANDIDATE_LIMIT,
+  buildCurrentJobMatchContext,
+  currentJobMatchFields,
+  hasCurrentJobMatchAnalysis,
+  readCurrentJobMatchSources
+} from "@/lib/jobs/current-job-match";
+import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -48,6 +61,8 @@ function parseFilters(params: SearchParams = {}) {
 
 async function getJobsForPage(params: SearchParams, userId: string) {
   const filters = parseFilters(params);
+  const hasMinFitScore = Number.isInteger(filters.minFitScore) && filters.minFitScore > 0;
+  const sources = await readCurrentJobMatchSources(userId);
   const where: Prisma.JobPostingWhereInput = { userId };
   const andConditions: Prisma.JobPostingWhereInput[] = [];
 
@@ -87,10 +102,6 @@ async function getJobsForPage(params: SearchParams, userId: string) {
     });
   }
 
-  if (Number.isInteger(filters.minFitScore) && filters.minFitScore > 0) {
-    where.overallFitScore = { gte: filters.minFitScore };
-  }
-
   if (Number.isInteger(filters.datePosted) && filters.datePosted > 0) {
     const since = new Date(Date.now() - filters.datePosted * 86_400_000);
     andConditions.push({
@@ -102,30 +113,53 @@ async function getJobsForPage(params: SearchParams, userId: string) {
     where.AND = andConditions;
   }
 
-  const jobs = await prisma.jobPosting.findMany({
-    where,
-    orderBy: [{ overallFitScore: "desc" }, { datePosted: "desc" }, { firstDiscoveredAt: "desc" }],
-    take: 40
-  });
+  const [jobs, candidateCount] = await Promise.all([
+    prisma.jobPosting.findMany({
+      where,
+      include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } },
+      orderBy: [{ overallFitScore: "desc" }, { datePosted: "desc" }, { firstDiscoveredAt: "desc" }],
+      take: hasMinFitScore ? JOB_MATCH_LIST_CANDIDATE_LIMIT : 40
+    }),
+    prisma.jobPosting.count({ where })
+  ]);
 
-  return jobs.map((job) => ({
-    id: job.id,
-    title: job.title,
-    company: job.company,
-    location: job.location || "Location not listed",
-    remoteStatus: job.remoteStatus || "Work style not listed",
-    salary:
-      job.salaryMin && job.salaryMax
-        ? `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`
-        : "Salary not listed",
-    datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-    fitScore: job.overallFitScore,
-    status: job.status,
-    sourceType: job.sourceType,
-    keyReason:
-      job.keyMatchReason ??
-      "Imported from an allowed source. Run fit scoring to generate a targeted match summary."
-  }));
+  const matchingJobs = jobs.map((job) => {
+    const context = buildCurrentJobMatchContext({ job, ...sources });
+    const currentJob = currentJobMatchFields(job, hasCurrentJobMatchAnalysis({
+      ...job,
+      currentEvidenceSourceValid: context.currentEvidenceSourceValid
+    }, context.matchInput));
+    return {
+      id: job.id,
+      title: job.title,
+      company: job.company,
+      location: job.location || "Location not listed",
+      remoteStatus: job.remoteStatus || "Work style not listed",
+      salary:
+        job.salaryMin && job.salaryMax
+          ? `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`
+          : "Salary not listed",
+      datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
+      fitScore: currentJob.overallFitScore,
+      status: job.status,
+      sourceType: job.sourceType,
+      keyReason:
+        currentJob.keyMatchReason ??
+        "Imported from an allowed source. Run fit scoring to generate a targeted match summary."
+    };
+  }).filter((job) => !hasMinFitScore ||
+    (job.fitScore !== null && job.fitScore >= filters.minFitScore));
+  const visibleJobs = matchingJobs.slice(0, 40);
+  return {
+    jobs: visibleJobs,
+    evaluatedCandidateCount: jobs.length,
+    ...summarizeBoundedJobResults({
+      evaluatedCandidateCount: jobs.length,
+      evaluatedMatchingCount: matchingJobs.length,
+      totalCandidateCount: candidateCount,
+      visibleCount: visibleJobs.length
+    })
+  };
 }
 
 type JobsPageProps = {
@@ -136,7 +170,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
   const params = (await searchParams) ?? {};
   const userId = await requirePageUserId();
   const filters = parseFilters(params);
-  const [jobs, savedPreference, profile] = await Promise.all([
+  const [jobResult, savedPreference, profile] = await Promise.all([
     getJobsForPage(params, userId),
     prisma.jobDiscoveryPreference.findUnique({
       where: { userId },
@@ -157,6 +191,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
       }
     })
   ]);
+  const { jobs, evaluatedCandidateCount, omittedCandidateCount, unevaluatedCandidateCount } = jobResult;
   const initialDiscoveryPreferences = resolveInitialJobDiscoveryPreferences({
     savedPreference,
     profile
@@ -169,6 +204,16 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
         description="Discover, import, deduplicate, and score recent jobs from compliant APIs, ATS feeds, RSS feeds, and permitted company career pages."
         tone="branded"
       />
+      {omittedCandidateCount > 0 || unevaluatedCandidateCount > 0 ? (
+        <div className="mb-4">
+          <JobMatchOmissionNotice
+            evaluatedCandidateCount={evaluatedCandidateCount}
+            omittedCandidateCount={omittedCandidateCount}
+            unevaluatedCandidateCount={unevaluatedCandidateCount}
+            viewLabel="jobs view"
+          />
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
         <section className="space-y-4">

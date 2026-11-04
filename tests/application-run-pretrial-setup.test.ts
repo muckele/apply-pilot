@@ -132,7 +132,9 @@ test("eligible owned DRAFT displays policy and Prepare without a render-time req
     assert.match(ui.container.textContent ?? "", /jobs\.example\.com/);
     assert.match(ui.container.textContent ?? "", /PREPARE_ONLY/);
     assert.match(ui.container.textContent ?? "", /host.*allowed/i);
+    assert.match(ui.container.textContent ?? "", /deterministic local rule-based planning/i);
     assert.ok(ui.container.querySelector("[data-testid='prepare-run']"));
+    assert.match(ui.container.querySelector("[data-testid='prepare-run']")?.textContent ?? "", /Prepare with local rules/);
     assert.equal(ui.container.querySelector("[data-testid='enable-pretrial']"), null);
     assert.deepEqual(ui.fetchCalls, []);
   } finally { await ui.cleanup(); }
@@ -316,7 +318,7 @@ test("durable blockers and bounded failures are explained without arbitrary erro
   }
   const failed = await mount({ initialRun: run({ state: "FAILED", errorCategory: "planner_provider_failure" }) });
   try {
-    assert.match(failed.container.textContent ?? "", /planner provider/i);
+    assert.match(failed.container.textContent ?? "", /local rule-based plan/i);
     assert.doesNotMatch(failed.container.textContent ?? "", /stack|exception/i);
   } finally { await failed.cleanup(); }
 });

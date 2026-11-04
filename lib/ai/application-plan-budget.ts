@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 
 import { getAiFinancialPolicy } from "@/lib/ai/config";
 import { PublicApiError } from "@/lib/api-errors";
+export { hashAiInput } from "@/lib/ai/input-hash";
 import { prisma } from "@/lib/prisma";
 
 const DEFAULT_MONTHLY_BUDGET_CENTS = 500;
@@ -14,12 +15,6 @@ export function monthWindow(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
   return { start, end };
-}
-
-export function hashAiInput(promptName: string, promptVersion: string, payload: unknown) {
-  return createHash("sha256")
-    .update(`${promptName}:${promptVersion}:${JSON.stringify(payload)}`)
-    .digest("hex");
 }
 
 export async function getOrCreateAiSettings(userId: string) {

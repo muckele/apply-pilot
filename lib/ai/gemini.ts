@@ -188,7 +188,9 @@ type GeminiJsonProviderInput = GeminiJsonRequestInput & {
   apiKey: string;
   model: string;
   fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
   timeoutMs?: number;
+  maxResponseBytes?: number;
 };
 
 type GeminiResponseBody = {
@@ -205,10 +207,43 @@ function boundedProviderDiagnostic(value: unknown) {
   return /^[A-Za-z0-9._~:/+=-]{1,200}$/u.test(normalized) ? normalized : null;
 }
 
-async function readGeminiRejectionDiagnostics(response: Response) {
-  const requestId = ["x-goog-request-id", "x-request-id", "x-guploader-uploadid"]
+function responseRequestId(response: Response) {
+  return ["x-goog-request-id", "x-request-id", "x-guploader-uploadid"]
     .map((name) => boundedProviderDiagnostic(response.headers.get(name)))
     .find((value): value is string => value !== null) ?? null;
+}
+
+async function readBoundedResponseText(response: Response, maxResponseBytes: number) {
+  const reader = response.body?.getReader();
+  if (!reader) return { text: "", responseBytes: 0 };
+  const decoder = new TextDecoder();
+  let text = "";
+  let responseBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        text += decoder.decode();
+        return { text, responseBytes };
+      }
+      responseBytes += value.byteLength;
+      if (responseBytes > maxResponseBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new GeminiProviderError("Gemini response exceeded the configured body limit.", {
+          providerResponded: true,
+          httpStatus: response.status,
+          requestId: responseRequestId(response)
+        });
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function readGeminiRejectionDiagnostics(response: Response) {
+  const requestId = responseRequestId(response);
   let providerCode: string | null = null;
   try {
     const reader = response.body?.getReader();
@@ -250,11 +285,21 @@ export async function callGeminiJsonProvider({
   apiKey,
   model,
   fetchImpl = fetch,
+  signal,
   timeoutMs = 180_000,
+  maxResponseBytes = 1_000_000,
   ...requestInput
 }: GeminiJsonProviderInput) {
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
+    throw new GeminiProviderError("Gemini response body limit is invalid.", {
+      providerResponded: false,
+      billingDisposition: "not_charged",
+      providerCode: "INVALID_RESPONSE_BODY_LIMIT"
+    });
+  }
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const requestBody = JSON.stringify(buildGeminiJsonRequest(requestInput));
+  const startedAt = Date.now();
   let response: Response;
   try {
     response = await fetchImpl(endpoint, {
@@ -264,7 +309,9 @@ export async function callGeminiJsonProvider({
         "x-goog-api-key": apiKey
       },
       body: requestBody,
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs)
     });
   } catch {
     throw new GeminiProviderError("Gemini request outcome is uncertain.", {
@@ -288,20 +335,41 @@ export async function callGeminiJsonProvider({
   }
 
   let body: GeminiResponseBody;
+  let responseBytes = 0;
   try {
-    body = await response.json() as GeminiResponseBody;
-  } catch {
+    const bounded = await readBoundedResponseText(response, maxResponseBytes);
+    responseBytes = bounded.responseBytes;
+    body = JSON.parse(bounded.text) as GeminiResponseBody;
+  } catch (error) {
+    if (error instanceof GeminiProviderError) throw error;
     throw new GeminiProviderError("Gemini returned an invalid response envelope.", {
-      providerResponded: true
+      providerResponded: true,
+      httpStatus: response.status,
+      requestId: responseRequestId(response)
     });
   }
 
-  const usage = readGeminiUsage(body.usageMetadata);
+  let usage: GeminiUsage;
+  try {
+    usage = readGeminiUsage(body.usageMetadata);
+  } catch (error) {
+    if (error instanceof GeminiProviderError) {
+      throw new GeminiProviderError(error.message, {
+        providerResponded: error.providerResponded,
+        usage: error.usage,
+        billingDisposition: error.billingDisposition,
+        httpStatus: response.status,
+        providerCode: error.providerCode,
+        requestId: responseRequestId(response)
+      });
+    }
+    throw error;
+  }
   const candidate = body.candidates?.[0];
   if (candidate?.finishReason !== "STOP") {
     throw new GeminiProviderError(
       `Gemini did not complete the structured response (finish reason: ${String(candidate?.finishReason ?? "missing")}).`,
-      { providerResponded: true, usage }
+      { providerResponded: true, usage, httpStatus: response.status, requestId: responseRequestId(response) }
     );
   }
   const text = candidate.content?.parts
@@ -311,7 +379,9 @@ export async function callGeminiJsonProvider({
   if (!text) {
     throw new GeminiProviderError("Gemini returned an empty structured response.", {
       providerResponded: true,
-      usage
+      usage,
+      httpStatus: response.status,
+      requestId: responseRequestId(response)
     });
   }
 
@@ -321,9 +391,18 @@ export async function callGeminiJsonProvider({
   } catch {
     throw new GeminiProviderError("Gemini returned invalid structured JSON.", {
       providerResponded: true,
-      usage
+      usage,
+      httpStatus: response.status,
+      requestId: responseRequestId(response)
     });
   }
 
-  return { value, usage, finishReason: "STOP" as const };
+  return {
+    value,
+    usage,
+    finishReason: "STOP" as const,
+    responseBytes,
+    elapsedMs: Date.now() - startedAt,
+    requestId: responseRequestId(response)
+  };
 }

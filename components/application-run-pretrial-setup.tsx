@@ -55,7 +55,7 @@ const failureMessages: Record<string, string> = {
   planner_input_invalid: "Preparation failed because the bounded planner input was invalid.",
   planner_output_invalid: "Preparation failed because the planner output was invalid.",
   planner_confidence_invalid: "Preparation failed because the planner confidence was invalid.",
-  planner_provider_failure: "Preparation failed at the planner provider.",
+  planner_provider_failure: "Preparation failed while producing the local rule-based plan.",
   ai_provider_usage_exceeded_reservation: "Preparation failed because provider usage exceeded its reservation."
 };
 
@@ -242,6 +242,7 @@ export function ApplicationRunPretrialSetup({
       <p>Run state: <strong>{run.state}</strong>. Canonical target host: <strong>{run.applyHost}</strong>.</p>
       <p>Automation policy: owner enabled <strong>{policy.enabled ? "yes" : "no"}</strong>; effective enabled <strong>{policy.effectiveEnabled ? "yes" : "no"}</strong>; mode <strong>{policy.mode}</strong>.</p>
       <p>Execution host: <strong>{hostAllowed ? "allowed" : "not allowed"}</strong> under the current policy.</p>
+      <p>This MVP uses deterministic local rule-based planning. Preparing does not send planning data to an AI provider.</p>
       <p>Preparation is separate from employer inspection and Fill. Preparing does not open an employer page or grant Fill authority.</p>
       {policy.mode === "FILL_AND_REVIEW" ? (
         <p>The current policy is FILL_AND_REVIEW. This pretrial setup does not change that mode; review it separately.</p>
@@ -271,7 +272,7 @@ export function ApplicationRunPretrialSetup({
       {showPrepare ? (
         <button type="button" data-testid="prepare-run" onClick={() => { void prepareRun(); }}
           className="rounded-lg bg-brand-600 px-4 py-2 font-semibold text-white">
-          Prepare run
+          Prepare with local rules
         </button>
       ) : null}
       {uncertain && !busy ? (

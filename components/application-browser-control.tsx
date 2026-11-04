@@ -1718,7 +1718,7 @@ export function ApplicationBrowserControl({
               </dl>
               <h4 className="mt-4 text-xs font-semibold uppercase text-slate-500">Review reasons</h4>
               {reviewLoad.run.reviewReasons.length === 0
-                ? <p className="mt-2 text-sm text-slate-700">No planner review reasons require acknowledgment.</p>
+                ? <p className="mt-2 text-sm text-slate-700">No local rule-based planning review reasons require acknowledgment.</p>
                 : <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-700">{reviewLoad.run.reviewReasons.map((reason) => <li key={reason}>{REVIEW_REASON_LABELS[reason]}</li>)}</ol>}
             </div> : null}
             <div className="mt-4">

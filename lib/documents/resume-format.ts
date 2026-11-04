@@ -37,11 +37,11 @@ export function isResumeHeading(line: string) {
 }
 
 export function isResumeBullet(line: string) {
-  return /^\s*(?:[-*]|\u2022)\s+/.test(line);
+  return /^\s*[-*•▪◦–—]\s+/u.test(line);
 }
 
 export function stripResumeBullet(line: string) {
-  return line.replace(/^\s*(?:[-*]|\u2022)\s+/, "").trim();
+  return line.replace(/^\s*[-*•▪◦–—]\s+/u, "").trim();
 }
 
 export function wrapResumeLine(line: string, maxCharacters: number) {

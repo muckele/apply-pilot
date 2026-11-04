@@ -21,10 +21,14 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const input = generatedDocumentPatchSchema.parse(await request.json());
     const existing = await prisma.generatedDocument.findFirstOrThrow({ where: { id, userId } });
+    const invalidatesEvidenceBinding = Object.hasOwn(input, "content");
     const document = await prisma.$transaction(async (tx) => {
       const updated = await tx.generatedDocument.update({
         where: { id: existing.id },
-        data: input
+        data: {
+          ...input,
+          ...(invalidatesEvidenceBinding ? { evidenceSnapshotId: null } : {})
+        }
       });
 
       await tx.auditLog.create({
@@ -33,7 +37,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           action: "generated-document.update",
           resource: "GeneratedDocument",
           resourceId: updated.id,
-          metadata: {}
+          metadata: { evidenceBindingInvalidated: invalidatesEvidenceBinding }
         }
       });
 

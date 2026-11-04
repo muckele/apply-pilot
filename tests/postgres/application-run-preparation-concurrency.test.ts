@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
 import type { ApplicationPlanInput } from "@/lib/ai/application-plan";
+import { JOB_MATCH_MODEL, JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 import type { AutomationPolicyValues } from "@/lib/application-runs/contracts";
 import {
   createApplicationRunOrchestrator,
@@ -13,6 +14,7 @@ import {
 } from "@/lib/application-runs/orchestration";
 import { dailyCapWindowStart, PREPARE_LEASE_MS } from "@/lib/application-runs/preparation";
 import { automationPolicyDefaultValues, createApplicationRunService } from "@/lib/application-runs/service";
+import { buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
 import {
   assertActorSessionPinned,
   assertDistinctActorSessions,
@@ -553,6 +555,117 @@ async function createEligibleRun(
       summary: "Synthetic candidate with verified TypeScript evidence.",
       skills: ["TypeScript"],
       fullText: "Synthetic candidate with verified TypeScript evidence."
+    },
+    select: { id: true }
+  });
+  const masterResume = await observer.client.resume.findFirst({
+    where: { userId, isMaster: true },
+    orderBy: { updatedAt: "desc" }
+  }) ?? await observer.client.resume.create({
+    data: {
+      userId,
+      isMaster: true,
+      title: `C5.4 master resume ${fixtureKey}`,
+      rawText: "Synthetic candidate with verified TypeScript evidence.",
+      summary: "Synthetic candidate with verified TypeScript evidence.",
+      skills: ["TypeScript"],
+      achievements: [],
+      workHistory: [],
+      projects: [],
+      education: [],
+      certifications: []
+    }
+  });
+  const jobInput = {
+    title: `C5.4 synthetic role ${fixtureKey}`,
+    company: "C5.4 Synthetic Employer",
+    location: "Remote",
+    remoteStatus: "REMOTE",
+    salaryMin: null,
+    salaryMax: null,
+    description: "Synthetic evidence-backed preparation concurrency fixture.",
+    requirements: ["TypeScript"],
+    preferredQualifications: [],
+    detectedTechStack: ["TypeScript"]
+  };
+  const resumeInput = {
+    summary: masterResume.summary,
+    rawText: masterResume.rawText,
+    skills: masterResume.skills,
+    achievements: masterResume.achievements,
+    workHistory: masterResume.workHistory,
+    projects: masterResume.projects,
+    education: masterResume.education,
+    certifications: masterResume.certifications
+  };
+  const bootstrapInputHash = currentJobMatchInputHash(buildCurrentJobMatchInput({
+    job: jobInput,
+    resume: resumeInput,
+    profile: null,
+    reviewedEvidence: null,
+    evidenceSnapshotGeneration: 0
+  }));
+  const bootstrapAnalysis = await observer.client.aIAnalysis.create({
+    data: {
+      userId,
+      jobPostingId: jobPosting.id,
+      type: "JOB_MATCH",
+      model: JOB_MATCH_MODEL,
+      promptName: "jobMatchPrompt",
+      promptVersion: JOB_MATCH_PROMPT_VERSION,
+      inputHash: bootstrapInputHash,
+      input: { fixture: "bootstrap-job-match" },
+      output: { fixture: "bootstrap-job-match" }
+    }
+  });
+  const snapshot = await observer.client.evidenceSnapshot.create({
+    data: {
+      userId,
+      jobPostingId: jobPosting.id,
+      resumeId: masterResume.id,
+      reviewedAnalysisId: bootstrapAnalysis.id,
+      requestId: `c54-snapshot:${fixtureKey}`,
+      requestHash: "a".repeat(64),
+      sourceResumeUpdatedAt: masterResume.updatedAt,
+      snapshotHash: "b".repeat(64),
+      sourceProjectionHash: "c".repeat(64),
+      gapProjectionHash: "d".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+    }
+  });
+  await observer.client.jobPosting.update({
+    where: { id: jobPosting.id },
+    data: { currentEvidenceSnapshotId: snapshot.id, evidenceSnapshotGeneration: { increment: 1 } }
+  });
+  await observer.client.resumeVersion.update({
+    where: { id: resumeVersion.id },
+    data: { evidenceSnapshotId: snapshot.id }
+  });
+  const inputHash = currentJobMatchInputHash(buildCurrentJobMatchInput({
+    job: jobInput,
+    resume: resumeInput,
+    profile: null,
+    reviewedEvidence: {
+      schema: "apply-pilot/job-match-reviewed-evidence/v1",
+      snapshotId: snapshot.id,
+      snapshotHash: snapshot.snapshotHash,
+      facts: [],
+      unresolvedGapIds: []
+    },
+    evidenceSnapshotGeneration: 1
+  }));
+  await observer.client.aIAnalysis.create({
+    data: {
+      userId,
+      jobPostingId: jobPosting.id,
+      evidenceSnapshotId: snapshot.id,
+      type: "JOB_MATCH",
+      model: JOB_MATCH_MODEL,
+      promptName: "jobMatchPrompt",
+      promptVersion: JOB_MATCH_PROMPT_VERSION,
+      inputHash,
+      input: { fixture: "current-job-match" },
+      output: { fixture: "current-job-match" }
     },
     select: { id: true }
   });
@@ -1447,6 +1560,75 @@ test("same-user first preparations serialize the daily cap without oversubscript
     bHooks.assertExpectedHooksReached();
     await assertNoExecutionTokens(scenario.observer, fixture.userId);
     await assertScenarioSessionsPinned(scenario, "daily-cap-complete");
+  });
+});
+
+test("a snapshot revision committed while the planner runs makes TX2 stale", async () => {
+  const scenario = await createScenario("preparation-evidence-revision-race");
+  const acquireAt = new Date("2036-01-01T02:00:00.000Z");
+  await runScenarioBody(scenario, async () => {
+    const fixture = await createEligibleUser(scenario, "user");
+    const run = await createEligibleRun(scenario.observer, fixture.userId, "evidence-revision-race");
+    const planner = createPausedPlanner(
+      scenario,
+      "evidence revision race",
+      fixture.userId,
+      () => fixedCleanPlan("evidence-revision-race")
+    );
+    const clock = queuedClock("evidence revision race", [acquireAt]);
+    const attempt = trackedAttemptId("evidence revision race", "evidence-revision-race-attempt");
+    const prepare = createPreparation(scenario.actorA.client, {
+      planner: planner.planner,
+      clock: clock.clock,
+      attemptIdGenerator: attempt.generate
+    });
+    const operation = trackOperation(
+      scenario,
+      prepare({ userId: fixture.userId, runId: run.runId, highCostConfirmed: false })
+    );
+    await planner.called.wait();
+    await assertNoIdleTransactions(scenario.observer, [scenario.actorA]);
+
+    const current = await scenario.actorB.client.jobPosting.findUniqueOrThrow({
+      where: { id: run.jobPostingId },
+      include: { currentEvidenceSnapshot: true }
+    });
+    assert.ok(current.currentEvidenceSnapshot);
+    const newer = await scenario.actorB.client.evidenceSnapshot.create({
+      data: {
+        userId: fixture.userId,
+        jobPostingId: current.id,
+        resumeId: current.currentEvidenceSnapshot.resumeId,
+        reviewedAnalysisId: current.currentEvidenceSnapshot.reviewedAnalysisId,
+        requestId: `planner-race-${randomUUID()}`,
+        requestHash: "1".repeat(64),
+        sourceResumeUpdatedAt: current.currentEvidenceSnapshot.sourceResumeUpdatedAt,
+        snapshotHash: "2".repeat(64),
+        sourceProjectionHash: current.currentEvidenceSnapshot.sourceProjectionHash,
+        gapProjectionHash: current.currentEvidenceSnapshot.gapProjectionHash,
+        reviewPayload: current.currentEvidenceSnapshot.reviewPayload as Prisma.InputJsonValue
+      }
+    });
+    await scenario.actorB.client.jobPosting.update({
+      where: { id: current.id },
+      data: { currentEvidenceSnapshotId: newer.id, evidenceSnapshotGeneration: { increment: 1 } }
+    });
+
+    planner.release.resolve();
+    const settled = await withTimeout(
+      Promise.allSettled([operation]),
+      OPERATION_TIMEOUT_MS,
+      "evidence revision race completion"
+    );
+    const error = requireRejected(settled[0], scenario.actorA, "evidence-revision-race");
+    assertPublicError(error, { code: "RUN_PREPARATION_STALE", status: 409 });
+    const staleRun = await requireRun(scenario.observer, fixture.userId, run.runId);
+    assert.equal(staleRun.state, "PREPARING");
+    await assertNoPlanSnapshots(scenario.observer, fixture.userId, staleRun);
+    planner.assertCalls(1);
+    attempt.assertCalls(1);
+    clock.assertCalls(1);
+    await assertScenarioSessionsPinned(scenario, "evidence-revision-race-complete");
   });
 });
 
