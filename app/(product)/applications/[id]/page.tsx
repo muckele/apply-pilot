@@ -1,9 +1,15 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ApplicationStatusActions } from "@/components/application-status-actions";
 import { ApplicationRunEntry } from "@/components/application-run-entry";
 import { ApplicationRunPretrialSetup } from "@/components/application-run-pretrial-setup";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import {
+  describeSentDocument,
+  latestSentDocumentsEvent,
+  readSentDocumentsSnapshot
+} from "@/lib/apply-kit/sent-documents";
 import { getCurrentApplicationRun } from "@/lib/application-runs/service";
 import { readAutomationPolicy } from "@/lib/application-runs/service";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
@@ -53,6 +59,8 @@ export default async function ApplicationDetailPage({ params }: Props) {
   const currentRun = await getCurrentApplicationRun(userId, application.id);
   const automationPolicy = currentRun ? await readAutomationPolicy(userId) : null;
   const attention = getApplicationAttention(application);
+  // "What I sent": the frozen snapshot recorded when the application entered APPLIED.
+  const sent = latestSentDocumentsEvent(application.events);
   const currentContext = buildCurrentJobMatchContext({ job: application.jobPosting, ...sources });
   const currentJob = currentJobMatchFields(
     application.jobPosting,
@@ -113,6 +121,15 @@ export default async function ApplicationDetailPage({ params }: Props) {
                   <div key={event.id} className="px-5 py-4 text-sm text-slate-700">
                     <p className="font-medium text-slate-950">{event.title}</p>
                     {event.body ? <p className="mt-1 leading-6">{event.body}</p> : null}
+                    {(() => {
+                      const snapshot = readSentDocumentsSnapshot(event.metadata);
+                      return snapshot ? (
+                        <p className="mt-1 text-xs text-slate-600" data-timeline-sent>
+                          Sent {describeSentDocument(snapshot.resume, "résumé")}, {describeSentDocument(snapshot.coverLetter, "cover letter")}.{" "}
+                          <Link href={`/applications/${application.id}/sent/${event.id}`} className="font-semibold text-brand-700 underline">View</Link>
+                        </p>
+                      ) : null;
+                    })()}
                     <p className="mt-1 text-xs text-slate-500">{formatDate(event.occurredAt)}</p>
                   </div>
                 ))
@@ -208,8 +225,28 @@ export default async function ApplicationDetailPage({ params }: Props) {
           <Panel>
             <PanelHeader title="Documents used" />
             <div className="space-y-2 p-5 text-sm text-slate-700">
-              <p>Tailored resume: {application.resumeVersion?.title ?? "not selected"}</p>
-              <p>Cover letter: {application.coverLetterVersion?.title ?? "not selected"}</p>
+              {sent ? (
+                <p data-sent-documents>
+                  Sent:{" "}
+                  {sent.snapshot.resume ? (
+                    <Link href={`/applications/${application.id}/sent/${sent.eventId}#resume`} className="font-semibold text-brand-700 underline">
+                      {describeSentDocument(sent.snapshot.resume, "résumé")}
+                    </Link>
+                  ) : "no résumé"}
+                  {", "}
+                  {sent.snapshot.coverLetter ? (
+                    <Link href={`/applications/${application.id}/sent/${sent.eventId}#cover-letter`} className="font-semibold text-brand-700 underline">
+                      {describeSentDocument(sent.snapshot.coverLetter, "cover letter")}
+                    </Link>
+                  ) : "no cover letter"}
+                  <span className="block text-xs text-slate-500">Frozen {sent.snapshot.recordedAt.slice(0, 10)}. Later edits do not change it.</span>
+                </p>
+              ) : (
+                <p className="text-xs text-slate-500">No sent documents recorded yet. Use the Apply Kit&apos;s &quot;I applied&quot; step to record them.</p>
+              )}
+              <p>Currently attached résumé: {application.resumeVersion?.title ?? "not selected"}</p>
+              <p>Currently attached cover letter: {application.coverLetterVersion?.title ?? "not selected"}</p>
+              <Link href={`/jobs/${application.jobPostingId}/apply`} className="font-semibold text-brand-700 underline">Open Apply Kit</Link>
             </div>
           </Panel>
 

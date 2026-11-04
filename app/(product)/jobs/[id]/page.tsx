@@ -6,7 +6,7 @@ import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
 import { ApplicationReviewWorkspace } from "@/components/application-review-workspace";
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
-import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { buildDocumentReviewView } from "@/lib/documents/document-review";
 import {
@@ -253,15 +253,18 @@ export default async function JobDetailPage({ params }: Props) {
         title={job.title}
         description={`${job.company} · ${job.location} · ${job.remoteStatus} · ${job.salary}`}
         action={
-          <a
-            href={job.applyUrl}
-            target={job.applyUrl.startsWith("http") ? "_blank" : undefined}
-            rel={job.applyUrl.startsWith("http") ? "noreferrer" : undefined}
-            className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          >
-            <ExternalLink className="mr-2" size={16} aria-hidden="true" />
-            Open apply link
-          </a>
+          <div className="flex flex-wrap gap-2">
+            <ButtonLink href={`/jobs/${job.id}/apply`}>Apply Kit</ButtonLink>
+            <a
+              href={job.applyUrl}
+              target={job.applyUrl.startsWith("http") ? "_blank" : undefined}
+              rel={job.applyUrl.startsWith("http") ? "noreferrer" : undefined}
+              className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              <ExternalLink className="mr-2" size={16} aria-hidden="true" />
+              Open apply link
+            </a>
+          </div>
         }
       />
 

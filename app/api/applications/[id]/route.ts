@@ -9,6 +9,10 @@ import {
 import { PublicApiError } from "@/lib/api-errors";
 import { normalizeApplicationPatch } from "@/lib/applications/status";
 import {
+  SENT_DOCUMENTS_METADATA_KEY,
+  captureSentDocumentsInTransaction
+} from "@/lib/apply-kit/sent-documents";
+import {
   CURRENT_EVIDENCE_SNAPSHOT_SELECT,
   resolveCurrentReviewedEvidence
 } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -102,6 +106,18 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         resumeVersion: requiresCurrent.resumeVersion ? resumeVersion : null,
         coverLetterVersion: requiresCurrent.coverLetterVersion ? coverLetterVersion : null
       });
+      // "What I sent": entering APPLIED freezes the exact selected documents into the event.
+      const sentDocuments = nextStatus === "APPLIED" && existing.status !== "APPLIED"
+        ? await captureSentDocumentsInTransaction(tx, {
+            userId,
+            jobPostingId: existing.jobPostingId,
+            currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
+            currentEvidenceSourceValid: evidence.currentEvidenceSourceValid,
+            recordedAt: new Date(),
+            resumeVersion,
+            coverLetterVersion
+          })
+        : null;
       const postingStatus = resolvePostingStatusForApplicationStatus(nextStatus);
       const statusChanged = nextStatus !== existing.status;
       const savedApplication = await tx.application.update({
@@ -122,7 +138,16 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           applicationId: savedApplication.id,
           type: statusChanged ? "STATUS_CHANGED" : "NOTE_ADDED",
           title: statusChanged ? `Status changed to ${nextStatus}` : "Application updated",
-          body: input.notes
+          body: input.notes,
+          ...(sentDocuments
+            ? {
+                metadata: {
+                  resumeVersionId: effective.resumeVersionId,
+                  coverLetterVersionId: effective.coverLetterVersionId,
+                  [SENT_DOCUMENTS_METADATA_KEY]: sentDocuments
+                }
+              }
+            : {})
         }
       });
 

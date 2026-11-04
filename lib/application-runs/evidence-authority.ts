@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
+import { isRunDocumentCurrent } from "@/lib/application-runs/document-currentness";
 
 type RunEvidenceAuthority = Readonly<{
   userId: string;
@@ -12,7 +13,8 @@ type RunEvidenceAuthority = Readonly<{
 type LockedJob = { id: string; currentEvidenceSnapshotId: string | null; evidenceSnapshotGeneration: number };
 type LockedResume = { id: string; updatedAt: Date };
 type LockedSnapshot = { id: string; resumeId: string; sourceResumeUpdatedAt: Date };
-type LockedArtifact = { id: string; evidenceSnapshotId: string | null };
+type LockedResumeArtifact = { id: string; evidenceSnapshotId: string | null; fullText: string; metadata: unknown };
+type LockedCoverLetterArtifact = { id: string; evidenceSnapshotId: string | null; content: string; metadata: unknown };
 
 export function applicationRunEvidenceStale(): PublicApiError {
   return new PublicApiError(
@@ -89,22 +91,27 @@ async function assertLockedCurrentApplicationRunEvidence(
   }
 
   if (run.resumeVersionId) {
-    const rows = await tx.$queryRaw<LockedArtifact[]>`
-      SELECT "id", "evidenceSnapshotId"
+    const rows = await tx.$queryRaw<LockedResumeArtifact[]>`
+      SELECT "id", "evidenceSnapshotId", "fullText", "metadata"
       FROM "ResumeVersion"
       WHERE "id" = ${run.resumeVersionId}
         AND "userId" = ${run.userId}
         AND "jobPostingId" = ${run.jobPostingId}
       FOR SHARE NOWAIT
     `;
-    if (rows.length !== 1 || rows[0].evidenceSnapshotId !== snapshot.id) {
+    // D031: the snapshot above is locked and verified against the master résumé, so the source is valid.
+    if (rows.length !== 1 || !isRunDocumentCurrent({
+      currentEvidenceSnapshotId: snapshot.id,
+      currentEvidenceSourceValid: true,
+      artifact: { evidenceSnapshotId: rows[0].evidenceSnapshotId, content: rows[0].fullText, metadata: rows[0].metadata }
+    })) {
       throw applicationRunEvidenceStale();
     }
   }
 
   if (run.coverLetterVersionId) {
-    const rows = await tx.$queryRaw<LockedArtifact[]>`
-      SELECT "id", "evidenceSnapshotId"
+    const rows = await tx.$queryRaw<LockedCoverLetterArtifact[]>`
+      SELECT "id", "evidenceSnapshotId", "content", "metadata"
       FROM "GeneratedDocument"
       WHERE "id" = ${run.coverLetterVersionId}
         AND "userId" = ${run.userId}
@@ -112,7 +119,11 @@ async function assertLockedCurrentApplicationRunEvidence(
         AND "type" = 'COVER_LETTER'
       FOR SHARE NOWAIT
     `;
-    if (rows.length !== 1 || rows[0].evidenceSnapshotId !== snapshot.id) {
+    if (rows.length !== 1 || !isRunDocumentCurrent({
+      currentEvidenceSnapshotId: snapshot.id,
+      currentEvidenceSourceValid: true,
+      artifact: { evidenceSnapshotId: rows[0].evidenceSnapshotId, content: rows[0].content, metadata: rows[0].metadata }
+    })) {
       throw applicationRunEvidenceStale();
     }
   }

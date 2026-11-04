@@ -10,6 +10,12 @@ import { createApplicationRunDocumentExportService } from "@/lib/application-run
 import { FORM_INSPECTION_SCHEMA_VERSION } from "@/lib/application-runs/form-inspection";
 import { createApplicationRunService } from "@/lib/application-runs/service";
 import {
+  buildDocumentReview,
+  confirmDocumentReviewFlag,
+  resolveReviewBaseline,
+  withDocumentReview
+} from "@/lib/documents/document-review";
+import {
   assertActorSessionPinned,
   assertDistinctActorSessions,
   assertNoIdleTransactions,
@@ -100,6 +106,47 @@ for (const invalidation of ["snapshot deletion", "source revision"] as const) {
           return true;
         }
       );
+    });
+  });
+}
+
+for (const artifactType of ["RESUME", "COVER_LETTER"] as const) {
+  test(`D031: prepared-run export accepts a confirmed edited ${artifactType} and refuses an unconfirmed one`, {
+    timeout: TEST_TIMEOUT_MS
+  }, async () => {
+    await runScenario(`d031-${artifactType.toLowerCase()}`, async (scenario) => {
+      const fixture = await createAuthorizedFixture(scenario, artifactType, "d031-edited");
+      const installed = await installEvidenceSnapshot(scenario.observer.client, fixture);
+      const kind = artifactType === "RESUME" ? "RESUME" as const : "COVER_LETTER" as const;
+      const now = new Date();
+      // The prepared bytes are the user's edit of a generated original bound to the current evidence.
+      const baseline = resolveReviewBaseline({
+        kind,
+        existing: { evidenceSnapshotId: installed.snapshot.id, content: "Generated placeholder text.", metadata: null },
+        now
+      });
+      const unconfirmed = buildDocumentReview({ baseline, content: fixture.content, previous: null, now });
+      assert.ok(unconfirmed.flags.length > 0, "the edit adds unsupported factual tokens");
+      let confirmed = unconfirmed;
+      for (const flag of unconfirmed.flags) confirmed = confirmDocumentReviewFlag({ review: confirmed, flagId: flag.id, now });
+      const setDocument = (data: { evidenceSnapshotId: string | null; metadata: Prisma.InputJsonValue | typeof Prisma.DbNull }) =>
+        artifactType === "RESUME"
+          ? scenario.observer.client.resumeVersion.update({ where: { id: fixture.sourceId }, data })
+          : scenario.observer.client.generatedDocument.update({ where: { id: fixture.sourceId }, data });
+      const service = documentExportService(scenario.observer.client);
+      const stale = (error: unknown) => {
+        assertPublicError(error, "RUN_DOCUMENT_EVIDENCE_STALE");
+        return true;
+      };
+
+      await setDocument({ evidenceSnapshotId: null, metadata: withDocumentReview(null, unconfirmed) as Prisma.InputJsonValue });
+      await assert.rejects(service.exportApprovedApplicationRunDocument(exportRequest(fixture)), stale);
+
+      await setDocument({ evidenceSnapshotId: null, metadata: withDocumentReview(null, confirmed) as Prisma.InputJsonValue });
+      assert.ok((await service.exportApprovedApplicationRunDocument(exportRequest(fixture))).bytes.length > 0);
+
+      await setDocument({ evidenceSnapshotId: null, metadata: Prisma.DbNull });
+      await assert.rejects(service.exportApprovedApplicationRunDocument(exportRequest(fixture)), stale);
     });
   });
 }

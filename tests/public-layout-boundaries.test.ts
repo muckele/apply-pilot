@@ -7,12 +7,14 @@ const repositoryRoot = process.cwd();
 
 const productPagePaths = [
   "applications/[id]/page.tsx",
+  "applications/[id]/sent/[eventId]/page.tsx",
   "applications/page.tsx",
   "application-runs/[id]/browser/page.tsx",
   "dashboard/page.tsx",
   "interviews/[id]/page.tsx",
   "interviews/library/page.tsx",
   "interviews/page.tsx",
+  "jobs/[id]/apply/page.tsx",
   "jobs/[id]/page.tsx",
   "jobs/page.tsx",
   "jobs/review/page.tsx",

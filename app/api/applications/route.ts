@@ -9,6 +9,10 @@ import {
 } from "@/lib/applications/pipeline";
 import { resolveApplicationPostStatus } from "@/lib/applications/status";
 import {
+  SENT_DOCUMENTS_METADATA_KEY,
+  captureSentDocumentsInTransaction
+} from "@/lib/apply-kit/sent-documents";
+import {
   applicationDocumentsRequiringCurrentEvidence,
   assertApplicationDocumentEvidenceCurrent,
   resolveEffectiveApplicationDocumentIds
@@ -21,6 +25,8 @@ import {
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
+
+const contentHashSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 
 const createApplicationSchema = z.object({
   jobPostingId: z.string(),
@@ -44,7 +50,10 @@ const createApplicationSchema = z.object({
   coverLetterVersionId: z.string().nullable().optional(),
   followUpDueAt: z.coerce.date().optional(),
   nextAction: z.string().optional(),
-  notes: z.string().optional()
+  notes: z.string().optional(),
+  // Apply Kit: hashes of the documents the user saw when attesting "I applied" (D031 content hash).
+  expectedResumeContentHash: contentHashSchema.optional(),
+  expectedCoverLetterContentHash: contentHashSchema.optional()
 });
 
 export async function POST(request: NextRequest) {
@@ -104,6 +113,20 @@ export async function POST(request: NextRequest) {
         resumeVersion: requiresCurrent.resumeVersion ? resumeVersion : null,
         coverLetterVersion: requiresCurrent.coverLetterVersion ? coverLetterVersion : null
       });
+      // "What I sent": entering APPLIED freezes the exact selected documents into the event.
+      const sentDocuments = nextStatus === "APPLIED" && existing?.status !== "APPLIED"
+        ? await captureSentDocumentsInTransaction(tx, {
+            userId,
+            jobPostingId: input.jobPostingId,
+            currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
+            currentEvidenceSourceValid: evidence.currentEvidenceSourceValid,
+            recordedAt: new Date(),
+            resumeVersion,
+            coverLetterVersion,
+            expectedResumeContentHash: input.expectedResumeContentHash,
+            expectedCoverLetterContentHash: input.expectedCoverLetterContentHash
+          })
+        : null;
 
       const statusChanged = !existing || existing.status !== nextStatus;
       const passiveStatusGuarded = Boolean(existing && input.status !== nextStatus);
@@ -167,7 +190,8 @@ export async function POST(request: NextRequest) {
           body: input.notes,
           metadata: {
             resumeVersionId: effective.resumeVersionId,
-            coverLetterVersionId: effective.coverLetterVersionId
+            coverLetterVersionId: effective.coverLetterVersionId,
+            ...(sentDocuments ? { [SENT_DOCUMENTS_METADATA_KEY]: sentDocuments } : {})
           }
         }
       });
