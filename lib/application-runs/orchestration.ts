@@ -43,10 +43,8 @@ import {
   currentJobMatchInputHash,
   hasCurrentJobMatchAnalysis
 } from "@/lib/jobs/current-job-match";
-import {
-  CURRENT_EVIDENCE_SNAPSHOT_SELECT,
-  isEvidenceBindingCurrent
-} from "@/lib/jobs/evidence-snapshot-contracts";
+import { isRunDocumentCurrent } from "@/lib/application-runs/document-currentness";
+import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { prisma } from "@/lib/prisma";
 
 const PREPARATION_RUN_SELECT = {
@@ -68,6 +66,7 @@ const PREPARATION_RUN_SELECT = {
           userId: true,
           jobPostingId: true,
           evidenceSnapshotId: true,
+          metadata: true,
           summary: true,
           skills: true,
           fullText: true,
@@ -92,6 +91,7 @@ const PREPARATION_RUN_SELECT = {
           userId: true,
           jobPostingId: true,
           evidenceSnapshotId: true,
+          metadata: true,
           type: true,
           content: true
         }
@@ -546,10 +546,14 @@ export function createApplicationRunOrchestrator(
         assignedResume.id === run.application.resumeVersionId &&
         assignedResume.userId === input.userId &&
         assignedResume.jobPostingId === run.jobPostingId &&
-        isEvidenceBindingCurrent({
+        isRunDocumentCurrent({
           currentEvidenceSnapshotId: run.jobPosting.currentEvidenceSnapshotId,
           currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid,
-          artifactEvidenceSnapshotId: assignedResume.evidenceSnapshotId
+          artifact: {
+            evidenceSnapshotId: assignedResume.evidenceSnapshotId,
+            content: assignedResume.fullText,
+            metadata: assignedResume.metadata
+          }
         }) &&
         (assignedResume.resume === null || assignedResume.resume.userId === input.userId)
       );
@@ -560,10 +564,14 @@ export function createApplicationRunOrchestrator(
         assignedCoverLetter.id === run.application.coverLetterVersionId &&
         assignedCoverLetter.userId === input.userId &&
         assignedCoverLetter.jobPostingId === run.jobPostingId &&
-        isEvidenceBindingCurrent({
+        isRunDocumentCurrent({
           currentEvidenceSnapshotId: run.jobPosting.currentEvidenceSnapshotId,
           currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid,
-          artifactEvidenceSnapshotId: assignedCoverLetter.evidenceSnapshotId
+          artifact: {
+            evidenceSnapshotId: assignedCoverLetter.evidenceSnapshotId,
+            content: assignedCoverLetter.content,
+            metadata: assignedCoverLetter.metadata
+          }
         }) &&
         assignedCoverLetter.type === "COVER_LETTER"
       );
@@ -790,13 +798,29 @@ export function createApplicationRunOrchestrator(
         !assignedResume ||
         assignedResume.id !== captured.resumeVersionId ||
         hashText(assignedResume.fullText) !== captured.resumeContentHash ||
-        assignedResume.evidenceSnapshotId !== captured.evidenceSnapshotId ||
+        !isRunDocumentCurrent({
+          currentEvidenceSnapshotId: captured.evidenceSnapshotId,
+          currentEvidenceSourceValid: currentEvidence.currentEvidenceSourceValid,
+          artifact: {
+            evidenceSnapshotId: assignedResume.evidenceSnapshotId,
+            content: assignedResume.fullText,
+            metadata: assignedResume.metadata
+          }
+        }) ||
         run.application.coverLetterVersionId !== captured.coverLetterVersionId ||
         (captured.coverLetterVersionId !== null && (
           !assignedCoverLetter ||
           assignedCoverLetter.id !== captured.coverLetterVersionId ||
           hashText(assignedCoverLetter.content) !== captured.coverLetterContentHash ||
-          assignedCoverLetter.evidenceSnapshotId !== captured.evidenceSnapshotId
+          !isRunDocumentCurrent({
+            currentEvidenceSnapshotId: captured.evidenceSnapshotId,
+            currentEvidenceSourceValid: currentEvidence.currentEvidenceSourceValid,
+            artifact: {
+              evidenceSnapshotId: assignedCoverLetter.evidenceSnapshotId,
+              content: assignedCoverLetter.content,
+              metadata: assignedCoverLetter.metadata
+            }
+          })
         ))
       ) {
         return { kind: "stale" };

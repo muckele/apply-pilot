@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 
 import type { ApplicationAutomationPolicy, PrismaClient } from "@prisma/client";
@@ -8,6 +9,7 @@ import type { ApplicationPlanInput } from "@/lib/ai/application-plan";
 import { createApplicationRunOrchestrator } from "@/lib/application-runs/orchestration";
 import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
 import { buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
+import { editedConfirmed, editedUnconfirmed, legacyConfirmed } from "@/tests/fixtures/apply-kit-documents";
 
 const USER_ID = "user-1";
 const RUN_ID = "clz8w7m9a0002qwer1234tyui";
@@ -1222,4 +1224,141 @@ test("ownership and target relation failures remain non-enumerating after policy
       assert.ok(fake.operations.indexOf("tx1:lock-policy") < fake.operations.indexOf("tx1:lock-run"));
     });
   }
+});
+
+// D031: assisted Fill accepts tailored documents that PR #41 considers edited-and-confirmed or
+// legacy-confirmed, exactly as export and the APPLIED transition do. Unconfirmed edits stay refused.
+const ASSIGNED_RESUME_TEXT = "Authoritative assigned resume contents";
+const EDITED_RESUME_TEXT = `${ASSIGNED_RESUME_TEXT}\nGrew revenue 12% at Acme.`;
+const ASSIGNED_COVER_TEXT = "Dear Example Co team,\nI build reliable customer systems.";
+const EDITED_COVER_TEXT = `${ASSIGNED_COVER_TEXT}\nI managed 9 analysts at Acme.`;
+
+function assignEditedResume(fake: ReturnType<typeof createFake>, confirmed: boolean) {
+  const original = { evidenceSnapshotId: "snapshot-current", content: ASSIGNED_RESUME_TEXT, metadata: null };
+  const edited = confirmed
+    ? editedConfirmed("RESUME", original, EDITED_RESUME_TEXT)
+    : editedUnconfirmed("RESUME", original, EDITED_RESUME_TEXT);
+  Object.assign(fake.state.run.application.resumeVersion!, {
+    fullText: edited.content,
+    evidenceSnapshotId: edited.evidenceSnapshotId,
+    metadata: edited.metadata
+  });
+}
+
+function assignCoverLetter(
+  fake: ReturnType<typeof createFake>,
+  artifact: { evidenceSnapshotId: string | null; content: string; metadata: unknown }
+) {
+  if (fake.state.policy) fake.state.policy.coverLetterRequired = true;
+  fake.state.run.application.coverLetterVersionId = COVER_ID;
+  fake.state.run.application.coverLetterVersion = {
+    id: COVER_ID,
+    userId: USER_ID,
+    jobPostingId: JOB_ID,
+    type: "COVER_LETTER",
+    ...artifact
+  } as never;
+}
+
+function expectBlocked(reason: string) {
+  return (error: unknown) => error instanceof PublicApiError &&
+    error.details?.code === "RUN_PREPARATION_BLOCKED" && error.details?.reason === reason;
+}
+
+test("D031: an edited-and-confirmed résumé is selectable for preparation and is hashed exactly", async () => {
+  const fake = createFake();
+  assignEditedResume(fake, true);
+  let plannerCalls = 0;
+  const result = await orchestrator(fake, async () => {
+    plannerCalls += 1;
+    return cleanPlan();
+  })({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false });
+  assert.equal(result.state, "READY");
+  assert.equal(plannerCalls, 1);
+  assert.equal(fake.state.run.resumeVersionId, RESUME_ID);
+  assert.equal(fake.state.run.resumeContentHash, createHash("sha256").update(EDITED_RESUME_TEXT).digest("hex"));
+});
+
+test("D031: an edited résumé with an unconfirmed factual edit is still refused", async () => {
+  const fake = createFake();
+  assignEditedResume(fake, false);
+  let plannerCalls = 0;
+  await assert.rejects(
+    orchestrator(fake, async () => {
+      plannerCalls += 1;
+      return cleanPlan();
+    })({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectBlocked("resume_required")
+  );
+  assert.equal(plannerCalls, 0);
+  assert.equal(fake.state.run.state, "BLOCKED");
+  assert.equal(fake.state.run.blockingReason, "resume_required");
+});
+
+test("D031: a legacy-confirmed cover letter satisfies a required cover letter; unconfirmed ones do not", async (t) => {
+  await t.test("legacy confirmed", async () => {
+    const fake = createFake();
+    assignCoverLetter(fake, legacyConfirmed(ASSIGNED_COVER_TEXT));
+    const result = await orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false });
+    assert.equal(result.state, "READY");
+    assert.equal(fake.state.run.coverLetterVersionId, COVER_ID);
+    assert.equal(fake.state.run.coverLetterContentHash, createHash("sha256").update(ASSIGNED_COVER_TEXT).digest("hex"));
+  });
+  await t.test("edited and unconfirmed", async () => {
+    const fake = createFake();
+    assignCoverLetter(fake, editedUnconfirmed(
+      "COVER_LETTER",
+      { evidenceSnapshotId: "snapshot-current", content: ASSIGNED_COVER_TEXT, metadata: null },
+      EDITED_COVER_TEXT
+    ));
+    await assert.rejects(
+      orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+      expectBlocked("cover_letter_required")
+    );
+    assert.equal(fake.state.run.blockingReason, "cover_letter_required");
+  });
+  await t.test("legacy without the owner's confirmation", async () => {
+    const fake = createFake();
+    assignCoverLetter(fake, { evidenceSnapshotId: null, content: ASSIGNED_COVER_TEXT, metadata: null });
+    await assert.rejects(
+      orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+      expectBlocked("cover_letter_required")
+    );
+  });
+});
+
+test("D031: an edited document whose cited evidence is no longer current is refused", async () => {
+  const fake = createFake();
+  const edited = editedConfirmed(
+    "RESUME",
+    { evidenceSnapshotId: "snapshot-old", content: ASSIGNED_RESUME_TEXT, metadata: null },
+    EDITED_RESUME_TEXT
+  );
+  Object.assign(fake.state.run.application.resumeVersion!, { fullText: edited.content, evidenceSnapshotId: null, metadata: edited.metadata });
+  await assert.rejects(
+    orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectBlocked("resume_required")
+  );
+});
+
+test("D031: TX2 rejects an edited résumé whose review stopped covering it during planning", async () => {
+  const fake = createFake();
+  assignEditedResume(fake, true);
+  const unconfirmed = editedUnconfirmed(
+    "RESUME",
+    { evidenceSnapshotId: "snapshot-current", content: ASSIGNED_RESUME_TEXT, metadata: null },
+    EDITED_RESUME_TEXT
+  );
+  const prepare = orchestrator(fake, async () => {
+    // Same bytes, but the stored review no longer holds the owner's confirmations.
+    fake.mutate((state) => {
+      Object.assign(state.run.application.resumeVersion!, { metadata: unconfirmed.metadata });
+    });
+    return cleanPlan();
+  });
+  await assert.rejects(
+    prepare({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectPublicError("RUN_PREPARATION_STALE")
+  );
+  assert.equal(fake.state.run.state, "PREPARING");
 });
