@@ -1,5 +1,6 @@
+import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { detectTechStack, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
+import { decodeHtmlEntities, detectTechStack, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
 
 type GreenhouseJob = {
   id: number;
@@ -8,29 +9,21 @@ type GreenhouseJob = {
   content?: string;
   location?: { name?: string };
   updated_at?: string;
+  first_published?: string;
   offices?: Array<{ name: string }>;
 };
 
 export class GreenhouseProvider implements JobSourceProvider {
   sourceType = "GREENHOUSE" as const;
 
+  // Public Job Board API: GET boards-api.greenhouse.io/v1/boards/{token}/jobs. No key; poll politely.
   async searchJobs(criteria: JobSearchCriteria) {
     if (!criteria.boardToken) {
       throw new Error("Greenhouse sync requires a board token.");
     }
 
-    const limit = criteria.limit ?? 50;
-    const response = await fetch(
-      `https://boards-api.greenhouse.io/v1/boards/${criteria.boardToken}/jobs?content=true`,
-      { next: { revalidate: 900 } }
-    );
-
-    if (!response.ok) {
-      throw new Error(`Greenhouse returned ${response.status}.`);
-    }
-
-    const payload = (await response.json()) as { jobs: GreenhouseJob[] };
-    return payload.jobs.slice(0, limit) as RawJob[];
+    const jobs = await fetchBoardListing(boardReferenceFromCriteria("GREENHOUSE", criteria));
+    return jobs.slice(0, criteria.limit ?? 50) as RawJob[];
   }
 
   async getJobDetails(url: string) {
@@ -44,13 +37,15 @@ export class GreenhouseProvider implements JobSourceProvider {
 
   normalizeJob(rawJob: RawJob): NormalizedJob {
     const job = rawJob as GreenhouseJob & { sourceUrl?: string; html?: string };
-    const description = htmlToText(job.content ?? job.html ?? "");
+    // With content=true the board API returns HTML-escaped HTML, so decode before stripping tags.
+    const description = job.content ? htmlToText(decodeHtmlEntities(job.content)) : htmlToText(job.html ?? "");
+    const postedAt = job.first_published ?? job.updated_at;
 
     return {
       title: job.title,
       company: "",
       location: job.location?.name ?? job.offices?.map((office) => office.name).join(", "),
-      datePosted: job.updated_at ? new Date(job.updated_at) : undefined,
+      datePosted: postedAt ? new Date(postedAt) : undefined,
       sourceUrl: job.absolute_url ?? job.sourceUrl ?? "",
       applyUrl: job.absolute_url ?? job.sourceUrl,
       description,

@@ -1,3 +1,4 @@
+import { listedBoardJobs } from "@/lib/job-sources/board-fetch";
 import { boardApiUrl, type BoardAts, type BoardReference } from "@/lib/job-sources/board-url";
 
 /**
@@ -33,21 +34,6 @@ function splitLocations(value: string) {
     .split(/[;|]/)
     .map((part) => part.trim())
     .filter((part) => part.length > 0 && part.length <= 80);
-}
-
-export function listedBoardJobs(ats: BoardAts, payload: unknown): Record<string, unknown>[] | null {
-  if (ats === "LEVER") {
-    return Array.isArray(payload) ? payload.filter((job): job is Record<string, unknown> => Boolean(asRecord(job))) : null;
-  }
-
-  const jobs = asRecord(payload)?.jobs;
-  if (!Array.isArray(jobs)) {
-    return null;
-  }
-
-  const records = jobs.filter((job): job is Record<string, unknown> => Boolean(asRecord(job)));
-  // Ashby marks unlisted postings with isListed=false; they are not part of the public board.
-  return ats === "ASHBY" ? records.filter((job) => job.isListed !== false) : records;
 }
 
 function jobLocations(ats: BoardAts, job: Record<string, unknown>) {
