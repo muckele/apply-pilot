@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import directoryData from "@/data/job-board-directory.json";
 import { boardAtsTypes, isValidBoardToken, type BoardAts } from "@/lib/job-sources/board-url";
+import { locationPreferenceMatch, preferredLocationsFromProfile } from "@/lib/job-sources/location-match";
 import { normalizeText } from "@/lib/normalize";
 
 /**
@@ -127,29 +128,9 @@ function industriesMatch(userIndustry: string, boardIndustry: string) {
   return userKey === boardKey || containsPhrase(normalizeText(boardIndustry), normalizeText(userIndustry));
 }
 
-const workStyleLocationTerms = new Set(["remote", "hybrid", "anywhere", "onsite", "on site", "in office"]);
-
-function isWorkStyleLocation(value: string) {
-  return workStyleLocationTerms.has(normalizeText(value));
-}
-
-function cityPart(location: string) {
-  return normalizeText(location.split(",")[0] ?? "");
-}
-
+/** Directory tags only count a city-level match; a shared state is too broad to rank boards. */
 function locationsMatch(userLocation: string, boardLocation: string) {
-  const userCity = cityPart(userLocation);
-  const boardCity = cityPart(boardLocation);
-
-  if (!userCity || !boardCity) {
-    return false;
-  }
-
-  return (
-    userCity === boardCity ||
-    containsPhrase(normalizeText(boardLocation), userCity) ||
-    containsPhrase(normalizeText(userLocation), boardCity)
-  );
+  return locationPreferenceMatch(boardLocation, [userLocation]) === "exact";
 }
 
 function uniqueTrimmed(values: Array<string | null | undefined>) {
@@ -190,10 +171,13 @@ export function directoryPreferencesFrom({
 }): DirectoryPreferences {
   const allLocations = uniqueTrimmed([location, ...(profile?.preferredLocations ?? []), profile?.location]);
   const wantsRemoteLocation = allLocations.some((value) => normalizeText(value).includes("remote"));
+  const placeLocations = new Set(
+    preferredLocationsFromProfile({ preferredLocations: allLocations }).map((value) => value.toLowerCase())
+  );
 
   return {
     industries: uniqueTrimmed(profile?.industriesOfInterest ?? []),
-    locations: allLocations.filter((value) => !isWorkStyleLocation(value)),
+    locations: allLocations.filter((value) => placeLocations.has(value.toLowerCase())),
     remote: Boolean(remoteOnly) || profile?.remotePreference === "REMOTE" || wantsRemoteLocation,
     remoteOnly: Boolean(remoteOnly)
   };

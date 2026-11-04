@@ -4,6 +4,7 @@ import { PublicApiError } from "@/lib/api-errors";
 import { LocalAiUnavailableError } from "@/lib/ai/client";
 import { getJobSourceProvider } from "@/lib/job-sources";
 import { resolveDiscoveryLocation, resolveDiscoveryQueries } from "@/lib/job-sources/discovery-preferences";
+import { locationPreferenceMatch, preferredLocationsFromProfile } from "@/lib/job-sources/location-match";
 import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
 import { isRemoteLikeText } from "@/lib/job-sources/remote";
 import { assertSourceCanSync, buildCriteriaFromSource } from "@/lib/job-sources/source-policy";
@@ -256,7 +257,8 @@ function locationMatchesProfile(job: NormalizedJob, profile: UserProfile | null)
     return true;
   }
 
-  const preferredLocations = profile?.preferredLocations?.map(normalizeText).filter(Boolean) ?? [];
+  // Driven by this user's own preferred and home locations; no locale is built in.
+  const preferredLocations = preferredLocationsFromProfile(profile);
 
   if (!preferredLocations.length) {
     return true;
@@ -266,15 +268,7 @@ function locationMatchesProfile(job: NormalizedJob, profile: UserProfile | null)
     return true;
   }
 
-  const locationAliases = ["los angeles", "fontana", "pasadena", "orange county", "southern california", "california", " ca"];
-  if (
-    preferredLocations.some((preferred) => location.includes(preferred) || preferred.includes(location)) ||
-    locationAliases.some((alias) => location.includes(alias))
-  ) {
-    return true;
-  }
-
-  return false;
+  return locationPreferenceMatch(job.location, preferredLocations) !== "none";
 }
 
 function salaryMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {

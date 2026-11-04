@@ -1,5 +1,6 @@
 import type { UserProfile } from "@prisma/client";
 
+import { locationPreferenceMatch, preferredLocationsFromProfile } from "@/lib/job-sources/location-match";
 import { isRemoteLikeText } from "@/lib/job-sources/remote";
 import type { NormalizedJob } from "@/lib/job-sources/types";
 import { normalizeText } from "@/lib/normalize";
@@ -250,16 +251,17 @@ function scoreLocation(job: NormalizedJob, profile: UserProfile | null) {
     return 100;
   }
 
-  const preferredLocations = profile?.preferredLocations?.map(normalizeText) ?? [];
-  if (preferredLocations.some((preferred) => preferred && location.includes(preferred))) {
+  // Driven by this user's own preferred and home locations; no locale is built in.
+  const preferredLocations = preferredLocationsFromProfile(profile);
+  if (!preferredLocations.length) {
+    return 80;
+  }
+
+  const match = locationPreferenceMatch(job.location, preferredLocations);
+  if (match === "exact") {
     return 100;
   }
-
-  if (location.includes("los angeles") || location.includes("fontana") || location.includes("pasadena") || location.includes("orange county")) {
-    return 92;
-  }
-
-  if (location.includes("california") || location.includes(" ca") || location.endsWith("ca")) {
+  if (match === "state") {
     return 70;
   }
 

@@ -69,7 +69,7 @@ test("directory parsing rejects duplicates, invalid tokens, unknown fields and m
   ];
 
   for (const value of invalid) {
-    assert.throws(() => parseJobBoardDirectory(value), undefined, JSON.stringify(value));
+    assert.throws(() => parseJobBoardDirectory(value), Error, JSON.stringify(value));
   }
 });
 
