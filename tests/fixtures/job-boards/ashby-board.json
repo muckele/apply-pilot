@@ -1,0 +1,128 @@
+{
+  "apiVersion": "1",
+  "jobs": [
+    {
+      "id": "9b33ebe7-e829-4f03-97ba-5c94dbd7daf6",
+      "title": "Member of Technical Staff - Systems",
+      "department": "Engineering Department",
+      "team": "Engineering Department",
+      "employmentType": "FullTime",
+      "location": "New York",
+      "secondaryLocations": [
+        {
+          "location": "San Francisco"
+        }
+      ],
+      "publishedAt": "2024-10-23T20:10:46.053+00:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "jobUrl": "https://jobs.ashbyhq.com/modal/9b33ebe7-e829-4f03-97ba-5c94dbd7daf6",
+      "applyUrl": "https://jobs.ashbyhq.com/modal/9b33ebe7-e829-4f03-97ba-5c94dbd7daf6/application",
+      "descriptionHtml": "<h2>About Us:AI needs a new infrastructure layer. We're building it at Modal.</h2><p>Every era of computing brought new workloads that previous infrastructure couldn't support: mainframes, databases, and the cloud. Each time, the company that rebuilt the layer underneath defined the decade. AI is no different, except it touches everything instead of one slice, and the window to build the layer underneath it is open right now.</p><p>Our customers include category-defining companies like Ramp, Cognition, DoorDash, and Suno. They rely on Modal for instant GPU access, sub-second container starts, and native storage, so it's simple to serve low-latency inference, fine-tune models, and access production-ready sandboxes at scale.</p><p>We've passed $1B in annualized run rate, up 15x from a year ago. In October 2026 we raised a $750M Series D led by Accel at a $15.75B valuation.</p>",
+      "descriptionPlain": "About Us:AI needs a new infrastructure layer. We're building it at Modal. Every era of computing brought new workloads that previous infrastructure couldn't support: mainframes, databases, and the cloud. Each time, the company that rebuilt the layer underneath defined the decade. AI is no different, except it touches everything instead of one slice, and the window to build the layer underneath it is open right now. Our customers include category-defining companies like Ramp, Cognition, DoorDash, and Suno. They rely on Modal for instant GPU access, sub-second container starts, and native storage, so it's simple to serve low-latency inference, fine-tune models, and access production-ready sandboxes at scale. We've passed $1B in annualized run rate, up 15x from a year ago. In October 2026 we raised a $750M Series D led by Accel at a $15.75B valuation.",
+      "compensation": {
+        "compensationTierSummary": "$220K – $300K • Offers Equity",
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 220000,
+            "maxValue": 300000
+          }
+        ]
+      }
+    },
+    {
+      "id": "9fadb51f-ce11-41b1-84d5-470e66cc8ee9",
+      "title": "Forward Deployed Engineer - ML",
+      "department": "Engineering Department",
+      "team": "Engineering Department",
+      "employmentType": "FullTime",
+      "location": "New York",
+      "secondaryLocations": [
+        {
+          "location": "San Francisco"
+        },
+        {
+          "location": "London"
+        }
+      ],
+      "publishedAt": "2026-02-23T19:17:06.760+00:00",
+      "isListed": true,
+      "isRemote": false,
+      "workplaceType": "OnSite",
+      "jobUrl": "https://jobs.ashbyhq.com/modal/9fadb51f-ce11-41b1-84d5-470e66cc8ee9",
+      "applyUrl": "https://jobs.ashbyhq.com/modal/9fadb51f-ce11-41b1-84d5-470e66cc8ee9/application",
+      "descriptionHtml": "<h2>About Us:AI needs a new infrastructure layer. We're building it at Modal.</h2><p>Every era of computing brought new workloads that previous infrastructure couldn't support: mainframes, databases, and the cloud. Each time, the company that rebuilt the layer underneath defined the decade. AI is no different, except it touches everything instead of one slice, and the window to build the layer underneath it is open right now.</p><p>Our customers include category-defining companies like Ramp, Cognition, DoorDash, and Suno. They rely on Modal for instant GPU access, sub-second container starts, and native storage, so it's simple to serve low-latency inference, fine-tune models, and access production-ready sandboxes at scale.</p><p>We've passed $1B in annualized run rate, up 15x from a year ago. In October 2026 we raised a $750M Series D led by Accel at a $15.75B valuation.</p>",
+      "descriptionPlain": "About Us:AI needs a new infrastructure layer. We're building it at Modal. Every era of computing brought new workloads that previous infrastructure couldn't support: mainframes, databases, and the cloud. Each time, the company that rebuilt the layer underneath defined the decade. AI is no different, except it touches everything instead of one slice, and the window to build the layer underneath it is open right now. Our customers include category-defining companies like Ramp, Cognition, DoorDash, and Suno. They rely on Modal for instant GPU access, sub-second container starts, and native storage, so it's simple to serve low-latency inference, fine-tune models, and access production-ready sandboxes at scale. We've passed $1B in annualized run rate, up 15x from a year ago. In October 2026 we raised a $750M Series D led by Accel at a $15.75B valuation.",
+      "compensation": {
+        "compensationTierSummary": "$180K – $250K • Offers Equity",
+        "summaryComponents": [
+          {
+            "compensationType": "EquityCashValue",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 180000,
+            "maxValue": 250000
+          }
+        ]
+      }
+    },
+    {
+      "id": "265d6127-dd34-433b-819a-1f935572c7d8",
+      "title": "Member of Technical Staff - SDK",
+      "department": "Engineering Department",
+      "team": "Engineering Department",
+      "employmentType": "FullTime",
+      "location": "San Francisco",
+      "secondaryLocations": [
+        {
+          "location": "New York"
+        }
+      ],
+      "publishedAt": "2025-08-22T14:44:09.061+00:00",
+      "isListed": true,
+      "isRemote": true,
+      "workplaceType": "Remote",
+      "jobUrl": "https://jobs.ashbyhq.com/modal/265d6127-dd34-433b-819a-1f935572c7d8",
+      "applyUrl": "https://jobs.ashbyhq.com/modal/265d6127-dd34-433b-819a-1f935572c7d8/application",
+      "descriptionHtml": "<h2>About Us:AI needs a new infrastructure layer. We're building it at Modal.</h2><p>Every era of computing brought new workloads that previous infrastructure couldn't support: mainframes, databases, and the cloud. Each time, the company that rebuilt the layer underneath defined the decade. AI is no different, except it touches everything instead of one slice, and the window to build the layer underneath it is open right now.</p><p>Our customers include category-defining companies like Ramp, Cognition, DoorDash, and Suno. They rely on Modal for instant GPU access, sub-second container starts, and native storage, so it's simple to serve low-latency inference, fine-tune models, and access production-ready sandboxes at scale.</p><p>We've passed $1B in annualized run rate, up 15x from a year ago. In October 2026 we raised a $750M Series D led by Accel at a $15.75B valuation.</p>",
+      "descriptionPlain": "About Us:AI needs a new infrastructure layer. We're building it at Modal. Every era of computing brought new workloads that previous infrastructure couldn't support: mainframes, databases, and the cloud. Each time, the company that rebuilt the layer underneath defined the decade. AI is no different, except it touches everything instead of one slice, and the window to build the layer underneath it is open right now. Our customers include category-defining companies like Ramp, Cognition, DoorDash, and Suno. They rely on Modal for instant GPU access, sub-second container starts, and native storage, so it's simple to serve low-latency inference, fine-tune models, and access production-ready sandboxes at scale. We've passed $1B in annualized run rate, up 15x from a year ago. In October 2026 we raised a $750M Series D led by Accel at a $15.75B valuation.",
+      "compensation": {
+        "compensationTierSummary": "$150K – $350K • Offers Equity",
+        "summaryComponents": [
+          {
+            "compensationType": "EquityPercentage",
+            "interval": "NONE",
+            "currencyCode": null,
+            "minValue": null,
+            "maxValue": null
+          },
+          {
+            "compensationType": "Salary",
+            "interval": "1 YEAR",
+            "currencyCode": "USD",
+            "minValue": 150000,
+            "maxValue": 350000
+          }
+        ]
+      }
+    }
+  ]
+}
