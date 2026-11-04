@@ -49,12 +49,12 @@ export const WEEKLY_METRIC_DEFINITIONS = {
   interviewsPerApplicantHour: {
     label: "Interviews per applicant-hour",
     howComputed:
-      "Of the week's applications with minutes you entered on the Apply Kit's \"I applied\" step, the interviews they have reached since, divided by the hours you reported for them. Applications without minutes are left out of both sides. The minutes are your own estimate, not a timer, and recent weeks can still rise."
+      "Of the week's applications with minutes you entered (on the Apply Kit's \"I applied\" step or the application's tracker page), the interviews they have reached since, divided by the hours you reported for them. Applications without minutes are left out of both sides. The minutes are your own estimate, not a timer, and recent weeks can still rise."
   },
   effortMinutesPerApplication: {
     label: "Minutes of effort per application",
     howComputed:
-      "The average of the minutes you entered on the Apply Kit's \"I applied\" step, over the week's applications that have them. Applications recorded without minutes (left blank, or moved to Applied in the tracker) are left out."
+      "The average of the minutes you entered for the week's applications, on the Apply Kit's \"I applied\" step or later on the application's tracker page; a correction replaces the earlier answer. Applications without minutes are left out."
   },
   tailoredShare: {
     label: "Sent with tailored documents",

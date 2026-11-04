@@ -9,6 +9,7 @@ import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared
 import { ApplyKit } from "@/components/apply-kit/apply-kit";
 import { loadApplyKitView, type ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { JOB, OWNER, fakeDb, fixtures } from "@/tests/fixtures/apply-kit-db";
+import { typeInto } from "@/tests/fixtures/react-input";
 
 type Request = { url: string; init: RequestInit };
 type Harness = {
@@ -194,19 +195,6 @@ test("'I applied' needs an explicit attestation and records the exact selected v
     assert.match(element(container, "[data-kit-message]").textContent ?? "", /exactly which documents/u);
   });
 });
-
-// react-dom is imported before this file installs a DOM, so React watches text inputs through its
-// legacy fallback (focus, then keyup) instead of the input event. JSDOM lacks the old IE hooks that
-// fallback attaches, so they are stubbed; React's own change detection then fires onChange.
-async function typeInto(input: HTMLInputElement, value: string) {
-  Object.assign(input, { attachEvent: () => undefined, detachEvent: () => undefined });
-  const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
-  await act(async () => {
-    input.dispatchEvent(new window.FocusEvent("focusin", { bubbles: true }));
-    setValue.call(input, value);
-    input.dispatchEvent(new window.KeyboardEvent("keyup", { bubbles: true }));
-  });
-}
 
 test("'I applied' can carry the minutes it took: optional, whole minutes only, sent with the record", async () => {
   const view = await kitView();

@@ -100,7 +100,9 @@ Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add 
 - **Minutes of effort per application:** the average over the week's applications that have minutes.
 - **Interviews per applicant-hour (primary):** for those same applications, the interviews they have reached since, divided by the hours reported.
 
-Applications recorded without minutes are left out of both sides, and the page shows how many reported (for example "2 of 3 applications"). This covers the box being left blank, a card moved to Applied in the tracker, and the job page's packet builder, which doesn't ask. The minutes are the user's estimate, not a timer. Minutes can't be added after recording yet.
+Minutes can also be added or corrected later from the application's tracker page ("Time spent" panel, `POST /api/applications/[id]/effort`) once it has an applied date. Each save appends a timeline event, and the latest record wins.
+
+Applications without minutes are left out of both sides, and the page shows how many reported (for example "2 of 3 applications"). This covers the box being left blank, a card moved to Applied in the tracker, and the job page's packet builder, which doesn't ask. The minutes are the user's estimate, not a timer, and they can be corrected but not removed.
 
 These §11 metrics still can't be measured honestly from current data:
 - **Jobs seen.** Nothing records which feed jobs the user opened, so the page counts jobs *added* to the feed instead.
