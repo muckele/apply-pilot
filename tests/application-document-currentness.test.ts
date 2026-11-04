@@ -136,3 +136,53 @@ test("reviewed evidence resolves only against the exact current master resume ve
   assert.equal(edited.reviewedEvidence, null);
   assert.equal(edited.effectiveEvidenceSnapshotId, null);
 });
+
+test("D031: an edited-and-confirmed or legacy-confirmed document counts as current for packet save and APPLIED", async () => {
+  const {
+    buildDocumentReview,
+    confirmDocumentReviewFlag,
+    confirmLegacyDocumentReview,
+    resolveReviewBaseline,
+    withDocumentReview
+  } = await import("@/lib/documents/document-review");
+  const now = new Date("2026-11-03T09:00:00.000Z");
+  const generated = "SUMMARY\nLed a team of 5 engineers.";
+  const edited = "SUMMARY\nLed a team of 12 engineers.";
+  const baseline = resolveReviewBaseline({
+    kind: "RESUME",
+    existing: { content: generated, evidenceSnapshotId: "snapshot-current", metadata: null },
+    now
+  });
+  const pending = buildDocumentReview({ baseline, content: edited, previous: null, now });
+  const confirmed = confirmDocumentReviewFlag({ review: pending, flagId: pending.flags[0]!.id, now });
+  const shared = { currentEvidenceSnapshotId: "snapshot-current", currentEvidenceSourceValid: true };
+
+  assert.doesNotThrow(() => assertApplicationDocumentEvidenceCurrent({
+    ...shared,
+    resumeVersion: { evidenceSnapshotId: null, fullText: edited, metadata: withDocumentReview(null, confirmed) }
+  }));
+  assert.throws(() => assertApplicationDocumentEvidenceCurrent({
+    ...shared,
+    resumeVersion: { evidenceSnapshotId: null, fullText: edited, metadata: withDocumentReview(null, pending) }
+  }), (error: unknown) => error instanceof PublicApiError &&
+    error.status === 409 && error.details?.code === "APPLICATION_DOCUMENT_REVIEW_REQUIRED");
+  assert.throws(() => assertApplicationDocumentEvidenceCurrent({
+    currentEvidenceSnapshotId: "snapshot-newer",
+    currentEvidenceSourceValid: true,
+    resumeVersion: { evidenceSnapshotId: null, fullText: edited, metadata: withDocumentReview(null, confirmed) }
+  }), (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_STALE");
+
+  const legacy = "Legacy cover letter body.";
+  assert.throws(() => assertApplicationDocumentEvidenceCurrent({
+    ...shared,
+    coverLetterVersion: { evidenceSnapshotId: null, content: legacy, metadata: null }
+  }), (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_REVIEW_REQUIRED");
+  assert.doesNotThrow(() => assertApplicationDocumentEvidenceCurrent({
+    ...shared,
+    coverLetterVersion: {
+      evidenceSnapshotId: null,
+      content: legacy,
+      metadata: withDocumentReview({ angle: "kept" }, confirmLegacyDocumentReview({ review: null, content: legacy, now }))
+    }
+  }));
+});

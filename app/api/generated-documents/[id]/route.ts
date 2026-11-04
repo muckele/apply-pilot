@@ -1,51 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
-
-import { prisma } from "@/lib/prisma";
+import { createGeneratedDocumentPatchHandler } from "@/lib/documents/document-edit-routes";
+import { generatedDocumentEditTransaction } from "@/lib/documents/document-edit-store";
 import { checkRateLimit } from "@/lib/security/rate-limit";
-import { apiErrorResponse, requireUserId } from "@/lib/user-context";
+import { requireUserId } from "@/lib/user-context";
 
-const generatedDocumentPatchSchema = z.object({
-  title: z.string().trim().min(2).max(160).optional(),
-  content: z.string().trim().min(1).max(30000).optional()
+// Content edits clear the exact generated-evidence binding and record per-line provenance (D031).
+export const PATCH = createGeneratedDocumentPatchHandler({
+  requireUserId,
+  checkRateLimit,
+  transaction: generatedDocumentEditTransaction
 });
-
-type Params = {
-  params: Promise<{ id: string }>;
-};
-
-export async function PATCH(request: NextRequest, { params }: Params) {
-  try {
-    const userId = await requireUserId();
-    await checkRateLimit(`generated-documents:update:${userId}`, 60, 60_000);
-    const { id } = await params;
-    const input = generatedDocumentPatchSchema.parse(await request.json());
-    const existing = await prisma.generatedDocument.findFirstOrThrow({ where: { id, userId } });
-    const invalidatesEvidenceBinding = Object.hasOwn(input, "content");
-    const document = await prisma.$transaction(async (tx) => {
-      const updated = await tx.generatedDocument.update({
-        where: { id: existing.id },
-        data: {
-          ...input,
-          ...(invalidatesEvidenceBinding ? { evidenceSnapshotId: null } : {})
-        }
-      });
-
-      await tx.auditLog.create({
-        data: {
-          userId,
-          action: "generated-document.update",
-          resource: "GeneratedDocument",
-          resourceId: updated.id,
-          metadata: { evidenceBindingInvalidated: invalidatesEvidenceBinding }
-        }
-      });
-
-      return updated;
-    });
-
-    return NextResponse.json({ document });
-  } catch (error) {
-    return apiErrorResponse(error);
-  }
-}

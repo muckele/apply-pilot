@@ -303,6 +303,10 @@ test("a supported stubbed résumé result is persisted only after v8 atomic-fact
   const persistedAnalysis = analysisData as unknown as Record<string, unknown>;
   assert.equal(persistedVersion.atsCompatibility, null);
   assert.equal(persistedVersion.jobFitScore, null);
+  // D031: AI-written lines keep their citations with the version so later edits can be compared.
+  const persistedClaims = (persistedVersion.metadata as { claimEvidence: Array<{ claim: string; citations: unknown[] }> }).claimEvidence;
+  assert.ok(persistedClaims.length > 0);
+  assert.deepEqual(persistedClaims, ((await response.clone().json()) as { tailored: { claimEvidence: unknown } }).tailored.claimEvidence);
   assert.equal(persistedAnalysis.confidence, null);
   assert.equal(persistedAnalysis.promptVersion, "12");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
