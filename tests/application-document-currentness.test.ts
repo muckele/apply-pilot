@@ -3,13 +3,57 @@ import { test } from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  applicationDocumentsRequiringCurrentEvidence,
   assertApplicationDocumentEvidenceCurrent,
   isEvidenceBindingCurrent,
   resolveEffectiveApplicationDocumentIds
 } from "@/lib/applications/document-currentness";
 import { resolveCurrentReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 
-test("status-only application updates retain and validate both effective document selections", () => {
+test("tracker-only updates never re-gate retained historical document selections", () => {
+  for (const nextStatus of ["RECRUITER_SCREEN", "REJECTED", "GHOSTED", "ARCHIVED", "SAVED", "INTERESTED"]) {
+    assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+      patch: {},
+      existingStatus: "APPLIED",
+      nextStatus
+    }), { resumeVersion: false, coverLetterVersion: false });
+  }
+  assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+    patch: {},
+    existingStatus: "APPLIED",
+    nextStatus: "APPLIED"
+  }), { resumeVersion: false, coverLetterVersion: false });
+  assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+    patch: { coverLetterVersionId: null },
+    existingStatus: "SAVED",
+    nextStatus: "SAVED"
+  }), { resumeVersion: false, coverLetterVersion: false });
+});
+
+test("explicit document selections and entry into APPLIED require current evidence", () => {
+  assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+    patch: { resumeVersionId: "resume-new" },
+    existingStatus: "SAVED",
+    nextStatus: "SAVED"
+  }), { resumeVersion: true, coverLetterVersion: false });
+  assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+    patch: { coverLetterVersionId: "cover-new" },
+    existingStatus: null,
+    nextStatus: "SAVED"
+  }), { resumeVersion: false, coverLetterVersion: true });
+  assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+    patch: {},
+    existingStatus: "SAVED",
+    nextStatus: "APPLIED"
+  }), { resumeVersion: true, coverLetterVersion: true });
+  assert.deepEqual(applicationDocumentsRequiringCurrentEvidence({
+    patch: {},
+    existingStatus: null,
+    nextStatus: "APPLIED"
+  }), { resumeVersion: true, coverLetterVersion: true });
+});
+
+test("effective document selections retain omitted IDs and any stale selected binding fails validation", () => {
   assert.deepEqual(resolveEffectiveApplicationDocumentIds({}, {
     resumeVersionId: "resume-existing",
     coverLetterVersionId: "cover-existing"

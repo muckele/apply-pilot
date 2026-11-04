@@ -27,6 +27,23 @@ export function resolveEffectiveApplicationDocumentIds(
   };
 }
 
+// Evidence currentness gates what a request newly attaches or sends, not the tracker history.
+// A document must be current when the request explicitly selects it, or when the request moves
+// the application into APPLIED (the packet the user is recording as sent). Status, notes, and
+// follow-up updates on an existing record keep their historical selections without re-gating, so
+// a later master-resume edit or legacy (pre-snapshot) documents never freeze the tracker.
+export function applicationDocumentsRequiringCurrentEvidence(input: {
+  patch: ApplicationDocumentPatch;
+  existingStatus: string | null;
+  nextStatus: string;
+}) {
+  const enteringApplied = input.nextStatus === "APPLIED" && input.existingStatus !== "APPLIED";
+  return {
+    resumeVersion: enteringApplied || typeof input.patch.resumeVersionId === "string",
+    coverLetterVersion: enteringApplied || typeof input.patch.coverLetterVersionId === "string"
+  };
+}
+
 export function assertApplicationDocumentEvidenceCurrent(input: {
   currentEvidenceSnapshotId: string | null;
   currentEvidenceSourceValid: boolean;

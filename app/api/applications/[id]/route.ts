@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { resolvePostingStatusForApplicationStatus } from "@/lib/applications/pipeline";
 import {
+  applicationDocumentsRequiringCurrentEvidence,
   assertApplicationDocumentEvidenceCurrent,
   resolveEffectiveApplicationDocumentIds
 } from "@/lib/applications/document-currentness";
@@ -88,14 +89,19 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             })
           : null
       ]);
+      const { nextStatus, data: updateData } = normalizeApplicationPatch(input, existing);
       const evidence = resolveCurrentReviewedEvidence(job, masterResume);
+      const requiresCurrent = applicationDocumentsRequiringCurrentEvidence({
+        patch: input,
+        existingStatus: existing.status,
+        nextStatus
+      });
       assertApplicationDocumentEvidenceCurrent({
         currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
         currentEvidenceSourceValid: evidence.currentEvidenceSourceValid,
-        resumeVersion,
-        coverLetterVersion
+        resumeVersion: requiresCurrent.resumeVersion ? resumeVersion : null,
+        coverLetterVersion: requiresCurrent.coverLetterVersion ? coverLetterVersion : null
       });
-      const { nextStatus, data: updateData } = normalizeApplicationPatch(input, existing);
       const postingStatus = resolvePostingStatusForApplicationStatus(nextStatus);
       const statusChanged = nextStatus !== existing.status;
       const savedApplication = await tx.application.update({

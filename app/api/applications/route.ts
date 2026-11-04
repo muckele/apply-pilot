@@ -9,6 +9,7 @@ import {
 } from "@/lib/applications/pipeline";
 import { resolveApplicationPostStatus } from "@/lib/applications/status";
 import {
+  applicationDocumentsRequiringCurrentEvidence,
   assertApplicationDocumentEvidenceCurrent,
   resolveEffectiveApplicationDocumentIds
 } from "@/lib/applications/document-currentness";
@@ -90,15 +91,20 @@ export async function POST(request: NextRequest) {
             })
           : null
       ]);
+      const nextStatus = resolveApplicationPostStatus(input.status, existing);
       const evidence = resolveCurrentReviewedEvidence(job, masterResume);
+      const requiresCurrent = applicationDocumentsRequiringCurrentEvidence({
+        patch: input,
+        existingStatus: existing?.status ?? null,
+        nextStatus
+      });
       assertApplicationDocumentEvidenceCurrent({
         currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
         currentEvidenceSourceValid: evidence.currentEvidenceSourceValid,
-        resumeVersion,
-        coverLetterVersion
+        resumeVersion: requiresCurrent.resumeVersion ? resumeVersion : null,
+        coverLetterVersion: requiresCurrent.coverLetterVersion ? coverLetterVersion : null
       });
 
-      const nextStatus = resolveApplicationPostStatus(input.status, existing);
       const statusChanged = !existing || existing.status !== nextStatus;
       const passiveStatusGuarded = Boolean(existing && input.status !== nextStatus);
       const dateApplied =
