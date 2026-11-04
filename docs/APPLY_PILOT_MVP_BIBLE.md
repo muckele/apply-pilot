@@ -77,6 +77,8 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 ### In flight (draft PRs opened 2026-11-03, none merged)
 
+**Owner decision 2026-11-04: land everything through one integration PR, #45 (`integration/mvp-m1`).** It merges every PR below off `main` in dependency order, one merge commit each. It gives migration C a unique timestamp and reconciles the env examples. On that branch: unit tests 2,439/2,439, lint, typecheck and build all pass, and the guarded PostgreSQL suite passes 147/148. The one failure is the Playwright Chromium install. Apply migrations A–C from #45's checkout, then merge #45 with a merge commit and close the PRs it supersedes.
+
 | PR | Work package | Base | Migration | Notes |
 |---|---|---|---|---|
 | #35 (+#31–#34) | WP0.2 evidence-bound generation stack | `main` (via #31–#34) | **A:** `20261008120000_add_evidence_snapshots` | Reviewed; critical tracker-freeze bug fixed in `7027ee4` |
@@ -90,7 +92,7 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 | #42 | WP1.1 single Gemini path | #35 | — | Restores interview prep and email on Gemini; removes OpenAI |
 | #43 | WP1.8 mock interview | #42 | **C:** `20261103130000_add_mock_interview_sessions` | |
 
-Production migrations are applied by hand (`DEPLOYMENT.md`); all three are additive and must be deployed before the PR that needs them reaches `main`. Several PRs edit the API route-inventory test, so expect small merge conflicts there. One Playwright journey test needs `npm run browser:install` locally.
+Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add tables, columns or constraints, and must be deployed before #45 reaches `main`. One Playwright journey test needs `npm run browser:install` locally.
 
 ## 4. What changes from the old roadmap
 
