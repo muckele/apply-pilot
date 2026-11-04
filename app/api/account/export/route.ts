@@ -34,6 +34,7 @@ export async function GET() {
       applicationAnswers,
       interviewQuestions,
       starStories,
+      mockInterviewSessions,
       aiSettings,
       aiUsageEvents,
       auditLogs
@@ -130,6 +131,8 @@ export async function GET() {
       prisma.applicationAnswer.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.interviewQuestion.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.starStory.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
+      // Mock-interview practice sessions, including the user's own answers and feedback.
+      prisma.mockInterviewSession.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.aISettings.findUnique({ where: { userId } }),
       prisma.aIUsageEvent.findMany({ where: { userId }, orderBy: { createdAt: "asc" } }),
       prisma.auditLog.findMany({
@@ -173,6 +176,7 @@ export async function GET() {
       applicationAnswers,
       interviewQuestions,
       starStories,
+      mockInterviewSessions,
       aiSettings,
       aiUsageEvents,
       auditLogs

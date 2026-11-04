@@ -13,7 +13,9 @@ type AiErrorPayload = {
 const AI_DATA_DESCRIPTIONS: Record<string, string> = {
   interview_prep_packet: "Your master-resume facts and the linked job post",
   interview_notes_packet: "Your interview notes, any pasted transcript, and your master-resume facts",
-  email_reply_packet: "The email text and the linked job title and company"
+  email_reply_packet: "The email text and the linked job title and company",
+  mock_interview_questions_packet: "Your master-resume facts and lines from the linked job post",
+  mock_interview_answer_packet: "Your practice answer, the question, and your master-resume facts"
 };
 
 function formatUsdMicros(micros: number) {

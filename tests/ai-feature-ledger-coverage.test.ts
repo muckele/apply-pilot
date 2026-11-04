@@ -161,6 +161,33 @@ const FEATURE_INVOKERS: Record<string, (userId: string) => Promise<unknown>> = {
   APPLICATION_PLAN: async (userId) => {
     const { planApplication } = await import("@/lib/ai/application-plan");
     return planApplication({ job, resume }, userId, { automation: true, highCostConfirmed: true });
+  },
+  MOCK_INTERVIEW_QUESTIONS: async (userId) => {
+    const { generateMockInterviewQuestions } = await import("@/lib/ai/mock-interview");
+    return generateMockInterviewQuestions({
+      interviewType: "TECHNICAL",
+      job: {
+        ...job,
+        description: "You will build reliable TypeScript services for payment teams.\nYou will lead incident response for core systems."
+      },
+      resume
+    }, userId, confirmed);
+  },
+  MOCK_INTERVIEW_FEEDBACK: async (userId) => {
+    const { generateMockAnswerFeedback } = await import("@/lib/ai/mock-interview");
+    return generateMockAnswerFeedback({
+      question: {
+        questionId: "q1",
+        category: "BEHAVIORAL",
+        question: "Tell me about a time you made a service more reliable.",
+        lookingFor: "A clear result.",
+        jobLine: { lineId: "L1", text: "TypeScript", source: "requirement" },
+        factIds: []
+      },
+      job,
+      resume,
+      answer: "At Prior Co I rebuilt our deploy pipeline in TypeScript so releases stopped failing."
+    }, userId, confirmed);
   }
 };
 
@@ -178,6 +205,13 @@ test("the registry covers every AI feature policy and every active feature has a
   // The retired legacy features the MVP needs (interview, email, planning) are active.
   for (const feature of ["INTERVIEW_PREP", "INTERVIEW_FEEDBACK", "EMAIL_REPLY", "APPLICATION_PLAN"] as AiFeature[]) {
     assert.equal(AI_FEATURE_REGISTRY[feature].status, "active", feature);
+  }
+  // Text mock interviews (WP1.8) send the user's own answers, so both calls need
+  // explicit data and cost confirmation.
+  for (const feature of ["MOCK_INTERVIEW_QUESTIONS", "MOCK_INTERVIEW_FEEDBACK"] as AiFeature[]) {
+    assert.equal(AI_FEATURE_REGISTRY[feature].status, "active", feature);
+    assert.equal(AI_FEATURE_REGISTRY[feature].confirmation, "data_and_cost", feature);
+    assert.match(AI_FEATURE_REGISTRY[feature].entryPoint ?? "", /^lib\/ai\/mock-interview\.ts#/u, feature);
   }
 });
 

@@ -1,7 +1,14 @@
 import Link from "next/link";
 
 import { InterviewCreateForm } from "@/components/interview-create-form";
+import {
+  MockInterviewPracticeNotice,
+  MockInterviewPracticePicker,
+  MockInterviewSessionList
+} from "@/components/mock-interview";
 import { ButtonLink, PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { getAiAvailability } from "@/lib/ai/config";
+import { aiUnavailableMessage, mockSessionListItem } from "@/lib/ai/mock-interview-records";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -11,7 +18,7 @@ function formatDate(value: Date | null) {
 
 export default async function InterviewsPage() {
   const userId = await requirePageUserId();
-  const [interviews, applications, jobs] = await Promise.all([
+  const [interviews, applications, jobs, practiceSessions] = await Promise.all([
     prisma.interview.findMany({
       where: { userId },
       include: { jobPosting: true, application: { include: { jobPosting: true } } },
@@ -29,14 +36,22 @@ export default async function InterviewsPage() {
       orderBy: [{ overallFitScore: "desc" }, { firstDiscoveredAt: "desc" }],
       take: 50,
       select: { id: true, title: true, company: true }
+    }),
+    // Practice started from an application or saved job, without a tracked interview.
+    prisma.mockInterviewSession.findMany({
+      where: { userId, interviewId: null },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: { id: true, title: true, questions: true, answers: true, completedAt: true, createdAt: true }
     })
   ]);
+  const availability = getAiAvailability();
 
   return (
     <>
       <PageHeader
         title="Interviews"
-        description="Schedule interviews, prepare with a Gemini prep brief and STAR stories from your own history, keep notes, and get post-interview feedback and a thank-you draft to review."
+        description="Schedule interviews, prepare with a Gemini prep brief and STAR stories from your own history, practise with a text mock interview, keep notes, and get post-interview feedback and a thank-you draft to review."
         action={<ButtonLink href="/interviews/library" variant="secondary">Question and STAR library</ButtonLink>}
       />
 
@@ -69,20 +84,48 @@ export default async function InterviewsPage() {
           </div>
         </Panel>
 
-        <Panel className="h-fit">
-          <PanelHeader title="Add interview" />
-          <InterviewCreateForm
-            applications={applications.map((application) => ({
-              id: application.id,
-              jobPostingId: application.jobPostingId,
-              label: `${application.jobPosting.company} - ${application.jobPosting.title}`
-            }))}
-            jobs={jobs.map((job) => ({
-              id: job.id,
-              label: `${job.company} - ${job.title}`
-            }))}
-          />
-        </Panel>
+        <div className="space-y-6">
+          <Panel className="h-fit">
+            <PanelHeader title="Add interview" />
+            <InterviewCreateForm
+              applications={applications.map((application) => ({
+                id: application.id,
+                jobPostingId: application.jobPostingId,
+                label: `${application.jobPosting.company} - ${application.jobPosting.title}`
+              }))}
+              jobs={jobs.map((job) => ({
+                id: job.id,
+                label: `${job.company} - ${job.title}`
+              }))}
+            />
+          </Panel>
+
+          <Panel className="h-fit">
+            <PanelHeader
+              title="Mock interview practice"
+              description="Practise answering questions from a job post, then get feedback before the real thing."
+            />
+            <div className="space-y-4 p-5">
+              <MockInterviewPracticeNotice />
+              <MockInterviewPracticePicker
+                applications={applications.map((application) => ({
+                  id: application.id,
+                  label: `${application.jobPosting.company} - ${application.jobPosting.title}`
+                }))}
+                jobs={jobs.map((job) => ({ id: job.id, label: `${job.company} - ${job.title}` }))}
+                aiAvailable={availability.available}
+                unavailableMessage={aiUnavailableMessage(availability)}
+              />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Practice without an interview</p>
+                <MockInterviewSessionList
+                  sessions={practiceSessions.map(mockSessionListItem)}
+                  emptyMessage="No practice sessions yet. Sessions for a tracked interview are listed on that interview."
+                />
+              </div>
+            </div>
+          </Panel>
+        </div>
       </div>
     </>
   );
