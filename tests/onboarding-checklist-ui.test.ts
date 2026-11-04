@@ -18,7 +18,7 @@ const NOTHING_DONE: OnboardingSignals = {
   profileReviewed: false,
   jobPreferencesSet: false,
   jobPostingCount: 0,
-  applicationCount: 0
+  appliedApplicationCount: 0
 };
 
 const RESUME_DONE: OnboardingSignals = { ...NOTHING_DONE, parsedMasterResumeCount: 1 };
@@ -28,7 +28,7 @@ const EVERYTHING_DONE: OnboardingSignals = {
   profileReviewed: true,
   jobPreferencesSet: true,
   jobPostingCount: 1,
-  applicationCount: 1
+  appliedApplicationCount: 1
 };
 
 const noopAction = async () => {};
@@ -55,7 +55,7 @@ test("the checklist is a labelled region with a semantic ordered list of five st
   const items = region.querySelectorAll("ol > li");
   assert.equal(items.length, 5);
   assert.match(items[0].textContent ?? "", /Upload your master resume/);
-  assert.match(items[4].textContent ?? "", /Track your first application/);
+  assert.match(items[4].textContent ?? "", /Apply to your first job/);
 });
 
 test("step state is conveyed in text, not colour alone", () => {
@@ -93,7 +93,7 @@ test("incomplete steps link to the page that completes them; finished steps do n
     ["/settings/profile", "Review profile"],
     ["/jobs", "Set preferences"],
     ["/jobs", "Find jobs"],
-    ["/jobs", "Track a job"]
+    ["/jobs", "Apply to a job"]
   ]);
 });
 

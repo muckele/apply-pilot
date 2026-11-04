@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test, { type TestContext } from "node:test";
 
+import { ONBOARDING_APPLIED_STATUSES } from "@/lib/onboarding";
 import { loadOnboardingChecklist } from "@/lib/onboarding-loader";
 import {
   ONBOARDING_HIDDEN_COOKIE,
@@ -28,7 +29,7 @@ function stubOnboardingQueries(
     profile?: unknown;
     discoveryPreference?: unknown;
     jobPostingCount?: number;
-    applicationCount?: number;
+    applicationStatuses?: string[];
   } = {}
 ) {
   const calls: Calls = {
@@ -56,7 +57,10 @@ function stubOnboardingQueries(
   });
   stub(t, prisma.application, "count", async (args: unknown) => {
     calls.applicationCount.push(args);
-    return results.applicationCount ?? 0;
+    // Simulate the database: count only rows whose status passes the query's status filter.
+    const allowed = (args as { where: { status?: { in?: readonly string[] } } }).where.status?.in;
+    const rows = results.applicationStatuses ?? [];
+    return Math.min(1, rows.filter((status) => !allowed || allowed.includes(status)).length);
   });
   return calls;
 }
@@ -79,7 +83,10 @@ test("loader runs one bounded, user-scoped query per step", async (t) => {
     select: { targetSearches: true }
   }]);
   assert.deepEqual(calls.jobPostingCount, [{ where: { userId: "user-a" }, take: 1 }]);
-  assert.deepEqual(calls.applicationCount, [{ where: { userId: "user-a" }, take: 1 }]);
+  assert.deepEqual(calls.applicationCount, [{
+    where: { userId: "user-a", status: { in: [...ONBOARDING_APPLIED_STATUSES] } },
+    take: 1
+  }]);
 });
 
 test("loader scopes every query to the requested user only", async (t) => {
@@ -115,7 +122,7 @@ test("loader derives profile and preference completion from the stored records",
     },
     discoveryPreference: { targetSearches: ["  "] },
     jobPostingCount: 0,
-    applicationCount: 0
+    applicationStatuses: []
   });
 
   const checklist = await loadOnboardingChecklist("user-c");
@@ -134,13 +141,38 @@ test("loader reports a finished account as complete", async (t) => {
     },
     discoveryPreference: { targetSearches: ["Product Manager"] },
     jobPostingCount: 1,
-    applicationCount: 1
+    applicationStatuses: ["SAVED", "APPLIED"]
   });
 
   const checklist = await loadOnboardingChecklist("user-d");
 
   assert.equal(checklist.isComplete, true);
   assert.equal(checklist.nextStep, null);
+});
+
+test("saved or interested applications do not finish the apply step", async (t) => {
+  stubOnboardingQueries(t, {
+    parsedMasterResumeCount: 1,
+    jobPostingCount: 1,
+    applicationStatuses: ["SAVED", "INTERESTED"]
+  });
+
+  const checklist = await loadOnboardingChecklist("user-e");
+
+  assert.notEqual(
+    checklist.steps.find((step) => step.id === "first-application")?.status,
+    "complete",
+    "a manual import creates a SAVED application and must not finish step 5"
+  );
+  assert.equal(checklist.steps.find((step) => step.id === "first-matches")?.status, "complete");
+});
+
+test("an application at or beyond APPLIED finishes the apply step", async (t) => {
+  for (const status of ["APPLIED", "RECRUITER_SCREEN", "OFFER", "REJECTED"]) {
+    stubOnboardingQueries(t, { applicationStatuses: ["SAVED", status] });
+    const checklist = await loadOnboardingChecklist("user-f");
+    assert.equal(checklist.steps.find((step) => step.id === "first-application")?.status, "complete", status);
+  }
 });
 
 test("the loader stays thin: no full-table reads and no unscoped queries", () => {

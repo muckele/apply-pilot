@@ -18,9 +18,21 @@
  *                        targetSearches entry (target searches hold both free
  *                        queries and target role titles).
  * 4. first-matches     - at least one JobPosting owned by the user.
- * 5. first-application - at least one Application owned by the user (any status;
- *                        saving a job counts as tracking it).
+ * 5. first-application - at least one Application owned by the user whose status
+ *                        is APPLIED or later in the pipeline ordering
+ *                        (`applicationStatusOptions`). SAVED and INTERESTED do
+ *                        not count, so a manual import alone does not finish it.
  */
+
+import type { ApplicationStatus } from "@prisma/client";
+
+import { applicationStatusOptions } from "@/lib/applications/pipeline";
+
+const APPLICATION_STATUS_ORDER = applicationStatusOptions.map((option) => option.value);
+
+export const ONBOARDING_APPLIED_STATUSES: readonly ApplicationStatus[] = Object.freeze(
+  APPLICATION_STATUS_ORDER.slice(APPLICATION_STATUS_ORDER.indexOf("APPLIED"))
+);
 
 export const ONBOARDING_STEP_IDS = [
   "master-resume",
@@ -39,7 +51,7 @@ export type OnboardingSignals = {
   profileReviewed: boolean;
   jobPreferencesSet: boolean;
   jobPostingCount: number;
-  applicationCount: number;
+  appliedApplicationCount: number;
 };
 
 export type OnboardingStep = {
@@ -124,11 +136,11 @@ const STEP_DEFINITIONS: readonly OnboardingStepDefinition[] = [
   },
   {
     id: "first-application",
-    title: "Track your first application",
-    description: "Save a job, or mark one as applied, to start tracking it in Applications.",
+    title: "Apply to your first job",
+    description: "Apply on the employer's site (you always press Submit yourself), then mark the job as applied so Applications tracks it.",
     href: "/jobs",
-    actionLabel: "Track a job",
-    isComplete: (signals) => hasPositiveCount(signals.applicationCount)
+    actionLabel: "Apply to a job",
+    isComplete: (signals) => hasPositiveCount(signals.appliedApplicationCount)
   }
 ];
 

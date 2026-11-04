@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 
 import {
+  ONBOARDING_APPLIED_STATUSES,
   buildOnboardingChecklist,
   hasOnboardingJobPreferences,
   isOnboardingProfileReviewed,
@@ -25,12 +26,12 @@ const ONBOARDING_JOB_PREFERENCE_SELECT = {
  * whether at least one row exists.
  */
 export async function loadOnboardingChecklist(userId: string): Promise<OnboardingChecklist> {
-  const [parsedMasterResumeCount, profile, discoveryPreference, jobPostingCount, applicationCount] = await Promise.all([
+  const [parsedMasterResumeCount, profile, discoveryPreference, jobPostingCount, appliedApplicationCount] = await Promise.all([
     prisma.resume.count({ where: { userId, isMaster: true, parsedAt: { not: null } }, take: 1 }),
     prisma.userProfile.findUnique({ where: { userId }, select: ONBOARDING_PROFILE_SELECT }),
     prisma.jobDiscoveryPreference.findUnique({ where: { userId }, select: ONBOARDING_JOB_PREFERENCE_SELECT }),
     prisma.jobPosting.count({ where: { userId }, take: 1 }),
-    prisma.application.count({ where: { userId }, take: 1 })
+    prisma.application.count({ where: { userId, status: { in: [...ONBOARDING_APPLIED_STATUSES] } }, take: 1 })
   ]);
 
   return buildOnboardingChecklist({
@@ -38,6 +39,6 @@ export async function loadOnboardingChecklist(userId: string): Promise<Onboardin
     profileReviewed: isOnboardingProfileReviewed(profile),
     jobPreferencesSet: hasOnboardingJobPreferences(discoveryPreference),
     jobPostingCount,
-    applicationCount
+    appliedApplicationCount
   });
 }

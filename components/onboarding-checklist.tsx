@@ -136,7 +136,7 @@ export function OnboardingChecklist({
             Set up your job search
           </h2>
           <p className="product-themed-muted mt-1 max-w-2xl text-sm leading-6">
-            Five steps take you from your resume to your first tracked application. Each step checks itself off once
+            Five steps take you from your resume to your first application. Each step checks itself off once
             the data is in Apply Pilot.
           </p>
         </div>

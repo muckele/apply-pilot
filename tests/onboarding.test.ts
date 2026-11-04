@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { applicationStatusOptions } from "@/lib/applications/pipeline";
 import {
+  ONBOARDING_APPLIED_STATUSES,
   ONBOARDING_STEP_IDS,
   buildOnboardingChecklist,
   hasOnboardingJobPreferences,
@@ -15,7 +17,7 @@ const NOTHING_DONE: OnboardingSignals = {
   profileReviewed: false,
   jobPreferencesSet: false,
   jobPostingCount: 0,
-  applicationCount: 0
+  appliedApplicationCount: 0
 };
 
 const EVERYTHING_DONE: OnboardingSignals = {
@@ -23,7 +25,7 @@ const EVERYTHING_DONE: OnboardingSignals = {
   profileReviewed: true,
   jobPreferencesSet: true,
   jobPostingCount: 1,
-  applicationCount: 1
+  appliedApplicationCount: 1
 };
 
 test("a brand-new account sees five ordered steps with the master resume as the next step", () => {
@@ -66,7 +68,7 @@ test("every step has a title, a description, and a distinct action label", () =>
     "Review your profile",
     "Set job preferences",
     "See your first matches",
-    "Track your first application"
+    "Apply to your first job"
   ]);
   for (const step of checklist.steps) {
     assert.ok(step.description.trim().length > 20, step.id);
@@ -82,7 +84,7 @@ test("each signal completes exactly its own step", () => {
     [{ profileReviewed: true }, "profile"],
     [{ jobPreferencesSet: true }, "job-preferences"],
     [{ jobPostingCount: 3 }, "first-matches"],
-    [{ applicationCount: 2 }, "first-application"]
+    [{ appliedApplicationCount: 2 }, "first-application"]
   ];
 
   for (const [signal, expectedCompleteId] of cases) {
@@ -98,7 +100,7 @@ test("the next step is the first incomplete step even when later steps finished 
     ...NOTHING_DONE,
     parsedMasterResumeCount: 1,
     jobPostingCount: 4,
-    applicationCount: 1
+    appliedApplicationCount: 1
   });
 
   assert.deepEqual(checklist.steps.map((step) => step.status), ["complete", "next", "pending", "complete", "complete"]);
@@ -112,7 +114,7 @@ test("only one step is ever highlighted as next", () => {
     NOTHING_DONE,
     { ...NOTHING_DONE, parsedMasterResumeCount: 1 },
     { ...NOTHING_DONE, parsedMasterResumeCount: 1, profileReviewed: true },
-    { ...EVERYTHING_DONE, applicationCount: 0 }
+    { ...EVERYTHING_DONE, appliedApplicationCount: 0 }
   ];
 
   for (const signal of signals) {
@@ -137,7 +139,7 @@ test("invalid or non-positive counts never complete a step", () => {
       ...EVERYTHING_DONE,
       parsedMasterResumeCount: count,
       jobPostingCount: count,
-      applicationCount: count
+      appliedApplicationCount: count
     });
     assert.deepEqual(
       checklist.steps.filter((step) => step.status !== "complete").map((step) => step.id),
@@ -148,7 +150,7 @@ test("invalid or non-positive counts never complete a step", () => {
 });
 
 test("large counts complete their step", () => {
-  const checklist = buildOnboardingChecklist({ ...EVERYTHING_DONE, jobPostingCount: 4_000, applicationCount: 250 });
+  const checklist = buildOnboardingChecklist({ ...EVERYTHING_DONE, jobPostingCount: 4_000, appliedApplicationCount: 250 });
   assert.equal(checklist.isComplete, true);
 });
 
@@ -229,6 +231,21 @@ test("job preferences require a saved preference with at least one non-blank tar
   assert.equal(hasOnboardingJobPreferences({ targetSearches: null }), false);
   assert.equal(hasOnboardingJobPreferences({ targetSearches: ["Staff engineer"] }), true);
   assert.equal(hasOnboardingJobPreferences({ targetSearches: ["  ", "remote data analyst"] }), true);
+});
+
+test("applied statuses are APPLIED and everything after it in the pipeline ordering", () => {
+  const ordering = applicationStatusOptions.map((option) => option.value);
+  const appliedIndex = ordering.indexOf("APPLIED");
+
+  assert.ok(appliedIndex > 0);
+  assert.deepEqual([...ONBOARDING_APPLIED_STATUSES], ordering.slice(appliedIndex));
+  assert.equal(ONBOARDING_APPLIED_STATUSES[0], "APPLIED");
+  for (const status of ["SAVED", "INTERESTED"] as const) {
+    assert.equal(ONBOARDING_APPLIED_STATUSES.includes(status), false, `${status} must not count as applied`);
+  }
+  for (const status of ["RECRUITER_SCREEN", "FINAL_INTERVIEW", "OFFER", "REJECTED"] as const) {
+    assert.equal(ONBOARDING_APPLIED_STATUSES.includes(status), true, status);
+  }
 });
 
 test("display is full until hidden, collapsed while hidden, and gone once complete", () => {
