@@ -222,7 +222,23 @@ Implemented:
 
 Go to `/settings/job-sources` to add, edit, enable/disable, test, manually sync, and monitor configured sources. URL-based RSS and company-careers sources require the explicit "reviewed as permitted or API-approved" checkbox before test, manual sync, or scheduled sync. Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, and save them to PostgreSQL. Discovery applies deterministic filters before import, ranks the remaining candidates, and sends only the highest-ranked capped set to AI when discovery-time AI is enabled.
 
-Remotive works without credentials. Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. SerpApi requires `SERPAPI_API_KEY` and may consume paid search credits; `SERPAPI_MAX_QUERIES_PER_RUN` caps how many SerpApi searches one discovery run can use. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
+### Company boards (Greenhouse, Lever, Ashby)
+
+The employer's own public ATS board is the primary job source: it is free, fresh, and carries the real apply URL.
+
+- **Follow a company.** On `/settings/job-sources`, paste any Greenhouse (`boards.greenhouse.io`, `job-boards.greenhouse.io`), Lever (`jobs.lever.co`, `jobs.eu.lever.co`) or Ashby (`jobs.ashbyhq.com`) job or board link. `lib/job-sources/board-url.ts` resolves it to the board token without fetching the link, and `POST /api/job-sources/follow` creates (or re-enables) a job source for the signed-in user. Disable a followed board to stop checking it; a disabled board is also excluded from the directory.
+- **Seed directory.** `data/job-board-directory.json` is a reviewed list of public boards tagged by industry, location and remote availability. Each entry was verified with one read-only GET to its board API; it is never scraped or extended automatically. Discovery checks directory boards whose tags match the user's industries, locations and remote preference (every board when the user has none of these). Postings from directory boards are attributed to a managed "Apply Pilot board directory" source per ATS.
+- **Per-run cap and rotation.** Each run checks followed boards first, then directory boards, up to `JOB_DISCOVERY_MAX_BOARDS_PER_RUN` (default `40`, max `100`). Remaining directory boards rotate into later runs on a daily window. Board fetches run four at a time and each board is fetched once per run.
+- **Freshness and dedupe.** Unchanged postings are not rewritten (a fingerprint of the stored fields is compared). Duplicates are dropped across sources by normalized apply URL, then by normalized company, title and location; boards run before aggregators so the employer's posting wins. Active postings that disappear from their board are marked `EXPIRED`; applied, archived and other statuses are never changed.
+- Board discovery keeps the existing deterministic relevance prefilter and the AI-scoring cap. Location matching uses each user's own preferred and home locations (a city match, then the same US state); no locale is built in.
+
+### Compliance-gated and paid sources
+
+- `JOB_SOURCE_REMOTIVE_ENABLED`: Remotive is **off unless set to `true`**. Its API terms prohibit showing its jobs to collect sign-ups; enable only after a compliance review or private agreement.
+- `JOB_SOURCE_ADZUNA_ENABLED`: Adzuna is **off unless set to `true`**, even with `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` configured. Adzuna requires a commercial licence after its trial for revenue-generating products.
+- `JOB_DISCOVERY_MAX_BOARDS_PER_RUN`: boards checked per discovery run or per user in the cron, default `40`.
+
+The gates apply to automated discovery, manual source sync and test, and the cron. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. SerpApi requires `SERPAPI_API_KEY` and may consume paid search credits; `SERPAPI_MAX_QUERIES_PER_RUN` caps how many SerpApi searches one discovery run can use. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
 
 For scheduled discovery, configure the host to call:
 
@@ -231,7 +247,7 @@ GET /api/cron/job-discovery
 Authorization: Bearer your-CRON_SECRET
 ```
 
-The cron route syncs only enabled job sources, skips recently synced sources, caps sources per run, blocks overlapping source syncs, and never submits applications.
+The cron route first runs preference discovery over company boards (followed and matching directory boards) for each approved user with saved discovery preferences, up to 25 users per run, sharing one fetch per board across users. It never calls the query aggregators. AI scoring follows each user's saved "score imported jobs" choice and the same cap. It then syncs other enabled job sources, skips recently synced sources (including boards just checked), skips compliance-gated sources, caps sources per run, blocks overlapping source syncs, and never submits applications.
 The included Vercel schedule runs once daily at 14:00 UTC; the route still enforces the configured per-source interval and provider caps.
 
 The generic provider rejects prohibited job-board hosts, blocks local/private/internal URLs, checks DNS resolution to reduce SSRF risk, limits fetch size/time, follows only validated redirects, and checks `robots.txt` before fetching. The app does not directly scrape LinkedIn, Indeed, ZipRecruiter, CareerBuilder, Glassdoor, or similar restricted job boards. Those sources require approved APIs, licensed aggregator APIs, partner feeds, exports, or user-reviewed manual import.
