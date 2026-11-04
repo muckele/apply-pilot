@@ -18,10 +18,12 @@
  *                        targetSearches entry (target searches hold both free
  *                        queries and target role titles).
  * 4. first-matches     - at least one JobPosting owned by the user.
- * 5. first-application - at least one Application owned by the user whose status
- *                        is APPLIED or later in the pipeline ordering
- *                        (`applicationStatusOptions`). SAVED and INTERESTED do
- *                        not count, so a manual import alone does not finish it.
+ * 5. first-application - at least one Application owned by the user with
+ *                        dateApplied set, OR a status of APPLIED or later in the
+ *                        pipeline ordering (`applicationStatusOptions`) other
+ *                        than ARCHIVED. SAVED and INTERESTED do not count, so a
+ *                        manual import alone does not finish it, and ARCHIVED
+ *                        counts only when the job was actually applied to.
  */
 
 import type { ApplicationStatus } from "@prisma/client";
@@ -30,8 +32,10 @@ import { applicationStatusOptions } from "@/lib/applications/pipeline";
 
 const APPLICATION_STATUS_ORDER = applicationStatusOptions.map((option) => option.value);
 
+// ARCHIVED sorts after APPLIED but can also close a job that was only saved,
+// so on its own it is not evidence of an application (dateApplied covers that).
 export const ONBOARDING_APPLIED_STATUSES: readonly ApplicationStatus[] = Object.freeze(
-  APPLICATION_STATUS_ORDER.slice(APPLICATION_STATUS_ORDER.indexOf("APPLIED"))
+  APPLICATION_STATUS_ORDER.slice(APPLICATION_STATUS_ORDER.indexOf("APPLIED")).filter((status) => status !== "ARCHIVED")
 );
 
 export const ONBOARDING_STEP_IDS = [

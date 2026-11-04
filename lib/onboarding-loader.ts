@@ -31,7 +31,13 @@ export async function loadOnboardingChecklist(userId: string): Promise<Onboardin
     prisma.userProfile.findUnique({ where: { userId }, select: ONBOARDING_PROFILE_SELECT }),
     prisma.jobDiscoveryPreference.findUnique({ where: { userId }, select: ONBOARDING_JOB_PREFERENCE_SELECT }),
     prisma.jobPosting.count({ where: { userId }, take: 1 }),
-    prisma.application.count({ where: { userId, status: { in: [...ONBOARDING_APPLIED_STATUSES] } }, take: 1 })
+    prisma.application.count({
+      where: {
+        userId,
+        OR: [{ dateApplied: { not: null } }, { status: { in: [...ONBOARDING_APPLIED_STATUSES] } }]
+      },
+      take: 1
+    })
   ]);
 
   return buildOnboardingChecklist({

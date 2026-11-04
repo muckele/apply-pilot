@@ -238,7 +238,15 @@ test("applied statuses are APPLIED and everything after it in the pipeline order
   const appliedIndex = ordering.indexOf("APPLIED");
 
   assert.ok(appliedIndex > 0);
-  assert.deepEqual([...ONBOARDING_APPLIED_STATUSES], ordering.slice(appliedIndex));
+  assert.deepEqual(
+    [...ONBOARDING_APPLIED_STATUSES],
+    ordering.slice(appliedIndex).filter((status) => status !== "ARCHIVED")
+  );
+  assert.equal(
+    ONBOARDING_APPLIED_STATUSES.includes("ARCHIVED"),
+    false,
+    "ARCHIVED alone does not prove the user applied; an archived saved job must not count"
+  );
   assert.equal(ONBOARDING_APPLIED_STATUSES[0], "APPLIED");
   for (const status of ["SAVED", "INTERESTED"] as const) {
     assert.equal(ONBOARDING_APPLIED_STATUSES.includes(status), false, `${status} must not count as applied`);
