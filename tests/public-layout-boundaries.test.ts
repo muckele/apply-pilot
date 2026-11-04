@@ -80,6 +80,7 @@ const apiRoutePaths = [
   "app/api/job-sources/[id]/route.ts",
   "app/api/job-sources/[id]/sync/route.ts",
   "app/api/job-sources/[id]/test/route.ts",
+  "app/api/job-sources/follow/route.ts",
   "app/api/job-sources/route.ts",
   "app/api/jobs/[id]/cover-letter/route.ts",
   "app/api/jobs/[id]/evidence-snapshots/route.ts",

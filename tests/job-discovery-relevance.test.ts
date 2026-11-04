@@ -16,6 +16,15 @@ function stub(t: TestContext, owner: object, name: string, replacement: unknown)
   t.after(() => { methods[name] = original; });
 }
 
+/** Discovery now looks up stored postings (dedupe, unchanged-skip) and expires vanished board postings. */
+function stubNoStoredPostings(t: TestContext) {
+  stub(t, prisma.jobPosting, "findMany", async ({ where }: { where: { userId: string } }) => {
+    assert.equal(where.userId, "user-1");
+    return [];
+  });
+  stub(t, prisma.jobPosting, "updateMany", async () => ({ count: 0 }));
+}
+
 const source = { id: "source-1", name: "Example Co", type: "GREENHOUSE" } as JobSource;
 const rawJob = {
   id: 1,
@@ -76,6 +85,7 @@ test("new discovery imports stay unscored and persist no applicant-fit evidence"
   const upserts: Array<{ create: Record<string, unknown>; update: Record<string, unknown> }> = [];
   const updates: Array<{ data: Record<string, unknown> }> = [];
   stub(t, provider, "searchJobs", async () => [rawJob]);
+  stubNoStoredPostings(t);
   stub(t, prisma.jobPosting, "upsert", async (args: { create: Record<string, unknown>; update: Record<string, unknown> }) => {
     upserts.push(args);
     return row;
@@ -110,6 +120,7 @@ test("discovery never writes a fixed applicant cover-letter narrative", async (t
   const row = posting("new-job", rawJob.title, rawJob.content).row;
   const writes: unknown[] = [];
   stub(t, provider, "searchJobs", async () => [rawJob]);
+  stubNoStoredPostings(t);
   stub(t, prisma.jobPosting, "upsert", async (args: unknown) => { writes.push(args); return row; });
   stub(t, prisma.jobPosting, "update", async (args: unknown) => { writes.push(args); return row; });
 
@@ -129,6 +140,7 @@ test("rediscovery preserves an existing personalized match without scoring-field
   } as JobPosting;
   let scoringUpdates = 0;
   stub(t, provider, "searchJobs", async () => [rawJob]);
+  stubNoStoredPostings(t);
   stub(t, prisma.jobPosting, "upsert", async () => row);
   stub(t, prisma.jobPosting, "update", async () => { scoringUpdates++; return row; });
 

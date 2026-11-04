@@ -13,6 +13,15 @@ function stub(t: TestContext, owner: object, name: string, replacement: unknown)
   t.after(() => { methods[name] = original; });
 }
 
+/** Discovery now looks up stored postings (dedupe, unchanged-skip) and expires vanished board postings. */
+function stubNoStoredPostings(t: TestContext) {
+  stub(t, prisma.jobPosting, "findMany", async ({ where }: { where: { userId: string } }) => {
+    assert.equal(where.userId, "user-1");
+    return [];
+  });
+  stub(t, prisma.jobPosting, "updateMany", async () => ({ count: 0 }));
+}
+
 function configureLocalAiUnavailable(t: TestContext) {
   const changes: Record<string, string | undefined> = {
     AI_ENABLED: "false",
@@ -88,6 +97,7 @@ function setup(t: TestContext, aiDiscoveryEnabled: boolean) {
   const sourceUpdates: Array<Record<string, unknown>> = [];
   let matchLoads = 0;
   stub(t, provider, "searchJobs", async () => [rawJob]);
+  stubNoStoredPostings(t);
   stub(t, prisma.jobSource, "updateMany", async () => ({ count: 1 }));
   stub(t, prisma.jobSource, "update", async ({ data }: { data: Record<string, unknown> }) => {
     sourceUpdates.push(data);

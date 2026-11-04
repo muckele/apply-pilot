@@ -32,6 +32,22 @@ export type NormalizedJob = {
   sourceType: JobSourceType;
 };
 
+export type DiscoverySourceReport = {
+  name: string;
+  type: string;
+  status: "imported" | "skipped" | "blocked" | "error";
+  imported: number;
+  skipped?: number;
+  /** Postings already stored with identical content; they are not rewritten. */
+  unchanged?: number;
+  /** Postings dropped because another source already supplied the same job. */
+  duplicates?: number;
+  /** Postings marked EXPIRED because they vanished from their board. */
+  closed?: number;
+  bestRelevanceScore?: number;
+  details: string;
+};
+
 export interface JobSourceProvider {
   sourceType: JobSourceType;
   searchJobs(criteria: JobSearchCriteria): Promise<RawJob[]>;
