@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { resolvePostingStatusForApplicationStatus } from "@/lib/applications/pipeline";
+import { formatApplicationStatus, resolvePostingStatusForApplicationStatus } from "@/lib/applications/pipeline";
 import {
   applicationDocumentsRequiringCurrentEvidence,
   assertApplicationDocumentEvidenceCurrent,
@@ -137,7 +137,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           userId,
           applicationId: savedApplication.id,
           type: statusChanged ? "STATUS_CHANGED" : "NOTE_ADDED",
-          title: statusChanged ? `Status changed to ${nextStatus}` : "Application updated",
+          title: statusChanged ? `Status changed to ${formatApplicationStatus(nextStatus)}` : "Application updated",
           body: input.notes,
           ...(sentDocuments
             ? {

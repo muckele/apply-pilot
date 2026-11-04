@@ -379,3 +379,13 @@ test("saving a packet records no sent snapshot; moving it to APPLIED through PAT
   assert.equal(later.status, 200);
   assert.equal(readSentDocumentsSnapshot(db.store.events.at(-1)!.metadata), null);
 });
+
+test("a PATCH status change titles its timeline event with the readable status label", async (t) => {
+  const db = await setup(t);
+  const saved = await post({ jobPostingId: JOB, status: "SAVED", resumeVersionId: "resume-v2", coverLetterVersionId: null });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  const id = String(db.store.applications[0]!.id);
+  const moved = await patch(id, { status: "HIRING_MANAGER_SCREEN" });
+  assert.equal(moved.status, 200, await moved.clone().text());
+  assert.equal(db.store.events.at(-1)!.title, "Status changed to Hiring manager");
+});
