@@ -14,8 +14,7 @@ const createInterviewSchema = z.object({
   durationMinutes: z.coerce.number().int().positive().optional(),
   locationOrLink: z.string().optional(),
   interviewerNames: z.array(z.string()).optional().default([]),
-  interviewerUrls: z.array(z.string().url()).optional().default([]),
-  generatePrep: z.boolean().optional().default(false)
+  interviewerUrls: z.array(z.string().url()).optional().default([])
 });
 
 export async function POST(request: NextRequest) {
@@ -57,21 +56,16 @@ export async function POST(request: NextRequest) {
           action: "interview.create",
           resource: "Interview",
           resourceId: savedInterview.id,
-          metadata: {
-            aiPrepRequested: input.generatePrep,
-            aiPrepStatus: "deferred"
-          }
+          metadata: {}
         }
       });
 
       return savedInterview;
     });
 
-    return NextResponse.json({
-      interview,
-      prep: null,
-      aiGeneration: { status: "deferred", feature: "INTERVIEW_PREP" }
-    });
+    // Saving never calls AI. Prep is generated from the interview page after the user
+    // confirms the data sent to Gemini and the request's maximum cost.
+    return NextResponse.json({ interview, prep: null });
   } catch (error) {
     return apiErrorResponse(error);
   }

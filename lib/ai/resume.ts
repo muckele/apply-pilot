@@ -1,13 +1,11 @@
 import { createHmac } from "node:crypto";
 
-import OpenAI from "openai";
 import { z } from "zod";
 
 import { resumeParsePromptV7, resumeParsePromptV8, resumeParsePromptV9 } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 import {
   generateJson,
-  getOpenAIClient,
   LocalAiUnavailableError,
   type AiInvocationOptions
 } from "@/lib/ai/client";
@@ -80,7 +78,6 @@ export const RESUME_PARSE_PROMPT_VERSION = "11";
 export const RESUME_PARSE_CACHE_VERSION = "12";
 export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "6";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
-const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
 export const RESUME_PARSE_PLANNED_JSON_BYTES =
   RESUME_PARSE_PLANNED_JSON_TOKENS * RESUME_PARSE_JSON_BYTES_PER_TOKEN;
@@ -1254,7 +1251,7 @@ function omitMaxItemsFromJsonSchema(value: unknown): unknown {
 
 // Gemini can reject this otherwise-valid, deeply nested schema when all nested
 // array maxima are present. Keep the complete canonical contract above for local
-// validation, admission estimates, OpenAI, and every consumer. Only the Gemini
+// validation, admission estimates, and every consumer. Only the Gemini
 // wire representation omits maxItems; minItems and all structural constraints stay.
 export const RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA =
   omitMaxItemsFromJsonSchema(RESUME_PARSE_RESPONSE_JSON_SCHEMA) as Record<string, unknown>;
@@ -2392,9 +2389,8 @@ export function estimateResumeParseMaximumProviderOutputBytes(
 }
 
 function resumeParseOutputTokenLimit(provider: AiProviderName) {
-  return provider === "gemini"
-    ? AI_FEATURE_POLICIES.RESUME_PARSE.maxOutputTokens
-    : OPENAI_RESUME_PARSE_OUTPUT_TOKENS;
+  void provider;
+  return AI_FEATURE_POLICIES.RESUME_PARSE.maxOutputTokens;
 }
 
 function assertResumeParseOutputCapacity(
@@ -3980,79 +3976,6 @@ class ResumeProviderError extends Error {
   }
 }
 
-async function callOpenAiResumeProvider(input: {
-  model: string;
-  payload: ReturnType<typeof buildResumeProviderSourceInput>;
-  responseJsonSchema: Record<string, unknown>;
-  maxOutputTokens: number;
-  systemPrompt: string;
-  schemaName: string;
-}) {
-  const client = getOpenAIClient();
-  if (!client) throw new LocalAiUnavailableError();
-  let response;
-  try {
-    response = await client.chat.completions.create({
-      model: input.model,
-      temperature: 0,
-      max_tokens: input.maxOutputTokens,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: input.schemaName,
-          strict: true,
-          schema: input.responseJsonSchema
-        }
-      },
-      messages: [
-        { role: "system", content: input.systemPrompt },
-        { role: "user", content: JSON.stringify(input.payload) }
-      ]
-    });
-  } catch (error) {
-    if (
-      error instanceof OpenAI.APIError &&
-      typeof error.status === "number" &&
-      error.status >= 400 &&
-      error.status < 500
-    ) {
-      throw new ResumeProviderError("OpenAI rejected resume parsing before completion.", {
-        billingDisposition: "not_charged"
-      });
-    }
-    throw new ResumeProviderError("OpenAI resume parsing outcome is uncertain.", {});
-  }
-  const usage = response.usage;
-  if (!usage) {
-    throw new ResumeProviderError("OpenAI returned no usage metadata.", {});
-  }
-  const providerUsage: ProviderUsage = {
-    inputTokens: usage.prompt_tokens,
-    outputTokens: usage.completion_tokens,
-    cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? 0
-  };
-  const choice = response.choices[0];
-  if (choice?.finish_reason !== "stop") {
-    throw new ResumeProviderError(
-      `OpenAI did not complete the structured response (finish reason: ${String(choice?.finish_reason ?? "missing")}).`,
-      { usage: providerUsage }
-    );
-  }
-  const content = choice.message.content;
-  if (!content) {
-    throw new ResumeProviderError("OpenAI returned an empty structured response.", {
-      usage: providerUsage
-    });
-  }
-  try {
-    return { value: JSON.parse(content) as unknown, usage: providerUsage };
-  } catch {
-    throw new ResumeProviderError("OpenAI returned invalid structured JSON.", {
-      usage: providerUsage
-    });
-  }
-}
-
 function providerUsageFromError(error: unknown) {
   if (error instanceof GeminiProviderError || error instanceof ResumeProviderError) return error.usage;
   return null;
@@ -4128,7 +4051,6 @@ export async function parseResumeTextWithMeta(
     normalizedText,
     outputTokenLimit,
     payload,
-    providerResponseSchema,
     geminiResponseSchema,
     policy
   } = prepareResumeParseV9Request(text, provider);
@@ -4238,26 +4160,15 @@ export async function parseResumeTextWithMeta(
   let reconciled = false;
   try {
     requestDispatched = true;
-    const response = provider === "gemini"
-      ? await callGeminiJsonProvider({
-          apiKey: process.env.GEMINI_API_KEY!.trim(),
-          model,
-          systemPrompt: resumeParsePromptV9,
-          payload,
-          responseJsonSchema: geminiResponseSchema,
-          maxOutputTokens: outputTokenLimit,
-          thinkingLevel: "LOW"
-        })
-      : provider === "openai"
-        ? await callOpenAiResumeProvider({
-            model,
-            payload,
-            responseJsonSchema: providerResponseSchema,
-            maxOutputTokens: outputTokenLimit,
-            systemPrompt: resumeParsePromptV9,
-            schemaName: "resume_parse_v9"
-          })
-        : (() => { throw new PublicApiError(`Unsupported resume parsing provider: ${provider}.`, 503); })();
+    const response = await callGeminiJsonProvider({
+      apiKey: process.env.GEMINI_API_KEY!.trim(),
+      model,
+      systemPrompt: resumeParsePromptV9,
+      payload,
+      responseJsonSchema: geminiResponseSchema,
+      maxOutputTokens: outputTokenLimit,
+      thinkingLevel: "LOW"
+    });
     usage = response.usage;
     actualCostMicros = estimateAiCostMicros({
       model,
@@ -4345,7 +4256,7 @@ export async function parseResumeText(text: string, userId?: string, options: Ai
 export async function tailorResume(
   payload: unknown,
   _fallbackText: string,
-  userId?: string,
+  userId: string,
   options: AiInvocationOptions = {}
 ) {
   const applicationPayload = payload as ApplicationDocumentPayload;
@@ -4360,12 +4271,13 @@ export async function tailorResume(
       value as TailoredResumeProviderOutput
     ),
     responseJsonSchema: buildTailoredResumeGeminiJsonSchema(applicationPayload),
-    context: userId ? {
+    // No anonymous path: a missing budget owner fails closed in the guarded engine.
+    context: {
       userId,
       feature: "RESUME_TAILOR",
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
-    } : undefined,
+    },
     validate: (value) => validateTailoredResumeQuality(
       applicationPayload,
       validateTailoredResumeClaims(applicationPayload, value)

@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { z } from "zod";
 
-import { PublicApiError } from "@/lib/api-errors";
-import { generateJson, getOpenAIClient, LocalAiUnavailableError } from "@/lib/ai/client";
+import { generateJson, LocalAiUnavailableError } from "@/lib/ai/client";
+import { draftCoverLetter } from "@/lib/ai/documents";
+import { draftEmailReply } from "@/lib/ai/email-reply";
+import { generateInterviewFeedback } from "@/lib/ai/interview-feedback";
+import { generateInterviewPrep } from "@/lib/ai/interview-prep";
 import { scoreJobMatch, validateAndNormalizeJobMatchOutput } from "@/lib/ai/job-match";
-import { draftCoverLetter, draftEmailReply, generateInterviewPrep, generateInterviewFeedback } from "@/lib/ai/documents";
 import { parseResumeText, tailorResume } from "@/lib/ai/resume";
-import { hashAiInput } from "@/lib/ai/usage";
-import { prisma } from "@/lib/prisma";
 
 const oldKey = process.env.OPENAI_API_KEY;
 const oldMock = process.env.OPENAI_MOCK_MODE;
@@ -35,17 +35,19 @@ const job = { title: "Software Engineer", company: "Acme", description: "React S
 const alice = { job, resume: { summary: "Alice Example", skills: ["Excel"] } };
 const bob = { job, resume: { summary: "Bob Example", skills: ["Python"] } };
 
-test("central contract keeps safe local fallback but rejects absent fallback with a typed error", async () => {
-  local();
-  const input = { promptName: "safe", systemPrompt: "test", payload: { a: 1 }, schema: z.object({ value: z.string() }) };
-  const safe = await generateJson({ ...input, fallback: { value: "from input" } });
-  assert.equal(safe.meta.model, "heuristic-local");
-  assert.equal(safe.meta.mocked, true);
-  assert.equal(safe.meta.inputTokens, 0);
-  assert.equal(safe.meta.requestHash, hashAiInput("safe", "1", { a: 1 }));
-  await assert.rejects(generateJson(input), (error) => error instanceof LocalAiUnavailableError);
-  local(true);
-  await assert.rejects(generateJson(input), (error) => error instanceof LocalAiUnavailableError);
+test("the central contract has no local template fallback and fails closed with a typed error", async () => {
+  for (const mock of [false, true]) {
+    local(mock);
+    const input = {
+      promptName: "safe",
+      systemPrompt: "test",
+      payload: { a: 1 },
+      schema: z.object({ value: z.string() }),
+      responseJsonSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+      context: { userId: "user-1", feature: "COVER_LETTER" as const, promptVersion: "1" }
+    };
+    await assert.rejects(generateJson(input), (error) => error instanceof LocalAiUnavailableError);
+  }
 });
 
 test("the job-match boundary accepts and normalizes a schema-valid v3 response", () => {
@@ -73,35 +75,6 @@ test("the job-match boundary accepts and normalizes a schema-valid v3 response",
   assert.deepEqual(result.supportedKeywords, ["Excel"]);
 });
 
-test("budget denial occurs before a real model call", async () => {
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MOCK_MODE = "false";
-  const settings = prisma.aISettings;
-  const usage = prisma.aIUsageEvent;
-  const originalUpsert = settings.upsert;
-  const originalAggregate = usage.aggregate;
-  const originalCount = usage.count;
-  const client = getOpenAIClient()!;
-  const originalCreate = client.chat.completions.create;
-  let called = false;
-  try {
-    settings.upsert = (async () => ({ monthlyBudgetCents: 0 })) as unknown as typeof originalUpsert;
-    usage.aggregate = (async () => ({ _sum: { estimatedCostMicros: 0 } })) as unknown as typeof originalAggregate;
-    usage.count = (async () => 0) as unknown as typeof originalCount;
-    client.chat.completions.create = (async () => { called = true; throw new Error("must not call"); }) as unknown as typeof originalCreate;
-    await assert.rejects(generateJson({
-      promptName: "budget", systemPrompt: "test", payload: {}, schema: z.object({ value: z.string() }),
-      context: { userId: "test-user", feature: "TEST" }
-    }), /monthly AI budget/);
-    assert.equal(called, false);
-  } finally {
-    settings.upsert = originalUpsert;
-    usage.aggregate = originalAggregate;
-    usage.count = originalCount;
-    client.chat.completions.create = originalCreate;
-  }
-});
-
 test("job match fails closed for Alice, Bob, and no applicant evidence in local and mock mode", async () => {
   for (const mock of [false, true]) {
     local(mock);
@@ -111,50 +84,41 @@ test("job match fails closed for Alice, Bob, and no applicant evidence in local 
   }
 });
 
-test("local cover letter is claim-free and cross-applicant safe", async () => {
-  local();
-  for (const resume of [alice.resume, bob.resume]) {
-    const draft = await draftCoverLetter({ job, resume });
-    assert.match(draft.coverLetter, /Acme/);
-    assert.match(draft.coverLetter, /Software Engineer/);
-    assert.doesNotMatch(JSON.stringify(draft), /Mathew|Uckele|General Assembly|Golden Behavior Connection|payer|billing|compliance|operations leadership|full-stack/i);
-    assert.deepEqual(draft.claimsUsed, []);
-    assert.match(draft.angle, /generic|personaliz|review/i);
+test("cover letters fail closed instead of producing a generic template", async () => {
+  for (const mock of [false, true]) {
+    local(mock);
+    for (const resume of [alice.resume, bob.resume]) {
+      await assert.rejects(draftCoverLetter({ job, resume }, "user-1"), LocalAiUnavailableError);
+    }
   }
 });
 
-function isDeferredFeature(feature: string) {
-  return (error: unknown) => error instanceof PublicApiError &&
-    error.status === 503 && error.details?.code === "AI_FEATURE_DEFERRED" &&
-    error.details?.feature === feature && error.details?.retryable === false;
-}
-
-test("email drafting is explicitly deferred instead of producing fallback output", async () => {
-  local();
-  await assert.rejects(
-    draftEmailReply({ emailText: "Your application was rejected.", tone: "professional" }),
-    isDeferredFeature("EMAIL_REPLY")
-  );
-});
-
-test("interview prep is explicitly deferred instead of producing fallback output", async () => {
-  local();
-  for (const resume of [alice.resume, bob.resume]) {
-    await assert.rejects(generateInterviewPrep({ job, resume }), isDeferredFeature("INTERVIEW_PREP"));
-  }
-});
-
-test("interview feedback is explicitly deferred instead of producing fallback output", async () => {
-  local();
-  for (const resume of [alice.resume, bob.resume]) {
-    await assert.rejects(generateInterviewFeedback({ job, resume }), isDeferredFeature("INTERVIEW_FEEDBACK"));
+test("email drafting, interview prep, and interview feedback fail closed without Gemini", async () => {
+  for (const mock of [false, true]) {
+    local(mock);
+    await assert.rejects(
+      draftEmailReply({ emailText: "Your application was rejected.", tone: "professional", job: null }, "user-1"),
+      LocalAiUnavailableError
+    );
+    for (const resume of [alice.resume, bob.resume]) {
+      await assert.rejects(
+        generateInterviewPrep({ interview: { type: "RECRUITER" }, job, resume, profile: null }, "user-1"),
+        LocalAiUnavailableError
+      );
+      await assert.rejects(
+        generateInterviewFeedback({
+          interview: { type: "RECRUITER" }, job, resume, notes: ["Asked about Excel."], transcript: null
+        }, "user-1"),
+        LocalAiUnavailableError
+      );
+    }
   }
 });
 
 test("local tailoring cannot assign a fixed persona or scores to Alice or Bob", async () => {
   local();
   for (const resume of [alice.resume, bob.resume]) {
-    await assert.rejects(tailorResume({ job, resume }, resume.summary), LocalAiUnavailableError);
+    await assert.rejects(tailorResume({ job, resume }, resume.summary, "user-1"), LocalAiUnavailableError);
   }
 });
 
@@ -164,27 +128,4 @@ test("resume parsing fails closed instead of replacing structured sections with 
     parseResumeText("EXPERIENCE\nEngineer — Example Co\nEDUCATION\nExample University"),
     LocalAiUnavailableError
   );
-});
-
-test("real client failures and invalid responses never become local fallback", async () => {
-  process.env.OPENAI_API_KEY = "test-key";
-  process.env.OPENAI_MOCK_MODE = "false";
-  process.env.OPENAI_MODEL = "gpt-test";
-  const client = getOpenAIClient()!;
-  const original = client.chat.completions.create;
-  const input = { promptName: "probe", systemPrompt: "test", payload: { a: 1 }, fallback: { value: "fallback" }, schema: z.object({ value: z.string() }) };
-  try {
-    client.chat.completions.create = (async () => { throw new Error("remote failed"); }) as unknown as typeof original;
-    await assert.rejects(generateJson(input), /remote failed/);
-    client.chat.completions.create = (async () => ({ choices: [{ message: { content: "bad json" } }] })) as unknown as typeof original;
-    await assert.rejects(generateJson(input), SyntaxError);
-    client.chat.completions.create = (async () => ({ choices: [{ message: { content: "{}" } }] })) as unknown as typeof original;
-    await assert.rejects(generateJson(input), /expected schema/);
-    client.chat.completions.create = (async () => ({ choices: [{ message: { content: '{"value":"real"}' } }], usage: { prompt_tokens: 3, completion_tokens: 2 } })) as unknown as typeof original;
-    const result = await generateJson(input);
-    assert.equal(result.data.value, "real");
-    assert.equal(result.meta.model, "gpt-test");
-    assert.equal(result.meta.mocked, false);
-    assert.equal(result.meta.inputTokens, 3);
-  } finally { client.chat.completions.create = original; }
 });

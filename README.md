@@ -14,7 +14,7 @@ Apply Pilot is a private, AI-assisted job discovery and controlled application w
 - Manual job import with deduplication
 - Automated job discovery from compliant APIs, licensed aggregators, ATS feeds, RSS feeds, and permitted company career pages
 - Greenhouse, Lever, Ashby, Remotive, Adzuna, TheirStack, SerpApi Google Jobs, USAJOBS, RSS, Workable, and generic company-careers provider layer
-- Gemini job matching, resume tailoring, and cover-letter drafting, plus ordinary interview scheduling and local rule-based application planning
+- Gemini resume parsing, job matching, resume tailoring, cover-letter drafting, interview prep (brief, likely questions, STAR stories from master-resume facts), post-interview feedback and thank-you drafts, email reply drafts, and application planning, all through one hard monthly budget ledger
 - Dashboard, jobs, job detail, applications, resumes, profile settings, integrations, interviews, and tasks pages
 - Configurable job-source settings page with source CRUD, test, manual sync, sync status, and sync errors
 - Gmail OAuth connect/search/disconnect route scaffolding using readonly access
@@ -79,16 +79,11 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
-- `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini`, and `false` respectively for live Gemini flows.
-- `GEMINI_API_KEY`: Gemini API key for resume parsing, JOB_MATCH, tailored résumés, and cover letters. Guarded paid document generation fails closed when Gemini is unavailable; it does not fall back to another provider.
-- `GEMINI_FAST_MODEL` / `GEMINI_QUALITY_MODEL`: optional model overrides for configurable features; pinned features ignore them.
-- `AI_HARD_CAP_CENTS`, `AI_AUTOMATION_CAP_CENTS`, `AI_MAX_REQUEST_COST_CENTS`, and `AI_CONFIRMATION_THRESHOLD_CENTS`: optional AI cost caps. They can only lower the compiled ceilings of 500, 150, 10, and 5 cents. A new user's default monthly AI budget is 500 cents, the `AISettings` schema default.
-- `APPLICATION_AUTOMATION_ENABLED`: global emergency stop for controlled application automation; only exactly `true` permits assisted Fill. Defaults to `false`.
-- `OPENAI_API_KEY`: optional only for explicit legacy resume-parser compatibility. Application planning is local rule-based, and AI email/interview generation is deferred for this MVP.
-- `OPENAI_MODEL`: default model for explicit legacy OpenAI resume-parser compatibility.
-- `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
-- `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
-- `OPENAI_INPUT_COST_PER_1M_USD`, `OPENAI_OUTPUT_COST_PER_1M_USD`, and `OPENAI_CACHED_INPUT_COST_PER_1M_USD`: optional current pricing used to estimate spend and enforce per-user monthly budgets.
+- `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini` (or leave `AI_PROVIDER` unset), and `false` respectively for live Gemini flows. Gemini is the only AI provider; any other `AI_PROVIDER` value turns every AI feature off.
+- `GEMINI_API_KEY`: Gemini API key for every AI feature. Without it, AI features show an explicit "AI unavailable" state and never fall back to another provider or to template output.
+- `GEMINI_FAST_MODEL`, `GEMINI_QUALITY_MODEL`, and `AI_ALLOWED_MODELS`: optional resume-parse model choices and the user-selectable override allowlist; each model must be in the compiled Gemini price registry.
+- `AI_HARD_CAP_CENTS`, `AI_AUTOMATION_CAP_CENTS`, `AI_MAX_REQUEST_COST_CENTS`, and `AI_CONFIRMATION_THRESHOLD_CENTS`: optional values that can lower, never raise, the compiled $5.00 monthly hard cap, $1.50 automation allowance, $0.10 per-request maximum, and $0.05 confirmation threshold.
+- `OPENAI_*`, `MOONSHOT_API_KEY`, `KIMI_*`, and `AI_PROVIDER_OVERRIDES` are retired; no feature reads them.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
 - `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.
 - `USAJOBS_USER_AGENT`: required USAJOBS API user-agent, usually your registered email.
@@ -162,11 +157,11 @@ The active paid structured-output flows use these prompts in `/prompts`:
 - `resumeTailorPrompt`
 - `coverLetterPrompt`
 
-`applicationPlanPrompt` remains part of the bounded local planning contract but does not call a provider. Historical email/interview prompt files do not activate the server-disabled MVP features.
+`applicationPlanPrompt` is the Gemini application-planning contract. Interview prep, interview feedback, and email reply prompts live with their features in `lib/ai/interview-prep.ts`, `lib/ai/interview-feedback.ts`, and `lib/ai/email-reply.ts`, and share one source-of-truth contract: the user's own records are the only applicant facts, and job posts, emails, and transcripts are untrusted data.
 
-Set `GEMINI_API_KEY`, `AI_ENABLED=true`, and `AI_MOCK_MODE=false` for resume parsing, JOB_MATCH, tailored résumé, and cover-letter calls. JOB_MATCH is pinned to Gemini 3.8 Flash with MEDIUM thinking; tailored résumé and cover-letter calls are pinned to Gemini 3.8 Flash with LOW thinking and do not automatically fall back to another provider or model. Application planning is deterministic and local for this MVP. AI email drafting, interview preparation, and interview feedback are server-disabled and return explicit deferred status instead of fabricated fallback output.
+Set `GEMINI_API_KEY`, `AI_ENABLED=true`, and `AI_MOCK_MODE=false` for resume parsing, JOB_MATCH, tailored résumé, and cover-letter calls. JOB_MATCH is pinned to Gemini 3.8 Flash with MEDIUM thinking; tailored résumé and cover-letter calls are pinned to Gemini 3.8 Flash with LOW thinking and do not automatically fall back to another provider or model. Interview prep, interview feedback, email reply drafts, and application plans also run on Gemini 3.8 Flash with LOW thinking, with strict JSON schemas and server-side grounding: STAR stories cite master-resume facts, and numbers those facts do not contain become `[add a number here]` gaps. Without Gemini, AI features report "AI unavailable"; only application planning keeps its deterministic, evidence-only local plan, labeled as local.
 
-AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and available cost metadata, including failed responses that report usage. Guarded paid calls use the compiled, expiring model-price registry; explicit legacy OpenAI resume-parser compatibility uses the optional pricing environment variables. Users can cap discovery-time AI and set a monthly budget at `/settings/ai`. Model overrides apply only to eligible configurable features; pinned JOB_MATCH and application-document models ignore them. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
+AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and available cost metadata, including failed responses that report usage. Every AI call reserves against one hard monthly budget ledger and uses the compiled, expiring model-price registry (Gemini 3.8 Flash pricing is registered through 2027-01-01; `/settings/ai` and `/api/health/readiness` show the expiry). Users can cap discovery-time AI and set a monthly budget, up to the hard cap, at `/settings/ai`. Model overrides apply only to resume parsing; every other feature is pinned to its reviewed Gemini model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
 
 ## Google Sign-In Setup
 

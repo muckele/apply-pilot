@@ -36,7 +36,7 @@ export default async function InterviewsPage() {
     <>
       <PageHeader
         title="Interviews"
-        description="Schedule interviews, keep notes, and upload consented audio. AI preparation and feedback are deferred for this MVP."
+        description="Schedule interviews, prepare with a Gemini prep brief and STAR stories from your own history, keep notes, and get post-interview feedback and a thank-you draft to review."
         action={<ButtonLink href="/interviews/library" variant="secondary">Question and STAR library</ButtonLink>}
       />
 
@@ -57,7 +57,7 @@ export default async function InterviewsPage() {
                       </div>
                       <div className="flex gap-2">
                         <StatusBadge status={interview.type} />
-                        <StatusBadge status="Interview saved" />
+                        <StatusBadge status={interview.prepBrief ? "Prep ready" : "Prep needed"} />
                       </div>
                     </div>
                   </Link>

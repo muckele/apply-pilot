@@ -22,7 +22,7 @@ export type AiFeaturePolicy = {
 
 export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
   // Gemini receives additional total-output headroom because its LOW thinking
-  // tokens share this ceiling with visible JSON. OpenAI has no thinking share.
+  // tokens share this ceiling with visible JSON.
   RESUME_PARSE: { maxOutputTokens: 24_000, maxInputTokens: 12_000, modelTier: "fast" },
   JOB_PARSE: { maxOutputTokens: 2_500, maxInputTokens: 21_000, modelTier: "fast" },
   // The output ceiling includes visible response and Gemini thinking tokens.
@@ -33,8 +33,8 @@ export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
   EMAIL_REPLY: { maxOutputTokens: 1_000, maxInputTokens: 32_000, modelTier: "fast" },
   INTERVIEW_PREP: { maxOutputTokens: 4_000, maxInputTokens: 56_000, modelTier: "quality" },
   INTERVIEW_FEEDBACK: { maxOutputTokens: 5_000, maxInputTokens: 42_000, modelTier: "quality" },
-  // Advisory application planning only. Bounded so the worst-case Kimi K3 request
-  // (12,000 uncached input + 4,000 output = $0.096) stays under the compiled
+  // Advisory application planning only. The worst-case Gemini 3.8 Flash request
+  // (12,000 uncached input + 4,000 output = $0.024) stays well under the compiled
   // ten-cent per-request ceiling. Do not raise these limits without re-pricing.
   APPLICATION_PLAN: { maxOutputTokens: 4_000, maxInputTokens: 12_000, modelTier: "quality" }
 };

@@ -484,7 +484,7 @@ test("offline planApplication uses the evidence-valid local fallback with proven
     assert.equal(plan.usage.mocked, true);
     assert.equal(plan.usage.estimatedCostMicros, 0);
     assert.equal(plan.promptVersion, APPLICATION_PLAN_PROMPT_VERSION);
-    assert.equal(APPLICATION_PLAN_PROMPT_VERSION, "1");
+    assert.equal(APPLICATION_PLAN_PROMPT_VERSION, "2");
     assert.match(plan.requestHash, /^[0-9a-f]{64}$/);
 
     // The fallback is evidence-valid by construction: every reference resolves.

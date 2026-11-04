@@ -1,11 +1,21 @@
 import { z } from "zod";
 
 import { applicationPlanPrompt } from "@/prompts/applicationPlanPrompt";
-import { generateJson, type AiInvocationOptions } from "@/lib/ai/client";
+import { isGeminiConfigured } from "@/lib/ai/config";
+import { APPLICANT_SOURCE_OF_TRUTH_CONTRACT } from "@/lib/ai/grounded-text";
+import {
+  generateGuardedGeminiJson,
+  type AiInvocationOptions,
+  type GeneratedJsonResult
+} from "@/lib/ai/guarded-gemini";
+import { hashAiInput } from "@/lib/ai/input-hash";
 import type { JobMatchReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 import { uniqueStrings } from "@/lib/normalize";
 
-export const APPLICATION_PLAN_PROMPT_VERSION = "1";
+export const APPLICATION_PLAN_PROMPT_NAME = "applicationPlanPrompt";
+export const APPLICATION_PLAN_PROMPT_VERSION = "2";
+
+export const applicationPlanSystemPrompt = `${applicationPlanPrompt.trim()}\n\n${APPLICANT_SOURCE_OF_TRUTH_CONTRACT}`;
 
 export type EvidenceSourceType =
   | "SUMMARY"
@@ -753,6 +763,71 @@ function heuristicApplicationPlan(payload: ApplicationPlanPayload): ApplicationP
   };
 }
 
+export function buildApplicationPlanResponseJsonSchema(payload: ApplicationPlanPayload) {
+  const requirementIds = payload.job.jobRequirements.map((entry) => entry.id);
+  const evidenceIds = payload.evidenceCatalog.map((entry) => entry.id);
+  const stringArray = (maxItems: number) => ({ type: "array", maxItems, items: { type: "string" } });
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      targetRoleSummary: { type: "string" },
+      evidenceMap: {
+        type: "array",
+        maxItems: 25,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            requirementId: requirementIds.length ? { type: "string", enum: requirementIds } : { type: "string" },
+            evidenceIds: {
+              type: "array",
+              maxItems: 8,
+              items: evidenceIds.length ? { type: "string", enum: evidenceIds } : { type: "string" }
+            },
+            gap: { type: "boolean" }
+          },
+          required: ["requirementId", "evidenceIds", "gap"]
+        }
+      },
+      resumeStrategy: stringArray(10),
+      coverLetterAngle: { type: "string" },
+      riskFlags: stringArray(15),
+      recommendedNextActions: stringArray(10),
+      confidenceScore: { type: "integer", minimum: 0, maximum: 100 }
+    },
+    required: [
+      "targetRoleSummary",
+      "evidenceMap",
+      "resumeStrategy",
+      "coverLetterAngle",
+      "riskFlags",
+      "recommendedNextActions",
+      "confidenceScore"
+    ]
+  };
+}
+
+// When Gemini is not configured, planning returns the deterministic evidence map built
+// directly from the payload catalogs. It is labeled provider "local", costs nothing,
+// contacts no provider, and never presents itself as AI output.
+function localApplicationPlan(payload: ApplicationPlanPayload): GeneratedJsonResult<ApplicationPlanOutput> {
+  return {
+    data: applicationPlanSchema.parse(heuristicApplicationPlan(payload)),
+    meta: {
+      provider: "local",
+      model: "heuristic-local",
+      promptVersion: APPLICATION_PLAN_PROMPT_VERSION,
+      requestHash: hashAiInput(APPLICATION_PLAN_PROMPT_NAME, APPLICATION_PLAN_PROMPT_VERSION, payload),
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      estimatedCostMicros: 0,
+      mocked: true
+    }
+  };
+}
+
 // Advisory application planning. Output is data only: it never executes code, invokes
 // tools, fills forms, sends messages, or submits applications.
 export async function planApplication(
@@ -761,21 +836,19 @@ export async function planApplication(
   options: AiInvocationOptions = {}
 ) {
   const payload = buildApplicationPlanPayload(input);
-  const generated = await generateJson<ApplicationPlanOutput>({
-    promptName: "applicationPlanPrompt",
-    systemPrompt: applicationPlanPrompt,
-    payload,
-    fallback: heuristicApplicationPlan(payload),
-    schema: applicationPlanSchema,
-    context: userId
-      ? {
-          userId,
-          feature: "APPLICATION_PLAN",
-          promptVersion: APPLICATION_PLAN_PROMPT_VERSION,
-          ...options
-        }
-      : undefined
-  });
+  const generated = isGeminiConfigured()
+    ? await generateGuardedGeminiJson<ApplicationPlanOutput>({
+        feature: "APPLICATION_PLAN",
+        userId,
+        promptName: APPLICATION_PLAN_PROMPT_NAME,
+        promptVersion: APPLICATION_PLAN_PROMPT_VERSION,
+        systemPrompt: applicationPlanSystemPrompt,
+        payload,
+        responseJsonSchema: buildApplicationPlanResponseJsonSchema(payload),
+        schema: applicationPlanSchema,
+        options
+      })
+    : localApplicationPlan(payload);
   const enforced = enforceApplicationPlanEvidence(generated.data, payload);
 
   return {

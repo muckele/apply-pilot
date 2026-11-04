@@ -1,31 +1,22 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
-import { getAllowedOpenAIModels, getOpenAIModel } from "@/lib/ai/client";
-import { estimateAiCostMicros, hashAiInput } from "@/lib/ai/usage";
+import { getAiModel, getAllowedAiModels } from "@/lib/ai/config";
+import { estimateAiCostMicros } from "@/lib/ai/pricing";
+import { hashAiInput } from "@/lib/ai/usage";
 import { paginateResumeText, type ResumeFormat } from "@/lib/documents/resume-format";
 import { normalizeInterviewQuestion } from "@/lib/interviews/library";
 import { createBrowserCaptureToken } from "@/lib/security/browser-capture-token";
 
-const pricingVariables = [
-  "OPENAI_INPUT_COST_PER_1M_USD",
-  "OPENAI_OUTPUT_COST_PER_1M_USD",
-  "OPENAI_CACHED_INPUT_COST_PER_1M_USD"
-] as const;
-const originalPricing = Object.fromEntries(pricingVariables.map((name) => [name, process.env[name]]));
-const originalModel = process.env.OPENAI_MODEL;
-const originalAllowedModels = process.env.OPENAI_ALLOWED_MODELS;
+const modelVariables = ["AI_ALLOWED_MODELS", "GEMINI_FAST_MODEL", "GEMINI_QUALITY_MODEL", "AI_PROVIDER"] as const;
+const originalModels = Object.fromEntries(modelVariables.map((name) => [name, process.env[name]]));
 
 afterEach(() => {
-  for (const name of pricingVariables) {
-    const value = originalPricing[name];
+  for (const name of modelVariables) {
+    const value = originalModels[name];
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
-  if (originalModel === undefined) delete process.env.OPENAI_MODEL;
-  else process.env.OPENAI_MODEL = originalModel;
-  if (originalAllowedModels === undefined) delete process.env.OPENAI_ALLOWED_MODELS;
-  else process.env.OPENAI_ALLOWED_MODELS = originalAllowedModels;
 });
 
 test("browser capture tokens expose a prefix but store a one-way hash", () => {
@@ -46,23 +37,27 @@ test("AI input hashes are stable for the same prompt contract", () => {
   assert.notEqual(hashAiInput("jobMatchPrompt", "2", payload), hashAiInput("jobMatchPrompt", "3", payload));
 });
 
-test("AI model overrides are limited to the server allowlist", () => {
-  process.env.OPENAI_MODEL = "gpt-default";
-  process.env.OPENAI_ALLOWED_MODELS = "gpt-default,gpt-approved";
+test("AI model overrides are limited to the server allowlist of priced Gemini models", () => {
+  delete process.env.AI_PROVIDER;
+  process.env.GEMINI_FAST_MODEL = "gemini-3.5-flash-lite";
+  delete process.env.GEMINI_QUALITY_MODEL;
+  process.env.AI_ALLOWED_MODELS = "gemini-3.5-flash,gemini-unpriced";
 
-  assert.deepEqual(getAllowedOpenAIModels(), ["gpt-default", "gpt-approved"]);
-  assert.equal(getOpenAIModel("gpt-approved"), "gpt-approved");
-  assert.equal(getOpenAIModel("gpt-unapproved"), "gpt-default");
+  assert.deepEqual(getAllowedAiModels(), ["gemini-3.5-flash-lite", "gemini-3.5-flash"]);
+  assert.equal(getAiModel("RESUME_PARSE", { modelOverride: "gemini-3.5-flash" }), "gemini-3.5-flash");
+  assert.equal(getAiModel("RESUME_PARSE", { modelOverride: "gemini-unpriced" }), "gemini-3.5-flash-lite");
 });
 
-test("AI cost estimation separates cached and uncached input tokens", () => {
-  process.env.OPENAI_INPUT_COST_PER_1M_USD = "2";
-  process.env.OPENAI_OUTPUT_COST_PER_1M_USD = "8";
-  process.env.OPENAI_CACHED_INPUT_COST_PER_1M_USD = "0.5";
-
+test("AI cost estimation uses the registered price and separates cached input tokens", () => {
   assert.equal(
-    estimateAiCostMicros({ inputTokens: 1_000, cachedInputTokens: 400, outputTokens: 200 }),
-    3_000
+    estimateAiCostMicros({
+      model: "gemini-3.5-flash",
+      inputTokens: 1_000,
+      cachedInputTokens: 400,
+      outputTokens: 200
+    }),
+    // 600 uncached x $1.50 + 400 cached x $0.15 + 200 output x $9 per million tokens.
+    900 + 60 + 1_800
   );
 });
 

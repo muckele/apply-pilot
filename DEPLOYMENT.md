@@ -18,8 +18,8 @@ Use `.env.production.example` as the source of truth. Configure these in the hos
 - `GOOGLE_CLIENT_SECRET`
 - `AUTH_ALLOWED_EMAILS`
 - `ALLOW_DEMO_USER=false`
-- `AI_ENABLED=true`, `AI_PROVIDER=gemini`, `AI_MOCK_MODE=false`, and `GEMINI_API_KEY` for live resume parsing, JOB_MATCH, tailored résumé, and cover-letter generation. These guarded flows fail closed when Gemini is unavailable; they do not fall back to OpenAI or another model.
-- `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_MOCK_MODE=false` only if explicit legacy resume-parser compatibility is required. Application planning is local rule-based, and AI email/interview generation is deferred for this MVP.
+- `AI_ENABLED=true`, `AI_PROVIDER=gemini` (or unset), `AI_MOCK_MODE=false`, and `GEMINI_API_KEY` for every AI feature: resume parsing, JOB_MATCH, tailored résumés, cover letters, interview prep and feedback, email reply drafts, and application planning. Gemini is the only AI provider, and every call reserves against one hard monthly budget ledger. Without Gemini, AI features show "AI unavailable" and never fall back to another model or to template output.
+- Remove retired AI variables: `OPENAI_*`, `MOONSHOT_API_KEY`, `KIMI_*`, and `AI_PROVIDER_OVERRIDES`. Any `AI_PROVIDER` value other than `gemini` turns AI off and fails readiness with `invalid_ai_provider`.
 - Keep the compiled provider pricing registry current. Guarded paid calls fail closed after a model's registered pricing expires.
 - `GMAIL_REDIRECT_URI`
 - `GMAIL_SCOPES`
@@ -99,7 +99,7 @@ GET /api/health/readiness
 ```
 
 Use `/api/health/readiness` for uptime checks because it verifies database connectivity and returns `503` when the app cannot reach PostgreSQL.
-It also validates the production Auth.js URLs, Gmail callback, private sign-in configuration, encryption key, cron secret, and Vercel function upload limits. Gemini, legacy OpenAI, and private Blob storage are reported as capabilities rather than required launch dependencies.
+It also validates the production Auth.js URLs, Gmail callback, private sign-in configuration, encryption key, cron secret, and Vercel function upload limits. Gemini and private Blob storage are reported as capabilities rather than required launch dependencies. `capabilities.aiPricing` lists each registered model price window, and `warnings` reports `ai_pricing_expires_soon:…` or `ai_pricing_expired:…` without making the app not-ready.
 
 ## Pre-deploy validation
 
