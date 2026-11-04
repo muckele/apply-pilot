@@ -46,49 +46,38 @@ async function main() {
 
   await prisma.user.deleteMany({ where: { id: userId } });
 
+  // Fictional sample persona: the person, employer and school below are invented for local demos.
   await prisma.user.create({
     data: {
       id: userId,
-      name: "Mathew Uckele",
-      email: "mathew@example.com",
+      name: "Sample User",
+      email: "sample@example.com",
       profile: {
         create: {
-          location: "Fontana / Los Angeles area, CA",
+          location: "Anytown, USA",
           careerGoals:
-            "Find high-fit customer-facing technical roles that combine full-stack software training, SaaS operations, implementation, technical account work, and sales engineering.",
+            "Fictional sample persona for local demos: find customer-facing technical roles that combine software skills with implementation and customer onboarding.",
           preferredRoles: [
-            "Sales Engineer",
             "Solutions Engineer",
-            "Technical Account Manager",
-            "Customer Success Engineer",
             "Implementation Specialist",
-            "Full-Stack Developer",
-            "Junior Software Engineer",
-            "Operations / SaaS operations"
+            "Customer Success Engineer",
+            "Junior Software Engineer"
           ],
-          preferredLocations: ["Los Angeles, CA", "Fontana, CA", "Remote", "Hybrid"],
+          preferredLocations: ["Remote", "Hybrid", "Anytown, USA"],
           remotePreference: "FLEXIBLE",
-          salaryTargetMin: 75000,
-          salaryTargetMax: 130000,
-          industriesOfInterest: ["SaaS", "Health tech", "Developer tools", "Operations"],
+          salaryTargetMin: 70000,
+          salaryTargetMax: 100000,
+          industriesOfInterest: ["SaaS", "Developer tools"],
           dealBreakers: ["Commission-only roles", "Unauthorized automation expectations"],
           skillsToEmphasize: [
             "JavaScript",
             "React",
             "Node.js",
-            "Express",
-            "Python",
             "SQL",
-            "MongoDB",
             "PostgreSQL",
-            "Django",
             "REST APIs",
-            "AWS",
-            "Customer discovery",
-            "Operations leadership",
-            "Scheduling",
-            "Compliance",
-            "Billing workflows"
+            "Customer onboarding",
+            "Workflow documentation"
           ],
           skillsNotToExaggerate: [
             "Enterprise-scale production ownership",
@@ -96,7 +85,7 @@ async function main() {
             "Tools only listed in a job posting but not supported by experience"
           ],
           workAuthorizationNotes: "Add work authorization details before applying.",
-          availabilityNotes: "Available for Los Angeles hybrid or remote roles.",
+          availabilityNotes: "Available for remote or hybrid roles.",
           preferredResumeTone: "clear, honest, concise, customer-facing technical"
         }
       }
@@ -109,44 +98,39 @@ async function main() {
       title: "Master Resume",
       isMaster: true,
       rawText:
-        "Mathew Uckele is a customer-facing technical professional with full-stack software engineering training from General Assembly and experience across business development, operations, recruiting, scheduling, compliance, billing workflows, payer coordination, and small-business leadership. Skills include JavaScript, React, Node.js, Express, Python, SQL, MongoDB, PostgreSQL, Django, REST APIs, AWS, HTML, and CSS.",
-      contactInfo: { name: "Mathew Uckele", location: "Fontana / Los Angeles area, CA" },
+        "Sample User is a fictional demo persona: a customer-facing technical professional with a software engineering certificate from Example Coding Academy and customer onboarding experience at Example Logistics Co. Skills include JavaScript, React, Node.js, SQL, PostgreSQL, REST APIs, HTML, and CSS.",
+      contactInfo: { name: "Sample User", location: "Anytown, USA" },
       summary:
-        "Customer-facing technical professional combining full-stack software engineering training with sales, operations, and implementation-oriented experience.",
+        "Customer-facing technical professional combining software engineering training with customer onboarding and implementation-oriented experience.",
       skills: [
         "JavaScript",
         "React",
         "Node.js",
-        "Express",
-        "Python",
         "SQL",
-        "MongoDB",
         "PostgreSQL",
-        "Django",
         "REST APIs",
-        "AWS",
-        "Customer discovery",
-        "Operations leadership"
+        "Customer onboarding",
+        "Workflow documentation"
       ],
       workHistory: [
         {
-          company: "Golden Behavior Connection",
-          role: "Operations leadership",
+          company: "Example Logistics Co.",
+          role: "Customer Operations Specialist",
           highlights: [
-            "Supported hiring, compliance, scheduling, billing workflows, payer coordination, and service operations."
+            "Onboarded new customers, documented support workflows, and coordinated handoffs between support and engineering."
           ]
         }
       ],
       projects: [
         {
-          name: "General Assembly full-stack projects",
-          technologies: ["React", "Node.js", "Express", "MongoDB", "SQL"]
+          name: "Example Coding Academy capstone",
+          technologies: ["React", "Node.js", "PostgreSQL", "REST APIs"]
         }
       ],
-      education: [{ school: "General Assembly", program: "Full-stack software engineering training" }],
+      education: [{ school: "Example Coding Academy", program: "Software engineering certificate" }],
       certifications: [],
       achievements: [
-        "Coordinated hiring, compliance, scheduling, billing workflows, and payer communication across operational workflows."
+        "Documented customer onboarding workflows used across a support team."
       ],
       parsedAt: new Date()
     }
@@ -264,14 +248,14 @@ async function main() {
         locationWorkStyleScore: job.remoteStatus === "Remote" ? 92 : 84,
         confidenceScore: 78,
         keyMatchReason:
-          "Strong overlap with customer-facing technical work, implementation, operations, and software fundamentals.",
+          "Strong overlap with customer-facing technical work, implementation, customer onboarding, and software fundamentals.",
         matchRecommendation: job.score >= 80 ? "apply now" : "consider",
         missingKeywords: job.preferredQualifications,
         supportedKeywords: job.detectedTechStack,
         suggestedResumeAngle:
-          "Lead with customer-facing technical problem solving, full-stack training, and operations ownership.",
+          "Lead with customer-facing technical problem solving, software training, and onboarding ownership.",
         suggestedCoverLetterAngle:
-          "Connect software training with sales, implementation, and operations credibility.",
+          "Connect software training with customer onboarding and implementation credibility.",
         concerns: ["Avoid adding unsupported keywords without evidence."]
       }
     });
@@ -284,16 +268,16 @@ async function main() {
       jobPostingId: "job-1",
       title: "Northstar SaaS tailored resume",
       summary:
-        "Customer-facing technical professional with full-stack training and experience translating operational requirements into reliable workflows.",
-      skills: ["React", "REST APIs", "Implementation", "Customer discovery", "Operations leadership"],
+        "Customer-facing technical professional with software training and experience translating customer requirements into reliable workflows.",
+      skills: ["React", "REST APIs", "Implementation", "Customer onboarding", "Workflow documentation"],
       bullets: [
         {
           rewrite:
-            "Coordinated hiring, compliance, scheduling, billing workflows, and payer communication to improve operational accountability."
+            "Onboarded new customers and documented support workflows to shorten handoffs between support and engineering."
         }
       ],
       fullText:
-        "Mathew Uckele\n\nCustomer-facing technical professional with full-stack training and operations leadership experience...",
+        "Sample User\n\nCustomer-facing technical professional with software training and customer onboarding experience...",
       atsCompatibility: 82,
       jobFitScore: 88
     }
@@ -354,16 +338,16 @@ async function main() {
       interviewerNames: ["Alex Rivera"],
       interviewerUrls: [],
       prepBrief:
-        "Prepare to connect sales engineering, technical discovery, full-stack training, and operational workflow ownership.",
+        "Prepare to connect technical discovery, software training, and customer onboarding ownership.",
       likelyQuestions: [
         "Tell me about your transition into technical roles.",
         "How do you explain APIs to non-technical customers?",
-        "Describe a time you improved an operational workflow."
+        "Describe a time you improved a customer onboarding workflow."
       ],
       starStories: [
         {
-          theme: "Operations workflow",
-          action: "Coordinated hiring, compliance, scheduling, billing workflows, and payer communication."
+          theme: "Customer onboarding workflow",
+          action: "Documented the onboarding steps and coordinated support-to-engineering handoffs."
         }
       ]
     }
@@ -388,7 +372,7 @@ async function main() {
       },
       {
         userId,
-        title: "Add STAR story for operations workflow improvement",
+        title: "Add STAR story for customer onboarding improvement",
         priority: "MEDIUM",
         dueAt: new Date("2026-05-21")
       }

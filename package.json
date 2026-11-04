@@ -26,7 +26,6 @@
     "test:postgres": "tsx scripts/run-postgres-tests.ts",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
-    "ai:evaluate": "tsx evaluation/ai-provider-evaluation.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "tsx scripts/run-local-prisma-migrate.ts",
     "prisma:seed": "tsx prisma/seed.ts"

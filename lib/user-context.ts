@@ -32,6 +32,8 @@ export async function requireUserId() {
     return session.user.id;
   }
 
+  // Local demos only: isDemoUserFallbackEnabled() is always false in production.
+  // The persona is fictional sample data and must never describe a real person.
   if (isDemoUserFallbackEnabled()) {
     const demoUserId = process.env.DEFAULT_DEMO_USER_ID ?? "demo-user";
 
@@ -40,35 +42,22 @@ export async function requireUserId() {
       update: {},
       create: {
         id: demoUserId,
-        name: "Mathew Uckele",
-        email: "mathew@example.com",
+        name: "Sample User",
+        email: "sample@example.com",
         profile: {
           create: {
             careerGoals:
-              "Find high-fit customer-facing technical roles that combine software, SaaS operations, implementation, and sales engineering.",
+              "Fictional sample persona for local demos: find customer-facing technical roles that combine software skills with implementation and customer onboarding.",
             preferredRoles: [
-              "Sales Engineer",
               "Solutions Engineer",
-              "Technical Account Manager",
-              "Customer Success Engineer",
               "Implementation Specialist",
-              "Full-Stack Developer",
-              "Junior Software Engineer",
-              "Operations / SaaS operations"
+              "Customer Success Engineer",
+              "Junior Software Engineer"
             ],
-            preferredLocations: ["Los Angeles, CA", "Fontana, CA", "Remote", "Hybrid"],
-            industriesOfInterest: ["SaaS", "Health tech", "Developer tools", "Operations"],
+            preferredLocations: ["Remote", "Hybrid", "Anytown, USA"],
+            industriesOfInterest: ["SaaS", "Developer tools"],
             dealBreakers: ["Commission-only roles", "Unclear role expectations"],
-            skillsToEmphasize: [
-              "JavaScript",
-              "React",
-              "Node.js",
-              "Python",
-              "SQL",
-              "REST APIs",
-              "Customer discovery",
-              "Operations leadership"
-            ],
+            skillsToEmphasize: ["JavaScript", "React", "Node.js", "SQL", "REST APIs", "Customer onboarding"],
             skillsNotToExaggerate: ["Enterprise-scale production ownership", "Deep DevOps ownership"]
           }
         }
