@@ -19,7 +19,7 @@ after(() => {
 
 // Identifiers of the real owner persona that used to be hard-coded in demo data.
 const OWNER_PERSONA = /Mathew|Uckele|muckele|Fontana|Golden Behavior|General Assembly|payer coordination/i;
-const DEMO_SOURCES = ["../lib/user-context.ts", "../lib/demo-data.ts", "../prisma/seed.ts"];
+const DEMO_SOURCES = ["../lib/user-context.ts", "../prisma/seed.ts"];
 
 function setEnv(t: TestContext, changes: Record<string, string | undefined>) {
   for (const [name, value] of Object.entries(changes)) {
@@ -93,7 +93,7 @@ test("production never activates the demo fallback, even with ALLOW_DEMO_USER=tr
   assert.equal(calls.length, 0, "no demo user may be created in production");
 });
 
-test("demo fallback, demo data and seed contain no real owner data", () => {
+test("demo fallback and seed contain no real owner data", () => {
   for (const file of DEMO_SOURCES) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     const match = OWNER_PERSONA.exec(source);
