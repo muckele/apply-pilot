@@ -1,9 +1,7 @@
+import { DEFAULT_MAX_ANALYSES_PER_SYNC, DEFAULT_MONTHLY_BUDGET_CENTS } from "@/lib/ai/budget-defaults";
 import { PublicApiError } from "@/lib/api-errors";
 export { hashAiInput } from "@/lib/ai/input-hash";
 import { prisma } from "@/lib/prisma";
-
-const DEFAULT_MONTHLY_BUDGET_CENTS = 1000;
-const DEFAULT_MAX_ANALYSES_PER_SYNC = 5;
 
 function monthWindow(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));

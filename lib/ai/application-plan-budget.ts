@@ -2,14 +2,15 @@ import { createHash } from "node:crypto";
 
 import { Prisma } from "@prisma/client";
 
+import {
+  DEFAULT_AUTOMATION_BUDGET_CENTS,
+  DEFAULT_MAX_ANALYSES_PER_SYNC,
+  DEFAULT_MONTHLY_BUDGET_CENTS
+} from "@/lib/ai/budget-defaults";
 import { getAiFinancialPolicy } from "@/lib/ai/config";
 import { PublicApiError } from "@/lib/api-errors";
 export { hashAiInput } from "@/lib/ai/input-hash";
 import { prisma } from "@/lib/prisma";
-
-const DEFAULT_MONTHLY_BUDGET_CENTS = 500;
-const DEFAULT_AUTOMATION_BUDGET_CENTS = 150;
-const DEFAULT_MAX_ANALYSES_PER_SYNC = 5;
 
 export function monthWindow(now = new Date()) {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
