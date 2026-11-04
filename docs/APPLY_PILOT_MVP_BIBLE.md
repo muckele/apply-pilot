@@ -88,7 +88,7 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 | #41 | D031 editable documents | #35 | **B:** `ResumeVersion.metadata` (nullable JSONB) | |
 | #44 | WP1.5 Apply Kit + D031 for assisted Fill | #41 | — | Touches protected run currentness check only; review carefully |
 | #42 | WP1.1 single Gemini path | #35 | — | Restores interview prep and email on Gemini; removes OpenAI |
-| #43 | WP1.8 mock interview | #42 | **C:** `20261103120000_add_mock_interview_sessions` | |
+| #43 | WP1.8 mock interview | #42 | **C:** `20261103130000_add_mock_interview_sessions` | |
 
 Production migrations are applied by hand (`DEPLOYMENT.md`); all three are additive and must be deployed before the PR that needs them reaches `main`. Several PRs edit the API route-inventory test, so expect small merge conflicts there. One Playwright journey test needs `npm run browser:install` locally.
 

@@ -15,7 +15,7 @@ import {
 // migration: cascades on user and interview delete, SET NULL on application/job delete,
 // and JSON-shape constraints.
 
-const migrationName = "20261103120000_add_mock_interview_sessions";
+const migrationName = "20261103130000_add_mock_interview_sessions";
 
 async function guardedClient() {
   const config = validatePostgresTestEnvironment(process.env);

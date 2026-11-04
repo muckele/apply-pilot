@@ -184,7 +184,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 72);
+  assert.equal(actualRoutes.length, 76);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });
