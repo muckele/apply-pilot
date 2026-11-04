@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { Download, Loader2, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { DocumentReviewPanel, documentReviewStatus } from "@/components/document-review-panel";
 import { PdfFontChoice, ActualPdfPreview } from "@/components/pdf-export-options";
 import { defaultPdfFont, type PdfFont } from "@/lib/documents/pdf-font";
 import { FormattedDocumentPreview } from "@/components/formatted-document-preview";
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import type { DocumentReviewView } from "@/lib/documents/document-review";
 import {
   type ResumeFontFamily,
   type ResumeFormat,
@@ -21,7 +23,9 @@ type ResumeVersionEditorProps = {
     title: string;
     fullText: string;
     jobLabel: string | null;
+    // Export readiness (D031): exactly generated from current evidence, or reviewed edits/legacy.
     evidenceCurrent?: boolean;
+    review?: DocumentReviewView;
   };
 };
 
@@ -49,6 +53,10 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
   const [busy, setBusy] = useState<"save" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  const textSaved = fullText === version.fullText;
+  const reviewStatus = version.review
+    ? documentReviewStatus(version.review.state)
+    : version.evidenceCurrent === false ? "Regenerate this document from current reviewed evidence before exporting." : null;
   const dirty = title !== version.title || fullText !== version.fullText || Object.entries(format).some(([key,value]) => value !== version[key as keyof ResumeFormat]);
   function updateFormat<Key extends keyof ResumeFormat>(key: Key, value: ResumeFormat[Key]) {
     setFormat((current) => ({ ...current, [key]: value }));
@@ -71,7 +79,11 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
       return;
     }
 
-    setMessage("Resume version saved.");
+    const saved = (await response.json().catch(() => null)) as { review?: { pendingFlagCount?: number } | null } | null;
+    const pending = saved?.review?.pendingFlagCount ?? 0;
+    setMessage(pending
+      ? `Resume version saved. Your edits are marked; confirm ${pending === 1 ? "the flagged detail" : `${pending} flagged details`} before export.`
+      : "Resume version saved.");
     router.refresh();
   }
 
@@ -187,8 +199,9 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
 
         <PdfFontChoice value={pdfFont} disabled={busy === "save"} onChange={font => { setPdfFont(font); setMessage(null); }} />
         <p className="text-sm text-slate-500">PDF font applies to this review only. DOCX retains its selected font. Preview actual PDF before downloading; PDF and DOCX can have different line breaks.</p>
-        {version.evidenceCurrent === false ? <p role="status">Regenerate this document from current reviewed evidence before exporting.</p> : null}
-        {dirty ? <p role="status">Unsaved changes — save before exporting or previewing the actual PDF. Saving edits requires regeneration from reviewed evidence for job documents.</p> : null}
+        {reviewStatus ? <p role="status">{reviewStatus}</p> : null}
+        {dirty ? <p role="status">Unsaved changes — save before exporting or previewing the actual PDF. Saved text edits are marked as yours, and changed facts are flagged for your confirmation.</p> : null}
+        {version.review && textSaved ? <DocumentReviewPanel kind="resume" documentId={version.id} review={version.review} disabled={busy !== null} /> : null}
         <div className="flex flex-wrap gap-2">
           <PrimaryButton type="button" onClick={save} disabled={busy !== null || !dirty}>
             {busy === "save" ? <Loader2 className="mr-2 animate-spin" size={16} /> : <Save className="mr-2" size={16} />}
@@ -198,7 +211,7 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
         </div>
       </section>
 
-      <div className="min-w-0"><FormattedDocumentPreview text={fullText} title="DOCX layout guide" format={format} headingLevel={2} /><EditorDocumentExports key={JSON.stringify([version,title,fullText,format,pdfFont,busy])} id={version.id} title={title} pdfFont={pdfFont} eligible={!dirty && busy === null && version.evidenceCurrent !== false} /></div>
+      <div className="min-w-0"><FormattedDocumentPreview text={fullText} title="DOCX layout guide" format={format} headingLevel={2} lineOrigins={textSaved ? version.review?.segments : undefined} /><EditorDocumentExports key={JSON.stringify([version,title,fullText,format,pdfFont,busy])} id={version.id} title={title} pdfFont={pdfFont} eligible={!dirty && busy === null && version.evidenceCurrent !== false} /></div>
     </div>
   );
 }

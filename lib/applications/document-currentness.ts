@@ -1,4 +1,4 @@
-import { PublicApiError } from "@/lib/api-errors";
+import { documentReadinessError, resolveDocumentReadiness } from "@/lib/documents/document-review";
 import { isEvidenceBindingCurrent } from "@/lib/jobs/evidence-snapshot-contracts";
 
 export { isEvidenceBindingCurrent } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -44,26 +44,41 @@ export function applicationDocumentsRequiringCurrentEvidence(input: {
   };
 }
 
+type CurrentnessArtifact = {
+  evidenceSnapshotId: string | null;
+  // Full rows carry their exact bytes and review metadata (D031); a bare binding is checked alone.
+  content?: string;
+  fullText?: string;
+  metadata?: unknown;
+} | null | undefined;
+
+// A document is current when it is exactly generated from the current reviewed evidence, or when
+// it was edited (or is a legacy document) and its owner's review covers its exact current bytes.
 export function assertApplicationDocumentEvidenceCurrent(input: {
   currentEvidenceSnapshotId: string | null;
   currentEvidenceSourceValid: boolean;
-  resumeVersion?: { evidenceSnapshotId: string | null } | null;
-  coverLetterVersion?: { evidenceSnapshotId: string | null } | null;
+  resumeVersion?: CurrentnessArtifact;
+  coverLetterVersion?: CurrentnessArtifact;
 }) {
   const shared = {
     currentEvidenceSnapshotId: input.currentEvidenceSnapshotId,
     currentEvidenceSourceValid: input.currentEvidenceSourceValid
   };
-  const stale = [input.resumeVersion, input.coverLetterVersion].some((artifact) => artifact &&
-    !isEvidenceBindingCurrent({
+  const states = [input.resumeVersion, input.coverLetterVersion].flatMap((artifact) => {
+    if (!artifact) return [];
+    const content = artifact.content ?? artifact.fullText;
+    if (content === undefined) {
+      return isEvidenceBindingCurrent({ ...shared, artifactEvidenceSnapshotId: artifact.evidenceSnapshotId })
+        ? []
+        : ["EVIDENCE_STALE" as const];
+    }
+    const readiness = resolveDocumentReadiness({
       ...shared,
-      artifactEvidenceSnapshotId: artifact.evidenceSnapshotId
-    }));
-  if (stale) {
-    throw new PublicApiError(
-      "Regenerate documents from the current reviewed evidence before saving this packet.",
-      409,
-      { code: "APPLICATION_DOCUMENT_EVIDENCE_STALE" }
-    );
-  }
+      jobBound: true,
+      artifact: { evidenceSnapshotId: artifact.evidenceSnapshotId, content, metadata: artifact.metadata ?? null }
+    });
+    return readiness.exportReady ? [] : [readiness.state];
+  });
+  if (!states.length) return;
+  throw documentReadinessError(states.includes("EVIDENCE_STALE") ? "EVIDENCE_STALE" : states[0]!, "packet");
 }

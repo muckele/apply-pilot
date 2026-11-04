@@ -8,10 +8,10 @@ import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
+import { buildDocumentReviewView } from "@/lib/documents/document-review";
 import {
   acceptedEvidenceFactsFromSnapshot,
-  CURRENT_EVIDENCE_SNAPSHOT_SELECT,
-  isEvidenceBindingCurrent
+  CURRENT_EVIDENCE_SNAPSHOT_SELECT
 } from "@/lib/jobs/evidence-snapshot-contracts";
 import {
   CURRENT_JOB_MATCH_ANALYSIS_WHERE,
@@ -107,13 +107,14 @@ async function getJobDetail(id: string) {
         atsCompatibility: true,
         jobFitScore: true,
         evidenceSnapshotId: true,
+        metadata: true,
         createdAt: true
       }
     }),
     prisma.generatedDocument.findMany({
       where: { userId, jobPostingId: id, type: "COVER_LETTER" },
       orderBy: { createdAt: "desc" },
-      select: { id: true, title: true, content: true, evidenceSnapshotId: true, createdAt: true }
+      select: { id: true, title: true, content: true, evidenceSnapshotId: true, metadata: true, createdAt: true }
     }),
     prisma.application.findUnique({
       where: { userId_jobPostingId: { userId, jobPostingId: id } },
@@ -168,28 +169,42 @@ async function getJobDetail(id: string) {
       job: mapJobPosting(job, currentAnalysis?.output),
       sourceText: masterResume?.rawText ?? "",
       workspaceIdentity: currentJobMatchInputHash(matchInput),
+      // D031: "evidenceCurrent" is export/packet readiness — exactly generated from current evidence,
+      // or edited/legacy with the owner's review covering the saved bytes.
       resumeVersions: resumeVersions.map(
-        (version): JobResumeVersionOption => ({
-          ...version,
-          resumeFormat: { template:version.template as ResumeFormat["template"], pageSize:version.pageSize as ResumeFormat["pageSize"], fontFamily:version.fontFamily as ResumeFormat["fontFamily"], accentColor:version.accentColor, fontSize:version.fontSize, lineSpacing:version.lineSpacing },
-          evidenceCurrent: isEvidenceBindingCurrent({
+        ({ metadata, ...version }): JobResumeVersionOption => {
+          const review = buildDocumentReviewView({
+            kind: "RESUME",
+            jobBound: true,
             currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
             currentEvidenceSourceValid: context.currentEvidenceSourceValid,
-            artifactEvidenceSnapshotId: version.evidenceSnapshotId
-          }),
-          createdAt: version.createdAt.toISOString()
-        })
+            artifact: { evidenceSnapshotId: version.evidenceSnapshotId, content: version.fullText, metadata }
+          });
+          return {
+            ...version,
+            resumeFormat: { template:version.template as ResumeFormat["template"], pageSize:version.pageSize as ResumeFormat["pageSize"], fontFamily:version.fontFamily as ResumeFormat["fontFamily"], accentColor:version.accentColor, fontSize:version.fontSize, lineSpacing:version.lineSpacing },
+            evidenceCurrent: review.exportReady,
+            review,
+            createdAt: version.createdAt.toISOString()
+          };
+        }
       ),
       coverLetters: coverLetters.map(
-        (document): JobCoverLetterOption => ({
-          ...document,
-          evidenceCurrent: isEvidenceBindingCurrent({
+        ({ metadata, ...document }): JobCoverLetterOption => {
+          const review = buildDocumentReviewView({
+            kind: "COVER_LETTER",
+            jobBound: true,
             currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
             currentEvidenceSourceValid: context.currentEvidenceSourceValid,
-            artifactEvidenceSnapshotId: document.evidenceSnapshotId
-          }),
-          createdAt: document.createdAt.toISOString()
-        })
+            artifact: { evidenceSnapshotId: document.evidenceSnapshotId, content: document.content, metadata }
+          });
+          return {
+            ...document,
+            evidenceCurrent: review.exportReady,
+            review,
+            createdAt: document.createdAt.toISOString()
+          };
+        }
       ),
       application: application
         ? {

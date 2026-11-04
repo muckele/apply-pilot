@@ -24,6 +24,10 @@ const resumeVersionRoute = readFileSync(
   path.join(repositoryRoot, "app", "api", "resume-versions", "[id]", "route.ts"),
   "utf8"
 );
+const documentEditRoutes = readFileSync(
+  path.join(repositoryRoot, "lib", "documents", "document-edit-routes.ts"),
+  "utf8"
+);
 
 function prismaBlock(kind: "model" | "enum", name: string): string {
   const match = schema.match(new RegExp(`${kind} ${name} \\{[\\s\\S]*?^\\}`, "m"));
@@ -126,8 +130,13 @@ test("owner export includes snapshot metadata/payload and content edits invalida
     assert.match(accountExportRoute, new RegExp(`${field}: true`));
   }
   assert.match(accountExportRoute, /evidenceSnapshots,/);
-  assert.match(generatedDocumentRoute, /Object\.hasOwn\(input, "content"\)/);
-  assert.match(generatedDocumentRoute, /invalidatesEvidenceBinding \? \{ evidenceSnapshotId: null \}/);
-  assert.match(resumeVersionRoute, /\["summary", "fullText", "skills"\]/);
-  assert.match(resumeVersionRoute, /invalidatesEvidenceBinding \? \{ evidenceSnapshotId: null \}/);
+  // D031: both routes delegate to the shared edit handlers, where a real text change still clears
+  // the exact generated-evidence binding (behaviour covered in tests/document-edit-routes.test.ts).
+  assert.match(generatedDocumentRoute, /createGeneratedDocumentPatchHandler\(/);
+  assert.match(resumeVersionRoute, /createResumeVersionPatchHandler\(/);
+  assert.match(documentEditRoutes, /typeof input\.content === "string" && input\.content !== existing\.content/);
+  assert.match(documentEditRoutes, /typeof input\.fullText === "string" && input\.fullText !== existing\.content/);
+  assert.match(documentEditRoutes, /Object\.hasOwn\(input, "summary"\)/);
+  assert.match(documentEditRoutes, /Object\.hasOwn\(input, "skills"\)/);
+  assert.match(documentEditRoutes, /edit \? \{ evidenceSnapshotId: null, metadata: edit\.metadata \}/);
 });

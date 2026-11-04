@@ -220,13 +220,24 @@ test("actual owned product job route reviews full career and exports current fil
     }
     await editor.getByLabel("PDF font",{exact:true}).selectOption("HELVETICA");
     assert.equal(await editor.locator("[data-actual-product-pdf]").count(),0);
-    await editor.getByLabel("Resume text",{exact:true}).fill(tailored.resumeText+"\nSynthetic owner edit");
+    // D031: an owner edit is saved and marked as theirs; a new metric is flagged and blocks export
+    // until the owner confirms it, after which the exact saved bytes export without any marker.
+    const ownerEdit=tailored.resumeText+"\nSynthetic owner edit across 987 reviews";
+    await editor.getByLabel("Resume text",{exact:true}).fill(ownerEdit);
     assert.equal(await editor.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
     await editor.getByRole("button",{name:"Save version",exact:true}).click();
-    await editor.getByText("Regenerate this document from current reviewed evidence before exporting.",{exact:true}).waitFor();
+    await editor.getByText("Your edits changed factual details. Confirm each flagged detail below before export.",{exact:true}).waitFor();
     assert.equal(await editor.locator("[data-actual-product-pdf]").count(),0);
-    const edited=await client.resumeVersion.findUniqueOrThrow({where:{id:customVersion.id}});assert.equal(edited.evidenceSnapshotId,null);
-    for(const pdfFont of ["HELVETICA","TIMES"]){const rejected=await editor.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format:"pdf",pdfFont}});assert.equal(rejected.status(),409);}
+    assert.equal(await editor.locator("[data-reading-content] [data-edit-marker]").count(),1);
+    const edited=await client.resumeVersion.findUniqueOrThrow({where:{id:customVersion.id}});assert.equal(edited.evidenceSnapshotId,null);assert.equal(edited.fullText,ownerEdit);
+    const editedReview=(edited.metadata as {documentReview:{flags:Array<{claims:Array<{text:string}>;confirmedAt:string|null}>}}).documentReview;
+    assert.deepEqual(editedReview.flags.map(flag=>[flag.claims.map(claim=>claim.text),flag.confirmedAt]),[[["987"],null]]);
+    for(const pdfFont of ["HELVETICA","TIMES"]){const rejected=await editor.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format:"pdf",pdfFont}});assert.equal(rejected.status(),409);assert.equal((await rejected.json()).code,"APPLICATION_DOCUMENT_REVIEW_REQUIRED");}
+    await editor.getByRole("button",{name:"I confirm this is accurate",exact:true}).click();
+    await editor.getByText(/^Confirmed .* UTC$/u).waitFor();
+    const confirmedReview=(await client.resumeVersion.findUniqueOrThrow({where:{id:customVersion.id}})).metadata as {documentReview:{flags:Array<{confirmedAt:string|null}>}};
+    assert.ok(confirmedReview.documentReview.flags[0]!.confirmedAt);
+    for(const format of ["pdf","docx","markdown"] as const){const accepted=await editor.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format}});assert.equal(accepted.status(),200);const bytes=await accepted.body();if(format==="markdown")assert.equal(bytes.toString("utf8"),ownerEdit);assert.doesNotMatch(bytes.toString("latin1"),/your edit/iu);}
     await editor.close();
     await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
     await page.getByRole("button",{name:"Review résumé",exact:true}).click();

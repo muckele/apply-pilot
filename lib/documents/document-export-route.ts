@@ -8,10 +8,8 @@ import {
   normalizeHexColor,
   type ResumeFormat
 } from "@/lib/documents/resume-format";
-import {
-  isEvidenceBindingCurrent,
-  resolveCurrentReviewedEvidence
-} from "@/lib/jobs/evidence-snapshot-contracts";
+import { documentReadinessError, resolveDocumentReadiness } from "@/lib/documents/document-review";
+import { resolveCurrentReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
 
@@ -28,6 +26,7 @@ type GeneratedDocumentExportRow = {
   title: string;
   content: string;
   evidenceSnapshotId?: string | null;
+  metadata?: unknown;
   jobPosting?: ExportJobEvidence | null;
 };
 
@@ -41,6 +40,7 @@ type ResumeVersionExportRow = {
   fontSize: number;
   lineSpacing: number;
   evidenceSnapshotId?: string | null;
+  metadata?: unknown;
   jobPosting?: ExportJobEvidence | null;
 };
 
@@ -86,17 +86,17 @@ export function createDocumentExportRouteHandlers(dependencies: DocumentExportRo
           throw new PublicApiError("Document not found.", 404);
         }
         const source = document ?? resumeVersion;
-        const currentEvidence = source?.jobPosting
-          ? resolveCurrentReviewedEvidence(source.jobPosting, source.jobPosting.user.resumes[0] ?? null)
-          : null;
-        if (source?.jobPosting && !isEvidenceBindingCurrent({
-          currentEvidenceSnapshotId: source.jobPosting.currentEvidenceSnapshotId,
-          currentEvidenceSourceValid: currentEvidence?.currentEvidenceSourceValid ?? false,
-          artifactEvidenceSnapshotId: source.evidenceSnapshotId ?? null
-        })) {
-          throw new PublicApiError("Regenerate this document from the current reviewed evidence before exporting it.", 409, {
-            code: "APPLICATION_DOCUMENT_EVIDENCE_STALE"
+        if (source?.jobPosting) {
+          // D031: an exactly generated document exports while its evidence is current; an edited
+          // or legacy document exports only once its review covers these exact current bytes.
+          const currentEvidence = resolveCurrentReviewedEvidence(source.jobPosting, source.jobPosting.user.resumes[0] ?? null);
+          const readiness = resolveDocumentReadiness({
+            jobBound: true,
+            currentEvidenceSnapshotId: source.jobPosting.currentEvidenceSnapshotId,
+            currentEvidenceSourceValid: currentEvidence.currentEvidenceSourceValid,
+            artifact: { evidenceSnapshotId: source.evidenceSnapshotId ?? null, content, metadata: source.metadata ?? null }
           });
+          if (!readiness.exportReady) throw documentReadinessError(readiness.state, "export");
         }
 
         const resumeFormat: ResumeFormat = resumeVersion

@@ -68,6 +68,8 @@ export function createTailoredResumeRouteHandler(dependencies: TailoredResumeRou
               bullets: tailored.bulletRewrites,
               fullText: tailored.resumeText,
               changeNotes: tailored.rolesOrProjectsToEmphasize.join("; "),
+              // D031: keep the validated citations beside the generated text for later edit review.
+              metadata: { claimEvidence: tailored.claimEvidence },
               atsCompatibility: null,
               jobFitScore: null
             }

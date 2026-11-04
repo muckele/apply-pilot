@@ -367,6 +367,7 @@ model ResumeVersion {
   bullets            Json?
   fullText           String
   changeNotes        String?
+  metadata           Json?
   atsCompatibility   Int?
   jobFitScore        Int?
   filePathDocx       String?

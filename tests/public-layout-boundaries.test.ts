@@ -59,6 +59,7 @@ const apiRoutePaths = [
   "app/api/cron/job-discovery/route.ts",
   "app/api/documents/export/route.ts",
   "app/api/email/draft-reply/route.ts",
+  "app/api/generated-documents/[id]/review/route.ts",
   "app/api/generated-documents/[id]/route.ts",
   "app/api/gmail/callback/route.ts",
   "app/api/gmail/connect/route.ts",
@@ -92,6 +93,7 @@ const apiRoutePaths = [
   "app/api/jobs/import/route.ts",
   "app/api/jobs/sync/route.ts",
   "app/api/profile/route.ts",
+  "app/api/resume-versions/[id]/review/route.ts",
   "app/api/resume-versions/[id]/route.ts",
   "app/api/resumes/master/route.ts",
   "app/api/resumes/parse/route.ts",
@@ -174,7 +176,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 68);
+  assert.equal(actualRoutes.length, 71);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });
