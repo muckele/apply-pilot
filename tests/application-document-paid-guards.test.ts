@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { z } from "zod";
 
-import { generateJson, getOpenAIClient } from "@/lib/ai/client";
+import { generateJson } from "@/lib/ai/client";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
@@ -190,7 +190,7 @@ test("document generation requires the approved Gemini runtime and does not fall
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("document generation stays pinned to Gemini even when the legacy global provider selects OpenAI", async (t) => {
+test("a retired global provider selection fails closed instead of reaching any provider", async (t) => {
   paidEnvironment(t);
   process.env.AI_PROVIDER = "openai";
   process.env.OPENAI_API_KEY = "unused-synthetic-openai-key";
@@ -201,33 +201,23 @@ test("document generation stays pinned to Gemini even when the legacy global pro
     return geminiResponse({ value: "supported" });
   });
 
-  const result = await documentRequest({ confirmed: true });
+  await assert.rejects(documentRequest({ confirmed: true }), /unavailable in local mode/iu);
 
-  assert.equal(result.meta.provider, "gemini");
-  assert.equal(result.meta.model, "gemini-3.8-flash");
-  assert.equal(calls, 1);
-  assert.equal(ledger.reservations[0].provider, "gemini");
+  assert.equal(calls, 0);
+  assert.equal(ledger.reservations.length, 0);
 });
 
-test("an OpenAI selection and key cannot replace a missing Gemini credential", async (t) => {
+test("an OpenAI key cannot replace a missing Gemini credential", async (t) => {
   paidEnvironment(t);
-  process.env.AI_PROVIDER = "openai";
   process.env.OPENAI_API_KEY = "unused-synthetic-openai-key";
   delete process.env.GEMINI_API_KEY;
   const ledger = installLedger(t);
   let geminiCalls = 0;
-  let openAiCalls = 0;
   installGemini(t, async () => { geminiCalls += 1; throw new Error("must not call"); });
-  const openAiClient = getOpenAIClient()!;
-  stub(t, openAiClient.chat.completions, "create", async () => {
-    openAiCalls += 1;
-    throw new Error("must not call");
-  });
 
   await assert.rejects(documentRequest({ confirmed: true }), /unavailable in local mode/iu);
 
   assert.equal(geminiCalls, 0);
-  assert.equal(openAiCalls, 0);
   assert.equal(ledger.reservations.length, 0);
 });
 

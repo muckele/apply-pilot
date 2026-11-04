@@ -3,7 +3,6 @@ import { z } from "zod";
 import { coverLetterPrompt } from "@/prompts/coverLetterPrompt";
 import { generateJson } from "@/lib/ai/client";
 import type { AiInvocationOptions } from "@/lib/ai/client";
-import { deferredAiFeatureError } from "@/lib/ai/deferred-features";
 import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
 import {
   NO_APPLICATION_DOCUMENT_FACT_ID,
@@ -15,7 +14,6 @@ import {
   buildApplicationDocumentSystemPrompt,
   getCoverLetterUncitedLines,
   validateCoverLetterClaims,
-  type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
 import { validateCoverLetterQuality } from "@/lib/ai/application-document-quality";
@@ -86,25 +84,18 @@ export function buildCoverLetterGeminiJsonSchema(payload: ApplicationDocumentPay
 
 export async function draftCoverLetter(
   payload: ApplicationDocumentPayload,
-  userId?: string,
+  userId: string,
   options: AiInvocationOptions = {}
 ) {
-  const company = typeof payload.job?.company === "string" ? payload.job.company : "the employer";
-  const jobTitle = typeof payload.job?.title === "string" ? payload.job.title : "the role";
-  const fallback = {
-    title: `${company} ${jobTitle} cover letter`,
-    coverLetter: `Dear ${company} Hiring Team,\n\nI am writing about the ${jobTitle} position. I am interested in learning more about the role and how I might contribute to your team.\n\nThank you for your time and consideration.\n\nSincerely,\n[Your name]`,
-    angle: "Generic draft requiring applicant personalization and review before use.",
-    claimsUsed: [] as ApplicationDocumentClaimEvidence[]
-  };
   const systemPrompt = buildCoverLetterSystemPrompt(payload);
   const responseJsonSchema = buildCoverLetterGeminiJsonSchema(payload);
 
+  // No anonymous path and no generic template: without Gemini or a budget owner the
+  // request fails closed before any cache read, reservation, or provider call.
   const generated = await generateJson({
     promptName: "coverLetterPrompt",
     systemPrompt,
     payload,
-    fallback,
     schema: coverLetterSchema,
     providerSchema: coverLetterProviderSchema,
     decodeProvider: (value) => assembleCoverLetterProviderOutput(
@@ -112,16 +103,13 @@ export async function draftCoverLetter(
       value as CoverLetterProviderOutput
     ),
     responseJsonSchema,
-    context: userId ? {
+    context: {
       userId,
       feature: "COVER_LETTER",
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
-    } : undefined,
-    validate: (value) => {
-      const factual = validateCoverLetterClaims(payload, value);
-      return userId ? validateCoverLetterQuality(payload, factual) : factual;
-    }
+    },
+    validate: (value) => validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value))
   });
 
   return {
@@ -131,26 +119,4 @@ export async function draftCoverLetter(
     inputHash: generated.meta.requestHash,
     usage: generated.meta
   };
-}
-
-export async function draftEmailReply(payload: {
-  emailText: string;
-  tone: string;
-  job?: unknown;
-}, userId?: string) {
-  void payload;
-  void userId;
-  throw deferredAiFeatureError("EMAIL_REPLY");
-}
-
-export async function generateInterviewPrep(payload: unknown, userId?: string) {
-  void payload;
-  void userId;
-  throw deferredAiFeatureError("INTERVIEW_PREP");
-}
-
-export async function generateInterviewFeedback(payload: unknown, userId?: string) {
-  void payload;
-  void userId;
-  throw deferredAiFeatureError("INTERVIEW_FEEDBACK");
 }

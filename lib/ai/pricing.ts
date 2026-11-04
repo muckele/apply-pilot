@@ -1,8 +1,9 @@
 import { PublicApiError } from "@/lib/api-errors";
 
-export type AiProviderName = "gemini" | "openai" | "kimi";
+// Gemini is the single MVP AI provider (decision D029). OpenAI and Kimi are retired.
+export type AiProviderName = "gemini";
 
-export const AI_PROVIDER_NAMES: readonly AiProviderName[] = ["gemini", "openai", "kimi"];
+export const AI_PROVIDER_NAMES: readonly AiProviderName[] = ["gemini"];
 
 export type ModelPricing = {
   provider: AiProviderName;
@@ -16,8 +17,6 @@ export type ModelPricing = {
 // Keep this registry explicit. Paid calls fail closed when a selected model is absent.
 // Standard, real-time Gemini prices: https://ai.google.dev/gemini-api/docs/pricing
 // Do not use lower batch or flex prices for synchronous application requests.
-// Kimi K3 standard real-time prices: https://platform.kimi.ai/docs/pricing (verified 2026-08-15).
-// Kimi output billing includes reasoning tokens. Never register deprecated K2 preview models.
 // Pricing changes require an intentional code update here; environment variables cannot raise them.
 export const MODEL_PRICING_REGISTRY: Record<string, ModelPricing> = {
   "gemini-3.8-flash": {
@@ -43,18 +42,6 @@ export const MODEL_PRICING_REGISTRY: Record<string, ModelPricing> = {
     inputUsdPerMillion: 1.5,
     outputUsdPerMillion: 9,
     cachedInputUsdPerMillion: 0.15
-  },
-  "gpt-4o-mini": {
-    provider: "openai",
-    inputUsdPerMillion: 0.15,
-    outputUsdPerMillion: 0.6,
-    cachedInputUsdPerMillion: 0.075
-  },
-  "kimi-k3": {
-    provider: "kimi",
-    inputUsdPerMillion: 3,
-    cachedInputUsdPerMillion: 0.3,
-    outputUsdPerMillion: 15
   }
 };
 
@@ -111,4 +98,37 @@ export function estimateAiCostMicros({
         outputTokens * pricing.outputUsdPerMillion
     )
   );
+}
+
+export const AI_PRICING_EXPIRY_WARNING_DAYS = 60;
+
+export type AiPricingStatus = {
+  model: string;
+  provider: AiProviderName;
+  validFrom: string | null;
+  validUntil: string | null;
+  status: "current" | "expiring_soon" | "expired" | "not_yet_effective" | "open_ended";
+  daysRemaining: number | null;
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Reports registered price windows so the expiry is visible before paid requests fail
+// closed. It never extends a window; changing a price requires an intentional code update.
+export function getAiPricingStatus(now = new Date()): AiPricingStatus[] {
+  return Object.entries(MODEL_PRICING_REGISTRY).map(([model, pricing]) => {
+    const validFrom = pricing.validFrom ?? null;
+    const validUntil = pricing.validUntil ?? null;
+    if (validFrom && now < new Date(validFrom)) {
+      return { model, provider: pricing.provider, validFrom, validUntil, status: "not_yet_effective", daysRemaining: null };
+    }
+    if (!validUntil) {
+      return { model, provider: pricing.provider, validFrom, validUntil, status: "open_ended", daysRemaining: null };
+    }
+    const daysRemaining = Math.max(0, Math.ceil((new Date(validUntil).getTime() - now.getTime()) / DAY_MS));
+    const status = now >= new Date(validUntil)
+      ? "expired"
+      : daysRemaining <= AI_PRICING_EXPIRY_WARNING_DAYS ? "expiring_soon" : "current";
+    return { model, provider: pricing.provider, validFrom, validUntil, status, daysRemaining };
+  });
 }

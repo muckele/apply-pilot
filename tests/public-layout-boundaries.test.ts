@@ -75,6 +75,7 @@ const apiRoutePaths = [
   "app/api/interviews/[id]/audio/route.ts",
   "app/api/interviews/[id]/audio/upload/route.ts",
   "app/api/interviews/[id]/feedback/route.ts",
+  "app/api/interviews/[id]/prep/route.ts",
   "app/api/interviews/[id]/route.ts",
   "app/api/interviews/route.ts",
   "app/api/job-sources/[id]/route.ts",
@@ -172,7 +173,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 67);
+  assert.equal(actualRoutes.length, 68);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });

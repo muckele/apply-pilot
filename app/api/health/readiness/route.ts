@@ -49,9 +49,11 @@ export async function GET(request: NextRequest) {
           capabilities: {
             aiMode: configuration.aiMode,
             aiProviderStatus: configuration.aiProviderStatus,
+            aiPricing: configuration.aiPricing,
             directAudioUploads: configuration.directAudioUploads
           },
           configurationIssues: configuration.issues,
+          warnings: configuration.warnings,
           latencyMs: Date.now() - startedAt,
           timestamp: new Date().toISOString()
         },
@@ -69,8 +71,10 @@ export async function GET(request: NextRequest) {
       capabilities: {
         aiMode: configuration.aiMode,
         aiProviderStatus: configuration.aiProviderStatus,
+        aiPricing: configuration.aiPricing,
         directAudioUploads: configuration.directAudioUploads
       },
+      warnings: configuration.warnings,
       latencyMs: Date.now() - startedAt,
       timestamp: new Date().toISOString()
     });
@@ -91,6 +95,7 @@ export async function GET(request: NextRequest) {
         capabilities: {
           aiMode: configuration.aiMode,
           aiProviderStatus: configuration.aiProviderStatus,
+          aiPricing: configuration.aiPricing,
           directAudioUploads: configuration.directAudioUploads
         },
         latencyMs: Date.now() - startedAt,

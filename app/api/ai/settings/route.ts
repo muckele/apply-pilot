@@ -1,19 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 
-import { getAllowedOpenAIModels } from "@/lib/ai/client";
-import { getMonthlyAiUsage, getOrCreateAiSettings } from "@/lib/ai/usage";
+import { getMonthlyAiUsage, getOrCreateAiSettings } from "@/lib/ai/application-plan-budget";
+import { getAiAvailability, getAiFinancialPolicy, getAllowedAiModels } from "@/lib/ai/config";
+import { getAiPricingStatus } from "@/lib/ai/pricing";
+import { aiSettingsUpdateSchema, effectiveMonthlyBudgetCents } from "@/lib/ai/settings";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
-
-const settingsSchema = z.object({
-  monthlyBudgetCents: z.coerce.number().int().min(100).max(100_000).optional(),
-  maxAnalysesPerSync: z.coerce.number().int().min(0).max(25).optional(),
-  aiDiscoveryEnabled: z.boolean().optional(),
-  modelOverride: z.string().trim().max(100).nullable().optional()
-});
 
 export async function GET() {
   try {
@@ -41,7 +35,16 @@ export async function GET() {
       })
     ]);
 
-    return NextResponse.json({ settings, usage, recent, allowedModels: getAllowedOpenAIModels() });
+    return NextResponse.json({
+      settings,
+      usage,
+      recent,
+      allowedModels: getAllowedAiModels(),
+      availability: getAiAvailability(),
+      effectiveMonthlyBudgetCents: effectiveMonthlyBudgetCents(settings.monthlyBudgetCents),
+      hardCapCents: getAiFinancialPolicy().hardCapCents,
+      pricing: getAiPricingStatus()
+    });
   } catch (error) {
     return apiErrorResponse(error);
   }
@@ -51,8 +54,9 @@ export async function PATCH(request: NextRequest) {
   try {
     const userId = await requireUserId();
     await checkRateLimit(`ai-settings:update:${userId}`, 20, 60_000);
-    const input = settingsSchema.parse(await request.json());
-    if (input.modelOverride && !getAllowedOpenAIModels().includes(input.modelOverride)) {
+    // The monthly budget can never exceed the hard ledger cap.
+    const input = aiSettingsUpdateSchema().parse(await request.json());
+    if (input.modelOverride && !getAllowedAiModels().includes(input.modelOverride)) {
       throw new PublicApiError("Choose a model allowed by the server configuration.");
     }
     const modelOverrideUpdate = input.modelOverride !== undefined

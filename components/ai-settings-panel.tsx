@@ -13,7 +13,15 @@ type Settings = {
   modelOverride: string | null;
 };
 
-export function AiSettingsPanel({ initialSettings, allowedModels }: { initialSettings: Settings; allowedModels: string[] }) {
+export function AiSettingsPanel({
+  initialSettings,
+  allowedModels,
+  maxMonthlyBudgetCents
+}: {
+  initialSettings: Settings;
+  allowedModels: string[];
+  maxMonthlyBudgetCents: number;
+}) {
   const router = useRouter();
   const [settings, setSettings] = useState(initialSettings);
   const [pending, setPending] = useState(false);
@@ -58,17 +66,20 @@ export function AiSettingsPanel({ initialSettings, allowedModels }: { initialSet
 
       <div className="grid gap-4 md:grid-cols-3">
         <label className="text-sm font-medium text-slate-700">
-          Monthly budget (USD)
+          Monthly budget (USD, up to ${(maxMonthlyBudgetCents / 100).toFixed(2)})
           <input
             type="number"
             min={1}
-            max={1000}
+            max={maxMonthlyBudgetCents / 100}
             step="0.50"
             value={(settings.monthlyBudgetCents / 100).toFixed(2)}
             onChange={(event) =>
               setSettings((current) => ({
                 ...current,
-                monthlyBudgetCents: Math.max(100, Math.round(Number(event.target.value || 0) * 100))
+                monthlyBudgetCents: Math.min(
+                  maxMonthlyBudgetCents,
+                  Math.max(100, Math.round(Number(event.target.value || 0) * 100))
+                )
               }))
             }
             className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"

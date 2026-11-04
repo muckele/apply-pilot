@@ -1,3 +1,4 @@
+import { getAiPricingStatus, type AiPricingStatus } from "@/lib/ai/pricing";
 import { getAllowedAuthEmails, requiresEmailAllowlist } from "@/lib/auth-access";
 
 type DeploymentEnv = Record<string, string | undefined>;
@@ -5,8 +6,10 @@ type DeploymentEnv = Record<string, string | undefined>;
 export type DeploymentReadiness = {
   ready: boolean;
   issues: string[];
-  aiMode: "gemini" | "openai" | "mixed" | "heuristic-local";
+  warnings: string[];
+  aiMode: "gemini" | "heuristic-local";
   aiProviderStatus: "disabled" | "not_configured" | "configured_unverified" | "invalid_configuration";
+  aiPricing: Array<Pick<AiPricingStatus, "model" | "validUntil" | "status" | "daysRemaining">>;
   directAudioUploads: boolean;
 };
 
@@ -14,9 +17,11 @@ type AiCapability = Pick<DeploymentReadiness, "aiMode" | "aiProviderStatus"> & {
   issue?: "invalid_ai_provider";
 };
 
+// Gemini is the single AI provider. AI_PROVIDER may be unset or "gemini"; the retired
+// "openai" and "kimi" values (and anything else) are invalid. OpenAI keys are ignored.
 function aiCapability(env: DeploymentEnv): AiCapability {
   const configuredProvider = env.AI_PROVIDER?.trim();
-  if (configuredProvider && configuredProvider !== "gemini" && configuredProvider !== "openai") {
+  if (configuredProvider && configuredProvider !== "gemini") {
     return {
       aiMode: "heuristic-local",
       aiProviderStatus: "invalid_configuration",
@@ -24,33 +29,27 @@ function aiCapability(env: DeploymentEnv): AiCapability {
     };
   }
 
-  // Legacy OpenAI features predate the guarded provider switch and still use
-  // their own key/mock gate. Resume parsing, JOB_MATCH, and guarded application
-  // documents use Gemini. Report both when configured, but never infer provider
-  // reachability from key presence.
-  const openAiConfigured = Boolean(env.OPENAI_API_KEY?.trim()) && env.OPENAI_MOCK_MODE !== "true";
-  const geminiConfigured =
-    env.AI_ENABLED === "true" &&
-    env.AI_MOCK_MODE !== "true" &&
-    Boolean(env.GEMINI_API_KEY?.trim());
+  const disabled = env.AI_ENABLED !== "true" || env.AI_MOCK_MODE === "true";
+  if (disabled) return { aiMode: "heuristic-local", aiProviderStatus: "disabled" };
+  // Key presence is never treated as proof of provider reachability.
+  return Boolean(env.GEMINI_API_KEY?.trim())
+    ? { aiMode: "gemini", aiProviderStatus: "configured_unverified" }
+    : { aiMode: "heuristic-local", aiProviderStatus: "not_configured" };
+}
 
-  if (openAiConfigured || geminiConfigured) {
-    return {
-      aiMode: openAiConfigured && geminiConfigured
-        ? "mixed"
-        : geminiConfigured ? "gemini" : "openai",
-      aiProviderStatus: "configured_unverified"
-    };
-  }
-
-  const selectedProviderDisabled =
-    env.AI_ENABLED !== "true" ||
-    env.AI_MOCK_MODE === "true" ||
-    (configuredProvider === "openai" && env.OPENAI_MOCK_MODE === "true");
-  return {
-    aiMode: "heuristic-local",
-    aiProviderStatus: selectedProviderDisabled ? "disabled" : "not_configured"
-  };
+// Price windows are registered in code. Reporting them never extends them; an expired
+// window disables paid requests on that model until pricing is reviewed in code.
+function aiPricingReport(now: Date) {
+  const pricing = getAiPricingStatus(now)
+    .filter((entry) => entry.validUntil)
+    .map(({ model, validUntil, status, daysRemaining }) => ({ model, validUntil, status, daysRemaining }));
+  const warnings = pricing.flatMap((entry) =>
+    entry.status === "expired"
+      ? [`ai_pricing_expired:${entry.model}:${entry.validUntil}`]
+      : entry.status === "expiring_soon"
+        ? [`ai_pricing_expires_soon:${entry.model}:${entry.validUntil}`]
+        : []);
+  return { pricing, warnings };
 }
 
 function productionOrigin(env: DeploymentEnv, requestOrigin: string) {
@@ -107,12 +106,15 @@ function exceedsVercelFunctionUploadLimit(value: string | undefined) {
 
 export function checkDeploymentReadiness(
   env: DeploymentEnv = process.env,
-  requestOrigin = "http://localhost:3000"
+  requestOrigin = "http://localhost:3000",
+  now = new Date()
 ): DeploymentReadiness {
   const production = env.NODE_ENV === "production" || env.VERCEL_ENV === "production";
   const issues: string[] = [];
   const { issue: aiIssue, ...ai } = aiCapability(env);
   if (aiIssue) issues.push(aiIssue);
+  const { pricing: aiPricing, warnings } = aiPricingReport(now);
+  if (env.AI_PROVIDER_OVERRIDES?.trim()) warnings.push("ai_provider_overrides_retired");
 
   if (production) {
     const expectedOrigin = productionOrigin(env, requestOrigin);
@@ -157,7 +159,9 @@ export function checkDeploymentReadiness(
   return {
     ready: issues.length === 0,
     issues,
+    warnings,
     ...ai,
+    aiPricing,
     directAudioUploads: Boolean(env.BLOB_READ_WRITE_TOKEN?.trim())
   };
 }

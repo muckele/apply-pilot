@@ -161,7 +161,7 @@ export function InterviewCreateForm({ applications, jobs }: InterviewCreateFormP
       </label>
 
       <p className="text-xs leading-5 text-slate-600">
-        AI interview preparation is deferred for this MVP. Saving records scheduling details only.
+        Saving records scheduling details only. Open the interview afterwards to generate a prep brief from your master resume and the linked job.
       </p>
 
       <button
