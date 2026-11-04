@@ -48,6 +48,7 @@ const apiRoutePaths = [
   "app/api/application-runs/[id]/route.ts",
   "app/api/application-runs/route.ts",
   "app/api/applications/[id]/route.ts",
+  "app/api/applications/export/route.ts",
   "app/api/applications/route.ts",
   "app/api/auth/[...nextauth]/route.ts",
   "app/api/browser-capture/answers/route.ts",
@@ -173,7 +174,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 67);
+  assert.equal(actualRoutes.length, 68);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });
