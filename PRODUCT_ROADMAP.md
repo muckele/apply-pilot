@@ -5,6 +5,8 @@ Effective product-reference date: **2026-09-20, America/Los_Angeles**<br>
 Product owner: **Mathew**<br>
 Status: **Strategic direction approved for documentation; detailed implementation, procurement, live trials, submission, and release remain separately gated.**
 
+> **2026-11-03:** MVP scope and order are now defined by [`docs/APPLY_PILOT_MVP_BIBLE.md`](docs/APPLY_PILOT_MVP_BIBLE.md) (decision D026). This roadmap remains the long-range P0–P5 safety and architecture plan.
+
 ## 1. Controlling product decision
 
 **Apply Pilot is web-first. A Chrome extension must not be required for core customer value. The preferred public execution experience is an Apply Pilot-managed browser workspace. The accepted local browser companion remains the technical/self-beta baseline. Extensions and a desktop/local companion are optional delivery surfaces, not mandatory customer prerequisites.**
