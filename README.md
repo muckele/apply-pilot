@@ -49,20 +49,28 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `.env`, then create and seed the database:
+Fill in `.env`, then create and seed a disposable local database. The guarded migrate and seed scripts run only against the localhost database `apply_pilot_local_dev`, and they read their target from shell variables rather than `.env` (see the local-only section of `.env.example`):
 
 ```bash
+export APPLY_PILOT_LOCAL_DESTRUCTIVE=1
+export LOCAL_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/apply_pilot_local_dev?schema=public"
+export LOCAL_DIRECT_URL="$LOCAL_DATABASE_URL"
 npm run prisma:generate
 npm run prisma:migrate
 npm run prisma:seed
 npm run dev
 ```
 
+The seed and the local demo fallback use a fictional "Sample User" persona with invented employers.
+
 Open `http://localhost:3000/dashboard`.
 
 ## Environment Variables
 
+`.env.example` lists every variable the code reads, each with a one-line comment and a `[required]`, `[required in production]`, `[optional]` or `[local only]` label. `.env.production.example` is the production equivalent. `tests/env-example-coverage.test.ts` fails when code reads a variable that the examples do not document, and when either file holds something that looks like a real value. Platform variables such as `NODE_ENV` and `VERCEL_*` are not listed.
+
 - `DATABASE_URL`: PostgreSQL connection string.
+- `DIRECT_URL`: direct (non-pooled) connection string Prisma uses for migrations.
 - `AUTH_SECRET`: random secret for Auth.js and local OAuth state signing.
 - `AUTH_URL`: canonical Auth.js app URL.
 - `NEXTAUTH_URL`: local or deployed app URL.
@@ -73,6 +81,9 @@ Open `http://localhost:3000/dashboard`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
 - `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini`, and `false` respectively for live Gemini flows.
 - `GEMINI_API_KEY`: Gemini API key for resume parsing, JOB_MATCH, tailored résumés, and cover letters. Guarded paid document generation fails closed when Gemini is unavailable; it does not fall back to another provider.
+- `GEMINI_FAST_MODEL` / `GEMINI_QUALITY_MODEL`: optional model overrides for configurable features; pinned features ignore them.
+- `AI_HARD_CAP_CENTS`, `AI_AUTOMATION_CAP_CENTS`, `AI_MAX_REQUEST_COST_CENTS`, and `AI_CONFIRMATION_THRESHOLD_CENTS`: optional AI cost caps. They can only lower the compiled ceilings of 500, 150, 10, and 5 cents. A new user's default monthly AI budget is 500 cents, the `AISettings` schema default.
+- `APPLICATION_AUTOMATION_ENABLED`: global emergency stop for controlled application automation; only exactly `true` permits assisted Fill. Defaults to `false`.
 - `OPENAI_API_KEY`: optional only for explicit legacy resume-parser compatibility. Application planning is local rule-based, and AI email/interview generation is deferred for this MVP.
 - `OPENAI_MODEL`: default model for explicit legacy OpenAI resume-parser compatibility.
 - `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
@@ -89,6 +100,7 @@ Open `http://localhost:3000/dashboard`.
 - `SERPAPI_API_KEY`: optional SerpApi key for Google Jobs API discovery.
 - `SERPAPI_MAX_QUERIES_PER_RUN`: caps paid SerpApi searches per discovery run, default `3`.
 - `JOB_SOURCE_MAX_POSTED_AGE_DAYS`: pre-import freshness window for dated postings, default `30`.
+- `JOB_SOURCE_REMOTIVE_ENABLED` / `JOB_SOURCE_ADZUNA_ENABLED`: compliance gates for Remotive and Adzuna discovery, default `false`. See MVP Bible §6 before turning either on.
 - `CRON_SECRET`: bearer token required by the scheduled job-discovery route.
 - `CRON_MAX_SOURCES_PER_RUN`: caps scheduled source syncs per cron invocation, default `10`.
 - `CRON_MIN_SOURCE_INTERVAL_MINUTES`: skips sources synced more recently than this window, default `360`.
@@ -101,7 +113,9 @@ Open `http://localhost:3000/dashboard`.
 - `MAX_DIRECT_AUDIO_UPLOAD_MB`: maximum direct private Blob audio upload size; defaults to `25` MB.
 - `APP_VERSION`: optional deployment version/commit label shown in health output.
 - `LOG_LEVEL`: structured logging threshold: `debug`, `info`, `warn`, or `error`.
-- `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session. Ignored in production.
+- `ALLOW_DEMO_USER`: allows local API routes to act as the fictional `demo-user` ("Sample User") without a session. Ignored in production.
+- `DEFAULT_DEMO_USER_ID`: user id for the demo fallback and the local seed, default `demo-user`.
+- Local-only tooling (`APPLY_PILOT_LOCAL_DESTRUCTIVE`, `LOCAL_DATABASE_URL`, `LOCAL_DIRECT_URL`, `TEST_DATABASE_URL`, `COMMIT5_POSTGRES_TEST`, and the `APPLY_PILOT_SYNTHETIC_*_PREVIEW` flags) is documented, commented out, in `.env.example`. Export these per command and never set them in production.
 
 ## Private Multi-User Mode
 
@@ -130,15 +144,9 @@ DATABASE_URL="postgresql://USER:PASSWORD@HOST.neon.tech/DB?sslmode=require"
 DIRECT_URL="postgresql://USER:PASSWORD@DIRECT_HOST.neon.tech/DB?sslmode=require"
 ```
 
-After saving `.env`, run:
+Never run the seed, tests, or `npm run prisma:migrate` against Neon or any other remote database; the guarded scripts refuse non-localhost targets. Remote schema changes use forward-only `prisma migrate deploy` only after explicit owner authorization and endpoint verification (see `AGENTS.md`).
 
-```bash
-npm run prisma:generate
-npm run prisma:migrate
-npm run prisma:seed
-```
-
-Then restart the dev server:
+After saving `.env`, run `npm run prisma:generate`, then restart the dev server:
 
 ```bash
 npm run dev -- -H 127.0.0.1 -p 3000
