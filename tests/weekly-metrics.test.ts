@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { ApplicationStatus } from "@prisma/client";
 
+import { SELF_REPORTED_EFFORT_METADATA_KEY, buildSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, SENT_DOCUMENTS_SCHEMA } from "@/lib/apply-kit/sent-documents";
 import { documentContentHash } from "@/lib/documents/document-review";
 import {
@@ -34,7 +35,7 @@ function rows(overrides: Partial<WeeklyMetricsRows> = {}): WeeklyMetricsRows {
     jobs: [],
     applications: [],
     statusEvents: [],
-    sentDocumentEvents: [],
+    appliedEvents: [],
     tailoredDocuments: [],
     interviews: [],
     aiUsage: [],
@@ -108,6 +109,17 @@ function sentEvent(
   };
 }
 
+// Minutes from the Apply Kit's "I applied" step; in real data they share the APPLIED event with
+// the sent snapshot, which `withMinutes` reproduces.
+function effortEvent(applicationId: string, occurredAt: string, minutes: number, userId = USER) {
+  return withMinutes({ id: nextId("event"), userId, applicationId, occurredAt: at(occurredAt), metadata: {} }, minutes);
+}
+
+function withMinutes<T extends { occurredAt: Date; metadata: object }>(event: T, minutes: number): T {
+  const record = buildSelfReportedEffort({ minutes, recordedAt: event.occurredAt });
+  return { ...event, metadata: { ...event.metadata, [SELF_REPORTED_EFFORT_METADATA_KEY]: record } };
+}
+
 function interview(input: {
   applicationId?: string | null;
   jobPostingId?: string | null;
@@ -147,8 +159,8 @@ test("an empty account shows its first week with zero counts and no misleading r
   for (const key of ["tailoredShare", "completeTracking", "interviewRate", "feedSaveRate", "aiCostPerApplication"] as const) {
     assert.equal(current.metrics[key].kind, "not_enough_data", key);
   }
-  assert.equal(current.metrics.interviewsPerApplicantHour.kind, "not_measured");
-  assert.equal(current.metrics.effortMinutesPerApplication.kind, "not_measured");
+  assert.equal(current.metrics.interviewsPerApplicantHour.kind, "not_enough_data");
+  assert.equal(current.metrics.effortMinutesPerApplication.kind, "not_enough_data");
   assert.deepEqual(report.dataNotes, []);
 });
 
@@ -249,14 +261,69 @@ test("an application counts as one interview, in the week of its first interview
   assert.equal(report.total.funnel.interviews, 3);
 });
 
-test("interviews per applicant-hour and effort minutes are reported as not measured, never as a number", () => {
+test("effort minutes average the self-reported minutes of the period's applications that have them", () => {
+  const quick = application({ status: "APPLIED", dateApplied: "2026-10-27T17:00:00Z" });
+  const long = application({ status: "APPLIED", dateApplied: "2026-10-28T17:00:00Z" });
+  const dragged = application({ status: "APPLIED", dateApplied: "2026-10-29T17:00:00Z" });
+  const report = compute(rows({
+    applications: [quick, long, dragged],
+    appliedEvents: [
+      withMinutes(sentEvent(quick.id, "2026-10-27T17:00:00Z", { resume: true }), 30),
+      // Re-entering Applied later records a new answer; the latest one counts.
+      effortEvent(long.id, "2026-10-21T17:00:00Z", 10),
+      effortEvent(long.id, "2026-10-28T17:00:00Z", 60)
+    ]
+  }));
+
+  assert.deepEqual(week(report, W2).metrics.effortMinutesPerApplication, {
+    kind: "minutes_per_item",
+    totalMinutes: 90,
+    reported: 2,
+    applications: 3,
+    valueMinutes: 45,
+    smallSample: true
+  });
+  assert.equal(week(report, W1).metrics.effortMinutesPerApplication.kind, "not_enough_data");
+});
+
+test("interviews per applicant-hour follows the applications with minutes to the interviews they reached", () => {
+  const interviewed = application({ status: "RECRUITER_SCREEN", dateApplied: "2026-10-27T17:00:00Z" });
+  const waiting = application({ status: "APPLIED", dateApplied: "2026-10-28T17:00:00Z" });
+  // Interviewed, but its time is unknown: it is left out of both sides.
+  const unreported = application({ status: "RECRUITER_SCREEN", dateApplied: "2026-10-28T18:00:00Z" });
+  const report = compute(rows({
+    applications: [interviewed, waiting, unreported],
+    statusEvents: [
+      statusEvent(interviewed.id, "Status changed to Recruiter screen", "2026-11-03T17:00:00Z"),
+      statusEvent(unreported.id, "Status changed to Recruiter screen", "2026-11-03T18:00:00Z")
+    ],
+    appliedEvents: [effortEvent(interviewed.id, "2026-10-27T17:00:00Z", 45), effortEvent(waiting.id, "2026-10-28T17:00:00Z", 75)]
+  }));
+
+  assert.deepEqual(week(report, W2).metrics.interviewsPerApplicantHour, {
+    kind: "interviews_per_hour",
+    interviews: 1,
+    totalMinutes: 120,
+    reported: 2,
+    applications: 3,
+    value: 0.5,
+    smallSample: true
+  });
+  assert.deepEqual(report.total.metrics.interviewsPerApplicantHour, week(report, W2).metrics.interviewsPerApplicantHour);
+});
+
+test("without reported minutes the effort metrics say not enough data and why, never zero", () => {
   const report = compute(rows({ applications: [application({ status: "APPLIED", dateApplied: "2026-10-28T17:00:00Z" })] }));
   const metrics = week(report, W2).metrics;
 
-  assert.equal(metrics.interviewsPerApplicantHour.kind, "not_measured");
-  assert.match(metrics.interviewsPerApplicantHour.reason, /time/i);
-  assert.equal(metrics.effortMinutesPerApplication.kind, "not_measured");
-  assert.equal(report.total.metrics.interviewsPerApplicantHour.kind, "not_measured");
+  for (const key of ["interviewsPerApplicantHour", "effortMinutesPerApplication"] as const) {
+    const result = metrics[key];
+    assert.equal(result.kind, "not_enough_data", key);
+    assert.match(result.reason, /1 application has no self-reported minutes/u, key);
+  }
+  const empty = week(report, W1).metrics.interviewsPerApplicantHour;
+  assert.equal(empty.kind, "not_enough_data");
+  assert.match(empty.reason, /No applications recorded as applied/u);
 });
 
 test("tailored share counts applications whose frozen 'what I sent' record holds a tailored document", () => {
@@ -266,7 +333,7 @@ test("tailored share counts applications whose frozen 'what I sent' record holds
   const noRecord = application({ status: "RECRUITER_SCREEN", dateApplied: "2026-10-30T17:00:00Z" });
   const report = compute(rows({
     applications: [withResume, withLetter, withNothing, noRecord],
-    sentDocumentEvents: [
+    appliedEvents: [
       sentEvent(withResume.id, "2026-10-27T17:00:00Z", { resume: true }),
       sentEvent(withLetter.id, "2026-10-28T17:00:00Z", { coverLetter: true }),
       sentEvent(withNothing.id, "2026-10-29T17:00:00Z", {})
@@ -298,7 +365,7 @@ test("complete tracking needs a sent record naming a document and a status at or
   const noRecord = application({ status: "APPLIED", dateApplied: "2026-10-28T18:00:00Z" });
   const report = compute(rows({
     applications: [complete, archived, noDocuments, noRecord],
-    sentDocumentEvents: [
+    appliedEvents: [
       sentEvent(complete.id, "2026-10-27T17:00:00Z", { resume: true, coverLetter: true }),
       sentEvent(archived.id, "2026-10-27T18:00:00Z", { resume: true }),
       sentEvent(noDocuments.id, "2026-10-28T17:00:00Z", {})
@@ -315,7 +382,7 @@ test("the latest sent record of an application is the one that counts", () => {
   const reapplied = application({ status: "APPLIED", dateApplied: "2026-10-27T17:00:00Z" });
   const report = compute(rows({
     applications: [reapplied],
-    sentDocumentEvents: [
+    appliedEvents: [
       sentEvent(reapplied.id, "2026-10-27T17:00:00Z", { resume: true }),
       sentEvent(reapplied.id, "2026-10-29T17:00:00Z", {})
     ]
@@ -393,12 +460,18 @@ test("feed save rate follows each week's new feed jobs to whether they were save
 test("ratios at or above the small-sample size are not flagged", () => {
   const applications = Array.from({ length: SMALL_SAMPLE_SIZE }, (_, index) =>
     application({ status: "APPLIED", dateApplied: `2026-10-2${7 + (index % 3)}T17:00:00Z` }));
-  const report = compute(rows({ applications }));
+  const report = compute(rows({
+    applications,
+    appliedEvents: applications.map((entry) => effortEvent(entry.id, entry.dateApplied!.toISOString(), 30))
+  }));
   const tracking = week(report, W2).metrics.completeTracking;
 
   assert.equal(tracking.kind, "ratio");
   assert.equal(tracking.denominator, SMALL_SAMPLE_SIZE);
   assert.equal(tracking.smallSample, false);
+  const effort = week(report, W2).metrics;
+  assert.equal(effort.effortMinutesPerApplication.kind === "minutes_per_item" && effort.effortMinutesPerApplication.smallSample, false);
+  assert.equal(effort.interviewsPerApplicantHour.kind === "interviews_per_hour" && effort.interviewsPerApplicantHour.smallSample, false);
 });
 
 test("another user's rows never count, even when they point at this user's records", () => {
@@ -408,7 +481,7 @@ test("another user's rows never count, even when they point at this user's recor
     jobs: [ownJob],
     applications: [own],
     statusEvents: [statusEvent(own.id, "Status changed to Recruiter screen", "2026-10-29T12:00:00Z")],
-    sentDocumentEvents: [sentEvent(own.id, "2026-10-27T12:00:00Z", { resume: true })],
+    appliedEvents: [withMinutes(sentEvent(own.id, "2026-10-27T12:00:00Z", { resume: true }), 40)],
     tailoredDocuments: [{ userId: USER, jobPostingId: ownJob.id, createdAt: at("2026-10-27T11:30:00Z") }],
     interviews: [interview({ applicationId: own.id, createdAt: "2026-10-29T12:00:00Z" })],
     aiUsage: [{ userId: USER, createdAt: at("2026-10-27T11:00:00Z"), estimatedCostMicros: 10_000 }]
@@ -427,10 +500,13 @@ test("another user's rows never count, even when they point at this user's recor
       // Foreign event aimed at this user's application.
       statusEvent(own.id, "Status changed to Offer", "2026-10-19T12:00:00Z", OTHER)
     ],
-    sentDocumentEvents: [
-      ...ownRows.sentDocumentEvents,
+    appliedEvents: [
+      ...ownRows.appliedEvents,
       sentEvent(own.id, "2026-10-30T12:00:00Z", {}, OTHER),
-      sentEvent(other.id, "2026-10-27T12:00:00Z", { resume: true }, OTHER)
+      sentEvent(other.id, "2026-10-27T12:00:00Z", { resume: true }, OTHER),
+      // Foreign minutes aimed at this user's application, and on the other user's own one.
+      effortEvent(own.id, "2026-10-31T12:00:00Z", 600, OTHER),
+      effortEvent(other.id, "2026-10-27T12:00:00Z", 5, OTHER)
     ],
     tailoredDocuments: [
       ...ownRows.tailoredDocuments,
@@ -452,6 +528,8 @@ test("another user's rows never count, even when they point at this user's recor
 
   assert.deepEqual(mixed, baseline);
   assert.deepEqual(week(baseline, W2).funnel, { jobsAdded: 1, jobsSaved: 1, kitsPrepared: 1, applied: 1, interviews: 1 });
+  const effort = week(baseline, W2).metrics.effortMinutesPerApplication;
+  assert.equal(effort.kind === "minutes_per_item" && effort.totalMinutes, 40);
 });
 
 test("an account record belonging to someone else is refused", () => {

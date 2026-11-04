@@ -1,6 +1,7 @@
 import type { ApplicationStatus } from "@prisma/client";
 
 import { applicationStatusOptions } from "@/lib/applications/pipeline";
+import { latestSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import { latestSentDocumentsEvent } from "@/lib/apply-kit/sent-documents";
 import type { MetricWeek } from "@/lib/metrics/weeks";
 import { ONBOARDING_APPLIED_STATUSES } from "@/lib/onboarding";
@@ -8,7 +9,7 @@ import { ONBOARDING_APPLIED_STATUSES } from "@/lib/onboarding";
 // Weekly job-search numbers for one user (MVP Bible WP1.9 and §11). Pure: the loader reads the
 // rows, this module only counts them. Every row is checked against `userId` again here, so a
 // loader mistake can never let another user's data into the numbers. A metric that cannot be
-// computed honestly says so ("not measured" or "not enough data") instead of showing 0.
+// computed honestly says "not enough data", with the reason, instead of showing 0.
 
 export const SMALL_SAMPLE_SIZE = 5;
 
@@ -48,12 +49,12 @@ export const WEEKLY_METRIC_DEFINITIONS = {
   interviewsPerApplicantHour: {
     label: "Interviews per applicant-hour",
     howComputed:
-      "Interviews divided by hours of active job-search effort. Apply Pilot doesn't record time spent applying yet, so there is no denominator; the interview count is shown on its own."
+      "Of the week's applications with minutes you entered on the Apply Kit's \"I applied\" step, the interviews they have reached since, divided by the hours you reported for them. Applications without minutes are left out of both sides. The minutes are your own estimate, not a timer, and recent weeks can still rise."
   },
   effortMinutesPerApplication: {
     label: "Minutes of effort per application",
     howComputed:
-      "Minutes of active effort divided by applications. Not recorded yet: Apply Pilot doesn't log when you start working on an application or how long you spend on the form."
+      "The average of the minutes you entered on the Apply Kit's \"I applied\" step, over the week's applications that have them. Applications recorded without minutes (left blank, or moved to Applied in the tracker) are left out."
   },
   tailoredShare: {
     label: "Sent with tailored documents",
@@ -100,7 +101,8 @@ export type WeeklyMetricsRows = {
     dateApplied: Date | null;
   }>;
   statusEvents: Array<{ id: string; userId: string; applicationId: string; type: string; title: string; occurredAt: Date }>;
-  sentDocumentEvents: Array<{ id: string; userId: string; applicationId: string; occurredAt: Date; metadata: unknown }>;
+  /** APPLIED timeline events that carry a "what I sent" snapshot, self-reported minutes, or both. */
+  appliedEvents: Array<{ id: string; userId: string; applicationId: string; occurredAt: Date; metadata: unknown }>;
   tailoredDocuments: Array<{ userId: string; jobPostingId: string | null; createdAt: Date }>;
   interviews: Array<{
     id: string;
@@ -114,8 +116,26 @@ export type WeeklyMetricsRows = {
 };
 
 export type NotEnoughData = { kind: "not_enough_data"; reason: string };
-export type NotMeasured = { kind: "not_measured"; reason: string };
 export type RatioMetric = { kind: "ratio"; numerator: number; denominator: number; value: number; smallSample: boolean };
+export type MinutesPerItemMetric = {
+  kind: "minutes_per_item";
+  totalMinutes: number;
+  /** Applications in the period with self-reported minutes. */
+  reported: number;
+  /** All applications in the period. */
+  applications: number;
+  valueMinutes: number;
+  smallSample: boolean;
+};
+export type InterviewsPerHourMetric = {
+  kind: "interviews_per_hour";
+  interviews: number;
+  totalMinutes: number;
+  reported: number;
+  applications: number;
+  value: number;
+  smallSample: boolean;
+};
 export type MoneyPerItemMetric = {
   kind: "money_per_item";
   totalMicros: number;
@@ -132,8 +152,8 @@ export type PeriodMetrics = {
   funnel: { jobsAdded: number; jobsSaved: number; kitsPrepared: number; applied: number; interviews: number };
   aiSpend: { micros: number; requests: number; unknownCostRequests: number };
   metrics: {
-    interviewsPerApplicantHour: NotMeasured;
-    effortMinutesPerApplication: NotMeasured;
+    interviewsPerApplicantHour: InterviewsPerHourMetric | NotEnoughData;
+    effortMinutesPerApplication: MinutesPerItemMetric | NotEnoughData;
     tailoredShare: RatioMetric | NotEnoughData;
     aiCostPerApplication: MoneyPerItemMetric | NotEnoughData;
     completeTracking: RatioMetric | NotEnoughData;
@@ -150,10 +170,6 @@ export type WeeklyMetricsReport = {
   dataNotes: string[];
 };
 
-const NOT_RECORDED_TIME: NotMeasured = {
-  kind: "not_measured",
-  reason: "Apply Pilot doesn't record the time you spend applying."
-};
 const NO_APPLICATIONS: NotEnoughData = {
   kind: "not_enough_data",
   reason: "No applications recorded as applied in this period."
@@ -217,10 +233,14 @@ function ownedData(userId: string, rows: WeeklyMetricsRows) {
   const statusEvents = rows.statusEvents.filter(ownsApplication);
   const aiUsage = rows.aiUsage.filter((row) => row.userId === userId);
 
-  const sentDocumentEvents = rows.sentDocumentEvents.filter(ownsApplication);
+  const appliedEvents = rows.appliedEvents.filter(ownsApplication);
   const latestSent = new Map(applications.flatMap((application) => {
-    const latest = latestSentDocumentsEvent(sentDocumentEvents.filter((event) => event.applicationId === application.id));
+    const latest = latestSentDocumentsEvent(appliedEvents.filter((event) => event.applicationId === application.id));
     return latest ? [[application.id, latest.snapshot] as const] : [];
+  }));
+  const reportedMinutes = new Map(applications.flatMap((application) => {
+    const effort = latestSelfReportedEffort(appliedEvents.filter((event) => event.applicationId === application.id));
+    return effort ? [[application.id, effort.minutes] as const] : [];
   }));
 
   const firstTailoredDocumentByJob = new Map<string, Date>();
@@ -250,13 +270,22 @@ function ownedData(userId: string, rows: WeeklyMetricsRows) {
     ...jobs.map((row) => row.firstDiscoveredAt),
     ...applications.flatMap((row) => (row.dateApplied ? [row.createdAt, row.dateApplied] : [row.createdAt])),
     ...statusEvents.map((row) => row.occurredAt),
-    ...sentDocumentEvents.map((row) => row.occurredAt),
+    ...appliedEvents.map((row) => row.occurredAt),
     ...firstTailoredDocumentByJob.values(),
     ...firstInterviewSignal.values(),
     ...aiUsage.map((row) => row.createdAt)
   ])!;
 
-  return { applications, jobs, aiUsage, latestSent, firstTailoredDocumentByJob, firstInterviewSignal, firstActivityAt };
+  return {
+    applications,
+    jobs,
+    aiUsage,
+    latestSent,
+    reportedMinutes,
+    firstTailoredDocumentByJob,
+    firstInterviewSignal,
+    firstActivityAt
+  };
 }
 
 function computePeriod(
@@ -282,6 +311,17 @@ function computePeriod(
   });
   const completelyTracked = sentTailored.filter((application) => appliedStatuses.has(application.status));
   const reachedInterview = applied.filter((application) => data.firstInterviewSignal.has(application.id));
+  const withMinutes = applied.filter((application) => data.reportedMinutes.has(application.id));
+  const totalMinutes = withMinutes.reduce((total, application) => total + data.reportedMinutes.get(application.id)!, 0);
+  const interviewsAfterReportedEffort = withMinutes.filter((application) => data.firstInterviewSignal.has(application.id)).length;
+  const noMinutes: NotEnoughData = applied.length
+    ? {
+        kind: "not_enough_data",
+        reason: applied.length === 1
+          ? "This period's 1 application has no self-reported minutes."
+          : `None of this period's ${applied.length} applications has self-reported minutes.`
+      }
+    : NO_APPLICATIONS;
   const savedApplicationJobs = new Set(data.applications.map((application) => application.jobPostingId));
 
   return {
@@ -295,8 +335,27 @@ function computePeriod(
     },
     aiSpend: { micros: spendMicros, requests: usage.length, unknownCostRequests: usage.length - costed.length },
     metrics: {
-      interviewsPerApplicantHour: NOT_RECORDED_TIME,
-      effortMinutesPerApplication: NOT_RECORDED_TIME,
+      interviewsPerApplicantHour: withMinutes.length
+        ? {
+            kind: "interviews_per_hour",
+            interviews: interviewsAfterReportedEffort,
+            totalMinutes,
+            reported: withMinutes.length,
+            applications: applied.length,
+            value: interviewsAfterReportedEffort / (totalMinutes / 60),
+            smallSample: withMinutes.length < SMALL_SAMPLE_SIZE
+          }
+        : noMinutes,
+      effortMinutesPerApplication: withMinutes.length
+        ? {
+            kind: "minutes_per_item",
+            totalMinutes,
+            reported: withMinutes.length,
+            applications: applied.length,
+            valueMinutes: totalMinutes / withMinutes.length,
+            smallSample: withMinutes.length < SMALL_SAMPLE_SIZE
+          }
+        : noMinutes,
       tailoredShare: withSentRecord.length
         ? ratio(sentTailored.length, withSentRecord.length)
         : applied.length

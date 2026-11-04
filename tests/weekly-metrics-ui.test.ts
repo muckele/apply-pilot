@@ -12,6 +12,7 @@ import {
   formatMetricResult,
   resolveInsightsWeekCount
 } from "@/components/weekly-metrics-report";
+import { SELF_REPORTED_EFFORT_METADATA_KEY, buildSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, SENT_DOCUMENTS_SCHEMA } from "@/lib/apply-kit/sent-documents";
 import { documentContentHash } from "@/lib/documents/document-review";
 import { WEEKLY_METRIC_DEFINITIONS, computeWeeklyMetrics, type WeeklyMetricsRows } from "@/lib/metrics/weekly-metrics";
@@ -26,7 +27,7 @@ function emptyRows(createdAt: string): WeeklyMetricsRows {
     jobs: [],
     applications: [],
     statusEvents: [],
-    sentDocumentEvents: [],
+    appliedEvents: [],
     tailoredDocuments: [],
     interviews: [],
     aiUsage: []
@@ -79,8 +80,12 @@ function busyRows(): WeeklyMetricsRows {
   rows.statusEvents = [
     { id: "event-1", userId: USER, applicationId: "app-2", type: "STATUS_CHANGED", title: "Status changed to Recruiter screen", occurredAt: new Date("2026-11-03T18:00:00Z") }
   ];
-  rows.sentDocumentEvents = [
-    { id: "sent-1", userId: USER, applicationId: "app-1", occurredAt: new Date("2026-10-27T18:00:00Z"), metadata: sentResume() }
+  const minutes = (value: number, at: string) => ({
+    [SELF_REPORTED_EFFORT_METADATA_KEY]: buildSelfReportedEffort({ minutes: value, recordedAt: new Date(at) })
+  });
+  rows.appliedEvents = [
+    { id: "sent-1", userId: USER, applicationId: "app-1", occurredAt: new Date("2026-10-27T18:00:00Z"), metadata: { ...sentResume(), ...minutes(45, "2026-10-27T18:00:00Z") } },
+    { id: "effort-2", userId: USER, applicationId: "app-2", occurredAt: new Date("2026-10-28T18:00:00Z"), metadata: minutes(75, "2026-10-28T18:00:00Z") }
   ];
   rows.aiUsage = [{ userId: USER, createdAt: new Date("2026-10-27T10:00:00Z"), estimatedCostMicros: 45_000 }];
   return rows;
@@ -104,25 +109,50 @@ test("money per application uses the AI Controls currency format and names its d
   });
 });
 
-test("missing data and unmeasured metrics say so instead of showing a number", () => {
+test("effort minutes round to whole minutes and say how many applications reported them", () => {
+  assert.deepEqual(formatMetricResult({ kind: "minutes_per_item", totalMinutes: 85, reported: 2, applications: 3, valueMinutes: 42.5, smallSample: true }), {
+    value: "43 min",
+    detail: "85 min over 2 of 3 applications · small sample"
+  });
+  assert.deepEqual(formatMetricResult({ kind: "minutes_per_item", totalMinutes: 300, reported: 6, applications: 6, valueMinutes: 50, smallSample: false }), {
+    value: "50 min",
+    detail: "300 min over 6 applications"
+  });
+});
+
+test("interviews per applicant-hour shows two decimals with the interviews and hours behind it", () => {
+  assert.deepEqual(formatMetricResult({ kind: "interviews_per_hour", interviews: 1, totalMinutes: 120, reported: 2, applications: 3, value: 0.5, smallSample: true }), {
+    value: "0.50 per hour",
+    detail: "1 interview in 2 hours, over 2 of 3 applications · small sample"
+  });
+  assert.deepEqual(formatMetricResult({ kind: "interviews_per_hour", interviews: 0, totalMinutes: 330, reported: 5, applications: 5, value: 0, smallSample: false }), {
+    value: "0.00 per hour",
+    detail: "0 interviews in 5.5 hours, over 5 applications"
+  });
+});
+
+test("missing data says so instead of showing a number", () => {
   assert.deepEqual(formatMetricResult({ kind: "not_enough_data", reason: "No applications recorded as applied in this period." }), {
     value: "Not enough data",
     detail: "No applications recorded as applied in this period."
   });
-  assert.deepEqual(formatMetricResult({ kind: "not_measured", reason: "Not measured yet: no time records." }), {
-    value: "Not measured yet",
-    detail: "Not measured yet: no time records."
-  });
 });
 
-test("an empty account sees the primary metric as not measured and no misleading ratios", () => {
+test("the primary metric shows interviews per applicant-hour from reported minutes", () => {
+  const primary = render(busyRows()).querySelector("[data-metric='interviewsPerApplicantHour']");
+
+  assert.match(primary?.textContent ?? "", /0\.50 per hour/);
+  assert.match(primary?.textContent ?? "", /1 interview in 2 hours, over 2 applications · small sample/);
+});
+
+test("an empty account sees no misleading numbers, the primary metric included", () => {
   const document = render(emptyRows("2026-11-03T18:00:00Z"));
 
   const primary = document.querySelector("[data-metric='interviewsPerApplicantHour']");
   assert.ok(primary);
   assert.match(primary.textContent ?? "", /Interviews per applicant-hour/);
-  assert.match(primary.textContent ?? "", /Not measured yet/);
-  for (const key of ["tailoredShare", "completeTracking", "interviewRate", "feedSaveRate", "aiCostPerApplication"]) {
+  assert.match(primary.textContent ?? "", /Not enough data/);
+  for (const key of ["effortMinutesPerApplication", "tailoredShare", "completeTracking", "interviewRate", "feedSaveRate", "aiCostPerApplication"]) {
     const card = document.querySelector(`[data-metric='${key}']`);
     assert.ok(card, key);
     assert.match(card.textContent ?? "", /Not enough data/, key);
@@ -175,6 +205,11 @@ test("supporting metrics show the window value with its sample, and a per-week t
   assert.equal(cells[0], "Oct 26");
   assert.ok(cells.includes("50% (1 of 2)"), cells.join(" | "));
   assert.ok(cells.includes("$0.0450"), cells.join(" | "));
+  assert.ok(cells.includes("0.50 (1 in 2 h)"), cells.join(" | "));
+  assert.ok(cells.includes("60 min (2 reported)"), cells.join(" | "));
+  const effort = document.querySelector("[data-metric='effortMinutesPerApplication']");
+  assert.match(effort?.textContent ?? "", /60 min/);
+  assert.match(effort?.textContent ?? "", /Apply Kit/);
 });
 
 test("data notes and the list of unmeasured numbers are shown", () => {
@@ -185,7 +220,7 @@ test("data notes and the list of unmeasured numbers are shown", () => {
   const notes = document.querySelector("[data-section='data-notes']");
   assert.match(notes?.textContent ?? "", /1 application is past Applied but has no applied date/);
   const gaps = document.querySelector("[data-section='not-measured']")?.textContent ?? "";
-  assert.match(gaps, /time you spend applying/i);
+  assert.doesNotMatch(gaps, /time you spend applying/i, "time is now self-reported");
   assert.match(gaps, /which feed jobs you opened/i);
   assert.match(gaps, /factual-error rate/i);
 });

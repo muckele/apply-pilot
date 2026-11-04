@@ -4,6 +4,7 @@ import { after, test, type TestContext } from "node:test";
 
 import type { NextRequest } from "next/server";
 
+import { readSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, readSentDocumentsSnapshot } from "@/lib/apply-kit/sent-documents";
 import { documentContentHash } from "@/lib/documents/document-review";
 import {
@@ -388,4 +389,41 @@ test("a PATCH status change titles its timeline event with the readable status l
   const moved = await patch(id, { status: "HIRING_MANAGER_SCREEN" });
   assert.equal(moved.status, 200, await moved.clone().text());
   assert.equal(db.store.events.at(-1)!.title, "Status changed to Hiring manager");
+});
+
+test("'I applied' keeps self-reported minutes on the APPLIED event, once, beside what was sent", async (t) => {
+  const db = await setup(t);
+  const response = await post(appliedBody({ effortMinutes: 45 }));
+  assert.equal(response.status, 200, await response.clone().text());
+  const event = db.store.events[0]!;
+  assert.equal(readSelfReportedEffort(event.metadata)?.minutes, 45);
+  assert.ok(readSentDocumentsSnapshot(event.metadata), "the same event still freezes what was sent");
+
+  // Recording "I applied" again neither adds nor replaces the minutes.
+  const again = await post(appliedBody({ effortMinutes: 90, expectedCoverLetterContentHash: undefined }));
+  assert.equal(again.status, 200);
+  const records = db.store.events.map((entry) => readSelfReportedEffort(entry.metadata)).filter(Boolean);
+  assert.deepEqual(records.map((record) => record?.minutes), [45]);
+});
+
+test("minutes are optional and are only recorded when the application enters Applied", async (t) => {
+  const db = await setup(t);
+  const saved = await post({ jobPostingId: JOB, status: "SAVED", resumeVersionId: "resume-v2", coverLetterVersionId: null, effortMinutes: 20 });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  assert.equal(readSelfReportedEffort(db.store.events[0]!.metadata), null);
+  const applied = await post(appliedBody());
+  assert.equal(applied.status, 200, await applied.clone().text());
+  assert.equal(readSelfReportedEffort(db.store.events.at(-1)!.metadata), null);
+  assert.ok(readSentDocumentsSnapshot(db.store.events.at(-1)!.metadata));
+});
+
+test("minutes that are not 1 to 600 whole minutes are refused and nothing is written", async (t) => {
+  for (const effortMinutes of [0, -5, 12.5, 601, "45"]) {
+    await t.test(JSON.stringify(effortMinutes), async (sub) => {
+      const db = await setup(sub);
+      const response = await post(appliedBody({ effortMinutes }));
+      assert.equal(response.status, 422);
+      assert.deepEqual([db.store.applications.length, db.store.events.length, db.store.audits.length], [0, 0, 0]);
+    });
+  }
 });

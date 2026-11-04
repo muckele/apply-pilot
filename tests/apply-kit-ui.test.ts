@@ -195,6 +195,45 @@ test("'I applied' needs an explicit attestation and records the exact selected v
   });
 });
 
+// react-dom is imported before this file installs a DOM, so React watches text inputs through its
+// legacy fallback (focus, then keyup) instead of the input event. JSDOM lacks the old IE hooks that
+// fallback attaches, so they are stubbed; React's own change detection then fires onChange.
+async function typeInto(input: HTMLInputElement, value: string) {
+  Object.assign(input, { attachEvent: () => undefined, detachEvent: () => undefined });
+  const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+  await act(async () => {
+    input.dispatchEvent(new window.FocusEvent("focusin", { bubbles: true }));
+    setValue.call(input, value);
+    input.dispatchEvent(new window.KeyboardEvent("keyup", { bubbles: true }));
+  });
+}
+
+test("'I applied' can carry the minutes it took: optional, whole minutes only, sent with the record", async () => {
+  const view = await kitView();
+  await mounted(view, ok, async ({ container, requests }) => {
+    await click(element(container, "[data-start-applied]"));
+    const minutes = element<HTMLInputElement>(container, "[data-effort-minutes]");
+    assert.equal(minutes.value, "", "the box starts empty");
+    assert.equal(minutes.required, false);
+    assert.match(container.querySelector(`label[for="${minutes.id}"]`)?.textContent ?? "", /minutes.*optional/iu);
+    assert.match(element(container, `#${minutes.getAttribute("aria-describedby")}`).textContent ?? "", /Insights/u);
+    await click(element(container, "[data-attest]"));
+    const record = element<HTMLButtonElement>(container, "[data-confirm-applied]");
+
+    for (const bad of ["0", "12.5", "601"]) {
+      await typeInto(minutes, bad);
+      assert.equal(record.disabled, true, `${bad} blocks recording`);
+      assert.match(element(container, "[data-effort-error]").textContent ?? "", /whole minutes from 1 to 600/u);
+      assert.equal(minutes.getAttribute("aria-invalid"), "true");
+    }
+    await typeInto(minutes, "45");
+    assert.equal(container.querySelector("[data-effort-error]"), null);
+    assert.equal(record.disabled, false);
+    await click(record);
+    assert.equal(JSON.parse(String(requests[0]!.init.body)).effortMinutes, 45);
+  });
+});
+
 test("a cover letter that needs review blocks recording until it is reviewed or left out", async () => {
   const view = await kitView((data) => { data.generatedDocument = data.generatedDocument.filter((row) => row.id !== "cover-legacy"); });
   await mounted(view, ok, async ({ container, requests }) => {

@@ -94,10 +94,15 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add tables, columns or constraints, and must be deployed before #45 reaches `main`. One Playwright journey test needs `npm run browser:install` locally.
 
-**WP1.9 measurement** (draft PR #47 against `integration/mvp-m1`, no migration). A new `/insights` page shows weekly counts: jobs added to the feed, jobs saved, Apply Kits prepared, applications, and interviews. It also shows the supporting metrics: share sent with tailored documents, complete tracking, interview rate, feed save rate, AI spend, and AI cost per application. Every number comes from existing tables and is scoped to the signed-in user. The page says how each number is computed. Where a number can't be computed it says "Not enough data" or "Not measured yet" instead of showing a zero.
+**WP1.9 measurement** (draft PR #47 against `integration/mvp-m1`, no migration). A new `/insights` page shows weekly counts: jobs added to the feed, jobs saved, Apply Kits prepared, applications, and interviews. It also shows the supporting metrics: share sent with tailored documents, complete tracking, interview rate, feed save rate, AI spend, and AI cost per application. Every number comes from existing tables and is scoped to the signed-in user. The page says how each number is computed. Where a number can't be computed it says "Not enough data" instead of showing a zero.
 
-These §11 metrics can't be measured honestly from current data:
-- **Interviews per applicant-hour (the primary metric) and minutes of active effort per application.** Nothing records time spent applying. One way to fix this without a migration: ask for self-reported minutes on the "I applied" step and keep them in that timeline event's metadata. Timing Apply Kit sessions would need a new event, probably a new table. This is the owner's choice.
+**Effort time is self-reported (owner decision, 2026-11-04).** The Apply Kit's "I applied" step has an optional "Minutes this application took" box, whole minutes from 1 to 600. The answer is stored once, in the APPLIED timeline event's metadata beside the "what I sent" snapshot (`apply-pilot/self-reported-effort/v1`), so there is still no migration. From it the page computes:
+- **Minutes of effort per application:** the average over the week's applications that have minutes.
+- **Interviews per applicant-hour (primary):** for those same applications, the interviews they have reached since, divided by the hours reported.
+
+Applications recorded without minutes are left out of both sides, and the page shows how many reported (for example "2 of 3 applications"). This covers the box being left blank, a card moved to Applied in the tracker, and the job page's packet builder, which doesn't ask. The minutes are the user's estimate, not a timer. Minutes can't be added after recording yet.
+
+These §11 metrics still can't be measured honestly from current data:
 - **Jobs seen.** Nothing records which feed jobs the user opened, so the page counts jobs *added* to the feed instead.
 - **Factual-error rate in reviewed documents.** There is no log of errors found in review.
 - **Weekly active users.** This is a beta-wide number, so it is not on a per-user page.

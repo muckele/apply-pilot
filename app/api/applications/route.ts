@@ -7,6 +7,11 @@ import {
   resolvePostingStatusForApplicationStatus,
   suggestApplicationNextAction
 } from "@/lib/applications/pipeline";
+import {
+  SELF_REPORTED_EFFORT_METADATA_KEY,
+  buildSelfReportedEffort,
+  effortMinutesSchema
+} from "@/lib/applications/self-reported-effort";
 import { resolveApplicationPostStatus } from "@/lib/applications/status";
 import {
   SENT_DOCUMENTS_METADATA_KEY,
@@ -53,7 +58,9 @@ const createApplicationSchema = z.object({
   notes: z.string().optional(),
   // Apply Kit: hashes of the documents the user saw when attesting "I applied" (D031 content hash).
   expectedResumeContentHash: contentHashSchema.optional(),
-  expectedCoverLetterContentHash: contentHashSchema.optional()
+  expectedCoverLetterContentHash: contentHashSchema.optional(),
+  // Apply Kit: the user's own estimate of the minutes this application took (Insights only).
+  effortMinutes: effortMinutesSchema.optional()
 });
 
 export async function POST(request: NextRequest) {
@@ -114,7 +121,8 @@ export async function POST(request: NextRequest) {
         coverLetterVersion: requiresCurrent.coverLetterVersion ? coverLetterVersion : null
       });
       // "What I sent": entering APPLIED freezes the exact selected documents into the event.
-      const sentDocuments = nextStatus === "APPLIED" && existing?.status !== "APPLIED"
+      const entersApplied = nextStatus === "APPLIED" && existing?.status !== "APPLIED";
+      const sentDocuments = entersApplied
         ? await captureSentDocumentsInTransaction(tx, {
             userId,
             jobPostingId: input.jobPostingId,
@@ -126,6 +134,9 @@ export async function POST(request: NextRequest) {
             expectedResumeContentHash: input.expectedResumeContentHash,
             expectedCoverLetterContentHash: input.expectedCoverLetterContentHash
           })
+        : null;
+      const selfReportedEffort = entersApplied && input.effortMinutes !== undefined
+        ? buildSelfReportedEffort({ minutes: input.effortMinutes, recordedAt: new Date() })
         : null;
 
       const statusChanged = !existing || existing.status !== nextStatus;
@@ -191,7 +202,8 @@ export async function POST(request: NextRequest) {
           metadata: {
             resumeVersionId: effective.resumeVersionId,
             coverLetterVersionId: effective.coverLetterVersionId,
-            ...(sentDocuments ? { [SENT_DOCUMENTS_METADATA_KEY]: sentDocuments } : {})
+            ...(sentDocuments ? { [SENT_DOCUMENTS_METADATA_KEY]: sentDocuments } : {}),
+            ...(selfReportedEffort ? { [SELF_REPORTED_EFFORT_METADATA_KEY]: selfReportedEffort } : {})
           }
         }
       });

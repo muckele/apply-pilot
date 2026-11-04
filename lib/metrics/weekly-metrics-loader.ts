@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 
+import { SELF_REPORTED_EFFORT_METADATA_KEY, SELF_REPORTED_EFFORT_SCHEMA } from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, SENT_DOCUMENTS_SCHEMA } from "@/lib/apply-kit/sent-documents";
 import { computeWeeklyMetrics, type WeeklyMetricsReport } from "@/lib/metrics/weekly-metrics";
 import { METRICS_TIME_ZONE, buildMetricWeeks } from "@/lib/metrics/weeks";
@@ -18,7 +19,8 @@ const STATUS_EVENT_TYPES = ["CREATED", "STATUS_CHANGED"] as const;
  * query filters by `userId`. Feed jobs and AI usage are bounded to the shown weeks; tracker rows
  * are read whole because an application's first interview or first tailored document can come
  * before the range, and one person's tracker is small. Only applications applied inside the range
- * have their frozen "what I sent" records read, because those carry full document text.
+ * have their APPLIED events read (the frozen "what I sent" record and self-reported minutes),
+ * because the snapshots carry full document text.
  */
 export async function loadWeeklyMetrics(db: WeeklyMetricsDb, input: {
   userId: string;
@@ -71,12 +73,17 @@ export async function loadWeeklyMetrics(db: WeeklyMetricsDb, input: {
       application.dateApplied.getTime() >= range.gte.getTime() &&
       application.dateApplied.getTime() < range.lt.getTime())
     .map((application) => application.id);
-  const sentDocumentEvents = appliedInRangeIds.length
+  // One read for the APPLIED events of in-range applications: their "what I sent" snapshot and
+  // self-reported minutes share the event, so reading them together avoids loading it twice.
+  const appliedEvents = appliedInRangeIds.length
     ? await db.applicationEvent.findMany({
         where: {
           userId,
           applicationId: { in: appliedInRangeIds },
-          metadata: { path: [SENT_DOCUMENTS_METADATA_KEY, "schema"], equals: SENT_DOCUMENTS_SCHEMA }
+          OR: [
+            { metadata: { path: [SENT_DOCUMENTS_METADATA_KEY, "schema"], equals: SENT_DOCUMENTS_SCHEMA } },
+            { metadata: { path: [SELF_REPORTED_EFFORT_METADATA_KEY, "schema"], equals: SELF_REPORTED_EFFORT_SCHEMA } }
+          ]
         },
         select: { id: true, userId: true, applicationId: true, occurredAt: true, metadata: true }
       })
@@ -91,7 +98,7 @@ export async function loadWeeklyMetrics(db: WeeklyMetricsDb, input: {
       jobs,
       applications,
       statusEvents,
-      sentDocumentEvents,
+      appliedEvents,
       tailoredDocuments: [...resumeVersions, ...generatedDocuments],
       interviews,
       aiUsage

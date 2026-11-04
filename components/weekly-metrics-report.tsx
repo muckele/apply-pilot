@@ -4,9 +4,10 @@ import { Panel, PanelHeader } from "@/components/ui";
 import type { LoadedWeeklyMetrics } from "@/lib/metrics/weekly-metrics-loader";
 import {
   WEEKLY_METRIC_DEFINITIONS,
+  type InterviewsPerHourMetric,
+  type MinutesPerItemMetric,
   type MoneyPerItemMetric,
   type NotEnoughData,
-  type NotMeasured,
   type PeriodMetrics,
   type RatioMetric
 } from "@/lib/metrics/weekly-metrics";
@@ -14,7 +15,7 @@ import {
 export const INSIGHTS_WEEK_OPTIONS = Object.freeze([4, 8, 13] as const);
 const DEFAULT_INSIGHTS_WEEKS = 8;
 
-type MetricResult = RatioMetric | MoneyPerItemMetric | NotEnoughData | NotMeasured;
+type MetricResult = RatioMetric | MoneyPerItemMetric | MinutesPerItemMetric | InterviewsPerHourMetric | NotEnoughData;
 type FunnelKey = keyof PeriodMetrics["funnel"];
 type SupportingKey = Exclude<keyof PeriodMetrics["metrics"], "interviewsPerApplicantHour">;
 
@@ -27,12 +28,18 @@ const SUPPORTING_KEYS: readonly SupportingKey[] = [
   "feedSaveRate",
   "aiCostPerApplication"
 ];
-const SUPPORTING_TABLE_KEYS = ["tailoredShare", "completeTracking", "interviewRate", "feedSaveRate"] as const;
+const SUPPORTING_TABLE_KEYS = [
+  "interviewsPerApplicantHour",
+  "effortMinutesPerApplication",
+  "tailoredShare",
+  "completeTracking",
+  "interviewRate",
+  "feedSaveRate"
+] as const;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const TIME_ZONE_NAMES: Record<string, string> = { "America/Los_Angeles": "Pacific time" };
 
 const NOT_MEASURED_ITEMS = [
-  "The time you spend applying. Without it there are no applicant-hours, so interviews per applicant-hour and minutes of effort per application can't be computed.",
   "Which feed jobs you opened. \"Jobs added to your feed\" counts jobs that arrived, not jobs you looked at.",
   "The factual-error rate in reviewed documents. Apply Pilot keeps no log of errors found in review yet, so there is nothing to count.",
   "Weekly active users. That is a beta-wide number, not one for your own search."
@@ -58,6 +65,20 @@ function plural(count: number, singular: string, pluralForm: string) {
   return `${count} ${count === 1 ? singular : pluralForm}`;
 }
 
+const oneDecimal = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+
+function formatHours(minutes: number) {
+  const hours = minutes / 60;
+  return `${oneDecimal.format(hours)} ${hours === 1 ? "hour" : "hours"}`;
+}
+
+// "over 2 of 3 applications" when some of the period's applications have no reported minutes.
+function reportedApplications(result: MinutesPerItemMetric | InterviewsPerHourMetric) {
+  return result.reported === result.applications
+    ? plural(result.applications, "application", "applications")
+    : `${result.reported} of ${plural(result.applications, "application", "applications")}`;
+}
+
 export function formatMetricResult(result: MetricResult): { value: string; detail: string } {
   const small = (smallSample: boolean) => (smallSample ? " · small sample" : "");
   switch (result.kind) {
@@ -71,17 +92,34 @@ export function formatMetricResult(result: MetricResult): { value: string; detai
         value: formatMoney(result.valueMicros),
         detail: `${formatMoney(result.totalMicros)} over ${plural(result.items, "application", "applications")}${small(result.smallSample)}`
       };
+    case "minutes_per_item":
+      return {
+        value: `${Math.round(result.valueMinutes)} min`,
+        detail: `${result.totalMinutes} min over ${reportedApplications(result)}${small(result.smallSample)}`
+      };
+    case "interviews_per_hour":
+      return {
+        value: `${result.value.toFixed(2)} per hour`,
+        detail: `${plural(result.interviews, "interview", "interviews")} in ${formatHours(result.totalMinutes)}, over ${reportedApplications(result)}${small(result.smallSample)}`
+      };
     case "not_enough_data":
       return { value: "Not enough data", detail: result.reason };
-    case "not_measured":
-      return { value: "Not measured yet", detail: result.reason };
   }
 }
 
-function formatTableCell(result: RatioMetric | MoneyPerItemMetric | NotEnoughData) {
-  if (result.kind === "ratio") return `${formatPercent(result.value)} (${result.numerator} of ${result.denominator})`;
-  if (result.kind === "money_per_item") return formatMoney(result.valueMicros);
-  return "Not enough data";
+function formatTableCell(result: MetricResult) {
+  switch (result.kind) {
+    case "ratio":
+      return `${formatPercent(result.value)} (${result.numerator} of ${result.denominator})`;
+    case "money_per_item":
+      return formatMoney(result.valueMicros);
+    case "minutes_per_item":
+      return `${Math.round(result.valueMinutes)} min (${result.reported} reported)`;
+    case "interviews_per_hour":
+      return `${result.value.toFixed(2)} (${result.interviews} in ${oneDecimal.format(result.totalMinutes / 60)} h)`;
+    case "not_enough_data":
+      return "Not enough data";
+  }
 }
 
 function formatWeekLabel(period: PeriodMetrics) {
@@ -101,7 +139,7 @@ function HowComputed({ text }: { text: string }) {
 function MetricTile({ metricKey, result }: { metricKey: SupportingKey; result: MetricResult }) {
   const definition = WEEKLY_METRIC_DEFINITIONS[metricKey];
   const formatted = formatMetricResult(result);
-  const missing = result.kind === "not_enough_data" || result.kind === "not_measured";
+  const missing = result.kind === "not_enough_data";
   return (
     <div data-metric={metricKey} className="product-surface rounded-xl border p-4">
       <p className="product-themed-accent text-xs font-semibold uppercase tracking-[0.08em]">{definition.label}</p>
@@ -225,7 +263,7 @@ export function WeeklyMetricsReportView({ report, weekCount }: { report: LoadedW
       <Panel tone="branded">
         <PanelHeader title="Supporting metrics by week" description="Small weekly samples swing a lot; read them with the counts beside them." tone="branded" />
         <div className="overflow-x-auto">
-          <table data-table="supporting" className="w-full min-w-[860px] text-left text-sm">
+          <table data-table="supporting" className="w-full min-w-[1180px] text-left text-sm">
             <caption className="sr-only">Supporting metrics by week</caption>
             <thead className="product-divider product-themed-muted border-b text-xs uppercase">
               <tr>

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  SELF_REPORTED_EFFORT_METADATA_KEY,
+  SELF_REPORTED_EFFORT_SCHEMA,
+  buildSelfReportedEffort
+} from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, SENT_DOCUMENTS_SCHEMA } from "@/lib/apply-kit/sent-documents";
 import { documentContentHash } from "@/lib/documents/document-review";
 import { loadWeeklyMetrics, type WeeklyMetricsDb } from "@/lib/metrics/weekly-metrics-loader";
@@ -13,6 +18,11 @@ const WEEKS = buildMetricWeeks({ now: NOW, count: 2 });
 const RANGE = { gte: WEEKS[0].start, lt: WEEKS[1].end };
 
 type Call = { model: string; method: string; args: { where: Record<string, unknown> } };
+
+const minutes = (metadata: object, value: number) => ({
+  ...metadata,
+  [SELF_REPORTED_EFFORT_METADATA_KEY]: buildSelfReportedEffort({ minutes: value, recordedAt: new Date("2026-11-03T18:00:00Z") })
+});
 
 const sentMetadata = {
   [SENT_DOCUMENTS_METADATA_KEY]: {
@@ -76,10 +86,11 @@ function fakeDb(options: { appliedInRange?: boolean } = {}) {
     applicationEvent: {
       findMany: async (args: Call["args"]) => {
         calls.push({ model: "applicationEvent", method: "findMany", args });
-        if ("metadata" in args.where) {
+        if ("applicationId" in args.where) {
           return [
-            { id: "sent-a", userId: USER, applicationId: "app-a", occurredAt: new Date("2026-11-03T18:00:00Z"), metadata: sentMetadata },
-            { id: "sent-b", userId: OTHER, applicationId: "app-b", occurredAt: new Date("2026-11-03T18:00:00Z"), metadata: sentMetadata }
+            { id: "sent-a", userId: USER, applicationId: "app-a", occurredAt: new Date("2026-11-03T18:00:00Z"), metadata: minutes(sentMetadata, 30) },
+            { id: "sent-b", userId: OTHER, applicationId: "app-b", occurredAt: new Date("2026-11-03T18:00:00Z"), metadata: minutes(sentMetadata, 600) },
+            { id: "effort-b", userId: OTHER, applicationId: "app-a", occurredAt: new Date("2026-11-04T18:00:00Z"), metadata: minutes({}, 600) }
           ];
         }
         return [
@@ -132,26 +143,29 @@ test("every query is scoped to the signed-in user, and range-bounded tables use 
   assert.deepEqual(where("generatedDocument").type, { in: ["TAILORED_RESUME", "COVER_LETTER"] });
 });
 
-test("sent records are read only for applications applied in the shown weeks", async () => {
+test("sent records and reported minutes are read in one query, only for applications applied in the shown weeks", async () => {
   const { db, calls } = fakeDb();
 
   await loadWeeklyMetrics(db, { userId: USER, now: NOW, weekCount: 2 });
 
-  const sentQuery = calls.find((call) => call.model === "applicationEvent" && "metadata" in call.args.where);
-  assert.ok(sentQuery);
-  assert.deepEqual(sentQuery.args.where, {
+  const appliedQuery = calls.find((call) => call.model === "applicationEvent" && "applicationId" in call.args.where);
+  assert.ok(appliedQuery);
+  assert.deepEqual(appliedQuery.args.where, {
     userId: USER,
     applicationId: { in: ["app-a"] },
-    metadata: { path: [SENT_DOCUMENTS_METADATA_KEY, "schema"], equals: SENT_DOCUMENTS_SCHEMA }
+    OR: [
+      { metadata: { path: [SENT_DOCUMENTS_METADATA_KEY, "schema"], equals: SENT_DOCUMENTS_SCHEMA } },
+      { metadata: { path: [SELF_REPORTED_EFFORT_METADATA_KEY, "schema"], equals: SELF_REPORTED_EFFORT_SCHEMA } }
+    ]
   });
 });
 
-test("no sent-record query runs when nothing was applied in the shown weeks", async () => {
+test("no applied-event query runs when nothing was applied in the shown weeks", async () => {
   const { db, calls } = fakeDb({ appliedInRange: false });
 
   await loadWeeklyMetrics(db, { userId: USER, now: NOW, weekCount: 2 });
 
-  assert.equal(calls.some((call) => call.model === "applicationEvent" && "metadata" in call.args.where), false);
+  assert.equal(calls.some((call) => call.model === "applicationEvent" && "applicationId" in call.args.where), false);
 });
 
 test("rows from another user never reach the numbers even if a query returned them", async () => {
@@ -165,6 +179,9 @@ test("rows from another user never reach the numbers even if a query returned th
   assert.equal(tailored.kind, "ratio");
   assert.equal(tailored.numerator, 1);
   assert.equal(tailored.denominator, 1);
+  const effort = report.total.metrics.effortMinutesPerApplication;
+  assert.equal(effort.kind, "minutes_per_item");
+  assert.deepEqual([effort.totalMinutes, effort.reported], [30, 1], "another user's minutes, even on this user's application, never count");
 });
 
 test("a missing user record is an error, not an empty report", async () => {
