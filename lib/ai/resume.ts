@@ -2502,6 +2502,15 @@ export function prepareResumeParseV8Request(
   };
 }
 
+/** The provider request hash (and response-cache key) a V9 parse of this text uses. */
+export function resumeParseRequestHash(text: string) {
+  return hashAiInput(
+    "resumeParsePrompt",
+    RESUME_PARSE_CACHE_VERSION,
+    buildResumeProviderSourceInputV9(normalizeResumeLineEndings(text))
+  );
+}
+
 export function prepareResumeParseV9Request(
   text: string,
   provider: AiProviderName
