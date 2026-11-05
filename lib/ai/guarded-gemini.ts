@@ -12,6 +12,7 @@ import { AI_FEATURE_REGISTRY, type AiFeatureRegistration } from "@/lib/ai/featur
 import {
   buildGeminiJsonRequest,
   callGeminiJsonProvider,
+  countGeminiRequestTokens,
   GeminiProviderError,
   type GeminiThinkingLevel,
   type GeminiUsage
@@ -19,6 +20,7 @@ import {
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { AI_FEATURE_POLICIES, assertAiInputWithinLimits, type AiFeature } from "@/lib/ai/policy";
 import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
+import { logger } from "@/lib/monitoring/logger";
 import { prisma } from "@/lib/prisma";
 
 // The one shared product path for Gemini JSON features. Every call: bounds its input,
@@ -131,6 +133,30 @@ export function assertConservativeGeminiWireBound(
       413,
       { code: "AI_INPUT_TOO_LARGE" }
     );
+  }
+}
+
+// The byte bound treats every byte as a token, so a real résumé plus job description
+// can exceed it while being far smaller in tokens. Before refusing, ask Gemini for the
+// exact count; the request is admitted only if that count is within maxInputTokens, so
+// the reservation (priced at maxInputTokens) still bounds the cost.
+export async function assertGeminiInputWithinBound(
+  feature: AiFeature,
+  maxInputTokens: number,
+  requestBody: object,
+  { apiKey, model }: { apiKey: string; model: string }
+) {
+  try {
+    assertConservativeGeminiWireBound(feature, maxInputTokens, requestBody);
+    return;
+  } catch (error) {
+    if (!(error instanceof PublicApiError) || error.status !== 413) throw error;
+    const counted = await countGeminiRequestTokens({ apiKey, model, requestBody });
+    if (counted !== null && counted <= maxInputTokens) {
+      logger.info("ai.gemini.input_bound_counted", { feature, countedTokens: counted, maxInputTokens });
+      return;
+    }
+    throw error;
   }
 }
 
@@ -256,7 +282,7 @@ export async function generateGuardedGeminiJson<T>(input: GuardedGeminiJsonInput
     maxOutputTokens: policy.maxOutputTokens,
     thinkingLevel
   });
-  assertConservativeGeminiWireBound(feature, policy.maxInputTokens, requestBody);
+  await assertGeminiInputWithinBound(feature, policy.maxInputTokens, requestBody, { apiKey, model });
 
   const cached = await findCachedAiResponse({ userId, provider: "gemini", model, promptName, promptVersion, requestHash });
   if (cached) {

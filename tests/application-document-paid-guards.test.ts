@@ -350,11 +350,21 @@ test("oversize document input fails before cache, reservation, or provider dispa
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("token-dense Gemini input fails a conservative wire bound before reservation or dispatch", async (t) => {
+test("token-dense Gemini input fails the input bound before reservation or dispatch", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
   let calls = 0;
-  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+  const counted: string[] = [];
+  installGemini(t, async (input) => {
+    // Over the byte bound, only the free countTokens method may be asked; here it
+    // reports a count over the limit, so nothing is generated or reserved.
+    if (String(input).endsWith(":countTokens")) {
+      counted.push(String(input));
+      return new Response(JSON.stringify({ totalTokens: 60_000 }), { status: 200 });
+    }
+    calls += 1;
+    throw new Error("must not call");
+  });
 
   await assert.rejects(
     documentRequest({
@@ -365,6 +375,7 @@ test("token-dense Gemini input fails a conservative wire bound before reservatio
       error.status === 413 && error.details?.code === "AI_INPUT_TOO_LARGE"
   );
   assert.equal(calls, 0);
+  assert.equal(counted.length, 1);
   assert.equal(ledger.reservations.length, 0);
 });
 

@@ -281,6 +281,39 @@ async function readGeminiRejectionDiagnostics(response: Response) {
   return { providerCode, requestId };
 }
 
+// Exact input-token count from Gemini's countTokens method, which is free and runs no
+// generation. Returns null if the count is unavailable, so callers can fail closed.
+export async function countGeminiRequestTokens({
+  apiKey,
+  model,
+  requestBody,
+  fetchImpl = fetch,
+  timeoutMs = 20_000
+}: {
+  apiKey: string;
+  model: string;
+  requestBody: object;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<number | null> {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:countTokens`;
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
+      body: JSON.stringify({ generateContentRequest: { model: `models/${model}`, ...requestBody } }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!response.ok) return null;
+    const json = (await response.json().catch(() => null)) as { totalTokens?: unknown } | null;
+    return typeof json?.totalTokens === "number" && Number.isSafeInteger(json.totalTokens) && json.totalTokens >= 0
+      ? json.totalTokens
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function callGeminiJsonProvider({
   apiKey,
   model,
