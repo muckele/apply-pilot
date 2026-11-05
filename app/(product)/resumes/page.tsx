@@ -44,8 +44,10 @@ export default async function ResumesPage() {
               </span>
               <ChevronDown size={18} aria-hidden className="shrink-0 text-slate-500 transition-transform group-open:rotate-180" />
             </summary>
-            <div className="max-w-3xl border-t border-slate-200">
-              <ResumeUploadForm />
+            <div className="border-t border-slate-200">
+              <div className="max-w-3xl">
+                <ResumeUploadForm />
+              </div>
             </div>
           </details>
         </Panel>
