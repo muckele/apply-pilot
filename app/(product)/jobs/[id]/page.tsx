@@ -6,6 +6,7 @@ import { ApplyPacketBuilder } from "@/components/apply-packet-builder";
 import { ApplicationReviewWorkspace } from "@/components/application-review-workspace";
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
+import { RequirementGapList } from "@/components/requirement-gap-list";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { buildDocumentReviewView } from "@/lib/documents/document-review";
@@ -380,20 +381,7 @@ export default async function JobDetailPage({ params }: Props) {
                   </div>
                 </div>
               </div>
-              {job.requirementGaps.length ? (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="text-xs font-semibold uppercase text-amber-900">Requirements not evidenced in the submitted resume</p>
-                  <p className="mt-1 text-xs leading-5 text-amber-800">Not evidenced is not proof that the applicant lacks the capability.</p>
-                  <ul className="mt-2 space-y-1 text-sm leading-6 text-amber-900">
-                    {job.requirementGaps.map((gap) => (
-                      <li key={`${gap.requirement}-${gap.jobRequirement?.ref ?? "legacy"}`}>
-                        {gap.requirement}
-                        {gap.jobRequirement ? <span className="ml-1 text-xs">({gap.jobRequirement.ref})</span> : null}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
+              <RequirementGapList gaps={job.requirementGaps} />
             </div>
           </Panel>
 

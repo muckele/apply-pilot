@@ -315,6 +315,7 @@ export function EvidenceCorrectionReview({ review, onReviewChanged, onReassessme
           return (
             <fieldset key={gap.id} className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 p-4">
               <legend className="px-1 text-sm font-semibold text-amber-950">{gap.requirement}</legend>
+              {gap.tenureSummary ? <p className="text-xs leading-5 text-amber-900">{gap.tenureSummary}</p> : null}
               <label className="block text-xs font-semibold text-slate-700">
                 Review outcome
                 <select

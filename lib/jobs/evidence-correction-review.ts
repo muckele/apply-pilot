@@ -26,6 +26,9 @@ export type EvidenceReviewGap = Readonly<{
   requirement: string;
   jobRef: string | null;
   missingKeywords: string[];
+  // Present only for a locally computed years-of-experience shortfall, so other
+  // gaps (and the snapshot hashes that cover them) keep their exact shape.
+  tenureSummary?: string;
 }>;
 
 export type EvidenceCorrectionReview = Readonly<{
@@ -158,13 +161,17 @@ function readGaps(value: unknown): EvidenceReviewGap[] {
   return value.requirementGaps.flatMap((candidate, index) => {
     if (!isRecord(candidate) || typeof candidate.requirement !== "string" || !candidate.requirement.trim()) return [];
     const citation = isRecord(candidate.jobRequirement) ? candidate.jobRequirement : null;
+    const tenureSummary = isRecord(candidate.tenure) && typeof candidate.tenure.summary === "string"
+      ? candidate.tenure.summary.trim()
+      : "";
     return [Object.freeze({
       id: `gap:${index}`,
       requirement: candidate.requirement.trim(),
       jobRef: typeof citation?.ref === "string" ? citation.ref : null,
       missingKeywords: Array.isArray(candidate.missingKeywords)
         ? candidate.missingKeywords.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
-        : []
+        : [],
+      ...(tenureSummary ? { tenureSummary } : {})
     })];
   });
 }
