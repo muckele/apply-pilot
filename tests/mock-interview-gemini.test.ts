@@ -502,9 +502,15 @@ test("stored session JSON is parsed defensively", async () => {
   assert.deepEqual(Object.keys(parseMockAnswers({ q1: { answer: "x" }, q2: { answer: "ok", feedback: feedbackFixture({ structure: 3, specificity: 3, relevance: 3, evidence: 3 }), answeredAt: "2026-11-03T10:00:00.000Z", attempts: 1, savedStoryId: null, requestHash: "c".repeat(64) } })), ["q2"]);
 });
 
-test("worst-case mock interview payloads stay inside their conservative Gemini wire bounds and the ten-cent ceiling", async () => {
+test("worst-case mock interview payloads stay inside their input-token limits and the ten-cent ceiling", async () => {
   const { buildGeminiJsonRequest } = await import("@/lib/ai/gemini");
-  const { assertConservativeGeminiWireBound, guardedGeminiMaximumCostMicros } = await import("@/lib/ai/guarded-gemini");
+  const { guardedGeminiMaximumCostMicros } = await import("@/lib/ai/guarded-gemini");
+  // With 120 résumé facts the worst case can exceed the bytes-as-tokens bound, which the
+  // guarded engine then settles with an exact countTokens call. English JSON runs ~4
+  // bytes per token; even at 2 bytes per token the worst case must fit the input limit,
+  // which is also what the reservation (and so the cost ceiling) is priced at.
+  const withinInputLimit = (maxInputTokens: number, body: unknown) =>
+    assert.ok(Buffer.byteLength(JSON.stringify(body)) / 2 + 1_024 <= maxInputTokens);
   const { AI_FEATURE_POLICIES } = await import("@/lib/ai/policy");
   const {
     buildMockFeedbackPayload,
@@ -536,8 +542,8 @@ test("worst-case mock interview payloads stay inside their conservative Gemini w
     prepQuestions: Array.from({ length: 30 }, (_, index) => long(`Prep ${index}`, 400))
   });
   assert.equal(questionsPayload.jobLines.length, 40);
-  assert.ok(questionsPayload.applicantFacts.length <= 50);
-  assertConservativeGeminiWireBound("MOCK_INTERVIEW_QUESTIONS", AI_FEATURE_POLICIES.MOCK_INTERVIEW_QUESTIONS.maxInputTokens, buildGeminiJsonRequest({
+  assert.ok(questionsPayload.applicantFacts.length <= 120);
+  withinInputLimit(AI_FEATURE_POLICIES.MOCK_INTERVIEW_QUESTIONS.maxInputTokens, buildGeminiJsonRequest({
     systemPrompt: mockInterviewQuestionsSystemPrompt,
     payload: questionsPayload,
     responseJsonSchema: buildMockQuestionsResponseJsonSchema(questionsPayload),
@@ -551,7 +557,7 @@ test("worst-case mock interview payloads stay inside their conservative Gemini w
     resume: bigResume,
     answer: long("Answer", MOCK_ANSWER_MAX_CHARS)
   });
-  assertConservativeGeminiWireBound("MOCK_INTERVIEW_FEEDBACK", AI_FEATURE_POLICIES.MOCK_INTERVIEW_FEEDBACK.maxInputTokens, buildGeminiJsonRequest({
+  withinInputLimit(AI_FEATURE_POLICIES.MOCK_INTERVIEW_FEEDBACK.maxInputTokens, buildGeminiJsonRequest({
     systemPrompt: mockInterviewFeedbackSystemPrompt,
     payload: feedbackPayload,
     responseJsonSchema: buildMockFeedbackResponseJsonSchema(feedbackPayload),

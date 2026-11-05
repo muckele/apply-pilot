@@ -55,7 +55,7 @@ export type InterviewFeedbackPayload = {
 const MAX_NOTES = 10;
 const MAX_NOTE_CHARS = 2_000;
 const MAX_TRANSCRIPT_SECTIONS = 2;
-const MAX_FEEDBACK_FACTS = 60;
+const MAX_FEEDBACK_FACTS = 120;
 
 export function buildInterviewFeedbackPayload(input: InterviewFeedbackInput): InterviewFeedbackPayload {
   const transcript = input.transcript?.trim() ?? "";

@@ -51,7 +51,8 @@ const MAX_JOB_LINES = 40;
 const MAX_JOB_LINE_CHARS = 240;
 const MIN_DESCRIPTION_LINE_CHARS = 20;
 const MIN_JOB_LINES = 3;
-const MAX_PROMPT_FACTS = 50;
+// Experience comes first in the catalog; five jobs alone produced 97 facts on a real résumé.
+const MAX_PROMPT_FACTS = 120;
 const MAX_PROMPT_FACT_CHARS = 300;
 const MAX_PREP_QUESTIONS = 12;
 

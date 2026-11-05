@@ -41,3 +41,38 @@ test("without a binding cap every fact is kept and fact IDs do not depend on ord
   for (const fact of capped) assert.equal(fact.factId, ids.get(fact.text));
   assert.ok(all.some((fact) => fact.text === "Skill 63"));
 });
+
+// Shaped like the live résumé: five jobs (≈97 work-history facts) and 63 skills.
+const longResume = {
+  summary: "Sales and account management professional.",
+  skills: Array.from({ length: 63 }, (_, index) => `Skill ${index + 1}`),
+  achievements: ["Top five of 400+ advisors."],
+  workHistory: Array.from({ length: 5 }, (_, job) => ({
+    company: `Company ${job + 1}`,
+    title: `Role ${job + 1}`,
+    startDate: `Jan ${2015 + job}`,
+    endDate: `Dec ${2015 + job}`,
+    bullets: Array.from({ length: 6 }, (_, bullet) => job === 4 && bullet === 5
+      ? "The playbooks were used by 100–200 agents."
+      : `Job ${job + 1} result ${bullet + 1} with a measured outcome.`)
+  })),
+  education: [{ institution: "State University", credential: "B.A." }]
+};
+
+test("mock interviews and interview feedback see the last job's bullets on a long résumé", async () => {
+  const { buildMockFeedbackPayload } = await import("@/lib/ai/mock-interview");
+  const { buildInterviewFeedbackPayload } = await import("@/lib/ai/interview-feedback");
+  const job = { title: "Account Executive", company: "Example", description: "Close deals." };
+  const mock = buildMockFeedbackPayload({
+    question: { questionId: "q1", category: "BEHAVIORAL", question: "Tell me about a win.", lookingFor: "Results.", jobLine: { lineId: "L1", text: "Close deals.", source: "description" }, factIds: [] },
+    job,
+    resume: longResume,
+    answer: "The playbooks were used by 100 to 200 agents and lifted conversion."
+  } as never);
+  const feedback = buildInterviewFeedbackPayload({
+    interview: { type: "PHONE" }, job, resume: longResume, notes: ["Went well."], transcript: null
+  } as never);
+  for (const payload of [mock, feedback] as Array<{ applicantFacts: Array<{ text: string }> }>) {
+    assert.ok(payload.applicantFacts.some((fact) => fact.text.includes("100–200 agents")));
+  }
+});
