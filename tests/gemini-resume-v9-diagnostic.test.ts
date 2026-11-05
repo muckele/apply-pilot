@@ -17,8 +17,8 @@ import { providerV9FromCanonical } from "@/tests/fixtures/resume-v9-provider-dat
 
 const CANDIDATE_COMMIT = "e712ad7829f2706b147f4b76ef49337c0d246e1b";
 const EXPECTED_SOURCE_HASH = "579be60d3d8e66dfd013e7cfa92a689746a4f74f811ea3c31934521f24e62799";
-const EXPECTED_REQUEST_HASH = "ea70c338a29242014f89eaa2b2d9b354898f262055a7746bee4862413b6237d7";
-const EXPECTED_SCHEMA_HASH = "d59e1ba2ba364ddf3706fdc68922e8e1b31e492c6ee6dcbb4f40fa967d4e9db1";
+const EXPECTED_REQUEST_HASH = "45770e5892974a61910182baf72740a528a02cc4bf1df3fd8cc3f45bfd7f0dc0";
+const EXPECTED_SCHEMA_HASH = "9357d37e3bca4593e77cd5f9f92c381441e7fca5e9ca99b9767af6fe66681a3b";
 const EXPECTED_CANONICAL_PROJECTION_HASH = "2d9771a9c6ba364376fbbc7ed98eecd86bde6601ddece5708c8923bb195d15a6";
 const HOSTED_RUNTIME_KEYS = [
   "CI",
@@ -94,8 +94,8 @@ test("pins the exact V9 owner-topology request, bounds, and hashes", async () =>
   assert.equal(request.sourceBytes, 5_447);
   assert.equal(request.sourceLineCount, 65);
   assert.equal(request.sourceHash, EXPECTED_SOURCE_HASH);
-  assert.equal(request.requestBodyBytes, 15_538);
-  assert.equal(request.schemaBytes, 2_766);
+  assert.equal(request.requestBodyBytes, 15_590);
+  assert.equal(request.schemaBytes, 2_818);
   assert.equal(request.requestHash, EXPECTED_REQUEST_HASH);
   assert.equal(request.schemaHash, EXPECTED_SCHEMA_HASH);
   assert.deepEqual(JSON.parse(request.bodyJson), expectedBody);

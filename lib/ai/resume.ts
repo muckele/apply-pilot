@@ -1218,6 +1218,8 @@ export function buildResumeParseProviderV9JsonSchema(
   const schema = structuredClone(RESUME_PARSE_PROVIDER_V9_JSON_SCHEMA) as {
     properties: Record<string, {
       items?: { properties?: { recordId?: Record<string, unknown> } };
+      minItems?: number;
+      maxItems?: number;
     }>;
   };
   for (const section of [
@@ -1235,6 +1237,10 @@ export function buildResumeParseProviderV9JsonSchema(
       type: "string",
       enum: recordIds.length > 0 ? recordIds : [`no-${section}-records`]
     };
+    // One typed projection per server-owned record: the provider cannot merge or
+    // drop a record. The Gemini wire schema omits maxItems but keeps minItems.
+    schema.properties[section]!.minItems = recordIds.length;
+    schema.properties[section]!.maxItems = recordIds.length;
   }
   return schema as Record<string, unknown>;
 }

@@ -312,3 +312,20 @@ test("an unfinished bullet's wrapped line is not mistaken for a new project", ()
     [projects.join("\n")]
   );
 });
+
+test("the V9 response schema asks for exactly one entry per server-owned record", async () => {
+  const { buildResumeParseProviderV9JsonSchema, buildResumeParseGeminiProviderV9JsonSchema } = await import("@/lib/ai/resume");
+  const input = buildResumeProviderSourceInputV9(source.replace(
+    "EDUCATION",
+    "PROJECTS\nLEDGER Group\n•Scores each listing.\nAtlas PilotMVP complete\n•Stops for human review.\n\nEDUCATION"
+  ));
+  type ArraySchema = { minItems?: number; maxItems?: number };
+  const counts = { workHistory: 3, projects: 2, education: 1, certifications: 0 } as const;
+  const canonical = buildResumeParseProviderV9JsonSchema(input) as { properties: Record<string, ArraySchema> };
+  const gemini = buildResumeParseGeminiProviderV9JsonSchema(input) as { properties: Record<string, ArraySchema> };
+  for (const [section, count] of Object.entries(counts)) {
+    assert.equal(canonical.properties[section]!.minItems, count, `${section} minItems`);
+    assert.equal(canonical.properties[section]!.maxItems, count, `${section} maxItems`);
+    assert.equal(gemini.properties[section]!.minItems, count, `${section} Gemini minItems`);
+  }
+});

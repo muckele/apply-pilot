@@ -4,6 +4,13 @@ Status: prepared and independently reviewed offline. **Not executed.** This
 document does not authorize a provider request, paid parse, database write,
 merge, or deployment.
 
+> **2026-11-05 re-pin.** The V9 response schema now requires exactly one typed
+> projection per server-owned record (`minItems`/`maxItems` equal to the catalog's
+> record count), so the request and schema hashes below were refreshed. The
+> earlier offline review covered the previous hashes
+> (`ea70c338…` / `d59e1ba2…`); re-review this envelope before any run. Bounds,
+> model, source fixture and maximum cost are unchanged.
+
 ## Candidate and purpose
 
 - Implementation under test: `e712ad7829f2706b147f4b76ef49337c0d246e1b`
@@ -25,12 +32,12 @@ merge, or deployment.
 - Source size: 5,447 bytes / 65 lines / 46 nonblank lines
 - Source SHA-256:
   `579be60d3d8e66dfd013e7cfa92a689746a4f74f811ea3c31934521f24e62799`
-- Request body: 15,538 bytes
+- Request body: 15,590 bytes
 - Request SHA-256:
-  `ea70c338a29242014f89eaa2b2d9b354898f262055a7746bee4862413b6237d7`
-- Response schema: 2,766 bytes
+  `45770e5892974a61910182baf72740a528a02cc4bf1df3fd8cc3f45bfd7f0dc0`
+- Response schema: 2,818 bytes
 - Schema SHA-256:
-  `d59e1ba2ba364ddf3706fdc68922e8e1b31e492c6ee6dcbb4f40fa967d4e9db1`
+  `9357d37e3bca4593e77cd5f9f92c381441e7fca5e9ca99b9767af6fe66681a3b`
 - Canonical projection SHA-256 (contact, work, projects, education,
   certifications; optional list markers and education degree/subject overlap
   are normalized; skills intentionally remain a semantic subset):
