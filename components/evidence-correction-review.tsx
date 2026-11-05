@@ -375,7 +375,7 @@ export function EvidenceCorrectionReview({ review, onReviewChanged, onReassessme
         ) : <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">The match analysis found no unresolved gaps.</p>}
       </div>
 
-      <button type="button" onClick={saveSnapshot} disabled={Boolean(pending)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+      <button type="button" onClick={saveSnapshot} disabled={Boolean(pending) || review.analysisId === null} title={review.analysisId === null ? "Score the match first" : undefined} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
         {pending === "save" ? "Saving…" : "Save reviewed evidence"}
       </button>
       {error ? <p role="alert" className="text-sm text-rose-700">{error}</p> : null}

@@ -563,6 +563,9 @@ test("an unscored job says the gaps are not checked yet instead of implying ther
   assert.match(text, /Not scored yet/);
   assert.match(text, /Score match/);
   assert.doesNotMatch(text, /No current disputed gaps were recorded/);
+  // Saving reviewed evidence needs a current assessment, so it waits for the score.
+  const save = [...new JSDOM(html).window.document.querySelectorAll("button")].find((node) => node.textContent === "Save reviewed evidence");
+  assert.equal(save?.hasAttribute("disabled"), true);
 });
 
 test("a scored job with no open gaps says so", () => {
