@@ -1,8 +1,12 @@
 import type { UserProfile } from "@prisma/client";
 
-import { locationPreferenceMatch, preferredLocationsFromProfile } from "@/lib/job-sources/location-match";
+import {
+  isRemoteOrHybridPosting,
+  isRemotePosting,
+  jobLocationFit,
+  preferredLocationsFromProfile
+} from "@/lib/job-sources/location-match";
 import { scoreJobRelevance, type JobRelevanceResult } from "@/lib/job-sources/relevance";
-import { isRemoteLikeText } from "@/lib/job-sources/remote";
 import type { NormalizedJob } from "@/lib/job-sources/types";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
 
@@ -46,12 +50,13 @@ export function queryMatchesAny(job: NormalizedJob, queries: readonly string[]) 
   return !queries.length || queries.some((query) => queryMatchesJob(job, query));
 }
 
+/** Remote is read from the posting's work style and location; description wording does not count. */
 export function matchesRemoteOnly(job: NormalizedJob, remoteOnly?: boolean) {
   if (!remoteOnly) {
     return true;
   }
 
-  return isRemoteLikeText(job.remoteStatus) || isRemoteLikeText(job.location) || isRemoteLikeText(job.description);
+  return isRemotePosting(job);
 }
 
 export function readPositiveIntegerEnv(name: string, fallback: number) {
@@ -71,36 +76,19 @@ function jobPostedAgeDays(job: NormalizedJob) {
   return (Date.now() - job.datePosted.getTime()) / 86_400_000;
 }
 
-function isRemoteOrHybrid(job: NormalizedJob) {
-  const workStyleText = normalizeText([job.remoteStatus, job.location, job.description].join(" "));
-
-  return (
-    isRemoteLikeText(job.remoteStatus) ||
-    isRemoteLikeText(job.location) ||
-    workStyleText.includes("hybrid") ||
-    workStyleText.includes("remote")
-  );
-}
-
+/**
+ * Driven by this user's own preferred and home locations; no locale is built in. A remote posting
+ * must be remote in a country the user accepts; a hybrid or onsite one must be in their city or
+ * state. Remote or hybrid wording in the description no longer skips this check.
+ */
 function locationMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {
-  const location = normalizeText(job.location);
-
-  if (!location || isRemoteOrHybrid(job)) {
-    return true;
-  }
-
-  // Driven by this user's own preferred and home locations; no locale is built in.
-  const preferredLocations = preferredLocationsFromProfile(profile);
-
-  if (!preferredLocations.length) {
-    return true;
-  }
-
-  if (location.includes("united states") || location === "us" || location === "usa") {
-    return true;
-  }
-
-  return locationPreferenceMatch(job.location, preferredLocations) !== "none";
+  return (
+    jobLocationFit({
+      location: job.location,
+      remoteStatus: job.remoteStatus,
+      preferredLocations: preferredLocationsFromProfile(profile)
+    }) !== "none"
+  );
 }
 
 function salaryMatchesProfile(job: NormalizedJob, profile: UserProfile | null) {
@@ -134,7 +122,7 @@ export function getPreImportRejectionReason({
     return "Posting does not match remote-only filter.";
   }
 
-  if (profile?.remotePreference === "REMOTE" && !isRemoteOrHybrid(job)) {
+  if (profile?.remotePreference === "REMOTE" && !isRemoteOrHybridPosting(job)) {
     return "Work style does not match remote preference.";
   }
 
@@ -154,8 +142,10 @@ export function getPreImportRejectionReason({
     return "Role appears too senior for the current search target.";
   }
 
-  if (relevance.breakdown.roleTitleScore < 45 && relevance.breakdown.bodyEvidenceScore < 70) {
-    return "Role title and body evidence are too weak for the target profile.";
+  // Titles are scored against the user's own roles and target searches (neutral when they have
+  // none), so a title outside them is not carried in by body wording alone.
+  if (relevance.breakdown.roleTitleScore < 45) {
+    return "Role title does not match your target roles or searches.";
   }
 
   if (relevance.decision === "skip") {
@@ -185,7 +175,7 @@ export function evaluateForImport({
     return { passed: false, relevance: null };
   }
 
-  const relevance = scoreJobRelevance({ job, profile, query: queries[0] });
+  const relevance = scoreJobRelevance({ job, profile, queries });
   const rejection = getPreImportRejectionReason({ job, profile, relevance, remoteOnly });
 
   return rejection ? { passed: false, relevance } : { passed: true, relevance };

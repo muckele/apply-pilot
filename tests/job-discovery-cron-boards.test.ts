@@ -59,7 +59,8 @@ function preference(userId: string, email: string, industries = ["Synthetic test
     scoreImported: false,
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
-    // An industry no directory board carries, so only the followed board is synced.
+    // Industry tags only rank directory boards; setup() caps a run at one board so only the
+    // followed board is synced unless a test raises JOB_DISCOVERY_MAX_BOARDS_PER_RUN.
     user: {
       id: userId,
       email,
@@ -104,6 +105,7 @@ function setup(t: TestContext, options: SetupOptions = {}) {
     OPENAI_API_KEY: undefined,
     JOB_SOURCE_REMOTIVE_ENABLED: undefined,
     JOB_SOURCE_ADZUNA_ENABLED: undefined,
+    JOB_DISCOVERY_MAX_BOARDS_PER_RUN: "1",
     LOG_LEVEL: "error"
   });
   forbidNetwork(t);
@@ -274,6 +276,7 @@ test("directory boards are fetched once per cron run and shared by every user", 
   ).map((match) => directoryBoardKey(match.entry));
   assert.ok(expectedDirectoryBoards.length >= 3, "the reviewed directory has several healthcare boards");
   const state = setup(t, { industries });
+  setEnv(t, { JOB_DISCOVERY_MAX_BOARDS_PER_RUN: "100" });
 
   const response = await runCron();
   const result = await response.json();

@@ -110,15 +110,17 @@ test("directory boards match by industry synonym, city and remote availability",
     remoteOnly: false
   });
 
-  assert.deepEqual(matches.map((match) => match.entry.company), ["Health SaaS", "LA Payments", "Remote AI"]);
+  assert.deepEqual(matches.map((match) => match.entry.company), ["Health SaaS", "LA Payments", "Remote AI", "Unrelated"]);
   assert.ok(matches[0].reasons.some((reason) => /industry/i.test(reason)));
   assert.ok(matches[1].reasons.some((reason) => /location/i.test(reason)));
   assert.ok(matches[2].reasons.some((reason) => /remote/i.test(reason)));
+  assert.equal(matches[3].score, 0, "an untagged board is ranked last, not excluded");
 
   const artificialIntelligence = matchDirectoryBoards(boards, {
     industries: ["Artificial Intelligence"], locations: [], remote: false, remoteOnly: false
   });
-  assert.deepEqual(artificialIntelligence.map((match) => match.entry.company), ["Remote AI"]);
+  assert.equal(artificialIntelligence[0].entry.company, "Remote AI");
+  assert.ok(artificialIntelligence.slice(1).every((match) => match.score === 0));
 });
 
 test("remote-only searches never select boards without remote postings", () => {
