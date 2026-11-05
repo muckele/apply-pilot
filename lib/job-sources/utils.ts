@@ -118,12 +118,15 @@ export function detectTechStack(text: string) {
   return uniqueStrings(terms.filter((term) => lower.includes(term.toLowerCase().replace(".", ""))));
 }
 
-export function splitRequirementText(text: string) {
+// Free text splits on lines and bullet marks; one long line is usually prose, not a
+// requirement. A real list item can be a long must-have, so callers splitting known
+// bullets may allow more.
+export function splitRequirementText(text: string, maxLength = 220) {
   return uniqueStrings(
     text
       .split(/\n|•|- |\* /)
       .map((item) => item.trim())
-      .filter((item) => item.length > 12 && item.length < 220)
+      .filter((item) => item.length > 12 && item.length < maxLength)
   ).slice(0, 24);
 }
 

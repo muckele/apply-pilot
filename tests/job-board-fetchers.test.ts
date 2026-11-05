@@ -174,6 +174,8 @@ test("board fetchers reject a 200 response with an unexpected shape", async (t) 
 test("Greenhouse requirements come from the posting's bullet points, not one flattened paragraph", (t) => {
   stubFetch(t, {});
   const provider = new GreenhouseProvider();
+  // A real must-have bullet that is longer than the 220-character line limit.
+  const long = "Demonstrated 5+ years of hands-on experience in a customer-facing technical role such as Forward Deployed Engineer, Solutions Engineer, AI Engineer, Implementation Engineer, Solutions Architect, Technical Consultant, or similar.";
   const escaped = (html: string) => html.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const job = provider.normalizeJob({
     id: 1,
@@ -187,6 +189,7 @@ test("Greenhouse requirements come from the posting's bullet points, not one fla
       "<li><p>Demonstrated 5+ years of hands-on experience in a customer-facing technical role</p></li>",
       "<li>Proven track record of shipping production systems with REST APIs, webhooks &amp; event-driven systems</li>",
       "<li>Payroll, tax, or compliance fluency</li>",
+      `<li>${long}</li>`,
       "<li>Short</li>",
       "</ul>"
     ].join(""))
@@ -195,7 +198,8 @@ test("Greenhouse requirements come from the posting's bullet points, not one fla
   assert.deepEqual(job.requirements, [
     "Demonstrated 5+ years of hands-on experience in a customer-facing technical role",
     "Proven track record of shipping production systems with REST APIs, webhooks & event-driven systems",
-    "Payroll, tax, or compliance fluency"
+    "Payroll, tax, or compliance fluency",
+    long
   ]);
   assert.match(job.description, /^About the role\. You will scope/);
 });

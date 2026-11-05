@@ -52,7 +52,7 @@ export class GreenhouseProvider implements JobSourceProvider {
       sourceUrl: job.absolute_url ?? job.sourceUrl ?? "",
       applyUrl: job.absolute_url ?? job.sourceUrl,
       description,
-      requirements: splitRequirementText(bullets.length ? bullets.join("\n") : description),
+      requirements: bullets.length ? splitRequirementText(bullets.join("\n"), 400) : splitRequirementText(description),
       preferredQualifications: [],
       benefits: [],
       detectedTechStack: detectTechStack(description),
