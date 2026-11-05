@@ -116,7 +116,7 @@ function readV3RequirementGaps(output: Record<string, unknown>): RequirementGapP
   });
 }
 
-function compensationExplanation(reason: unknown) {
+export function compensationExplanation(reason: unknown) {
   switch (reason) {
     case "missing_applicant_salary_target":
       return "Unknown because the applicant salary target is missing.";
