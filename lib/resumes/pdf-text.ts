@@ -25,3 +25,34 @@ const hyphenWrap = /(?<=\p{Ll}-)\n(?=\p{Ll})/gu;
 export function normalizePdfResumeText(text: string) {
   return repairPdfGluedDateRanges(text).replace(softWrap, " ").replace(hyphenWrap, "");
 }
+
+type PdfTextItem = { str: string; transform: number[]; width: number };
+
+// pdf-parse's default page renderer, except that two pieces of text on the same
+// line separated by at least one font size (right-aligned dates, a status note
+// beside a project name) are joined with one space instead of running together.
+// Ordinary joins, such as a bullet touching its text, are unchanged.
+export function joinPdfPageItems(items: PdfTextItem[]) {
+  let text = "";
+  let last: PdfTextItem | null = null;
+  for (const item of items) {
+    const y = item.transform[5];
+    if (!last || !last.transform[5] || last.transform[5] === y) {
+      const fontSize = Math.abs(item.transform[3] ?? 0) || 1;
+      const gap = last ? item.transform[4]! - (last.transform[4]! + last.width) : 0;
+      const separated = last !== null && gap >= fontSize && !/\s$/u.test(text) && !/^\s/u.test(item.str);
+      text += (separated ? " " : "") + item.str;
+    } else {
+      text += `\n${item.str}`;
+    }
+    last = item;
+  }
+  return text;
+}
+
+export async function renderPdfPageText(pageData: {
+  getTextContent: (options: { normalizeWhitespace: boolean; disableCombineTextItems: boolean }) => Promise<{ items: PdfTextItem[] }>;
+}) {
+  const content = await pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false });
+  return joinPdfPageItems(content.items);
+}

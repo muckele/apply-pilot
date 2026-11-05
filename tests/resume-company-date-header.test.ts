@@ -329,3 +329,20 @@ test("the V9 response schema asks for exactly one entry per server-owned record"
     assert.equal(gemini.properties[section]!.minItems, count, `${section} Gemini minItems`);
   }
 });
+
+test("PDF page text keeps a visible same-line gap as one space", async () => {
+  const { joinPdfPageItems } = await import("@/lib/resumes/pdf-text");
+  const item = (str: string, x: number, y: number, width: number, size = 10) =>
+    ({ str, transform: [size, 0, 0, size, x, y], width });
+  assert.equal(
+    joinPdfPageItems([
+      item("Atlas Pilot", 50, 700, 55),
+      item("MVP complete", 480, 700, 62), // right-aligned on the same line
+      item("•", 50, 686, 4),
+      item("Built the first release.", 57, 686, 110), // 0.3 em after the bullet: unchanged
+      item("Acme & Co ", 50, 672, 50),
+      item("Jan 2024 – Present", 470, 672, 90) // already separated by a space
+    ]),
+    "Atlas Pilot MVP complete\n•Built the first release.\nAcme & Co Jan 2024 – Present"
+  );
+});

@@ -12,7 +12,7 @@ import {
 } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
-import { normalizePdfResumeText } from "@/lib/resumes/pdf-text";
+import { normalizePdfResumeText, renderPdfPageText } from "@/lib/resumes/pdf-text";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { deletePrivateFile, savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -113,7 +113,7 @@ async function extractTextFromFile(file: File) {
 
   if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
     const pdfParse = (await import("pdf-parse")).default;
-    const parsed = await pdfParse(buffer);
+    const parsed = await pdfParse(buffer, { pagerender: renderPdfPageText });
     return { text: normalizePdfResumeText(parsed.text), buffer };
   }
 
