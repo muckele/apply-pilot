@@ -273,6 +273,18 @@ test("a bullet that says the applicant served in the role counts that role", () 
   assert.deepEqual(findTenureGaps(input, { asOf: AS_OF }), []);
 });
 
+test("a bullet naming the applicant's own promotion or dual role counts that role", () => {
+  for (const bullet of [
+    "Promoted to Solutions Engineer in 2021 after two years in sales.",
+    "Account Executive and Solutions Architect for the SMB segment."
+  ]) {
+    const input = matchInput([
+      { title: "Account Executive", company: "Contoso Cloud", startDate: "Jan 2019", endDate: "Dec 2025", bullets: [bullet] }
+    ]);
+    assert.deepEqual(findTenureGaps(input, { asOf: AS_OF }), [], bullet);
+  }
+});
+
 test("overlapping matching roles are counted once", () => {
   const input = matchInput([
     { title: "Solutions Engineer", company: "Contoso Cloud", startDate: "Jan 2020", endDate: "Dec 2022" },

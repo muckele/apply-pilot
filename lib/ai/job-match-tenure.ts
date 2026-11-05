@@ -91,11 +91,12 @@ const TOKEN_FAMILIES: Record<string, string> = {
   tech: "technical"
 };
 
-// Words that, right before a role phrase in a bullet, show the applicant worked
-// with someone in that role rather than in it.
+// Words that, right before a singular role phrase in a bullet, show the
+// applicant worked with someone in that role rather than in it. Kept narrow:
+// "promoted to", "and" (dual titles) and "for" must still count the role.
 const COLLABORATOR_CUES = new Set([
-  "with", "alongside", "and", "among", "between", "other", "to", "for", "supporting", "supported",
-  "partnering", "partnered", "managing", "managed", "hiring", "hired", "training", "trained", "of"
+  "with", "alongside", "among", "between", "other", "supporting", "supported",
+  "partnering", "partnered", "managing", "managed", "hiring", "hired", "training", "trained"
 ]);
 
 const KIND_STOPWORDS = new Set(["a", "an", "the", "role", "roles", "position", "positions", "capacity", "or", "and"]);
@@ -286,8 +287,12 @@ function parseDetailed(requirement: string): DetailedTenureRequirement | null {
 export function parseTenureRequirement(requirement: string): TenureRequirement | null {
   const parsed = parseDetailed(requirement);
   if (!parsed) return null;
-  const { kindTerms: _kindTerms, ...publicRequirement } = parsed;
-  return publicRequirement;
+  return {
+    minimumMonths: parsed.minimumMonths,
+    requiredLabel: parsed.requiredLabel,
+    kindLabel: parsed.kindLabel,
+    roleAnchors: parsed.roleAnchors
+  };
 }
 
 export function describeEvidencedDuration(months: number) {
