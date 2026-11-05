@@ -543,3 +543,69 @@ test("an in-flight reassessment cannot report success after the reviewed draft c
     dom.window.close();
   }
 });
+
+function unscoredReview(analysisId: string | null, analysisOutput: unknown) {
+  return buildEvidenceCorrectionReview({
+    jobId: "job-1",
+    resumeId: "resume-1",
+    resumeUpdatedAt: "2026-10-08T12:00:00.000Z",
+    resume,
+    analysisId,
+    analysisOutput,
+    selectedResumeDocumentId: null,
+    selectedCoverLetterDocumentId: null
+  });
+}
+
+test("an unscored job says the gaps are not checked yet instead of implying there are none", () => {
+  const html = renderToStaticMarkup(React.createElement(EvidenceCorrectionReview, { review: unscoredReview(null, null) }));
+  const text = new JSDOM(html).window.document.body.textContent ?? "";
+  assert.match(text, /Not scored yet/);
+  assert.match(text, /Score match/);
+  assert.doesNotMatch(text, /No current disputed gaps were recorded/);
+});
+
+test("a scored job with no open gaps says so", () => {
+  const html = renderToStaticMarkup(React.createElement(EvidenceCorrectionReview, {
+    review: unscoredReview("analysis-1", { ...analysis, requirementGaps: [] })
+  }));
+  const text = new JSDOM(html).window.document.body.textContent ?? "";
+  assert.match(text, /The match analysis found no unresolved gaps/);
+  assert.doesNotMatch(text, /Not scored yet|Score match/);
+});
+
+test("Score match on an unscored job asks for cost confirmation, then refreshes the review", async (t) => {
+  const dom = new JSDOM("<!doctype html><div id=root></div>", { url: "http://localhost/jobs/job-1" });
+  const priorGlobals = { window: globalThis.window, document: globalThis.document, fetch: globalThis.fetch };
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, IS_REACT_ACT_ENVIRONMENT: true });
+  const calls: Array<{ url: string; method?: string; confirmed: string | null }> = [];
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    const confirmed = new Headers(init?.headers).get("x-ai-cost-confirmed");
+    calls.push({ url, method: init?.method, confirmed });
+    return confirmed
+      ? new Response(JSON.stringify({ match: { overallFitScore: 61 } }), { status: 200 })
+      : new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 72_720 }), { status: 428 });
+  }) as typeof fetch;
+  dom.window.confirm = () => true;
+  t.after(() => Object.assign(globalThis, priorGlobals));
+
+  let refreshed = 0;
+  const container = dom.window.document.getElementById("root")!;
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(EvidenceCorrectionReview, {
+      review: unscoredReview(null, null),
+      onReassessmentSaved: () => { refreshed += 1; }
+    }));
+  });
+  const button = [...container.querySelectorAll("button")].find((node) => node.textContent?.includes("Score match"))!;
+  await act(async () => { button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
+  await waitForRenderedText(container, /Scored: 61% fit/);
+
+  assert.deepEqual(calls, [
+    { url: "/api/jobs/job-1/match", method: "POST", confirmed: null },
+    { url: "/api/jobs/job-1/match", method: "POST", confirmed: "true" }
+  ]);
+  assert.equal(refreshed, 1);
+  await act(async () => root.unmount());
+});

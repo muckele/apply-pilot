@@ -46,9 +46,36 @@ export function EvidenceCorrectionReview({ review, onReviewChanged, onReassessme
   const [snapshotInvalidated, setSnapshotInvalidated] = useState(false);
   const [pending, setPending] = useState<"save" | "reassess" | null>(null);
   const [reassessmentSaved, setReassessmentSaved] = useState(false);
+  const [scoring, setScoring] = useState(false);
+  const [scoreMessage, setScoreMessage] = useState<string | null>(null);
   const reviewRevision = useRef(0);
   const requestId = useRef<string | null>(null);
   const draftFor = (gapId: string) => drafts[gapId] ?? emptyDraft;
+
+  // Gaps come from the job's match analysis. Until one exists there is nothing to
+  // review, so offer the scoring step here instead of an empty list.
+  async function scoreMatch() {
+    setScoring(true);
+    setScoreMessage(null);
+    try {
+      const response = await fetchWithAiCostConfirmation(`/api/jobs/${review.jobId}/match`, { method: "POST" });
+      const json = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        match?: { overallFitScore?: number };
+        job?: { overallFitScore?: number };
+      };
+      if (!response.ok) {
+        setScoreMessage(json.error ?? "Scoring failed. Nothing was saved.");
+        return;
+      }
+      setScoreMessage(`Scored: ${json.match?.overallFitScore ?? json.job?.overallFitScore}% fit. Loading the gaps…`);
+      onReassessmentSaved?.();
+    } catch (scoreError) {
+      setScoreMessage(scoreError instanceof Error ? scoreError.message : "Scoring failed. Nothing was saved.");
+    } finally {
+      setScoring(false);
+    }
+  }
   const acceptedDraftFor = (factId: string) => acceptedDrafts[factId] ?? emptyAcceptedDraft;
   const update = (gapId: string, patch: Partial<Draft>) => {
     onReviewChanged?.();
@@ -337,7 +364,15 @@ export function EvidenceCorrectionReview({ review, onReviewChanged, onReassessme
               ) : null}
             </fieldset>
           );
-        }) : <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">No current disputed gaps were recorded.</p>}
+        }) : review.analysisId === null ? (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950">
+            <p><strong>Not scored yet.</strong> Gaps appear after Apply Pilot compares your résumé with this job. Scoring uses Gemini and asks you to confirm the cost first.</p>
+            <button type="button" onClick={scoreMatch} disabled={scoring} className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+              {scoring ? "Scoring…" : "Score match"}
+            </button>
+            {scoreMessage ? <p role="status" className="mt-2">{scoreMessage}</p> : null}
+          </div>
+        ) : <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">The match analysis found no unresolved gaps.</p>}
       </div>
 
       <button type="button" onClick={saveSnapshot} disabled={Boolean(pending)} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
