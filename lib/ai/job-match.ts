@@ -37,6 +37,7 @@ export {
   JOB_MATCH_PROVIDER,
   JOB_MATCH_THINKING_LEVEL
 } from "@/lib/ai/job-match-version";
+import { comparableEvidenceText } from "@/lib/ai/evidence-text";
 
 export type JobMatchEvidenceCitation = {
   ref: string;
@@ -575,7 +576,7 @@ function citationForDisplay(
 }
 
 function comparable(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return comparableEvidenceText(value);
 }
 
 const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
