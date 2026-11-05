@@ -201,3 +201,23 @@ test("pipe headers ending in a date range keep the pipe rule", () => {
   ].join("\n");
   assert.equal(workRecords(buildResumeSourceCatalogV9(`Sample Person\n\nEXPERIENCE\n${body}`)).length, 2);
 });
+
+test("PDF text repair rejoins lines the PDF wrapped, marked by a trailing space", async () => {
+  const { normalizePdfResumeText } = await import("@/lib/resumes/pdf-text");
+  assert.equal(
+    normalizePdfResumeText("Leadership: planning, budgets, P&L \nmanagement, hiring\n•Led a team of five planners across \ntwo regions.\n•Next bullet."),
+    "Leadership: planning, budgets, P&L management, hiring\n•Led a team of five planners across two regions.\n•Next bullet."
+  );
+  // A trailing space before a bullet, a blank line or the end is not a wrap.
+  assert.equal(normalizePdfResumeText("First line \n•Bullet"), "First line \n•Bullet");
+  assert.equal(normalizePdfResumeText("Heading \n\nBody "), "Heading \n\nBody ");
+  // The glued-date repair still runs.
+  assert.equal(normalizePdfResumeText("Acme & CoJan 2024 – Present"), "Acme & Co Jan 2024 – Present");
+});
+
+test("PDF text repair rejoins a hyphenated word the PDF wrapped", async () => {
+  const { normalizePdfResumeText } = await import("@/lib/resumes/pdf-text");
+  assert.equal(normalizePdfResumeText("Tools: Atlas (the re-\nentry MVP), Beacon"), "Tools: Atlas (the re-entry MVP), Beacon");
+  // A dash before a capitalized or bulleted line is left alone.
+  assert.equal(normalizePdfResumeText("Planning -\nNext Section"), "Planning -\nNext Section");
+});
