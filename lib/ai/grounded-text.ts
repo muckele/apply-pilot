@@ -60,6 +60,14 @@ const MAX_FACT_CHARS = 400;
 
 // Master-resume facts only. Contact details, raw text, profile notes, and sensitive
 // answers are never projected; each fact keeps a deterministic, payload-local ID.
+const FACT_PRIORITY = ["summary", "achievements", "workHistory", "projects", "education", "certifications", "skills"];
+
+function factPriority(ref: string) {
+  const family = /^resume\.([A-Za-z]+)/u.exec(ref)?.[1] ?? "";
+  const index = FACT_PRIORITY.indexOf(family);
+  return index === -1 ? FACT_PRIORITY.length : index;
+}
+
 export function buildMasterResumeFactCatalog(
   resume: MasterResumeFacts | null | undefined,
   maxFacts = MAX_APPLICANT_FACTS
@@ -76,6 +84,10 @@ export function buildMasterResumeFactCatalog(
   };
   return buildApplicationDocumentFactCatalog({ resume: projected })
     .filter((fact: ApplicationDocumentFact) => fact.provenance.kind === "resume")
+    // A cap must trim the long skills list before experience: a résumé with 63 skills
+    // otherwise filled a 50-fact cap before any job or achievement. Sort is stable,
+    // and fact IDs come from refs, so order does not change IDs.
+    .sort((a, b) => factPriority(a.ref) - factPriority(b.ref))
     .slice(0, maxFacts)
     .map((fact) => ({ factId: fact.factId, text: fact.excerpt.slice(0, MAX_FACT_CHARS) }));
 }
