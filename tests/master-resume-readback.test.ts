@@ -229,6 +229,26 @@ test("saved master detail reads as one resume: jobs in a single column, referenc
   assert.doesNotMatch(side!.parentElement!.className, /(?:^| )(?:sm|md|lg):grid-cols-/);
 });
 
+test("saved list entries show one bullet even when the source text kept its own marker", () => {
+  const resume = {
+    ...savedMaster(),
+    achievements: ["•Top five of 400+ advisors.", "▪ Built a practice from zero.", "- Cut costs 10%.", "1. Led the launch.", "-5% churn after the change."]
+  };
+  const html = renderToStaticMarkup(createElement(MasterResumeDetail, { resume }));
+  const document = new JSDOM(html).window.document;
+  const panel = [...document.querySelectorAll("aside h2")]
+    .find((heading) => heading.textContent === "Achievements")!
+    .closest("aside > *")!;
+  const achievements = [...panel.querySelectorAll("li")].map((node) => node.textContent);
+  assert.deepEqual(achievements, [
+    "Top five of 400+ advisors.",
+    "Built a practice from zero.",
+    "Cut costs 10%.",
+    "Led the launch.",
+    "-5% churn after the change."
+  ]);
+});
+
 test("saved master detail handles absent and legacy stored fields without inventing values", () => {
   const legacy: MasterResumeDetailDto = {
     ...savedMaster(),

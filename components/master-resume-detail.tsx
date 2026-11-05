@@ -35,10 +35,16 @@ function dateRange(record: StoredRecord) {
   return start ?? end;
 }
 
+// Saved entries keep the exact source text, including a copied list marker
+// ("•Top five…"). The list already draws a bullet, so hide the copied one.
+function withoutListMarker(item: string) {
+  return item.replace(/^\s*(?:[•▪◦‣●○■□]\s*|[-*–—]\s+|\d+[.)]\s+)/u, "");
+}
+
 function RecordList({ items }: { items: string[] }) {
   return items.length ? (
     <ul className="mt-3 max-w-[90ch] list-disc space-y-1.5 pl-5 text-sm leading-6 text-slate-700">
-      {items.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
+      {items.map((item, index) => <li key={`${index}-${item}`}>{withoutListMarker(item)}</li>)}
     </ul>
   ) : null;
 }
