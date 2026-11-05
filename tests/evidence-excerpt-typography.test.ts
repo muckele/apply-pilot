@@ -54,3 +54,43 @@ test("job match still rejects a quote that changes a number", () => {
     /unsupported applicant evidence excerpt/
   );
 });
+
+test("job match accepts a quote that spans a line break inside a work record", () => {
+  const withSource = {
+    ...input,
+    resume: {
+      ...input.resume,
+      workHistory: [{
+        ...input.resume.workHistory[0],
+        sourceText: "Tripadvisor Feb 2022 – Sep 2023\nBusiness Development Executive, SMB Hotels\n•Owned the full sales cycle, closing ~30 deals a month at a 40–50% demo-to-close rate."
+      }]
+    }
+  };
+  assert.doesNotThrow(() => validateAndNormalizeJobMatchOutput(
+    withSource,
+    output("Business Development Executive, SMB Hotels •Owned the full sales cycle, closing ~30 deals a month at a 40–50% demo-to-close rate")
+  ));
+});
+
+test("a rejected job match logs which field and reference failed, never the quoted text", async () => {
+  const { apiErrorResponse } = await import("@/lib/user-context");
+  const lines: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    let failure: unknown;
+    try {
+      validateAndNormalizeJobMatchOutput(input, output("closing 99 deals a day"));
+    } catch (error) {
+      failure = error;
+    }
+    const response = apiErrorResponse(failure);
+    assert.equal(response.status, 400);
+  } finally {
+    console.warn = original;
+  }
+  const logged = lines.join("\n");
+  assert.match(logged, /UNSUPPORTED_APPLICANT_EXCERPT/);
+  assert.match(logged, /factualMatches\[0\]\.applicantEvidence\[0\]\.excerpt/);
+  assert.doesNotMatch(logged, /closing 99 deals a day/);
+});

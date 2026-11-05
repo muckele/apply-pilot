@@ -134,11 +134,15 @@ export function apiErrorResponse(error: unknown) {
         : "The request could not be completed."
       : error.message;
 
+    // Validation errors may say which output field failed; log that, never its content.
+    const detail = error as Error & { validationCode?: unknown; fieldPath?: unknown };
     logger.warn("api.handled_error", {
       status,
       error: {
         name: error.name,
-        message: error.message
+        message: error.message,
+        ...(typeof detail.validationCode === "string" ? { validationCode: detail.validationCode } : {}),
+        ...(typeof detail.fieldPath === "string" ? { fieldPath: detail.fieldPath } : {})
       }
     });
 

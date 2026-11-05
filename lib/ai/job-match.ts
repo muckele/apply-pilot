@@ -621,9 +621,11 @@ function validateCitation(
     );
   }
 
-  const haystack = comparable(evidenceText(resolved.value));
+  // A record's JSON form escapes line breaks ("\\n"), so also match against its plain
+  // text: a quote may span lines of a record's sourceText as the model saw them.
+  const haystacks = [evidenceText(resolved.value), ...readableSourceLeaves(resolved.value)].map(comparable);
   const needle = comparable(citation.excerpt);
-  if (!needle || !haystack.includes(needle)) {
+  if (!needle || !haystacks.some((haystack) => haystack.includes(needle))) {
     semanticFailure(
       source === "applicant" ? "UNSUPPORTED_APPLICANT_EXCERPT" : "UNSUPPORTED_JOB_EXCERPT",
       `${fieldPath}.excerpt`,
