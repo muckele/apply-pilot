@@ -100,6 +100,7 @@ function boardReport(planned: PlannedBoard, result: BoardSyncResult): DiscoveryS
     result.unchanged.length ? `${result.unchanged.length} unchanged.` : "",
     result.duplicates ? `${result.duplicates} already found through another source.` : "",
     result.capped ? `${result.capped} more matches over the per-board limit.` : "",
+    result.otherLocations ? `${result.otherLocations} more locations for the same role kept as one job.` : "",
     result.closed ? `${result.closed} no longer listed and marked expired.` : "",
     !result.imported.length && !result.unchanged.length && result.skipped ? "No jobs passed the current relevance filter." : ""
   ].filter(Boolean);

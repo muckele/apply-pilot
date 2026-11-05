@@ -1,7 +1,11 @@
 import type { JobPosting, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
-import { selectBoardImports, type BoardImportCandidate } from "@/lib/job-sources/board-import-selection";
+import {
+  collapseRepeatedRoles,
+  selectBoardImports,
+  type BoardImportCandidate
+} from "@/lib/job-sources/board-import-selection";
 import { boardRegionFromBaseUrl, type BoardAts } from "@/lib/job-sources/board-url";
 import {
   closeVanishedPostings,
@@ -39,6 +43,8 @@ export type BoardSyncResult = {
   listed: number;
   skipped: number;
   capped: number;
+  /** Same role listed again for other locations on this board; one listing is kept. */
+  otherLocations: number;
   duplicates: number;
   closed: number;
   bestRelevanceScore: number;
@@ -119,14 +125,15 @@ export async function syncBoard({
     }
   });
 
+  const { kept: distinctRoles, collapsed: otherLocations } = collapseRepeatedRoles(passing);
   const cap = Math.max(0, Math.trunc(maxImports));
   // Only a board with more passing postings than the cap needs to know which ones are stored.
   const stored =
-    passing.length > cap
-      ? await storedApplyKeys(userId, [...new Set(passing.map((entry) => postingApplyKey(entry.job)).filter(Boolean))])
+    distinctRoles.length > cap
+      ? await storedApplyKeys(userId, [...new Set(distinctRoles.map((entry) => postingApplyKey(entry.job)).filter(Boolean))])
       : new Set<string>();
   const selected = selectBoardImports({
-    candidates: passing,
+    candidates: distinctRoles,
     alreadyImported: (job) => {
       const applyKey = postingApplyKey(job);
       return stored.has(applyKey) || index.applyUrls.has(applyKey);
@@ -148,7 +155,8 @@ export async function syncBoard({
     unchanged: persisted.unchanged,
     listed: rawJobs.length,
     skipped: rawJobs.length - passing.length,
-    capped: Math.max(0, passing.length - selected.length),
+    capped: Math.max(0, distinctRoles.length - selected.length),
+    otherLocations,
     duplicates: persisted.duplicates,
     closed,
     bestRelevanceScore

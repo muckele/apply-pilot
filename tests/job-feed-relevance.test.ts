@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { matchDirectoryBoards, selectBoardsForRun, type JobBoardDirectoryEntry } from "@/lib/job-sources/board-directory";
-import { selectBoardImports } from "@/lib/job-sources/board-import-selection";
-import { acceptedCountries, locationCountries } from "@/lib/job-sources/location-match";
+import { collapseRepeatedRoles, selectBoardImports } from "@/lib/job-sources/board-import-selection";
+import { acceptedCountries, locationCountries, workStyleFromLocation } from "@/lib/job-sources/location-match";
 import { evaluateForImport } from "@/lib/job-sources/prefilter";
 import { scoreJobRelevance } from "@/lib/job-sources/relevance";
 import type { NormalizedJob } from "@/lib/job-sources/types";
@@ -288,4 +288,75 @@ test("an exact-title posting whose body names two of the user's own skills is no
     description: "Mature ransomware recovery governance. Develop risk heat maps and executive reporting."
   });
   assert.equal(passes(unrelatedBody, remoteEngineer, ["software engineer"]), false, "a title alone still cannot carry a posting");
+});
+
+// ---- live-test findings on draft PR #49 (2026-11-05) ----
+
+const salesUser = {
+  preferredRoles: [
+    "SMB Account Executive", "Mid-Market Account Manager", "SMB Account Manager", "sales enablement",
+    "Revenue enablement", "Solutions consultant", "sales engineer"
+  ],
+  preferredLocations: [],
+  location: "Los Angeles, CA",
+  remotePreference: "REMOTE",
+  skillsToEmphasize: [],
+  dealBreakers: [],
+  salaryTargetMin: null,
+  salaryTargetMax: null
+} as never;
+
+test("a role qualified by a function word needs that word: sales engineer does not match other engineers", () => {
+  const score = (title: string) => scoreJobRelevance({ job: job({ title }), profile: salesUser }).breakdown.roleTitleScore;
+
+  for (const title of [
+    "Intermediate Fullstack Engineer, Subscription Lifecycle",
+    "Backend Engineer, GitLab Orbit",
+    "Senior CX Platform Engineer",
+    "Developer, Enterprise Tenants and Policies",
+    "IT Systems Engineer, M&A",
+    "Enterprise Engineer",
+    "Lead/Senior Forward Deployed Engineer (AI Enablement)"
+  ]) {
+    assert.ok(score(title) < 45, `${title} should not match a sales user's roles`);
+  }
+  for (const title of ["Sales Engineer", "Small Business Account Executive II", "Sales Enablement Operations Manager"]) {
+    assert.ok(score(title) >= 45, `${title} should match`);
+  }
+});
+
+test("a country, province or foreign city in the title counts when the location field names none", () => {
+  const remoteSales = (title: string, location: string) =>
+    job({ title, location, remoteStatus: "", description: "Sell to SMB and mid-market customers; run discovery, demos and renewals." });
+
+  assert.equal(passes(remoteSales("Enterprise Account Executive, Philippines", "Hybrid"), salesUser), false);
+  assert.equal(passes(remoteSales("Territory Account Executive, Saskatchewan / Manitoba", "Distributed"), salesUser), false);
+  assert.equal(passes(remoteSales("Account Executive, Enterprise - Quebec, Montreal", "Remote"), salesUser), false);
+  assert.equal(passes(remoteSales("SMB Account Executive, Global Accounts", "Remote"), salesUser), true, "'Global' in a title is not a place");
+  assert.equal(passes(remoteSales("SMB Account Executive, Philippines", "Remote - US"), salesUser), true, "the location field wins when it names a country");
+});
+
+test("a remote work style is read from location strings the provider left unlabelled", () => {
+  assert.equal(workStyleFromLocation("Remote, Canada; Remote, United States"), "Remote");
+  assert.equal(workStyleFromLocation("Remote - US: Select locations"), "Remote");
+  assert.equal(workStyleFromLocation("Hybrid - San Francisco"), "Hybrid");
+  assert.equal(workStyleFromLocation("New York, NY"), undefined);
+});
+
+test("collapsing a role listed per city keeps the listing whose location itself says remote", () => {
+  const listing = (location: string, order: number) => ({
+    job: job({ title: "Account Executive, Commercial (Eastern Time Zone)", location, remoteStatus: "Remote", sourceUrl: `https://example.com/${order}` }),
+    score: 77,
+    decision: "review",
+    order
+  });
+
+  const { kept, collapsed } = collapseRepeatedRoles([listing("US - Atlanta", 0), listing("US - Boston", 1), listing("US - Remote", 2)]);
+
+  assert.deepEqual(kept.map((entry) => entry.job.location), ["US - Remote"]);
+  assert.equal(collapsed, 2);
+  assert.ok(
+    scoreJobRelevance({ job: job({ title: "Developer Marketer - Sales" }), profile: salesUser }).breakdown.roleTitleScore < 45,
+    "a marketer is not a sales engineer"
+  );
 });

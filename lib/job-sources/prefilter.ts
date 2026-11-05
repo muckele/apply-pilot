@@ -86,6 +86,7 @@ function locationMatchesProfile(job: NormalizedJob, profile: UserProfile | null)
     jobLocationFit({
       location: job.location,
       remoteStatus: job.remoteStatus,
+      title: job.title,
       preferredLocations: preferredLocationsFromProfile(profile)
     }) !== "none"
   );

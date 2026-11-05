@@ -168,6 +168,14 @@ const nonUsCities: Array<[string, string]> = [
   ["auckland", "NZ"], ["wellington", "NZ"]
 ];
 
+/** Provinces and states outside the US that postings name instead of a country. */
+const nonUsRegions: Array<[string, string]> = [
+  ["ontario", "CA"], ["quebec", "CA"], ["british columbia", "CA"], ["alberta", "CA"], ["saskatchewan", "CA"],
+  ["manitoba", "CA"], ["nova scotia", "CA"], ["new brunswick", "CA"], ["newfoundland", "CA"],
+  ["prince edward island", "CA"], ["new south wales", "AU"], ["victoria", "AU"], ["queensland", "AU"],
+  ["karnataka", "IN"], ["maharashtra", "IN"], ["telangana", "IN"], ["haryana", "IN"], ["bavaria", "DE"]
+];
+
 const europe = new Set(["GB", "IE", "FR", "DE", "NL", "BE", "LU", "CH", "AT", "ES", "PT", "IT", "GR", "PL", "CZ", "HU", "RO", "BG", "RS", "HR", "UA", "EE", "LV", "LT", "SE", "NO", "DK", "FI", "IS", "TR"]);
 const latinAmerica = new Set(["MX", "BR", "AR", "CO", "CL", "PE", "CR", "UY"]);
 const middleEastAfrica = new Set(["IL", "AE", "SA", "EG", "ZA", "NG", "KE"]);
@@ -225,7 +233,9 @@ function placeCountries(place: string) {
     }
   }
 
-  const named = new Set(phraseHits(nonStateText, countryNames).map(([, code]) => code));
+  const named = new Set(
+    [...phraseHits(nonStateText, countryNames), ...phraseHits(nonStateText, nonUsRegions)].map(([, code]) => code)
+  );
   const cities = new Set(phraseHits(text, nonUsCities).map(([, code]) => code));
   // "Bengaluru, IN" is India and "Toronto, CA" is Canada; "Dublin, CA" is California.
   const stateCodes = parts.filter(
@@ -286,6 +296,42 @@ export function isRemoteOrHybridPosting(job: { location?: string | null; remoteS
   return isRemotePosting(job) || /\bhybrid\b/.test(normalizeText([job.remoteStatus, job.location].join(" ")));
 }
 
+/**
+ * Countries a job title names ("Account Executive, Philippines", "…, Saskatchewan / Manitoba",
+ * "…, Quebec, Montreal"). Used only when the location field names no country. Bare state codes,
+ * "US" and worldwide words ("Global Accounts") are ignored: in a title they are rarely places.
+ */
+export function titleCountries(title: string | null | undefined) {
+  const text = segments(title ?? "").join(" ");
+  const countries = new Set<string>();
+  const add = (code: string) => countries.add(code);
+
+  for (const [name, code] of [...countryNames, ...nonUsRegions, ...nonUsCities]) {
+    if (name.length >= 3 && name !== "usa" && containsPhrase(text, name)) {
+      add(code);
+    }
+  }
+  if (` ${text} `.includes(" uk ")) {
+    add("GB");
+  }
+  for (const [phrase, codes] of regionPhrases) {
+    if (!codes.includes(anyCountry) && phrase.length >= 4 && containsPhrase(text, phrase)) {
+      codes.forEach(add);
+    }
+  }
+
+  return countries;
+}
+
+/** "Remote" or "Hybrid" when a location string says so, for postings whose board gives no work style. */
+export function workStyleFromLocation(location: string | null | undefined) {
+  const places = locationPlaces(location);
+  if (places.some(isRemotePlace)) {
+    return "Remote";
+  }
+  return /\bhybrid\b/.test(normalizeText(location)) ? "Hybrid" : undefined;
+}
+
 export type JobLocationFit = "exact" | "remote" | "state" | "country" | "unspecified" | "none";
 
 const fitRank: Record<JobLocationFit, number> = { exact: 5, remote: 4, state: 3, country: 2, unspecified: 1, none: 0 };
@@ -298,18 +344,28 @@ const fitRank: Record<JobLocationFit, number> = { exact: 5, remote: 4, state: 3,
 export function jobLocationFit({
   location,
   remoteStatus,
+  title,
   preferredLocations
 }: {
   location?: string | null;
   remoteStatus?: string | null;
+  /** Read for a country only when the location field names none. */
+  title?: string | null;
   preferredLocations: readonly string[];
 }): JobLocationFit {
+  const accepted = acceptedCountries(preferredLocations);
+  if (accepted.size && !locationCountries(location).size) {
+    const named = titleCountries(title);
+    if (named.size && ![...named].some((code) => accepted.has(code))) {
+      return "none";
+    }
+  }
+
   const places = locationPlaces(location);
   if (!places.length) {
     return "unspecified";
   }
 
-  const accepted = acceptedCountries(preferredLocations);
   const status = normalizeText(remoteStatus);
   const remoteJob = remoteWords.test(status) && !negatedRemote.test(status);
   let best: JobLocationFit = "none";

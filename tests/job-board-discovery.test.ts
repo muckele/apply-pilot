@@ -346,7 +346,8 @@ test("a board's already-imported jobs no longer hold the per-board slots from it
   const db = setup(t, [followed]);
   const listing = [1, 2, 3].map((id) => ({
     id,
-    title: "Solutions Engineer",
+    // Distinct roles: one board listing a role per city is collapsed separately.
+    title: ["Solutions Engineer", "Solutions Engineer, Payments", "Solutions Engineer, Billing"][id - 1],
     absolute_url: `https://boards.greenhouse.io/acme/jobs/${id}`,
     location: { name: "Remote" },
     content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
@@ -397,4 +398,54 @@ test("a board's already-imported jobs no longer hold the per-board slots from it
     "the known job is refreshed outside the cap and the one slot goes to a new job"
   );
   assert.match(result.reports.find((report) => report.name === "Acme (Greenhouse)")?.details ?? "", /1 more matches over the per-board limit/);
+});
+
+test("one role listed once per city on a board becomes one feed job, keeping the remote listing", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  const cities = ["US - Raleigh", "US - Boston", "US - Atlanta", "US - Remote"];
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () =>
+    cities.map((city, index) => ({
+      id: index + 1,
+      title: "Solutions Engineer (Eastern Time Zone)",
+      absolute_url: `https://boards.greenhouse.io/acme/jobs/${index + 1}`,
+      location: { name: city },
+      content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
+    }))
+  );
+
+  const result = await runBoardDiscovery({
+    userId: "user-1",
+    profile,
+    queries: [],
+    location: "",
+    remoteOnly: false,
+    limitPerBoard: 8,
+    maxBoards: 1,
+    index: createRunDedupeIndex(),
+    directory: [],
+    now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.deepEqual(db.upserts.map((upsert) => upsert.create.location), ["US - Remote"]);
+  assert.match(result.reports.find((report) => report.name === "Acme (Greenhouse)")?.details ?? "", /3 more locations for the same role/);
+});
+
+test("Greenhouse postings get a work style from their location when the board gives none", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => [{
+    id: 1,
+    title: "Solutions Engineer",
+    absolute_url: "https://boards.greenhouse.io/acme/jobs/1",
+    location: { name: "Remote, Canada; Remote, United States" },
+    content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
+  }]);
+
+  await runBoardDiscovery({
+    userId: "user-1", profile, queries: [], location: "", remoteOnly: false, limitPerBoard: 8, maxBoards: 1,
+    index: createRunDedupeIndex(), directory: [], now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.equal(db.upserts[0]?.create.remoteStatus, "Remote");
 });

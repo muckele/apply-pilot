@@ -211,7 +211,7 @@ const craftWords = new Set(["engineer", "developer", "programmer", "designer", "
  * these ("Product Marketing Manager" against "Product Manager") is a different job.
  */
 const functionWords = new Set([
-  "marketing", "sales", "customer", "design", "designer", "recruiting", "recruiter", "finance", "legal", "support", "success",
+  "marketing", "marketer", "sales", "customer", "design", "designer", "recruiting", "recruiter", "finance", "legal", "support", "success",
   "security", "data", "research", "operations", "engineering", "product", "program", "project", "account",
   "partner", "partnerships", "people", "talent", "solutions", "solution", "compliance", "accounting", "growth", "content",
   "communications", "brand", "analytics", "infrastructure", "quality", "manufacturing", "supply", "procurement"
@@ -278,11 +278,16 @@ function scoreTitleAgainstRole(title: string, role: RoleTarget) {
   }
 
   const head = role.core[role.core.length - 1];
+  const qualifiers = role.core.slice(0, -1);
   const distinctiveMatched = role.core.filter((word) => !genericRoleWords.has(word) && has(word)).length;
-  if (has(head) && distinctiveMatched > 0 && !otherFunction) {
+  // The head alone is not enough: "AI Enablement" is not "Revenue Enablement".
+  const qualifierMatched = qualifiers.some((word) => !genericRoleWords.has(word) && has(word));
+  if (has(head) && qualifierMatched && !otherFunction) {
     return Math.round(50 + (40 * matched) / role.core.length);
   }
-  if (has(head) && craftWords.has(head) && !otherFunction) {
+  // A qualifier that names a function ("sales" in "Sales Engineer") is what defines the role.
+  const qualifiedByFunction = qualifiers.some((word) => functionWords.has(word));
+  if (has(head) && craftWords.has(head) && !qualifiedByFunction && !otherFunction) {
     // Same craft, another specialty: "Platform Engineer" for a "Software Engineer". Org words
     // such as "manager" or "lead" say nothing about the work, so they never get this credit.
     return 50;
@@ -334,7 +339,7 @@ function scoreTargetRole(text: string, roles: readonly RoleTarget[]) {
 function scoreLocation(job: NormalizedJob, profile: UserProfile | null) {
   // Driven by this user's own preferred and home locations; no locale is built in.
   const preferredLocations = preferredLocationsFromProfile(profile);
-  const fit = jobLocationFit({ location: job.location, remoteStatus: job.remoteStatus, preferredLocations });
+  const fit = jobLocationFit({ location: job.location, remoteStatus: job.remoteStatus, title: job.title, preferredLocations });
 
   if (fit === "exact" || fit === "remote") {
     return 100;

@@ -1,4 +1,6 @@
+import { isRemotePosting, workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { NormalizedJob } from "@/lib/job-sources/types";
+import { normalizeText } from "@/lib/normalize";
 
 /**
  * Chooses which passing postings from one board listing are stored in a run.
@@ -27,6 +29,34 @@ export type BoardImportCandidate = {
 function isRecent(job: NormalizedJob, now: number) {
   const posted = job.datePosted?.getTime();
   return posted !== undefined && !Number.isNaN(posted) && now - posted <= recentDays * 86_400_000;
+}
+
+/**
+ * One board often lists the same role once per city ("Account Executive, Commercial" in
+ * Raleigh, Boston, Atlanta and US - Remote), each with its own apply URL. Those collapse to one
+ * feed job per normalized title: the best-scoring listing; on ties one whose location says
+ * remote, then a remote-flagged one, then the board's first. The other listings stay on the board and are not expired.
+ */
+export function collapseRepeatedRoles<T extends BoardImportCandidate>(candidates: readonly T[]) {
+  const best = new Map<string, T>();
+  // A listing whose own location says remote beats city listings of a remote-flagged role.
+  const remote = (candidate: T) =>
+    workStyleFromLocation(candidate.job.location) === "Remote" ? 2 : isRemotePosting(candidate.job) ? 1 : 0;
+
+  for (const candidate of candidates) {
+    const key = normalizeText(candidate.job.title);
+    const current = best.get(key);
+    if (
+      !current ||
+      candidate.score > current.score ||
+      (candidate.score === current.score && remote(candidate) > remote(current))
+    ) {
+      best.set(key, candidate);
+    }
+  }
+
+  const kept = candidates.filter((candidate) => best.get(normalizeText(candidate.job.title)) === candidate);
+  return { kept, collapsed: candidates.length - kept.length };
 }
 
 export function selectBoardImports<T extends BoardImportCandidate>({
