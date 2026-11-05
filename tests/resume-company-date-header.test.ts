@@ -221,3 +221,58 @@ test("PDF text repair rejoins a hyphenated word the PDF wrapped", async () => {
   // A dash before a capitalized or bulleted line is left alone.
   assert.equal(normalizePdfResumeText("Planning -\nNext Section"), "Planning -\nNext Section");
 });
+
+function singleJobOutput(job: string, location: string | null): ParsedResumeV5 {
+  return {
+    contractVersion: "5",
+    sourceSections: [
+      { section: "contactInfo", heading: null, sourceText: "Casey Structure", recordBlocks: ["Casey Structure"] },
+      { section: "workHistory", heading: "EXPERIENCE", sourceText: job, recordBlocks: [job] }
+    ],
+    contactInfo: {
+      sourceText: "Casey Structure", name: "Casey Structure", headline: null, email: null,
+      phone: null, location: null, linkedin: null, github: null, portfolio: null
+    },
+    summary: "",
+    skills: [],
+    workHistory: [{
+      sourceText: job,
+      company: "Beta Labs",
+      title: "Co-Founder",
+      location,
+      startDate: "Feb 2020",
+      endDate: "Dec 2023",
+      bullets: ["•Grew revenue 40% in New York and Boston."]
+    }],
+    projects: [],
+    education: [],
+    certifications: [],
+    achievements: [],
+    sectionStatus: {
+      summary: "absent", skills: "absent", workHistory: "present", projects: "absent",
+      education: "absent", certifications: "absent", achievements: "absent"
+    },
+    warnings: []
+  };
+}
+
+const v9 = { allowLegacy: false, catalogVersion: "9", boundaryAuthority: "server_catalog" } as const;
+
+test("V9 accepts a location written in the job's header lines", () => {
+  const job = [
+    "Beta Labs (PE-backed, Remote/Hybrid, New York) Feb 2020 – Dec 2023",
+    "Co-Founder",
+    "•Grew revenue 40% in New York and Boston."
+  ].join("\n");
+  const resume = ["Casey Structure", "", "EXPERIENCE", job].join("\n");
+  assert.doesNotThrow(() => validateParsedResumeOutput(resume, singleJobOutput(job, "New York"), v9));
+});
+
+test("V9 still rejects a location found only in a bullet", () => {
+  const job = ["Beta Labs Feb 2020 – Dec 2023", "Co-Founder", "•Grew revenue 40% in New York and Boston."].join("\n");
+  const resume = ["Casey Structure", "", "EXPERIENCE", job].join("\n");
+  assert.throws(
+    () => validateParsedResumeOutput(resume, singleJobOutput(job, "Boston"), v9),
+    (error: unknown) => error instanceof PublicApiError && error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS"
+  );
+});

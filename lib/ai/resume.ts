@@ -1770,9 +1770,15 @@ function isUnambiguousStandaloneWorkLocation(value: string) {
   return isStandaloneResumeLocation(value);
 }
 
-function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
+function assertWorkLocationSemantics(item: ResumeWorkHistoryItem, serverCatalogAuthority: boolean) {
   if (!item.location) return;
   const locationIndex = item.sourceText.indexOf(item.location);
+  // With server catalog authority the record boundaries are already fixed, so a
+  // location anywhere in the record's header lines (before its first bullet) cannot
+  // conceal a merged record, e.g. "Beta Labs (Remote/Hybrid, New York) Feb 2020 – …".
+  if (serverCatalogAuthority && locationIndex >= 0 && locationIndex < firstFactIndex(item.sourceText, item.bullets)) {
+    return;
+  }
   const coreEnd = Math.max(
     item.sourceText.indexOf(item.company) + item.company.length,
     item.sourceText.indexOf(item.title) + item.title.length
@@ -3194,7 +3200,7 @@ export function validateParsedResumeOutput(
     assertResumeDate(item.startDate, "workHistory", "workHistory date or location", `workHistory[${index}].startDate`);
     assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
     assertWorkHeaderSemantics(item, `workHistory[${index}]`);
-    assertWorkLocationSemantics(item);
+    assertWorkLocationSemantics(item, serverCatalogAuthority);
     if (!serverCatalogAuthority) assertUnambiguousNarrativeEntries(
       item.bullets,
       "workHistory",
