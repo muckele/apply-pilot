@@ -267,6 +267,31 @@ test("the résumé-only choice drops the cover letter from the plan and the quot
   }
 });
 
+test("the gap list never claims to be everything the résumé is missing", async () => {
+  const harness = createDomHarness({ fetch: apiStub([]) });
+  try {
+    await harness.render(React.createElement(TailorFlow, props()));
+    const intro = harness.container.querySelector("[data-gap-intro]")?.textContent ?? "";
+    assert.match(intro, /may not flag every requirement/u);
+    assert.match(intro, /years of experience/u);
+  } finally {
+    await harness.close();
+  }
+  const empty = createDomHarness({ fetch: apiStub([]) });
+  try {
+    const noGaps = buildEvidenceCorrectionReview({
+      jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z", resume, analysisId: "analysis-1",
+      analysisInputHash: "a".repeat(64), analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.4",
+      analysisOutput: { ...analysisOutput, requirementGaps: [] }
+    });
+    await empty.render(React.createElement(TailorFlow, props({ review: noGaps })));
+    assert.doesNotMatch(empty.text(), /Every requirement/u);
+    assert.match(empty.text(), /didn't flag any listed requirement/u);
+  } finally {
+    await empty.close();
+  }
+});
+
 test("plain language: no internal jargon, and extracted facts stay behind a disclosure", async () => {
   const harness = createDomHarness({ fetch: apiStub([]) });
   try {

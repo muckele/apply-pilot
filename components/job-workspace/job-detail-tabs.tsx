@@ -119,7 +119,7 @@ export function JobDetailTabs({
           <div className="job-stack">
             {estimate ? (
               <p className="job-card-copy">
-                Apply Pilot compared each requirement with your résumé. “Not on your résumé” is about what your résumé says, not proof you lack the skill.
+                Apply Pilot compared each listed requirement with your résumé. “Not on your résumé” is about what your résumé says, not proof you lack the skill. “Not checked” means Apply Pilot couldn&apos;t judge it either way (years of experience often land here), so read those yourself.
               </p>
             ) : (
               <p className="job-card-copy">This job hasn&apos;t been scored yet. Score it to see which requirements your résumé shows.</p>

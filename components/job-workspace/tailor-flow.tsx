@@ -267,8 +267,8 @@ export function TailorFlow({
       {review && review.gaps.length ? (
         <section aria-labelledby="gaps-heading" className="job-step">
           <h3 id="gaps-heading" className="job-step-title">Anything missing? <span className="job-step-optional">Optional</span></h3>
-          <p className="job-step-copy">
-            These requirements aren&apos;t shown on your résumé. That doesn&apos;t mean you lack them. If you have one, add a line in your own words, or point to the résumé line that already shows it. Lines you add are used for this job only and never change your master résumé.
+          <p className="job-step-copy" data-gap-intro>
+            Apply Pilot couldn&apos;t find these listed requirements on your résumé. That doesn&apos;t mean you lack them. It also may not flag every requirement (years of experience, for example), so check the Match tab too. If you have one of these, add a line in your own words, or point to the résumé line that already shows it. Lines you add are used for this job only and never change your master résumé.
           </p>
           <fieldset disabled={running} className="job-gap-list">
             {review.gaps.map((gap) => {
@@ -325,7 +325,7 @@ export function TailorFlow({
           </fieldset>
         </section>
       ) : review && reviewable ? (
-        <p className="job-note">Every requirement Apply Pilot checked is shown on your résumé. Nothing to add.</p>
+        <p className="job-note">Apply Pilot didn&apos;t flag any listed requirement as missing from your résumé. It can&apos;t check every requirement (years of experience, for example), so read the Match tab before you apply.</p>
       ) : null}
 
       {review && !reviewable && readOnlyGaps.length ? (
