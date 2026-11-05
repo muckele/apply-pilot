@@ -276,3 +276,39 @@ test("V9 still rejects a location found only in a bullet", () => {
     (error: unknown) => error instanceof PublicApiError && error.details?.code === "RESUME_PARSE_STRUCTURE_AMBIGUOUS"
   );
 });
+
+test("common achievement section headings are recognized", async () => {
+  const { resumeSourceSectionForHeading } = await import("@/lib/ai/resume-source-catalog");
+  for (const heading of ["ACHIEVEMENTS", "KEY ACHIEVEMENTS", "Selected Achievements", "CAREER HIGHLIGHTS", "KEY ACCOMPLISHMENTS", "Notable Accomplishments"]) {
+    assert.equal(resumeSourceSectionForHeading(heading), "achievements", heading);
+  }
+  assert.equal(resumeSourceSectionForHeading("KEY SKILLS"), "skills");
+});
+
+test("V9 splits undated projects whose name line is followed by a bullet", () => {
+  const projects = [
+    "LEDGER Group",
+    "•Small-business acquisition app that scores each listing against my criteria.",
+    "Atlas PilotMVP complete",
+    "•Job-application tool in TypeScript that stops for human review before submission."
+  ];
+  const catalog = buildResumeSourceCatalogV9(["Sample Person", "", "PROJECTS", ...projects].join("\n"));
+  assert.deepEqual(
+    catalog.sections.filter((section) => section.section === "projects").flatMap((section) => section.recordBlocks),
+    [projects.slice(0, 2).join("\n"), projects.slice(2).join("\n")]
+  );
+});
+
+test("an unfinished bullet's wrapped line is not mistaken for a new project", () => {
+  const projects = [
+    "LEDGER Group",
+    "• Built the pricing model for",
+    "Northwind Teams",
+    "• Shipped the first release."
+  ];
+  const catalog = buildResumeSourceCatalogV9(["Sample Person", "", "PROJECTS", ...projects].join("\n"));
+  assert.deepEqual(
+    catalog.sections.filter((section) => section.section === "projects").flatMap((section) => section.recordBlocks),
+    [projects.join("\n")]
+  );
+});

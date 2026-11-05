@@ -69,7 +69,7 @@ export const resumeSectionHeadings: Record<ResumeTypedSectionName, RegExp> = {
   projects: /^(?:(?:SELECTED|PROFESSIONAL|TECHNICAL|PERSONAL|SIDE|KEY|INDEPENDENT|ACADEMIC|RELEVANT)(?:\s+TECHNICAL)?\s+)?PROJECTS?$/i,
   education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
   certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
-  achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
+  achievements: /^(?:(?:KEY|SELECTED|CAREER|NOTABLE|PROFESSIONAL)\s+)?(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|HIGHLIGHTS|AWARDS?|HONORS?)$/i
 };
 
 const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING|\s+EXPERIENCE)?|COMMUNITY\s+(?:INVOLVEMENT|SERVICE)|LEADERSHIP|PROFESSIONAL\s+(?:DEVELOPMENT|AFFILIATIONS?|MEMBERSHIPS?)|TRAINING|COURSES?|COURSEWORK|ACTIVITIES|PUBLICATIONS?|PATENTS?|PRESENTATIONS?|CONFERENCES?|REFERENCES?|ADDITIONAL\s+(?:EXPERIENCE|INFORMATION)|OTHER)$/i;
@@ -224,6 +224,26 @@ function startsWithBullet(line: string) {
   return listEntryPattern.test(line) || /^[•▪◦]/u.test(line);
 }
 
+// An undated project: a short name line directly followed by a bullet, after the
+// previous project's last sentence ended. Name lines may carry a status note
+// ("Atlas Pilot   MVP complete"), so they are not held to the compact-header shape.
+function isUndatedProjectNameAt(
+  lines: ResumeSourceCatalogLine[],
+  start: number,
+  first: string,
+  second: string
+) {
+  const previousIndex = start > 0 ? previousNonemptyIndex(lines, start - 1, 0) : null;
+  const previous = previousIndex === null ? "" : lines[previousIndex]!.sourceText.trim();
+  return /^[\p{Lu}\p{N}]/u.test(first) &&
+    first.length <= 60 &&
+    first.split(/\s+/u).length <= 8 &&
+    !/[.!?:;,]$/u.test(first) &&
+    !startsWithBullet(first) &&
+    startsWithBullet(second) &&
+    (!previous || isCompleteNarrative(previous));
+}
+
 function isCompleteNarrative(line: string) {
   return /[.!?…]$/u.test(line.trim());
 }
@@ -300,6 +320,7 @@ function isRecordStartAt(
       structuralDateLinePattern.test(fourth);
   }
   if (section === "projects") {
+    if (catalogVersion === "9" && isUndatedProjectNameAt(lines, start, first, second)) return true;
     return looksLikeCompactHeader(first) && (
       structuralDateLinePattern.test(second) ||
       /^(?:technologies?(?: used)?|tools|methods|platforms?)\s*:/i.test(second)
