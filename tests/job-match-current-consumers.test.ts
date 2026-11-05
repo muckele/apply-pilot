@@ -144,7 +144,8 @@ test("every product score consumer joins the current prompt version before prese
     "app/(product)/applications/[id]/page.tsx"
   ]) {
     const source = readFileSync(path, "utf8");
-    assert.match(source, /CURRENT_JOB_MATCH_ANALYSIS|currentJobMatchFields|hasCurrentJobMatchAnalysis/, path);
+    // resolveFitEstimate (lib/jobs/fit-estimate.ts) applies hasCurrentJobMatchAnalysis and the prompt-version check.
+    assert.match(source, /CURRENT_JOB_MATCH_ANALYSIS|currentJobMatchFields|hasCurrentJobMatchAnalysis|resolveFitEstimate/, path);
   }
 });
 
