@@ -11,6 +11,7 @@ import {
 } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
+import { repairPdfGluedDateRanges } from "@/lib/resumes/pdf-text";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { deletePrivateFile, savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -100,7 +101,7 @@ async function extractTextFromFile(file: File) {
   if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
     const pdfParse = (await import("pdf-parse")).default;
     const parsed = await pdfParse(buffer);
-    return { text: parsed.text, buffer };
+    return { text: repairPdfGluedDateRanges(parsed.text), buffer };
   }
 
   if (

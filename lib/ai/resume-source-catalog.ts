@@ -66,7 +66,7 @@ export const resumeSectionHeadings: Record<ResumeTypedSectionName, RegExp> = {
   summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
   skills: /^(?:(?:(?:TECHNICAL|KEY|CORE)\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
   workHistory: /^(?:WORK|PROFESSIONAL|EMPLOYMENT|CAREER)?\s*(?:EXPERIENCE|HISTORY)$/i,
-  projects: /^(?:(?:SELECTED(?:\s+TECHNICAL)?|PROFESSIONAL)\s+)?PROJECTS?$/i,
+  projects: /^(?:(?:SELECTED|PROFESSIONAL|TECHNICAL|PERSONAL|SIDE|KEY|INDEPENDENT|ACADEMIC|RELEVANT)(?:\s+TECHNICAL)?\s+)?PROJECTS?$/i,
   education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
   certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
   achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
@@ -179,10 +179,10 @@ export function isStandaloneResumeLocation(line: string) {
     resumeEnglishRegionNames.has(normalized);
 }
 
-function looksLikeCompactHeader(line: string) {
+function looksLikeCompactHeader(line: string, dateLinePattern = structuralDateLinePattern) {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length > 140 || listEntryPattern.test(trimmed)) return false;
-  if (structuralMetadataPattern.test(trimmed) || structuralDateLinePattern.test(trimmed)) return false;
+  if (structuralMetadataPattern.test(trimmed) || dateLinePattern.test(trimmed)) return false;
   if (/[,;:]\s+[a-z]/u.test(trimmed)) return false;
   const words = trimmed
     .replace(/[|,:.!?()&/+\-]/gu, " ")
@@ -195,6 +195,33 @@ function looksLikeCompactHeader(line: string) {
     /^[A-Z0-9][\p{L}\p{N}'’.-]*$/u.test(word) ||
     (index > 0 && /^[A-Z]{2,}$/u.test(word))
   );
+}
+
+const headerMonthPattern = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?";
+const headerYearPattern = "(?:19|20)\\d{2}";
+const trailingDateRangePattern = new RegExp(
+  `^(.+?)\\s*(?:${headerMonthPattern}\\s+)?${headerYearPattern}\\s*[–—-]\\s*` +
+    `(?:(?:${headerMonthPattern}\\s+)?${headerYearPattern}|present|current|now)$`,
+  "iu"
+);
+
+// Whole-word date terms, so "Representative" or "Knowledge" are not read as dates.
+const wholeWordDateLinePattern = /^(?:(?:issued|expires?|expiration|completed|graduated|expected|anticipated)[:\s]+)?[^|\n]*\b(?:(?:19|20)\d{2}|present|current|ongoing|now)\b[^|\n]*$/i;
+
+function looksLikeCompactHeaderIgnoringAsides(line: string) {
+  return looksLikeCompactHeader(line.replace(/\s*\([^()]*\)\s*/gu, " ").trim(), wholeWordDateLinePattern);
+}
+
+// "Acme & Co   Jan 2024 – Present": an organization header with its date range on the
+// same line (right-aligned dates in the original document).
+function isOrganizationDateHeader(line: string) {
+  if (line.includes("|")) return false; // pipe headers keep their own rule
+  const prefix = trailingDateRangePattern.exec(line.trim())?.[1];
+  return Boolean(prefix) && looksLikeCompactHeaderIgnoringAsides(prefix!);
+}
+
+function startsWithBullet(line: string) {
+  return listEntryPattern.test(line) || /^[•▪◦]/u.test(line);
 }
 
 function isCompleteNarrative(line: string) {
@@ -232,6 +259,16 @@ function isRecordStartAt(
   catalogVersion: ResumeSourceCatalogVersion
 ) {
   const first = lines[start]?.sourceText.trim() ?? "";
+  // V9 only: V8 boundaries stay frozen so stored V8 projections decode unchanged.
+  if (catalogVersion === "9" && section === "workHistory" && isOrganizationDateHeader(first)) {
+    const [second = "", third = ""] = lines
+      .slice(start + 1, end + 1)
+      .map((line) => line.sourceText.trim())
+      .filter(Boolean);
+    return looksLikeCompactHeaderIgnoringAsides(second) &&
+      !isStandaloneResumeLocation(second) &&
+      (!third || startsWithBullet(third) || isCompleteNarrative(third) || /^location\s*:/iu.test(third));
+  }
   if (
     !first ||
     listEntryPattern.test(first) ||
