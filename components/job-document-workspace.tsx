@@ -8,11 +8,13 @@ import { PdfFontChoice, ActualPdfPreview } from "@/components/pdf-export-options
 import { defaultPdfFont, pdfFontLabels, type PdfFont } from "@/lib/documents/pdf-font";
 import type { DocumentReviewView } from "@/lib/documents/document-review";
 import { defaultResumeFormat, type ResumeFormat } from "@/lib/documents/resume-format";
+import type { TailoredResumeItem } from "@/lib/ai/tailored-resume-keep-rule";
 
 // evidenceCurrent means "ready for export and packet use": exactly generated from current evidence,
 // or edited/legacy with the owner's review covering the saved bytes (D031). review carries line
 // provenance and flags when the server computed it.
-export type JobResumeVersionOption = {id:string;title:string;fullText:string;summary:string|null;atsCompatibility:number|null;jobFitScore:number|null;evidenceCurrent:boolean;createdAt:string;resumeFormat?:ResumeFormat;review?:DocumentReviewView};
+// leftOut: catalog items this tailored version trimmed (keep rule), as paste-ready verbatim source text.
+export type JobResumeVersionOption = {id:string;title:string;fullText:string;summary:string|null;atsCompatibility:number|null;jobFitScore:number|null;evidenceCurrent:boolean;createdAt:string;resumeFormat?:ResumeFormat;review?:DocumentReviewView;leftOut?:TailoredResumeItem[]};
 export type JobCoverLetterOption = {id:string;title:string;content:string;evidenceCurrent:boolean;createdAt:string;review?:DocumentReviewView};
 type ExportFormat="markdown"|"docx"|"pdf";
 
@@ -92,6 +94,17 @@ function DocumentReviewCard({kind,selected,stored,text,conflict,changeText,clear
       {pdfUrl?<ActualPdfPreview url={pdfUrl} font={pdfFont}/>:null}
       <details><summary>Selected version and formatting</summary><label className="block">{kind==="resume"?"Résumé version":"Cover-letter version"}<select aria-label={kind==="resume"?"Résumé version":"Cover-letter version"} className="block w-full mt-1" value={selected?.id??""} disabled={!selected} onChange={event=>chooseVersion(event.target.value)}>{versions.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}</select></label><p>{format.template} · {format.pageSize} · {format.fontFamily} · {format.fontSize} pt · {format.lineSpacing}% line spacing</p></details>
       <details><summary>Edit document text</summary><label className="block">{kind==="resume"?"Tailored résumé text":"Cover-letter text"}<textarea className="w-full mt-2" rows={14} value={text} disabled={!selected||busy==="save"} onChange={event=>{invalidate();changeText(event.target.value);setMessage(null);}}/></label><button onClick={save} disabled={!selected||!!busy||!dirty||conflict}>{busy==="save"?"Saving…":"Save edits"}</button>{dirty||conflict?<button disabled={!!busy} onClick={()=>{invalidate();clearDraft();setMessage(null);}}>Discard unsaved edits</button>:null}</details>
+      {kind==="resume"&&selected&&"leftOut" in selected&&selected.leftOut?.length?<LeftOutList items={selected.leftOut}/>:null}
       {kind==="resume"&&selected?<Link href={"/resumes/"+selected.id}>Format and preview résumé</Link>:null}
     </section>;
+}
+// Minimal on purpose (the review-page redesign owns layout). Copy puts the verbatim source text on
+// the clipboard; pasting it into the editor above is saved and marked as the user's own edit (D031).
+function LeftOutList({items}:{items:TailoredResumeItem[]}) {
+  const [copied,setCopied]=useState<number|null>(null);
+  async function copy(index:number,text:string){try{await navigator.clipboard.writeText(text);setCopied(index);}catch{setCopied(null);}}
+  return <details data-left-out><summary>Left out of this version ({items.length})</summary>
+    <p className="text-sm product-review-metadata">Trimmed to fit this job. Copy an item and paste it into the editor to add it back.</p>
+    <ul>{items.map((item,index)=><li key={item.ref+":"+index}><span className="whitespace-pre-line">{item.text}</span>{item.context?<span className="text-sm product-review-metadata"> — {item.context}</span>:null} <button type="button" onClick={()=>copy(index,item.text)}>Copy</button>{copied===index?<span role="status"> Copied</span>:null}</li>)}</ul>
+  </details>;
 }

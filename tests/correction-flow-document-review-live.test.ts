@@ -21,7 +21,7 @@ function safeReceipt(manifestHash: string): CorrectionFlowDocumentReviewReceipt 
     manifestHash,
     exactHead,
     providerMode: "live_synthetic" as const,
-    conservativeReservationMicros: 112_125,
+    conservativeReservationMicros: 121_500,
     providerCallsStarted: 2,
     providerCallsCompleted: 2,
     knownInputTokens: 200,
@@ -96,7 +96,7 @@ test("the mocked launcher binds product rendering before simulated consent and e
           assert.equal(parsed.safeManifest.contractVersion, "3");
           assert.deepEqual(parsed.safeManifest.rendering, PRODUCT_DOCUMENT_REVIEW_RENDERING);
           assert.equal(parsed.safeManifest.validatedDocumentLifetimeMs, 900_000);
-          assert.equal(parsed.safeManifest.conservativeReservationMicros, 112_125);
+          assert.equal(parsed.safeManifest.conservativeReservationMicros, 121_500);
           events.push("manifest");
         }
       },

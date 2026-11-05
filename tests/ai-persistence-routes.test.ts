@@ -183,6 +183,8 @@ test("unavailable tailoring returns 503 without a resume version or AI analysis"
     rawText: "Alice Example\nExcel"
   }));
   stub(t, prisma.userProfile, "findUnique", async () => null);
+  // Tailoring reads the current job match for protected résumé citations (none here).
+  stub(t, prisma.aIAnalysis, "findFirst", async () => null);
   stub(t, prisma.resumeVersion, "create", async () => { versions++; return { id: "version-1" }; });
   stub(t, prisma.aIAnalysis, "create", async () => { analyses++; return { id: "analysis-1" }; });
   stub(t, prisma.auditLog, "create", async () => { audits++; return { id: "audit-1" }; });

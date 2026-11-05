@@ -98,6 +98,11 @@ function isResumeSectionHeading(value: string) {
     .test(value.trim());
 }
 
+// The same atomic split the catalog uses, so a source line maps to exactly its catalog facts.
+export function applicationDocumentAtomicStrings(value: unknown): string[] {
+  return atomicStrings(value);
+}
+
 function atomicStrings(value: unknown): string[] {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
     return String(value).split(/\r?\n/)

@@ -68,6 +68,12 @@ import {
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
 import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
+import {
+  tailoredResumeLeftOut,
+  tailoredResumeProtectedFactIds,
+  tailoredResumeRestorations,
+  type TailoredResumeItem
+} from "@/lib/ai/tailored-resume-keep-rule";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
@@ -1352,7 +1358,8 @@ export const tailoredResumeProviderSchema: z.ZodType<
 
 export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
   const priorities = applicationDocumentPriorityOpportunities(payload).map(({ ref, leadingFactIds }) => ({ ref, leadingFactIds }));
-  return buildApplicationDocumentSystemPrompt(`${resumeTailorPrompt.trim()}\n\nConditional within-record priority opportunities: ${JSON.stringify(priorities)}`, payload);
+  const protectedFactIds = tailoredResumeProtectedFactIds(payload);
+  return buildApplicationDocumentSystemPrompt(`${resumeTailorPrompt.trim()}\n\nConditional within-record priority opportunities: ${JSON.stringify(priorities)}\nProtected factIds (never trim): ${JSON.stringify(protectedFactIds)}`, payload);
 }
 
 export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {
@@ -4299,14 +4306,20 @@ export async function tailorResume(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     },
-    validate: (value) => validateTailoredResumeQuality(
+    // Truth checks first, then the keep rule restores omitted required/protected/below-floor items
+    // verbatim, then the completed résumé is checked again in full before caching or persistence.
+    validate: (value) => validateTailoredResumeClaims(
       applicationPayload,
-      validateTailoredResumeClaims(applicationPayload, value)
+      validateTailoredResumeQuality(applicationPayload, validateTailoredResumeClaims(applicationPayload, value))
     )
   });
+  const leftOut: TailoredResumeItem[] = tailoredResumeLeftOut(applicationPayload, generated.data);
+  const restored: TailoredResumeItem[] = [...tailoredResumeRestorations(generated.data)];
 
   return {
     ...generated.data,
+    leftOut,
+    restored,
     model: generated.meta.model,
     promptVersion: generated.meta.promptVersion,
     inputHash: generated.meta.requestHash,

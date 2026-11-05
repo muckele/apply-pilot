@@ -19,6 +19,8 @@ export type ApplicationDocumentPayload = {
   resume?: Record<string, unknown> | null;
   profile?: Record<string, unknown> | null;
   reviewedEvidence?: Record<string, unknown> | null;
+  // Résumé items cited by the job's current match analysis; tailoring must not trim them.
+  protectedEvidence?: Record<string, unknown> | null;
 };
 
 type TailoredResumeClaimsOutput = {
@@ -468,6 +470,15 @@ function validateClaimEvidence(
     supportedClaims.add(comparable(claim));
   }
   return supportedClaims;
+}
+
+// Server-restored résumé lines face the same unchanged excerpt, date, negation and
+// fabrication checks as provider-selected claims.
+export function validateRestoredResumeClaimEvidence(
+  payload: ApplicationDocumentPayload,
+  claims: ApplicationDocumentClaimEvidence[]
+) {
+  validateClaimEvidence(payload, claims, "claimEvidence");
 }
 
 function requireClaims(claims: Set<string>, values: Array<{ value: string; fieldPath: string }>) {

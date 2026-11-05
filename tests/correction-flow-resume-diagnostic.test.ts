@@ -72,15 +72,15 @@ test("the one-call manifest binds the complete reviewed payload and exact produc
   assert.equal(value.callCount, 1);
   assert.equal(value.call.stage, "tailored_resume");
   assert.equal(value.call.model, "gemini-3.8-flash");
-  assert.equal(value.call.promptVersion, "12");
+  assert.equal(value.call.promptVersion, "13");
   assert.equal(value.call.thinkingLevel, "LOW");
-  assert.equal(value.call.maximumInputTokens, 56_000);
-  assert.equal(value.call.maximumOutputTokens, 6_000);
-  assert.equal(value.conservativeReservationMicros, 64_500);
+  assert.equal(value.call.maximumInputTokens, 36_000);
+  assert.equal(value.call.maximumOutputTokens, 12_000);
+  assert.equal(value.conservativeReservationMicros, 72_000);
   assert.equal(value.payloadHash, "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae");
   assert.equal(value.reviewedEvidenceHash, "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708");
   assert.equal(value.schemaHash, "3717d6f6602baff101fbf10e0de5f959d74cbe15e847a585eadb7f770cdfa573");
-  assert.equal(value.wireRequestHash, "ed5859b5052df38166238d6d229546fdaa33001ab5d7a7939cb2e6359ef13955");
+  assert.equal(value.wireRequestHash, "ba5c3632c29d7b628b5043e8a641cbd0a9392a4869f488f17328f6b24147bad6");
 
   for (const mutate of [
     (changed: ReturnType<typeof syntheticCorrectionFlowDocumentPayload>) => {
@@ -160,7 +160,7 @@ test("the runner sends exactly one production-shaped request and retains only a 
   assert.equal(requests[0].headers.get("x-goog-api-key"), credential);
   assert.equal(requests[0].headers.has("authorization"), false);
   const generation = requests[0].body.generationConfig as Record<string, unknown>;
-  assert.equal(generation.maxOutputTokens, 6_000);
+  assert.equal(generation.maxOutputTokens, 12_000);
   assert.deepEqual(generation.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(generation.responseMimeType, "application/json");
   assert.doesNotMatch(JSON.stringify(receipt), new RegExp(credential, "u"));

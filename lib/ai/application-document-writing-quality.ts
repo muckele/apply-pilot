@@ -31,24 +31,31 @@ export function validateResumePriorityOrder(payload: ApplicationDocumentPayload,
       entry.citations.some(citation => citation.ref === record.ref && comparable(citation.excerpt) === comparable(record.header)));
   for (const opportunity of applicationDocumentPriorityOpportunities(payload)) {
     const starts = lines.flatMap((line, index) => matchesHeader(line, opportunity) ? [index] : []);
+    // A trimmed project has nothing to order; every work record is restored before this check.
+    if (!starts.length && opportunity.ref.startsWith("resume.projects[")) continue;
     if (starts.length !== 1) revision(opportunity.ref, "Retain exactly one owning record header for this source record.");
     const start = starts[0] + 1;
     const next = lines.findIndex((line, index) => index >= start &&
       (recordHeaders.some(record => matchesHeader(line, record)) || /^(?:summary|profile|skills|experience|work experience|projects|education|certifications|achievements|additional information)$/u.test(line)));
-    const block = lines.slice(start, next < 0 ? undefined : next);
+    const end = next < 0 ? lines.length : next;
+    const block = lines.slice(start, end);
     const foreignBullet = evidence.some(entry => block.includes(comparable(entry.claim)) && entry.citations.some(citation =>
       citation.ref !== opportunity.ref && sourceBullets.some(bullet => bullet.ref === citation.ref && bullet.excerpt === citation.excerpt)));
     if (foreignBullet) revision(opportunity.ref, "Do not attribute another source record's bullet to this employer or project.");
+    // Trimmed bullets are allowed (keep rule); a kept bullet must appear once, inside its own record.
     const emitted = opportunity.bullets.flatMap(fact => {
       const claims = evidence.filter(entry => entry.citations.some(citation => citation.ref === opportunity.ref && citation.excerpt === fact.excerpt));
-      const positions = block.flatMap((line, index) => claims.some(entry => comparable(entry.claim) === line) ? [index] : []);
+      const rendered = (line: string) => claims.some(entry => comparable(entry.claim) === line);
+      const positions = block.flatMap((line, index) => rendered(line) ? [index] : []);
+      const elsewhere = lines.some((line, index) => (index < start || index >= end) && rendered(line));
+      if (positions.length > 1 || (!positions.length && elsewhere)) {
+        revision(opportunity.ref, "Keep each complete source bullet once inside its owning record before prioritizing it.");
+      }
       return positions.length === 1 ? [{ ...fact, position: positions[0] }] : [];
     }).sort((a, b) => a.position - b.position);
-    if (emitted.length !== opportunity.bullets.length) {
-      revision(opportunity.ref, "Keep each complete source bullet once inside its owning record before prioritizing it.");
-    }
+    if (!emitted.length) continue;
     if (!opportunity.leadingFactIds.includes(emitted[0].factId!)) {
-      revision(opportunity.ref, "Lead this record with an available fact addressing the target job priority; retain every other fact and its ownership.");
+      revision(opportunity.ref, "Lead this record with an available fact addressing the target job priority; keep every kept fact inside its own record.");
     }
   }
 }

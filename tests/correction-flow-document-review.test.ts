@@ -55,7 +55,7 @@ function consentFor(value: ReturnType<typeof manifest>) {
     exactHead: value.exactHead,
     providerMode: value.providerMode,
     approvedCallCount: 2,
-    approvedConservativeReservationMicros: 112_125,
+    approvedConservativeReservationMicros: 121_500,
     approvedStepTimeoutMs: 180_000,
     syntheticApplicantDataSharingApproved: true,
     existingCredentialUseApproved: value.providerMode === "live_synthetic",
@@ -81,7 +81,7 @@ test("the v3 review manifest freezes the exact visible-review scope and generati
   assert.equal(value.contractVersion, "3");
   assert.equal(value.callCount, 2);
   assert.equal(value.stepTimeoutMs, 180_000);
-  assert.equal(value.conservativeReservationMicros, 112_125);
+  assert.equal(value.conservativeReservationMicros, 121_500);
   assert.equal(value.recipient, "google-gemini-developer-api");
   assert.equal(value.rawProviderOutputRetention, false);
   assert.equal(value.validatedDocumentPersistentRetention, false);

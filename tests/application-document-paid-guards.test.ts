@@ -167,7 +167,7 @@ test("document generation requires both data and exact-cost confirmation before 
   await assert.rejects(documentRequest(), (error: unknown) =>
     error instanceof PublicApiError && error.status === 428 &&
     error.details?.code === "AI_COST_CONFIRMATION_REQUIRED" &&
-    error.details.maximumCostMicros === 64_500 &&
+    error.details.maximumCostMicros === 72_000 &&
     error.details.dataType === "application_packet" &&
     error.details.provider === "gemini" &&
     error.details.model === "gemini-3.8-flash" &&
@@ -242,11 +242,11 @@ test("confirmed resume tailoring reserves its exact cap, sends one capped reques
   assert.equal(requests[0].headers.get("x-goog-api-key"), "synthetic-never-log");
   assert.equal(requests[0].headers.has("authorization"), false);
   const generation = requests[0].body.generationConfig as Record<string, unknown>;
-  assert.equal(generation.maxOutputTokens, 6_000);
+  assert.equal(generation.maxOutputTokens, 12_000);
   assert.deepEqual(generation.thinkingConfig, { thinkingLevel: "LOW" });
   assert.equal(generation.responseMimeType, "application/json");
   assert.deepEqual(generation.responseJsonSchema, responseJsonSchema);
-  assert.equal(ledger.reservations[0].maximumCostMicros, 64_500);
+  assert.equal(ledger.reservations[0].maximumCostMicros, 72_000);
   assert.equal(ledger.reservations[0].promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
@@ -266,8 +266,8 @@ test("confirmed cover-letter generation uses its smaller output cap and exact re
 
   assert.equal(result.data.value, "supported");
   assert.equal(requests.length, 1);
-  assert.equal((requests[0].generationConfig as Record<string, unknown>).maxOutputTokens, 1_500);
-  assert.equal(ledger.reservations[0].maximumCostMicros, 47_625);
+  assert.equal((requests[0].generationConfig as Record<string, unknown>).maxOutputTokens, 6_000);
+  assert.equal(ledger.reservations[0].maximumCostMicros, 49_500);
 });
 
 test("cache lookups are isolated by prompt version and validated without dispatch or reservation", async (t) => {
@@ -397,7 +397,7 @@ test("an uncertain document-provider outcome consumes the reservation once and n
   );
   assert.equal(calls, 1);
   assert.equal(ledger.reconciliations[0].status, "UNCERTAIN");
-  assert.equal(ledger.reconciliations[0].actualCostMicros, 64_500);
+  assert.equal(ledger.reconciliations[0].actualCostMicros, 72_000);
   assert.equal(ledger.cacheWrites.length, 0);
 });
 

@@ -4,7 +4,8 @@ export function buildApplicationDocumentPayload(
   job: unknown,
   resume: unknown,
   profile: unknown,
-  reviewedEvidence: unknown = null
+  reviewedEvidence: unknown = null,
+  protectedEvidence: unknown = null
 ): ApplicationDocumentPayload {
   const pick = (value: unknown, keys: string[]) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -59,7 +60,7 @@ export function buildApplicationDocumentPayload(
     ], []);
   }
 
-  return {
+  const payload: ApplicationDocumentPayload = {
     job: pick(job, [
       "title", "company", "location", "remoteStatus", "salaryMin", "salaryMax",
       "description", "requirements", "preferredQualifications", "detectedTechStack"
@@ -71,6 +72,28 @@ export function buildApplicationDocumentPayload(
     ]),
     reviewedEvidence: projectedEvidence
   };
+  // Only tailoring passes match protection; other documents keep their previous payload shape.
+  const protectedCitations = pick(protectedEvidence, ["citations"]);
+  if (protectedCitations) {
+    payload.protectedEvidence = { citations: protectedResumeCitations(protectedCitations.citations) };
+  }
+  return payload;
+}
+
+// Résumé items cited as applicant evidence by the job match. Owner-attested facts and job
+// references are never protected: they stay optional for tailoring.
+export function protectedResumeCitations(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const { ref, excerpt } = item as Record<string, unknown>;
+    if (typeof ref !== "string" || typeof excerpt !== "string" || !ref.startsWith("resume.") || !excerpt.trim()) return [];
+    const key = `${ref}\u0000${excerpt}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ ref, excerpt }];
+  });
 }
 
 // Compatibility name for callers that have not yet moved to the shared

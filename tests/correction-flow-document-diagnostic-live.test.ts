@@ -27,7 +27,7 @@ test("the launcher binds two sequential document calls before one hidden credent
           const parsed = JSON.parse(value);
           manifestHash = parsed.safeManifest.manifestHash;
           assert.equal(parsed.safeManifest.callCount, 2);
-          assert.equal(parsed.safeManifest.conservativeReservationMicros, 112_125);
+          assert.equal(parsed.safeManifest.conservativeReservationMicros, 121_500);
           assert.deepEqual(parsed.safeManifest.calls.map((call: { stage: string }) => call.stage), [
             "tailored_resume",
             "cover_letter"
@@ -48,7 +48,7 @@ test("the launcher binds two sequential document calls before one hidden credent
           manifestHash,
           exactHead,
           providerMode: "live_synthetic",
-          conservativeReservationMicros: 112_125,
+          conservativeReservationMicros: 121_500,
           providerCallsStarted: 2,
           providerCallsCompleted: 2,
           knownInputTokens: 200,
