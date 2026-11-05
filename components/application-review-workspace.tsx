@@ -36,7 +36,7 @@ export function ApplicationReviewWorkspace({sourceText,job,correctionReview,resu
     </section>
     <section data-product-review-stage="corrections" hidden={stage!=="corrections"}>
       <h2 tabIndex={-1}>Missing-fact corrections</h2><p className="mb-4">Review source facts and saved job-only attestations separately. Saving changes requires reassessment and regeneration; earlier documents do not become current through navigation.</p>
-      <div className="application-review-panel">{correctionReview?<EvidenceCorrectionReview review={correctionReview} onReviewChanged={()=>setEvidenceChanged(true)} onReassessmentSaved={()=>router.refresh()}/>:<p>A master résumé is required to review missing facts.</p>}</div>
+      <div className="application-review-panel">{correctionReview?<EvidenceCorrectionReview review={correctionReview} onReviewChanged={()=>setEvidenceChanged(true)} onReassessmentSaved={()=>{setEvidenceChanged(false);router.refresh();}}/>:<p>A master résumé is required to review missing facts.</p>}</div>
       <button onClick={()=>chooseStage("documents")}>Continue to documents</button>
     </section>
     <section data-product-review-stage="documents" hidden={stage!=="documents"}>
