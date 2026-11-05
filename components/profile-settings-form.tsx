@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { Loader2, Save } from "lucide-react";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import { splitListInput } from "@/lib/profile/list-input";
 
 export type ProfileSettingsData = {
   name: string;
@@ -43,20 +44,6 @@ type FormState = Omit<
 
 function toLines(values: string[]) {
   return values.join("\n");
-}
-
-function toLineList(value: string) {
-  return value
-    .split(/\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function toKeywordList(value: string) {
-  return value
-    .split(/\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 function toNumberOrNull(value: string | number | null) {
@@ -107,15 +94,15 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
       name: form.name || null,
       location: form.location,
       careerGoals: form.careerGoals || null,
-      preferredRoles: toLineList(form.preferredRoles),
-      preferredLocations: toLineList(form.preferredLocations),
+      preferredRoles: splitListInput(form.preferredRoles, "commas"),
+      preferredLocations: splitListInput(form.preferredLocations, "lines"),
       remotePreference: form.remotePreference,
       salaryTargetMin: toNumberOrNull(form.salaryTargetMin),
       salaryTargetMax: toNumberOrNull(form.salaryTargetMax),
-      industriesOfInterest: toLineList(form.industriesOfInterest),
-      dealBreakers: toLineList(form.dealBreakers),
-      skillsToEmphasize: toKeywordList(form.skillsToEmphasize),
-      skillsNotToExaggerate: toKeywordList(form.skillsNotToExaggerate),
+      industriesOfInterest: splitListInput(form.industriesOfInterest, "commas"),
+      dealBreakers: splitListInput(form.dealBreakers, "commas"),
+      skillsToEmphasize: splitListInput(form.skillsToEmphasize, "commas"),
+      skillsNotToExaggerate: splitListInput(form.skillsNotToExaggerate, "commas"),
       workAuthorizationNotes: form.workAuthorizationNotes || null,
       availabilityNotes: form.availabilityNotes || null,
       preferredResumeTone: form.preferredResumeTone
@@ -190,6 +177,7 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
       <div className="grid gap-4 md:grid-cols-2">
         <label className={labelClass()}>
           Preferred roles
+          <span className="ml-1 font-normal text-slate-500">Separate with commas or new lines.</span>
           <textarea
             rows={6}
             value={form.preferredRoles}
@@ -199,6 +187,7 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
         </label>
         <label className={labelClass()}>
           Preferred locations
+          <span className="ml-1 font-normal text-slate-500">One per line, e.g. New York, NY or Remote.</span>
           <textarea
             rows={6}
             value={form.preferredLocations}
@@ -236,6 +225,7 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
       <div className="grid gap-4 xl:grid-cols-2">
         <label className={labelClass()}>
           Industries of interest
+          <span className="ml-1 font-normal text-slate-500">Separate with commas or new lines.</span>
           <textarea
             rows={5}
             value={form.industriesOfInterest}
@@ -245,6 +235,7 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
         </label>
         <label className={labelClass()}>
           Deal-breakers
+          <span className="ml-1 font-normal text-slate-500">Separate with commas or new lines.</span>
           <textarea
             rows={5}
             value={form.dealBreakers}
@@ -257,6 +248,7 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
       <div className="grid gap-4 xl:grid-cols-2">
         <label className={labelClass()}>
           Skills to emphasize
+          <span className="ml-1 font-normal text-slate-500">Separate with commas or new lines.</span>
           <textarea
             rows={6}
             value={form.skillsToEmphasize}
@@ -266,6 +258,7 @@ export function ProfileSettingsForm({ initialProfile }: { initialProfile: Profil
         </label>
         <label className={labelClass()}>
           Skills not to exaggerate
+          <span className="ml-1 font-normal text-slate-500">Separate with commas or new lines.</span>
           <textarea
             rows={6}
             value={form.skillsNotToExaggerate}

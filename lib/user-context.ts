@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ZodError, type ZodIssue } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
 import { auth } from "@/lib/auth";
@@ -70,6 +71,30 @@ export async function requireUserId() {
   throw new UnauthorizedError();
 }
 
+// "preferredRoles", 0 → "Preferred roles #1"
+function validationFieldLabel(path: ZodIssue["path"]) {
+  const label = path
+    .map((part) => typeof part === "number"
+      ? `#${part + 1}`
+      : part.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").toLowerCase())
+    .join(" ");
+  return label ? label[0]!.toUpperCase() + label.slice(1) : "This request";
+}
+
+// A field-level validation message people can act on. It names only the field
+// and the rule, never the submitted value.
+function describeValidationError(error: ZodError) {
+  const issue = error.issues[0];
+  if (!issue) return "Check the submitted fields and try again.";
+  const label = validationFieldLabel(issue.path);
+  if (issue.code === "too_big" && issue.type === "string") return `${label} must be ${issue.maximum} characters or fewer.`;
+  if (issue.code === "too_big" && issue.type === "array") return `${label} can have at most ${issue.maximum} entries.`;
+  if (issue.code === "too_small" && issue.type === "string") {
+    return Number(issue.minimum) <= 1 ? `${label} is required.` : `${label} must be at least ${issue.minimum} characters.`;
+  }
+  return `${label}: ${issue.message.replace(/\.$/u, "")}.`;
+}
+
 export function apiErrorResponse(error: unknown) {
   if (error instanceof UnauthorizedError) {
     logger.warn("api.unauthorized", {
@@ -89,6 +114,15 @@ export function apiErrorResponse(error: unknown) {
     });
 
     return NextResponse.json({ error: error.message, ...error.details }, { status: error.status });
+  }
+
+  if (error instanceof ZodError) {
+    logger.warn("api.handled_error", {
+      status: 422,
+      error: { name: error.name, message: error.message }
+    });
+
+    return NextResponse.json({ error: describeValidationError(error) }, { status: 422 });
   }
 
   if (error instanceof Error) {
