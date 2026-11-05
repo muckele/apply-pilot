@@ -1,6 +1,6 @@
 import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { decodeHtmlEntities, detectTechStack, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
+import { decodeHtmlEntities, detectTechStack, htmlBulletItems, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
 
 type GreenhouseJob = {
   id: number;
@@ -38,7 +38,10 @@ export class GreenhouseProvider implements JobSourceProvider {
   normalizeJob(rawJob: RawJob): NormalizedJob {
     const job = rawJob as GreenhouseJob & { sourceUrl?: string; html?: string };
     // With content=true the board API returns HTML-escaped HTML, so decode before stripping tags.
-    const description = job.content ? htmlToText(decodeHtmlEntities(job.content)) : htmlToText(job.html ?? "");
+    const html = job.content ? decodeHtmlEntities(job.content) : job.html ?? "";
+    const description = htmlToText(html);
+    // htmlToText flattens every line break, so take requirements from the posting's bullets.
+    const bullets = htmlBulletItems(html);
     const postedAt = job.first_published ?? job.updated_at;
 
     return {
@@ -49,7 +52,7 @@ export class GreenhouseProvider implements JobSourceProvider {
       sourceUrl: job.absolute_url ?? job.sourceUrl ?? "",
       applyUrl: job.absolute_url ?? job.sourceUrl,
       description,
-      requirements: splitRequirementText(description),
+      requirements: splitRequirementText(bullets.length ? bullets.join("\n") : description),
       preferredQualifications: [],
       benefits: [],
       detectedTechStack: detectTechStack(description),

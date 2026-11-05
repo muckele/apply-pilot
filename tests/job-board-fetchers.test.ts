@@ -170,3 +170,32 @@ test("board fetchers reject a 200 response with an unexpected shape", async (t) 
   await assert.rejects(new LeverProvider().searchJobs({ boardToken: "odd" }), /unexpected/i);
   await assert.rejects(new AshbyProvider().searchJobs({ boardToken: "odd" }), /unexpected/i);
 });
+
+test("Greenhouse requirements come from the posting's bullet points, not one flattened paragraph", (t) => {
+  stubFetch(t, {});
+  const provider = new GreenhouseProvider();
+  const escaped = (html: string) => html.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const job = provider.normalizeJob({
+    id: 1,
+    title: "Sales Engineer",
+    absolute_url: "https://example.com/jobs/1",
+    location: { name: "Denver, CO - Hybrid" },
+    content: escaped([
+      "<p>About the role. You will scope, build and embed with clients.</p>",
+      "<h3>Here's what we're looking for</h3>",
+      "<ul>",
+      "<li><p>Demonstrated 5+ years of hands-on experience in a customer-facing technical role</p></li>",
+      "<li>Proven track record of shipping production systems with REST APIs, webhooks &amp; event-driven systems</li>",
+      "<li>Payroll, tax, or compliance fluency</li>",
+      "<li>Short</li>",
+      "</ul>"
+    ].join(""))
+  });
+
+  assert.deepEqual(job.requirements, [
+    "Demonstrated 5+ years of hands-on experience in a customer-facing technical role",
+    "Proven track record of shipping production systems with REST APIs, webhooks & event-driven systems",
+    "Payroll, tax, or compliance fluency"
+  ]);
+  assert.match(job.description, /^About the role\. You will scope/);
+});

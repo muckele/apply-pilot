@@ -61,6 +61,13 @@ export function htmlToText(html: string) {
   return decodeHtmlEntities(text).replace(/\s+/g, " ").trim();
 }
 
+/** Plain text of every `<li>` in an HTML document, in order. */
+export function htmlBulletItems(html: string) {
+  return [...html.matchAll(/<li\b[^>]*>([\s\S]*?)<\/li>/gi)]
+    .map((match) => htmlToText(match[1] ?? ""))
+    .filter(Boolean);
+}
+
 /** Plain-text items of an HTML list fragment such as `<li>One</li><li>Two</li>`. */
 export function htmlListItems(html: string) {
   return html
