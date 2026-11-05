@@ -606,6 +606,57 @@ function positiveCitationReversesNegation(
   });
 }
 
+// A record's JSON form escapes line breaks ("\\n"), so also match against its plain
+// text: a quote may span lines of a record's sourceText as the model saw them.
+function excerptFound(resolved: ResolvedEvidence, excerpt: string) {
+  if (!resolved.found) return false;
+  const needle = comparable(excerpt);
+  if (!needle) return false;
+  return [evidenceText(resolved.value), ...readableSourceLeaves(resolved.value)]
+    .map(comparable)
+    .some((haystack) => haystack.includes(needle));
+}
+
+// The model sometimes miscounts a list position: it quotes "Salesforce" (resume.skills[35])
+// but cites resume.skills[34]. When the quote is not in the cited item but is in another
+// item of the same list, cite that item (the nearest one if several). The quote must
+// still be verbatim source text, so only the position is corrected.
+function repairCitationPosition<T extends { ref: string; excerpt: string }>(
+  citation: T,
+  refs: string[],
+  resolve: (ref: string) => ResolvedEvidence
+): T {
+  const position = citation.ref.match(/^(.+)\[(\d+)\]$/);
+  const cited = resolve(citation.ref);
+  // A position that does not exist is not a miscount; leave it to fail validation.
+  if (!position || !cited.found || excerptFound(cited, citation.excerpt)) return citation;
+  const [, list, citedIndex] = position;
+  const indexOf = (ref: string) => Number(ref.slice(list!.length + 1, -1));
+  const candidates = refs
+    .filter((ref) => ref.startsWith(`${list}[`) && /^\[\d+\]$/.test(ref.slice(list!.length)))
+    .filter((ref) => excerptFound(resolve(ref), citation.excerpt))
+    .sort((a, b) => Math.abs(indexOf(a) - Number(citedIndex)) - Math.abs(indexOf(b) - Number(citedIndex)));
+  return candidates[0] ? { ...citation, ref: candidates[0] } : citation;
+}
+
+function repairCitationPositions(input: MatchInput, output: JobMatchModelOutput): JobMatchModelOutput {
+  const refs = getJobMatchEvidenceReferences(input);
+  const applicant = (ref: string) => resolveApplicantEvidence(input, ref);
+  const job = (ref: string) => resolveJobEvidence(input, ref);
+  return {
+    ...output,
+    factualMatches: output.factualMatches.map((match) => ({
+      ...match,
+      applicantEvidence: match.applicantEvidence.map((citation) => repairCitationPosition(citation, refs.applicant, applicant)),
+      jobEvidence: match.jobEvidence.map((citation) => repairCitationPosition(citation, refs.job, job))
+    })),
+    requirementGaps: output.requirementGaps.map((gap) => ({
+      ...gap,
+      jobRequirement: repairCitationPosition(gap.jobRequirement, refs.gap, job)
+    }))
+  };
+}
+
 function validateCitation(
   citation: JobMatchEvidenceCitation,
   resolver: (ref: string) => ResolvedEvidence,
@@ -621,11 +672,7 @@ function validateCitation(
     );
   }
 
-  // A record's JSON form escapes line breaks ("\\n"), so also match against its plain
-  // text: a quote may span lines of a record's sourceText as the model saw them.
-  const haystacks = [evidenceText(resolved.value), ...readableSourceLeaves(resolved.value)].map(comparable);
-  const needle = comparable(citation.excerpt);
-  if (!needle || !haystacks.some((haystack) => haystack.includes(needle))) {
+  if (!excerptFound(resolved, citation.excerpt)) {
     semanticFailure(
       source === "applicant" ? "UNSUPPORTED_APPLICANT_EXCERPT" : "UNSUPPORTED_JOB_EXCERPT",
       `${fieldPath}.excerpt`,
@@ -908,7 +955,8 @@ export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unk
     );
   }
   try {
-    return { modelOutput: parsed.data, normalized: normalizeJobMatchOutput(input, parsed.data) };
+    const modelOutput = repairCitationPositions(input, parsed.data);
+    return { modelOutput, normalized: normalizeJobMatchOutput(input, modelOutput) };
   } catch (error) {
     throw new JobMatchOutputValidationError(
       "semantic",
