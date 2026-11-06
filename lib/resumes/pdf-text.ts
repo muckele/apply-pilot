@@ -22,8 +22,13 @@ const softWrap = /(?<=\S) \n(?=[^\s•▪◦])/gu;
 // A compound word broken after its hyphen ("re-\nentry") is rejoined as "re-entry".
 const hyphenWrap = /(?<=\p{Ll}-)\n(?=\p{Ll})/gu;
 
+// The PDF reader keeps a bullet glyph touching its text ("•Started …"). Put one space after a
+// glyph that starts a line, as Word uploads already store it, so a bullet's text is exactly the
+// parsed bullet. Mid-line glyphs are left alone.
+const gluedBullet = /^([ \t]*[•▪◦]+)(?=[^\s•▪◦])/gmu;
+
 export function normalizePdfResumeText(text: string) {
-  return repairPdfGluedDateRanges(text).replace(softWrap, " ").replace(hyphenWrap, "");
+  return repairPdfGluedDateRanges(text).replace(softWrap, " ").replace(hyphenWrap, "").replace(gluedBullet, "$1 ");
 }
 
 type PdfTextItem = { str: string; transform: number[]; width: number };

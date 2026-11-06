@@ -206,13 +206,24 @@ test("PDF text repair rejoins lines the PDF wrapped, marked by a trailing space"
   const { normalizePdfResumeText } = await import("@/lib/resumes/pdf-text");
   assert.equal(
     normalizePdfResumeText("Leadership: planning, budgets, P&L \nmanagement, hiring\n•Led a team of five planners across \ntwo regions.\n•Next bullet."),
-    "Leadership: planning, budgets, P&L management, hiring\n•Led a team of five planners across two regions.\n•Next bullet."
+    "Leadership: planning, budgets, P&L management, hiring\n• Led a team of five planners across two regions.\n• Next bullet."
   );
   // A trailing space before a bullet, a blank line or the end is not a wrap.
-  assert.equal(normalizePdfResumeText("First line \n•Bullet"), "First line \n•Bullet");
+  assert.equal(normalizePdfResumeText("First line \n•Bullet"), "First line \n• Bullet");
   assert.equal(normalizePdfResumeText("Heading \n\nBody "), "Heading \n\nBody ");
   // The glued-date repair still runs.
   assert.equal(normalizePdfResumeText("Acme & CoJan 2024 – Present"), "Acme & Co Jan 2024 – Present");
+});
+
+// Live case 2026-11-06: the PDF reader stores each bullet glyph touching its text ("•Started …"),
+// so the stored résumé, every screen that lists its lines and every evidence check saw "•Started"
+// beside the parsed "Started". The glyph keeps one space after it, as Word uploads already do.
+test("PDF text repair puts one space after a bullet glyph glued to its text", async () => {
+  const { normalizePdfResumeText } = await import("@/lib/resumes/pdf-text");
+  assert.equal(normalizePdfResumeText("EXPERIENCE\n•Started the West region.\n  ▪Ran demos.\n◦Booked 40 meetings."),
+    "EXPERIENCE\n• Started the West region.\n  ▪ Ran demos.\n◦ Booked 40 meetings.");
+  // Already spaced, mid-line and repeated glyphs are left as they are.
+  assert.equal(normalizePdfResumeText("• Spaced bullet\nSkills •Salesforce\n••Double"), "• Spaced bullet\nSkills •Salesforce\n•• Double");
 });
 
 test("PDF text repair rejoins a hyphenated word the PDF wrapped", async () => {
