@@ -743,3 +743,72 @@ test("an uncited line built from a source item plus an invented one puts the sou
   assert.equal(final.resumeText, completeText);
   assert.deepEqual(tailoredResumeReversions(final).map((entry) => [entry.rejectedText, entry.original.map((item) => item.text)]), [[padded, [SKILLS[0]]]]);
 });
+
+// Live case 2026-11-06: an owner fact written as two clauses ("At A, …; at B, …") was split by
+// Gemini into one bullet per job. Each part was a valid cited part of the fact, but the second
+// started lowercase and the first lost its closing period. Parts placed as their own lines read
+// as whole sentences.
+test("parts of a split fact placed as their own lines start with a capital and end like the fact", () => {
+  const payload = syntheticPayload();
+  const fact = "At Northwind Software, owned onboarding through go-live; at Fabrikam Analytics, managed renewals end to end.";
+  (payload.reviewedEvidence!.facts as Array<{ fact: string }>)[0]!.fact = fact;
+  const first = "At Northwind Software, owned onboarding through go-live";
+  const second = "at Fabrikam Analytics, managed renewals end to end.";
+  const text = withoutLines(completeText, OWNER_FACT)
+    .replace(`• ${JOBS[0]!.bullets[2]}`, `• ${JOBS[0]!.bullets[2]}\n• ${first}`)
+    .replace(`• ${JOBS[1]!.bullets[2]}`, `• ${JOBS[1]!.bullets[2]}\n• ${second}`);
+  // The fact catalog holds each clause of the fact as its own fact; each line cites its clause.
+  // As in the live answer, the lowercase part is also listed as a bullet rewrite.
+  const factIdOf = (excerpt: string) => buildApplicationDocumentFactCatalog(payload).find((entry) => entry.excerpt === excerpt)!.factId;
+  const { final } = finalize(payload, text, [{ claim: first, factExcerpt: first }, { claim: second, factExcerpt: second }], {
+    bulletRewrites: [first, second].map((part) => ({ factId: factIdOf(part), rewrite: part, reason: "Placed under the matching job." }))
+  });
+  const lines = final.resumeText.split("\n");
+  assert.ok(lines.includes("• At Northwind Software, owned onboarding through go-live."), final.resumeText);
+  assert.ok(lines.includes("• At Fabrikam Analytics, managed renewals end to end."), final.resumeText);
+  assert.ok(final.claimEvidence.some((entry) => entry.claim === "At Fabrikam Analytics, managed renewals end to end."));
+  assert.deepEqual(final.bulletRewrites.map((rewrite) => rewrite.rewrite),
+    ["At Northwind Software, owned onboarding through go-live.", "At Fabrikam Analytics, managed renewals end to end."]);
+  validateTailoredResumeClaims(payload, final);
+  const replay = finalizeTailoredResume(payload, structuredClone(final));
+  assert.equal(replay.resumeText, final.resumeText);
+});
+
+test("a whole fact and a source bullet keep their own wording and punctuation", () => {
+  const payload = syntheticPayload();
+  const { final } = finalize(payload, completeText);
+  assert.equal(final.resumeText, completeText);
+});
+
+// Live case 2026-11-06: a source skills line whose items carry parenthetical detail ("Vendor
+// management (Contoso, Fabrikam), …") is not a clean category, so a match-cited skill from it that the
+// keep rule put back was printed alone, without the label that says what it is.
+const LOOSE_SKILLS = [
+  "Selling: Salesforce, Pipeline forecasting, Discovery calls, Contract negotiation, HubSpot, Territory planning, Account mapping, Gong, Excel modeling",
+  "Outreach: Public speaking (trade shows, meetups), Spanish, Event planning",
+  "Photography",
+  "Woodworking"
+];
+const looseEdit = (text: string) => text.replace(`SKILLS\n${SKILLS.join("\n")}\n`, `SKILLS\n${LOOSE_SKILLS.join("\n")}\n`);
+
+test("a match-cited skill put back from a labelled line that is not a clean category keeps its label", () => {
+  const payload = syntheticPayload([{ ref: "resume.skills[11]", excerpt: "Event planning" }], false, looseEdit);
+  const text = looseEdit(completeText).replace(`${LOOSE_SKILLS[1]}\n`, "");
+  const { final } = finalize(payload, text, [{ claim: LOOSE_SKILLS[0]!, factExcerpt: LOOSE_SKILLS[0]! }]);
+  const lines = final.resumeText.split("\n");
+  assert.ok(!lines.includes("Event planning"), final.resumeText);
+  assert.deepEqual(lines.slice(lines.indexOf("SKILLS") + 1, lines.indexOf("SKILLS") + 3), [LOOSE_SKILLS[0], "Outreach: Event planning"]);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("an uncited labelled skills line with an extra puts back every source skill it listed", () => {
+  const payload = syntheticPayload(null, false, looseEdit);
+  const padded = `${LOOSE_SKILLS[0]}, Event planning`;
+  const text = looseEdit(completeText).replace(`${LOOSE_SKILLS[0]}\n`, `${padded}\n`).replace(`${LOOSE_SKILLS[1]}\n`, "");
+  const final = finalizeUncited(payload, text, padded);
+  const lines = final.resumeText.split("\n");
+  assert.ok(lines.includes(LOOSE_SKILLS[0]!), final.resumeText);
+  assert.ok(lines.includes("Outreach: Event planning"), final.resumeText);
+  assert.ok(!lines.includes("Event planning"), final.resumeText);
+  validateTailoredResumeClaims(payload, final);
+});

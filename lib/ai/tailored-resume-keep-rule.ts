@@ -82,7 +82,9 @@ type SourceRecord = {
   bullets: Unit[];
   leading: Unit[];
 };
-type SkillCategory = Readonly<{ label: string | null; fact: ApplicationDocumentFact | undefined; skills: readonly Unit[] }>;
+// loose: a labelled source line that is not a clean category (see buildSourceModel); it only
+// labels skills of it that are kept on their own and never switches regrouping on.
+type SkillCategory = Readonly<{ label: string | null; fact: ApplicationDocumentFact | undefined; skills: readonly Unit[]; loose: boolean }>;
 type SourceModel = {
   factByKey: ReadonlyMap<string, ApplicationDocumentFact>;
   factByCitation: ReadonlyMap<string, ApplicationDocumentFact>;
@@ -156,6 +158,28 @@ function listParts(text: string) {
   const labelled = trimmed.match(/^([^:,;|]{1,40}):\s*(.+)$/u);
   const items = (labelled ? labelled[2]! : trimmed).split(/\s*[,;|·•]\s*/u).map(factKey).filter(Boolean);
   return { label: labelled ? labelled[1]!.trim() : null, items };
+}
+
+// The items of a "Label: a (x, y), b" line split only outside parentheses, each without its
+// trailing parenthetical detail: ["a", "b"].
+function itemsOutsideParentheses(text: string) {
+  const trimmed = normalizeApplicationDocumentSourceLine(text).replace(/[.;]+$/u, "");
+  const body = trimmed.match(/^[^:,;|]{1,40}:\s*(.+)$/u)?.[1] ?? trimmed;
+  const items: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const character of body) {
+    if (character === "(") depth += 1;
+    if (character === ")") depth = Math.max(0, depth - 1);
+    if (depth === 0 && /[,;|·•]/u.test(character)) {
+      items.push(current);
+      current = "";
+    } else {
+      current += character;
+    }
+  }
+  items.push(current);
+  return items.map((item) => factKey(item.replace(/\s*\([^()]*\)\s*$/u, ""))).filter(Boolean);
 }
 
 export function tailoredResumeSourceHeaderLines(payload: ApplicationDocumentPayload) {
@@ -300,7 +324,13 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
         const parts = listParts(raw);
         const skills = parts.items.map((item) => skillsByKey.get(item));
         if ((parts.label !== null || skills.length >= 2) && skills.length && skills.every(Boolean)) {
-          skillCategories.push({ label: parts.label, fact: factByKey.get(line.key), skills: skills as Unit[] });
+          skillCategories.push({ label: parts.label, fact: factByKey.get(line.key), skills: skills as Unit[], loose: false });
+        } else if (parts.label !== null && factByKey.get(line.key)) {
+          // Live case 2026-11-06: a labelled line whose items carry parenthetical detail ("Vendor
+          // management (Contoso, Fabrikam), …") is not a clean category and is never regrouped, but a
+          // skill of it that comes back alone still prints under its label.
+          const listed = [...new Set(itemsOutsideParentheses(raw).flatMap((item) => skillsByKey.get(item) ?? []))];
+          if (listed.length) skillCategories.push({ label: parts.label, fact: factByKey.get(line.key), skills: listed, loose: true });
         }
       }
       if (!line.facts.length || line.facts.every((fact) => resumeCovered.has(fact.factId)) || seen.has(line.key) ||
@@ -892,20 +922,26 @@ function insertSectionUnit(model: SourceModel, draft: ResumeDraft, unit: Unit) {
   draft.insert(at, needsGap ? [...rendered, ""] : rendered);
 }
 
+function hasCleanSkillCategories(model: SourceModel) {
+  return model.skillCategories.some((category) => !category.loose);
+}
+
 // When the source groups skills ("Sales tools: a, b, c"), the tailored SKILLS section lists the
 // kept skills the same way, dropping only trimmed ones. Each line cites its category line and skills.
 function regroupSkills(model: SourceModel, draft: ResumeDraft, restoredSkills: ReadonlySet<Unit>) {
-  if (!model.skillCategories.length) return;
+  if (!hasCleanSkillCategories(model)) return;
   const skills = model.units.filter((unit) => unit.kind === "skill");
   // A mixed source skills line stays as it is; skills it lists are not listed again.
   const kept = new Set(skills.filter((unit) => restoredSkills.has(unit) ||
     draft.renderedLines(unit).some((index) => !draft.ownedByNonSkill(index))));
   if (!kept.size) return;
   const grouped = new Set(model.skillCategories.flatMap((category) => category.skills));
+  const listed = new Set<Unit>();
   const lines: RenderedLine[] = [];
   for (const category of model.skillCategories) {
-    const items = category.skills.filter((unit) => kept.has(unit));
+    const items = category.skills.filter((unit) => kept.has(unit) && !listed.has(unit));
     if (!items.length) continue;
+    items.forEach((unit) => listed.add(unit));
     const label = category.label !== null && category.fact ? category.label : null;
     const text = `${label ? `${label}: ` : ""}${items.map(unitText).join(", ")}`;
     const facts = items.flatMap((unit) => unit.facts);
@@ -983,7 +1019,7 @@ export function completeTailoredResume<T extends ResumeOutput>(
     if (draft.lines.join("\n") === output.resumeText) return output;
   }
 
-  const regrouping = model.skillCategories.length > 0;
+  const regrouping = hasCleanSkillCategories(model);
   const restoredSkills = new Set<Unit>();
   const items: Array<{ id: number; item: TailoredResumeItem }> = [];
   const done = new Set<Unit>();
@@ -1048,6 +1084,67 @@ export function carryTailoredResumeReversions<T extends object>(from: object, to
   return to;
 }
 
+// Live case 2026-11-06: an owner fact written as two clauses ("At A, …; at B, …") was split by
+// Gemini into one bullet per job. Each part was a valid cited part of the fact, but the second
+// began lowercase ("at B, …") and the first lost its closing period. A line that is
+// exactly one inner part of a longer fact or source line now starts with a capital (unless it
+// starts like "iOS") and, when the whole ends in a period, ends with one. Whole facts and source
+// lines keep their own wording; the claim naming the line changes with it, and the unchanged truth
+// checks still run afterwards. Applying it twice changes nothing.
+export function completeSplitFactParts<T extends ResumeOutput>(payload: ApplicationDocumentPayload, output: T): T {
+  const reviewed: unknown = payload.reviewedEvidence?.facts;
+  const wholes = [
+    ...(Array.isArray(reviewed) ? reviewed.flatMap((fact) => isRecord(fact) && typeof fact.fact === "string" ? [fact.fact] : []) : []),
+    ...(typeof payload.resume?.rawText === "string" ? payload.resume.rawText.split(/\r?\n/u) : [])
+  ].map((value) => normalizeApplicationDocumentSourceLine(value)).filter(Boolean);
+  const wholeKeys = new Set(wholes.map(comparable));
+  const completed = new Map<string, string>();
+  for (const whole of wholes) {
+    const parts = applicationDocumentAtomicStrings(whole);
+    if (parts.length < 2) continue;
+    const ending = whole.match(/[.!?]$/u)?.[0] ?? null;
+    parts.forEach((part, index) => {
+      let text = part;
+      if (index > 0 && /^\p{Ll}(?!\p{Lu})/u.test(text)) text = `${text[0]!.toLocaleUpperCase()}${text.slice(1)}`;
+      if (index < parts.length - 1 && ending && !/[.!?:]$/u.test(text)) text = `${text}${ending}`;
+      const key = comparable(part);
+      if (text !== part && !wholeKeys.has(key) && !completed.has(key)) completed.set(key, text);
+    });
+  }
+  if (!completed.size) return output;
+  const changed = new Map<string, string>();
+  const lines = output.resumeText.split(/\r?\n/u).map((line) => {
+    const marker = line.match(/^\s*(?:[-*•▪◦–—]\s*)?/u)![0];
+    const text = line.slice(marker.length);
+    const next = completed.get(comparable(text));
+    if (!next || next === text.trim()) return line;
+    changed.set(comparable(text), next);
+    return `${marker}${next}`;
+  });
+  if (!changed.size) return output;
+  // The typed fields that repeat a line (summary, skills, bullet rewrites, emphasis) change with it,
+  // or the claims check would no longer find their evidence.
+  const swap = (value: unknown) => typeof value === "string" ? changed.get(comparable(value)) ?? value : value;
+  const result: Record<string, unknown> = {
+    ...output,
+    resumeText: lines.join("\n"),
+    claimEvidence: output.claimEvidence.map((entry) => {
+      const next = changed.get(comparable(entry.claim));
+      return next ? { ...entry, claim: next } : entry;
+    })
+  };
+  if (typeof result.professionalSummary === "string") result.professionalSummary = swap(result.professionalSummary);
+  for (const field of ["skillsSection", "rolesOrProjectsToEmphasize"] as const) {
+    const values = result[field];
+    if (Array.isArray(values)) result[field] = values.map(swap);
+  }
+  if (Array.isArray(result.bulletRewrites)) {
+    result.bulletRewrites = result.bulletRewrites.map((item: unknown) =>
+      isRecord(item) && typeof item.rewrite === "string" ? { ...item, rewrite: swap(item.rewrite) } : item);
+  }
+  return carryTailoredResumeReversions(output, result as T);
+}
+
 type ProjectedResumeOutput = ResumeOutput & {
   professionalSummary?: unknown;
   skillsSection?: unknown;
@@ -1087,7 +1184,8 @@ export function revertUnverifiedResumeLines<T extends ProjectedResumeOutput>(
   const revertedFactIds = factIdsOf(output.claimEvidence.filter((entry) => onPage.has(lineKey(entry.claim))));
   // An uncited line may still be built from source items (a skills line with one invented item
   // added): those items are protected, so the keep rule puts their source wording back.
-  const sourceFactIdsOf = (line: string) => new Set([...keysOf(line), ...applicationDocumentAtomicStrings(line)].flatMap((value) => {
+  // A labelled list ("Selling: a, b, c") names each of its source items too.
+  const sourceFactIdsOf = (line: string) => new Set([...keysOf(line), ...applicationDocumentAtomicStrings(line), ...listParts(line).items].flatMap((value) => {
     const fact = model.factByKey.get(factKey(value));
     return fact ? [fact.factId] : [];
   }));
