@@ -443,10 +443,19 @@ test("execution fails closed before transport on stale input, incomplete consent
   });
   assert.equal(calls, 1);
 
+  await assert.rejects(runJobMatchQualification({
+    preparation,
+    consent: approvedConsent(preparation.safeManifest.manifestHash),
+    transport,
+    reviewCase: noDisagreements,
+    now: new Date("2027-01-01T00:00:00Z")
+  }), /pricing changed or expired/i);
+  assert.equal(calls, 1);
+
   const expired = buildQualificationPreparation(
     buildApplicantQualificationSnapshot(master, profile),
     JOB_MATCH_QUALIFICATION_CASES,
-    new Date("2027-01-01T00:00:00Z")
+    new Date("2027-04-01T00:00:00Z")
   );
   assert.equal(expired.safeManifest.readiness, "blocked_pricing_review_required");
 });

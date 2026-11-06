@@ -70,20 +70,28 @@ test("pricing expiry is reported for every registered Gemini model without exten
   const current = getAiPricingStatus(new Date("2026-10-15T00:00:00.000Z"));
   const flash = current.find((entry) => entry.model === "gemini-3.8-flash");
   assert.ok(flash);
-  assert.equal(flash.validUntil, "2027-01-01T00:00:00.000Z");
+  assert.equal(flash.validFrom, "2026-10-01T00:00:00.000Z");
+  assert.equal(flash.validUntil, "2027-04-01T00:00:00.000Z");
   assert.equal(flash.status, "current");
-  assert.equal(flash.daysRemaining, 78);
+  assert.equal(flash.daysRemaining, 168);
 
-  const soon = getAiPricingStatus(new Date("2026-11-03T00:00:00.000Z"))
+  // A registered price change is not an expiry: coverage runs to the last window's end.
+  const priceChange = getAiPricingStatus(new Date("2027-01-01T00:00:00.000Z"))
+    .find((entry) => entry.model === "gemini-3.8-flash");
+  assert.equal(priceChange?.status, "current");
+  assert.equal(priceChange?.validUntil, "2027-04-01T00:00:00.000Z");
+  assert.equal(priceChange?.daysRemaining, 90);
+
+  const soon = getAiPricingStatus(new Date("2027-02-01T00:00:00.000Z"))
     .find((entry) => entry.model === "gemini-3.8-flash");
   assert.equal(soon?.status, "expiring_soon");
   assert.equal(soon?.daysRemaining, 59);
 
-  const expired = getAiPricingStatus(new Date("2027-01-01T00:00:00.000Z"))
+  const expired = getAiPricingStatus(new Date("2027-04-01T00:00:00.000Z"))
     .find((entry) => entry.model === "gemini-3.8-flash");
   assert.equal(expired?.status, "expired");
   assert.equal(expired?.daysRemaining, 0);
-  assert.equal(MODEL_PRICING_REGISTRY["gemini-3.8-flash"].validUntil, "2027-01-01T00:00:00.000Z");
+  assert.equal(MODEL_PRICING_REGISTRY["gemini-3.8-flash"].prices.at(-1)?.validUntil, "2027-04-01T00:00:00.000Z");
 });
 
 test("the legacy soft budget check is gone and settings share the hard-ledger defaults", () => {
