@@ -20,6 +20,7 @@ import {
 import { assertAiInputWithinLimits } from "@/lib/ai/policy";
 import { estimateAiCostMicros, getModelPricing } from "@/lib/ai/pricing";
 import { hasEvidenceNegationCue } from "@/lib/evidence-negation";
+import { findTenureGaps, type JobMatchTenureFinding } from "@/lib/ai/job-match-tenure";
 import {
   JOB_MATCH_MODEL,
   JOB_MATCH_PROMPT_VERSION,
@@ -31,6 +32,9 @@ import type { JobMatchReviewedEvidence } from "@/lib/jobs/evidence-snapshot-cont
 
 // Result contract remains v3; prompt/cache revision 3.4 adds durable reviewed
 // evidence while retaining evidence-scoped gaps and illustrative-example guards.
+// Years-of-experience gaps are computed locally during normalization (see
+// job-match-tenure.ts) from the same submitted input, so the prompt, response
+// schema, cache key and cached raw output are unchanged.
 export {
   JOB_MATCH_MODEL,
   JOB_MATCH_PROMPT_VERSION,
@@ -89,8 +93,15 @@ export type CompensationAssessmentReason =
   | "missing_job_salary"
   | "missing_both";
 
-export type JobMatchOutput = Omit<JobMatchModelOutput, "factualMatches"> & {
+export type { JobMatchTenureFinding } from "@/lib/ai/job-match-tenure";
+
+export type JobMatchNormalizedRequirementGap = JobMatchRequirementGap & {
+  tenure?: JobMatchTenureFinding;
+};
+
+export type JobMatchOutput = Omit<JobMatchModelOutput, "factualMatches" | "requirementGaps"> & {
   factualMatches: JobMatchFactualMatch[];
+  requirementGaps: JobMatchNormalizedRequirementGap[];
   compensationAssessment: {
     score: number | null;
     reason: CompensationAssessmentReason;
@@ -779,7 +790,39 @@ function assessCompensation(input: MatchInput, modelScore: number | null) {
   return { score, reason };
 }
 
-export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModelOutput): JobMatchOutput {
+export type JobMatchNormalizationOptions = {
+  // Reference date for "Present" work-history end dates. Defaults to now.
+  asOf?: Date;
+};
+
+function withTenureGaps(
+  input: MatchInput,
+  gaps: JobMatchRequirementGap[],
+  asOf: Date
+): JobMatchNormalizedRequirementGap[] {
+  const tenureByRef = new Map(findTenureGaps(input, { asOf }).map((gap) => [gap.jobRequirement.ref, gap]));
+  const merged: JobMatchNormalizedRequirementGap[] = gaps.map((gap) => {
+    const tenureGap = tenureByRef.get(gap.jobRequirement.ref);
+    if (!tenureGap) return gap;
+    tenureByRef.delete(gap.jobRequirement.ref);
+    return { ...gap, tenure: tenureGap.tenure };
+  });
+  // A locally computed tenure shortfall adds no missing keyword: the duration
+  // is not a term to add to a résumé.
+  const appended = [...tenureByRef.values()].map((gap) => ({
+    requirement: gap.requirement,
+    jobRequirement: gap.jobRequirement,
+    missingKeywords: [],
+    tenure: gap.tenure
+  }));
+  return [...merged, ...appended];
+}
+
+export function normalizeJobMatchOutput(
+  input: MatchInput,
+  output: JobMatchModelOutput,
+  options: JobMatchNormalizationOptions = {}
+): JobMatchOutput {
   for (const [matchIndex, match] of output.factualMatches.entries()) {
     if (Object.prototype.hasOwnProperty.call(match, "claim")) {
       semanticFailure(
@@ -912,14 +955,14 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
       claim: `Submitted applicant evidence matches job evidence for ${supportedKeywords.join(", ")}.`
     };
   });
-  const requirementGaps = output.requirementGaps.map((gap) => {
+  const requirementGaps = withTenureGaps(input, output.requirementGaps.map((gap) => {
     const jobRequirement = citationForDisplay(gap.jobRequirement, (ref) => resolveJobEvidence(input, ref));
     return {
       ...gap,
       requirement: jobRequirement.excerpt,
       jobRequirement
     };
-  });
+  }), options.asOf ?? new Date());
   return {
     ...output,
     factualMatches,
@@ -941,7 +984,11 @@ export function normalizeJobMatchOutput(input: MatchInput, output: JobMatchModel
   };
 }
 
-export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unknown) {
+export function validateAndNormalizeJobMatchOutput(
+  input: MatchInput,
+  value: unknown,
+  options: JobMatchNormalizationOptions = {}
+) {
   const parsed = jobMatchModelOutputSchema.safeParse(value);
   if (!parsed.success) {
     const path = parsed.error.issues[0]?.path
@@ -956,7 +1003,7 @@ export function validateAndNormalizeJobMatchOutput(input: MatchInput, value: unk
   }
   try {
     const modelOutput = repairCitationPositions(input, parsed.data);
-    return { modelOutput, normalized: normalizeJobMatchOutput(input, modelOutput) };
+    return { modelOutput, normalized: normalizeJobMatchOutput(input, modelOutput, options) };
   } catch (error) {
     throw new JobMatchOutputValidationError(
       "semantic",

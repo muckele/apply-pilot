@@ -45,9 +45,14 @@ type FactualMatchPresentation = {
   applicantEvidence: EvidenceCitation[];
   jobEvidence: EvidenceCitation[];
 };
-type RequirementGapPresentation = {
+export type TenureGapPresentation = {
+  summary: string;
+  countedRoles: Array<{ title: string; company: string | null; dates: string }>;
+};
+export type RequirementGapPresentation = {
   requirement: string;
   jobRequirement: EvidenceCitation | null;
+  tenure: TenureGapPresentation | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -77,11 +82,37 @@ function readV3FactualMatches(output: Record<string, unknown>): FactualMatchPres
   });
 }
 
+function optionalText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function readTenure(value: unknown): TenureGapPresentation | null {
+  if (!isRecord(value)) return null;
+  const summary = optionalText(value.summary);
+  if (!summary) return null;
+  const countedRoles = Array.isArray(value.countedRoles)
+    ? value.countedRoles.flatMap((role) => {
+        const title = isRecord(role) ? optionalText(role.title) : null;
+        if (!isRecord(role) || !title) return [];
+        return [{
+          title,
+          company: optionalText(role.company),
+          dates: [optionalText(role.startDate), optionalText(role.endDate)].filter(Boolean).join(" – ")
+        }];
+      })
+    : [];
+  return { summary, countedRoles };
+}
+
 function readV3RequirementGaps(output: Record<string, unknown>): RequirementGapPresentation[] {
   if (!Array.isArray(output.requirementGaps)) return [];
   return output.requirementGaps.flatMap((value) => {
     if (!isRecord(value) || typeof value.requirement !== "string") return [];
-    return [{ requirement: value.requirement, jobRequirement: readCitation(value.jobRequirement) }];
+    return [{
+      requirement: value.requirement,
+      jobRequirement: readCitation(value.jobRequirement),
+      tenure: readTenure(value.tenure)
+    }];
   });
 }
 

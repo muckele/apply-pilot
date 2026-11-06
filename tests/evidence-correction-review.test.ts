@@ -679,3 +679,29 @@ test("saving then reassessing unlocks document generation without a page reload"
   assert.equal(generation().hasAttribute("disabled"), false);
   await act(async () => root.unmount());
 });
+
+test("the gaps step shows a tenure gap's counted duration; other gaps keep their exact shape", () => {
+  const tenureRequirement = "Demonstrated 5+ years of hands-on experience in a customer-facing technical role such as Solutions Engineer or similar.";
+  const tenureSummary = "Your résumé shows about 4 months in a customer-facing technical role; this job asks for 5+ years.";
+  const review = unscoredReview("analysis-1", {
+    ...analysis,
+    requirementGaps: [
+      ...analysis.requirementGaps,
+      {
+        requirement: tenureRequirement,
+        jobRequirement: { ref: "job.requirements[1]", excerpt: tenureRequirement },
+        missingKeywords: [],
+        tenure: { method: "work_history_titles_and_dates", summary: tenureSummary, countedRoles: [] }
+      }
+    ]
+  });
+
+  assert.deepEqual(Object.keys(review.gaps[0]).sort(), ["id", "jobRef", "missingKeywords", "requirement"]);
+  assert.equal(review.gaps[1].tenureSummary, tenureSummary);
+  assert.deepEqual(review.gaps[1].missingKeywords, []);
+
+  const html = renderToStaticMarkup(React.createElement(EvidenceCorrectionReview, { review }));
+  const text = new JSDOM(html).window.document.body.textContent ?? "";
+  assert.ok(text.includes(tenureRequirement));
+  assert.ok(text.includes(tenureSummary));
+});
