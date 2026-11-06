@@ -11,6 +11,7 @@ const productPagePaths = [
   "applications/page.tsx",
   "application-runs/[id]/browser/page.tsx",
   "dashboard/page.tsx",
+  "insights/page.tsx",
   "interviews/[id]/page.tsx",
   "interviews/library/page.tsx",
   "interviews/mock/[sessionId]/page.tsx",
@@ -50,6 +51,7 @@ const apiRoutePaths = [
   "app/api/application-runs/[id]/resolve-review/route.ts",
   "app/api/application-runs/[id]/route.ts",
   "app/api/application-runs/route.ts",
+  "app/api/applications/[id]/effort/route.ts",
   "app/api/applications/[id]/route.ts",
   "app/api/applications/export/route.ts",
   "app/api/applications/route.ts",
@@ -184,7 +186,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 76);
+  assert.equal(actualRoutes.length, 77);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });

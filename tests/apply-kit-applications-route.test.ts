@@ -4,6 +4,7 @@ import { after, test, type TestContext } from "node:test";
 
 import type { NextRequest } from "next/server";
 
+import { latestSelfReportedEffort, readSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, readSentDocumentsSnapshot } from "@/lib/apply-kit/sent-documents";
 import { documentContentHash } from "@/lib/documents/document-review";
 import {
@@ -160,6 +161,9 @@ function fakeTransaction(store: Store) {
         if (!row) throw notFound();
         return structuredClone(row);
       },
+      async findFirst({ where }: { where: Row }) {
+        return structuredClone(store.applications.find((candidate) => scopedMatch(candidate, where)) ?? null);
+      },
       async upsert({ where, create, update }: { where: { userId_jobPostingId: Row }; create: Row; update: Row }) {
         const key = where.userId_jobPostingId;
         const existing = store.applications.find((row) => row.userId === key.userId && row.jobPostingId === key.jobPostingId);
@@ -200,7 +204,10 @@ function fakeTransaction(store: Store) {
     },
     applicationEvent: {
       async create({ data }: { data: Row }) {
-        const created = { id: `event-${store.events.length + 1}`, occurredAt: new Date(), ...structuredClone(data) };
+        // Like the database default, each later request gets a later timestamp, even within one millisecond.
+        const previous = (store.events.at(-1)?.occurredAt as Date | undefined)?.getTime() ?? 0;
+        const occurredAt = new Date(Math.max(Date.now(), previous + 1));
+        const created = { id: `event-${store.events.length + 1}`, occurredAt, ...structuredClone(data) };
         store.events.push(created);
         return created;
       }
@@ -248,6 +255,15 @@ async function patch(id: string, body: Record<string, unknown>) {
   const { PATCH } = await import("../app/api/applications/[id]/route");
   return invokeRoute(`/api/applications/${id}`, () => PATCH(new Request(`http://localhost/api/applications/${id}`, {
     method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }) as NextRequest, { params: Promise.resolve({ id }) }));
+}
+
+async function postEffort(id: string, body: unknown) {
+  const { POST } = await import("../app/api/applications/[id]/effort/route");
+  return invokeRoute(`/api/applications/${id}/effort`, () => POST(new Request(`http://localhost/api/applications/${id}/effort`, {
+    method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   }) as NextRequest, { params: Promise.resolve({ id }) }));
@@ -388,4 +404,105 @@ test("a PATCH status change titles its timeline event with the readable status l
   const moved = await patch(id, { status: "HIRING_MANAGER_SCREEN" });
   assert.equal(moved.status, 200, await moved.clone().text());
   assert.equal(db.store.events.at(-1)!.title, "Status changed to Hiring manager");
+});
+
+test("'I applied' keeps self-reported minutes on the APPLIED event, once, beside what was sent", async (t) => {
+  const db = await setup(t);
+  const response = await post(appliedBody({ effortMinutes: 45 }));
+  assert.equal(response.status, 200, await response.clone().text());
+  const event = db.store.events[0]!;
+  assert.equal(readSelfReportedEffort(event.metadata)?.minutes, 45);
+  assert.ok(readSentDocumentsSnapshot(event.metadata), "the same event still freezes what was sent");
+
+  // Recording "I applied" again neither adds nor replaces the minutes.
+  const again = await post(appliedBody({ effortMinutes: 90, expectedCoverLetterContentHash: undefined }));
+  assert.equal(again.status, 200);
+  const records = db.store.events.map((entry) => readSelfReportedEffort(entry.metadata)).filter(Boolean);
+  assert.deepEqual(records.map((record) => record?.minutes), [45]);
+});
+
+test("minutes are optional and are only recorded when the application enters Applied", async (t) => {
+  const db = await setup(t);
+  const saved = await post({ jobPostingId: JOB, status: "SAVED", resumeVersionId: "resume-v2", coverLetterVersionId: null, effortMinutes: 20 });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  assert.equal(readSelfReportedEffort(db.store.events[0]!.metadata), null);
+  const applied = await post(appliedBody());
+  assert.equal(applied.status, 200, await applied.clone().text());
+  assert.equal(readSelfReportedEffort(db.store.events.at(-1)!.metadata), null);
+  assert.ok(readSentDocumentsSnapshot(db.store.events.at(-1)!.metadata));
+});
+
+test("minutes that are not 1 to 600 whole minutes are refused and nothing is written", async (t) => {
+  for (const effortMinutes of [0, -5, 12.5, 601, "45"]) {
+    await t.test(JSON.stringify(effortMinutes), async (sub) => {
+      const db = await setup(sub);
+      const response = await post(appliedBody({ effortMinutes }));
+      assert.equal(response.status, 422);
+      assert.deepEqual([db.store.applications.length, db.store.events.length, db.store.audits.length], [0, 0, 0]);
+    });
+  }
+});
+
+test("minutes can be added later from the tracker, and a correction replaces the earlier answer", async (t) => {
+  const db = await setup(t);
+  assert.equal((await post(appliedBody())).status, 200);
+  const id = String(db.store.applications[0]!.id);
+  const timeline = () => db.store.events as Array<{ occurredAt: Date; metadata: unknown }>;
+  assert.equal(latestSelfReportedEffort(timeline()), null);
+
+  const added = await postEffort(id, { minutes: 50 });
+  assert.equal(added.status, 200, await added.clone().text());
+  assert.equal((await added.json()).effort.minutes, 50);
+  const event = db.store.events.at(-1)!;
+  assert.deepEqual([event.type, event.title, event.applicationId, event.userId], ["NOTE_ADDED", "Minutes this application took: 50", id, OWNER]);
+  assert.equal(readSelfReportedEffort(event.metadata)?.minutes, 50);
+  assert.equal(readSentDocumentsSnapshot(event.metadata), null, "a minutes correction never records a sent snapshot");
+  assert.equal(db.store.audits.at(-1)?.action, "application.effort_recorded");
+
+  const corrected = await postEffort(id, { minutes: 35 });
+  assert.equal(corrected.status, 200);
+  assert.equal(latestSelfReportedEffort(timeline())?.minutes, 35);
+  assert.equal(db.store.applications[0]!.status, "APPLIED", "recording minutes changes nothing else");
+});
+
+test("minutes need an applied date, whole minutes in range, and the user's own application", async (t) => {
+  const cases: Array<{ name: string; prepare: (store: Store) => string; body: unknown; status: number }> = [
+    {
+      name: "not applied yet",
+      prepare: (store) => {
+        store.applications.push({ id: "application-saved", userId: OWNER, jobPostingId: JOB, status: "SAVED", dateApplied: null });
+        return "application-saved";
+      },
+      body: { minutes: 30 },
+      status: 409
+    },
+    ...[0, 601, 12.5, "45", null].map((minutes) => ({
+      name: `minutes ${JSON.stringify(minutes)}`,
+      prepare: (store: Store) => {
+        store.applications.push({ id: "application-applied", userId: OWNER, jobPostingId: JOB, status: "APPLIED", dateApplied: new Date("2026-11-03T18:00:00Z") });
+        return "application-applied";
+      },
+      body: { minutes },
+      status: 422
+    })),
+    {
+      name: "another user's application",
+      prepare: (store) => {
+        store.applications.push({ id: "application-foreign", userId: OTHER, jobPostingId: OTHER_JOB, status: "APPLIED", dateApplied: new Date("2026-11-03T18:00:00Z") });
+        return "application-foreign";
+      },
+      body: { minutes: 30 },
+      status: 404
+    }
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async (sub) => {
+      const db = await setup(sub);
+      let id = "";
+      db.mutate((store) => { id = item.prepare(store); });
+      const response = await postEffort(id, item.body);
+      assert.equal(response.status, item.status, await response.clone().text());
+      assert.deepEqual([db.store.events.length, db.store.audits.length], [0, 0]);
+    });
+  }
 });

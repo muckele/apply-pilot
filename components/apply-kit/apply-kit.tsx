@@ -18,6 +18,7 @@ import { CopyButton } from "@/components/apply-kit/copy-button";
 import { DocumentReviewPanel } from "@/components/document-review-panel";
 import { Panel, PanelHeader, PrimaryButton, SecondaryButton } from "@/components/ui";
 import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+import { MAX_EFFORT_MINUTES, parseEffortMinutesInput } from "@/lib/applications/self-reported-effort";
 import type { ApplyKitDocument, ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 
 // Apply Kit (WP1.5): everything needed to apply to this job by hand, with no browser companion.
@@ -234,6 +235,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
   const [confirming, setConfirming] = useState(false);
   const [attested, setAttested] = useState(false);
   const [appliedError, setAppliedError] = useState<{ text: string; fixHref: string | null } | null>(null);
+  const [effortInput, setEffortInput] = useState("");
 
   const resume = view.resumes.find((item) => item.id === resumeId) ?? null;
   const cover = includeCover ? view.coverLetters.find((item) => item.id === coverId) ?? null : null;
@@ -241,6 +243,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
     resume && !resume.exportReady ? { text: `Résumé v${resume.versionNumber} needs attention before it can be recorded as sent.`, href: "#review-resume" } : null,
     cover && !cover.exportReady ? { text: `Cover letter v${cover.versionNumber} needs attention. Review it, or untick "Include this cover letter".`, href: "#review-cover-letter" } : null
   ].filter((item): item is { text: string; href: string } => item !== null);
+  const effort = parseEffortMinutesInput(effortInput);
 
   async function handleDownload(document: ApplyKitDocument, format: ExportFormat) {
     setBusy({ action: "export", key: `${document.id}:${format}` });
@@ -276,7 +279,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
   }
 
   async function recordApplied() {
-    if (!attested || blockers.length || busy) return;
+    if (!attested || blockers.length || busy || !effort.ok) return;
     setBusy({ action: "applied", key: "applied" });
     setAppliedError(null);
     try {
@@ -288,7 +291,8 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
           status: "APPLIED",
           ...(resume ? { resumeVersionId: resume.id, expectedResumeContentHash: resume.contentHash } : {}),
           coverLetterVersionId: cover ? cover.id : null,
-          ...(cover ? { expectedCoverLetterContentHash: cover.contentHash } : {})
+          ...(cover ? { expectedCoverLetterContentHash: cover.contentHash } : {}),
+          ...(effort.minutes !== null ? { effortMinutes: effort.minutes } : {})
         })
       });
       if (!response.ok) {
@@ -470,7 +474,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
               <Link href={`/applications/${view.application.id}`} className="font-semibold text-brand-700 underline">Open in tracker</Link>
             </p>
           ) : !confirming ? (
-            <PrimaryButton type="button" onClick={() => { setConfirming(true); setAttested(false); setAppliedError(null); }} data-start-applied>
+            <PrimaryButton type="button" onClick={() => { setConfirming(true); setAttested(false); setAppliedError(null); setEffortInput(""); }} data-start-applied>
               <CheckCircle2 className="mr-2" size={15} aria-hidden="true" />
               I applied
             </PrimaryButton>
@@ -494,6 +498,29 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
                   {blocker.text} <a href={blocker.href} className="font-semibold underline">Fix it</a>
                 </p>
               ))}
+              <div className="space-y-1">
+                <label htmlFor="effort-minutes" className="block text-sm font-medium text-slate-800">Minutes this application took (optional)</label>
+                <input
+                  id="effort-minutes"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={MAX_EFFORT_MINUTES}
+                  step={1}
+                  value={effortInput}
+                  onChange={(event) => setEffortInput(event.target.value)}
+                  aria-describedby="effort-minutes-help"
+                  aria-invalid={effort.ok ? undefined : true}
+                  className="w-28 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                  data-effort-minutes
+                />
+                <p id="effort-minutes-help" className="text-xs text-slate-500">
+                  Your own estimate, from reading the posting to submitting the employer&apos;s form. It is used only for your Insights page.
+                </p>
+                {!effort.ok ? (
+                  <p className="text-xs text-amber-900" data-effort-error>Enter whole minutes from 1 to {MAX_EFFORT_MINUTES}, or leave it blank.</p>
+                ) : null}
+              </div>
               <label className="flex items-start gap-2 text-sm text-slate-800">
                 <input type="checkbox" checked={attested} onChange={(event) => setAttested(event.target.checked)} className="mt-0.5 h-4 w-4 rounded border-slate-300" data-attest />
                 I submitted this application on the employer&apos;s site.
@@ -505,7 +532,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
                 </p>
               ) : null}
               <div className="flex flex-wrap gap-2">
-                <PrimaryButton type="button" onClick={recordApplied} disabled={!attested || blockers.length > 0 || Boolean(busy)} data-confirm-applied>
+                <PrimaryButton type="button" onClick={recordApplied} disabled={!attested || blockers.length > 0 || Boolean(busy) || !effort.ok} data-confirm-applied>
                   {busy?.action === "applied" ? <Loader2 className="mr-2 animate-spin" size={15} aria-hidden="true" /> : <FileText className="mr-2" size={15} aria-hidden="true" />}
                   Record as applied
                 </PrimaryButton>

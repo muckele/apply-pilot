@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { ApplicationEffortEditor } from "@/components/application-effort-editor";
 import { ApplicationStatusActions } from "@/components/application-status-actions";
 import { ApplicationRunEntry } from "@/components/application-run-entry";
 import { ApplicationRunPretrialSetup } from "@/components/application-run-pretrial-setup";
@@ -13,6 +14,7 @@ import {
 import { getCurrentApplicationRun } from "@/lib/application-runs/service";
 import { readAutomationPolicy } from "@/lib/application-runs/service";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
+import { latestSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import {
   CURRENT_JOB_MATCH_ANALYSES,
   buildCurrentJobMatchContext,
@@ -61,6 +63,8 @@ export default async function ApplicationDetailPage({ params }: Props) {
   const attention = getApplicationAttention(application);
   // "What I sent": the frozen snapshot recorded when the application entered APPLIED.
   const sent = latestSentDocumentsEvent(application.events);
+  // Self-reported minutes: the latest record, from "I applied" or a later correction here.
+  const effort = latestSelfReportedEffort(application.events);
   const currentContext = buildCurrentJobMatchContext({ job: application.jobPosting, ...sources });
   const currentJob = currentJobMatchFields(
     application.jobPosting,
@@ -248,6 +252,15 @@ export default async function ApplicationDetailPage({ params }: Props) {
               <p>Currently attached cover letter: {application.coverLetterVersion?.title ?? "not selected"}</p>
               <Link href={`/jobs/${application.jobPostingId}/apply`} className="font-semibold text-brand-700 underline">Open Apply Kit</Link>
             </div>
+          </Panel>
+
+          <Panel>
+            <PanelHeader title="Time spent" description="Feeds interviews per applicant-hour on Insights." />
+            <ApplicationEffortEditor
+              applicationId={application.id}
+              initialMinutes={effort?.minutes ?? null}
+              canRecord={application.dateApplied !== null}
+            />
           </Panel>
 
           <Panel>

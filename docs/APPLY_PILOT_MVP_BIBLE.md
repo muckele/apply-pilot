@@ -94,6 +94,25 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add tables, columns or constraints, and must be deployed before #45 reaches `main`. One Playwright journey test needs `npm run browser:install` locally.
 
+**WP1.9 measurement** (draft PR #47 against `integration/mvp-m1`, no migration). A new `/insights` page shows weekly counts: jobs added to the feed, jobs saved, Apply Kits prepared, applications, and interviews. It also shows the supporting metrics: share sent with tailored documents, complete tracking, interview rate, feed save rate, AI spend, and AI cost per application. Every number comes from existing tables and is scoped to the signed-in user. The page says how each number is computed. Where a number can't be computed it says "Not enough data" instead of showing a zero.
+
+**Effort time is self-reported (owner decision, 2026-11-04).** The Apply Kit's "I applied" step has an optional "Minutes this application took" box, whole minutes from 1 to 600. The answer is stored once, in the APPLIED timeline event's metadata beside the "what I sent" snapshot (`apply-pilot/self-reported-effort/v1`), so there is still no migration. From it the page computes:
+- **Minutes of effort per application:** the average over the week's applications that have minutes.
+- **Interviews per applicant-hour (primary):** for those same applications, the interviews they have reached since, divided by the hours reported.
+
+Minutes can also be added or corrected later from the application's tracker page ("Time spent" panel, `POST /api/applications/[id]/effort`) once it has an applied date. Each save appends a timeline event, and the latest record wins.
+
+Applications without minutes are left out of both sides, and the page shows how many reported (for example "2 of 3 applications"). This covers the box being left blank, a card moved to Applied in the tracker, and the job page's packet builder, which doesn't ask. The minutes are the user's estimate, not a timer, and they can be corrected but not removed.
+
+These §11 metrics still can't be measured honestly from current data:
+- **Jobs seen.** Nothing records which feed jobs the user opened, so the page counts jobs *added* to the feed instead.
+- **Factual-error rate in reviewed documents.** There is no log of errors found in review.
+- **Weekly active users.** This is a beta-wide number, so it is not on a per-user page.
+
+Approximations to know about:
+- Interviews come from interview records and from status-change timeline titles. Older events store the raw status name, and both forms are read.
+- Weeks are fixed to Pacific time because the profile has no time-zone field.
+
 ## 4. What changes from the old roadmap
 
 The September roadmap (`PRODUCT_ROADMAP.md`, P0–P5) remains the long-range safety and architecture plan. Its weakness in practice: since late September the work narrowed to the browser-fill engine and repeated resume-contract and qualification iterations (V5 through V9 diagnostics, a qualification run prepared but never executed), while the user-facing product that the owner wants stood still.
