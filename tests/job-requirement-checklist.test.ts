@@ -92,6 +92,14 @@ test("the summary divides only by requirements Apply Pilot checked", () => {
     heading: "Your résumé shows 4 of 6 must-haves",
     notChecked: null
   });
+  assert.deepEqual(summarizeChecklist({ shown: 1, notShown: 0, notAssessed: 0, total: 1 }), {
+    heading: "Your résumé shows 1 of 1 must-have",
+    notChecked: null
+  });
+  assert.deepEqual(summarizeChecklist({ shown: 0, notShown: 1, notAssessed: 0, total: 1 }), {
+    heading: "Your résumé shows 0 of 1 must-have",
+    notChecked: null
+  });
   assert.deepEqual(summarizeChecklist({ shown: 0, notShown: 3, notAssessed: 1, total: 4 }), {
     heading: "Your résumé shows 0 of 3 checked must-haves",
     notChecked: "1 not checked yet"

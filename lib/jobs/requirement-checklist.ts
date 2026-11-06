@@ -63,9 +63,10 @@ export function summarizeChecklist(counts: ChecklistCounts): { heading: string; 
   if (!counts.total) return null;
   const checked = counts.shown + counts.notShown;
   if (!checked) return { heading: "Apply Pilot didn't check these requirements", notChecked: null };
-  if (!counts.notAssessed) return { heading: `Your résumé shows ${counts.shown} of ${checked} must-haves`, notChecked: null };
+  const mustHaves = `must-have${checked === 1 ? "" : "s"}`;
+  if (!counts.notAssessed) return { heading: `Your résumé shows ${counts.shown} of ${checked} ${mustHaves}`, notChecked: null };
   return {
-    heading: `Your résumé shows ${counts.shown} of ${checked} checked must-have${checked === 1 ? "" : "s"}`,
+    heading: `Your résumé shows ${counts.shown} of ${checked} checked ${mustHaves}`,
     notChecked: `${counts.notAssessed} not checked yet`
   };
 }
