@@ -37,7 +37,10 @@ const PLACEHOLDERS = [
 const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
 
 function excerptBefore(text: string, at: number) {
-  const start = Math.max(0, at - 39);
+  let start = Math.max(0, at - 39);
+  // Start on a whole word, not partway through one.
+  const space = start > 0 ? text.slice(start, at).search(/\s/u) : -1;
+  if (space >= 0) start += space + 1;
   return `${start > 0 ? "…" : ""}${text.slice(start, at + 1).trimStart()}`;
 }
 
@@ -109,29 +112,50 @@ export function assertOwnerFactClean(fact: string) {
   );
 }
 
-// Saving the job's facts while keeping an owner fact saved before this check existed.
-export function assertKeptOwnerFactClean(fact: string) {
-  const problems = ownerFactProblems(fact);
-  if (!problems.length) return;
+function factStart(fact: string) {
+  const text = fact.trim();
+  if (text.length <= 40) return text;
+  const space = text.lastIndexOf(" ", 40);
+  return `${text.slice(0, space > 20 ? space : 40)}…`;
+}
+
+function factsMessage(dirty: ReadonlyArray<{ fact: string; problems: readonly OwnerFactProblem[] }>, verb: string, next: string) {
+  if (dirty.length === 1) {
+    return `A fact you ${verb} for this job has text that shouldn't go on your résumé: ${describe(dirty[0]!.problems)}. ${next}`;
+  }
+  const each = dirty.map((item) => `In the fact starting “${factStart(item.fact)}”: ${describe(item.problems)}.`).join(" ");
+  return `${dirty.length} facts you ${verb} for this job have text that shouldn't go on your résumé. ${each} ${next}`;
+}
+
+function dirtyFacts<T extends { fact: string }>(facts: readonly T[]) {
+  return facts.flatMap((item) => {
+    const problems = ownerFactProblems(item.fact);
+    return problems.length ? [{ ...item, problems }] : [];
+  });
+}
+
+// Saving the job's facts while keeping owner facts saved before this check existed.
+export function assertKeptOwnerFactsClean(facts: readonly string[]) {
+  const dirty = dirtyFacts(facts.map((fact) => ({ fact })));
+  if (!dirty.length) return;
   throw new PublicApiError(
-    `A fact you kept for this job has text that shouldn't go on your résumé: ${describe(problems)}. ` +
-      "Use Change or Remove next to that fact, then save again.",
+    factsMessage(dirty, "kept", "Use Change or Remove next to each one, then save again."),
     422,
-    { code: "OWNER_FACT_NEEDS_CLEANUP", problems: problems.map((problem) => problem.kind) }
+    { code: "OWNER_FACT_NEEDS_CLEANUP", problems: [...new Set(dirty.flatMap((item) => item.problems.map((problem) => problem.kind)))] }
   );
 }
 
 // Before a paid résumé or cover letter: owner facts saved before this check existed.
 export function assertReviewedOwnerFactsClean(evidence: JobMatchReviewedEvidence | null | undefined) {
-  for (const fact of evidence?.facts ?? []) {
-    if (fact.provenance !== "OWNER_ATTESTED") continue;
-    const problems = ownerFactProblems(fact.fact);
-    if (!problems.length) continue;
-    throw new PublicApiError(
-      `A fact you added for this job has text that shouldn't go on your résumé: ${describe(problems)}. ` +
-        "Use Change next to that fact on the job page to fix it, then create your documents again.",
-      422,
-      { code: "OWNER_FACT_NEEDS_CLEANUP", gapId: fact.gapId, problems: problems.map((problem) => problem.kind) }
-    );
-  }
+  const dirty = dirtyFacts((evidence?.facts ?? []).filter((fact) => fact.provenance === "OWNER_ATTESTED"));
+  if (!dirty.length) return;
+  throw new PublicApiError(
+    factsMessage(dirty, "added", "Use Change next to each one on the job page to fix it, then create your documents again."),
+    422,
+    {
+      code: "OWNER_FACT_NEEDS_CLEANUP",
+      gapIds: dirty.map((item) => item.gapId),
+      problems: [...new Set(dirty.flatMap((item) => item.problems.map((problem) => problem.kind)))]
+    }
+  );
 }

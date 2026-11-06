@@ -60,6 +60,22 @@ test("ordinary facts pass, including first person, quoted names and apostrophes"
   }
 });
 
+test("every owner fact with problems is named in one message, and excerpts start on a whole word", () => {
+  const facts = [pastedWithNote, "I hold an active Spanish medical interpreting certificate.", pastedWithInstruction].map((fact, index) => ({
+    gapId: `gap:${index}`, fact, provenance: "OWNER_ATTESTED" as const, sourceRef: null
+  }));
+  assert.throws(
+    () => assertReviewedOwnerFactsClean({ schema: "apply-pilot/job-match-reviewed-evidence/v1", snapshotId: "s", snapshotHash: "a".repeat(64), facts, unresolvedGapIds: [] }),
+    (error: unknown) => error instanceof PublicApiError &&
+      JSON.stringify(error.details?.gapIds) === JSON.stringify(["gap:0", "gap:2"]) &&
+      error.message.startsWith("2 facts you added for this job have text") &&
+      error.message.includes("In the fact starting \u201cAt Northwind, worked with sales, product\u2026\u201d") &&
+      error.message.includes("In the fact starting \u201cAt Fabrikam, owned onboarding through\u2026\u201d") &&
+      !error.message.includes("Spanish")
+  );
+  assert.equal(ownerFactProblems(trailingStraightQuote)[0]!.excerpt, "\u2026of 60 merchants and kept churn low.\"");
+});
+
 test("saving a fact with problems is refused with a message that names them", () => {
   assert.throws(
     () => assertOwnerFactClean(pastedWithNote),
@@ -86,7 +102,7 @@ test("before a paid document, saved owner facts with problems stop the request w
     (error: unknown) => error instanceof PublicApiError &&
       error.status === 422 &&
       error.details?.code === "OWNER_FACT_NEEDS_CLEANUP" &&
-      error.details?.gapId === "gap:1" &&
+      JSON.stringify(error.details?.gapIds) === JSON.stringify(["gap:1"]) &&
       /Change/u.test(error.message)
   );
   // Résumé lines are the applicant's own source text and are never second-guessed here.
