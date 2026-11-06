@@ -95,6 +95,8 @@ function describeValidationError(error: ZodError) {
   return `${label}: ${issue.message.replace(/\.$/u, "")}.`;
 }
 
+const LOGGED_CLIENT_ERROR_DETAILS = ["code", "fieldPath", "failureClass", "relationReason", "rewordingFailure"] as const;
+
 export function apiErrorResponse(error: unknown) {
   if (error instanceof UnauthorizedError) {
     logger.warn("api.unauthorized", {
@@ -105,11 +107,19 @@ export function apiErrorResponse(error: unknown) {
   }
 
   if (error instanceof PublicApiError) {
+    // The same enum-like details the response carries, so a failed (possibly paid) request can be
+    // diagnosed from the log. Only these keys and only short string values: never submitted or
+    // generated text.
+    const loggedDetails = Object.fromEntries(LOGGED_CLIENT_ERROR_DETAILS.flatMap((key) => {
+      const value = error.details?.[key];
+      return typeof value === "string" && value.length <= 120 ? [[key, value]] : [];
+    }));
     logger.warn("api.client_error", {
       status: error.status,
       error: {
         name: error.name,
-        message: error.message
+        message: error.message,
+        ...loggedDetails
       }
     });
 
