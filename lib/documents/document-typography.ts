@@ -139,3 +139,18 @@ export function wrapStyledRuns(runs: readonly StyledRun[], width: number, measur
     });
   });
 }
+
+const wordCount = (line: readonly PlacedFragment[]) => line.map((fragment) => fragment.text).join("").trim().split(/\s+/u).length;
+
+// Like `wrapStyledRuns`, but a wrapped paragraph does not end on a single word when breaking the
+// earlier lines a little sooner, without adding a line, gives the last line company.
+export function wrapStyledRunsWithoutLoneLastWord(runs: readonly StyledRun[], width: number, measure: MeasureText) {
+  const lines = wrapStyledRuns(runs, width, measure);
+  if (lines.length < 2 || wordCount(lines.at(-1)!) > 1) return lines;
+  for (let narrower = width - 1; narrower >= width / 2; narrower -= 1) {
+    const candidate = wrapStyledRuns(runs, narrower, measure);
+    if (candidate.length > lines.length) break;
+    if (wordCount(candidate.at(-1)!) > 1) return candidate;
+  }
+  return lines;
+}

@@ -20,6 +20,7 @@ import type { CorrectionFlowDocumentReviewContext } from "@/lib/ai/correction-fl
 import { coverLetterSchema } from "@/lib/ai/documents";
 import { hashAiInput } from "@/lib/ai/input-hash";
 import { tailoredResumeSchema } from "@/lib/ai/resume";
+import { productDocumentExportText } from "@/lib/documents/product-document-layout";
 import { renderProductDocument } from "@/lib/documents/product-document-renderer";
 import { productDocumentReviewInput, PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
 import { isResumeBullet, stripResumeBullet } from "@/lib/documents/resume-format";
@@ -116,9 +117,13 @@ async function renderAndVerifyArtifact(
   artifactType: "RESUME" | "COVER_LETTER",
   content: string
 ) {
+  const input = productDocumentReviewInput(artifactType, content);
+  // The source as the layout draws it: identical except for the separator mark before a dated
+  // heading's right-aligned dates (layout 6). Every other character must survive extraction.
+  const drawn = productDocumentExportText(input);
   const [docxResult, pdfResult] = await Promise.allSettled([
-    renderProductDocument({ ...productDocumentReviewInput(artifactType, content), format: "docx" }),
-    renderProductDocument({ ...productDocumentReviewInput(artifactType, content), format: "pdf" })
+    renderProductDocument({ ...input, format: "docx" }),
+    renderProductDocument({ ...input, format: "pdf" })
   ]);
   if (docxResult.status === "rejected" || pdfResult.status === "rejected") {
     if (docxResult.status === "fulfilled") docxResult.value.fill(0);
@@ -145,9 +150,9 @@ async function renderAndVerifyArtifact(
         docxExtractedTextHash: sha256(productionDocx),
         pdfByteHash: sha256(pdf),
         pdfExtractedTextHash: sha256(extractedPdf),
-        docxRoundTripExact: docxRoundTripComparable(exactDocx) === docxRoundTripComparable(content),
-        docxCriticalFactsPresent: criticalFactsPresent(content, productionDocx, false),
-        pdfCriticalFactsPresent: pdfComparable(content) === pdfComparable(extractedPdf)
+        docxRoundTripExact: docxRoundTripComparable(exactDocx) === docxRoundTripComparable(drawn),
+        docxCriticalFactsPresent: criticalFactsPresent(drawn, productionDocx, false),
+        pdfCriticalFactsPresent: pdfComparable(drawn) === pdfComparable(extractedPdf)
       })
     };
     docx.fill(0);

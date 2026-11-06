@@ -1,7 +1,7 @@
-// "Create my résumé and cover letter" as one plan with one cost confirmation. The plan only
-// orders the existing guarded requests (evidence-snapshot save, job match, tailored résumé,
-// cover letter); every server-side check, ledger reservation and per-request ceiling still runs
-// on each request exactly as before.
+// "Create my résumé and cover letter" (or just the cover letter) as one plan with one cost
+// confirmation. The plan only orders the existing guarded requests (evidence-snapshot save, job
+// match, tailored résumé, cover letter); every server-side check, ledger reservation and
+// per-request ceiling still runs on each request exactly as before.
 
 export type DocumentCreationStep = "save" | "rescore" | "resume" | "cover";
 
@@ -18,15 +18,22 @@ export type DocumentCreationQuote = {
   coverMicros: number;
 };
 
+type DecisionKind = "UNRESOLVED" | "SOURCE_CORRECTION" | "OWNER_ATTESTATION";
+type AcceptedFactAction = "RETAIN" | "REMOVE" | "REPLACE_OWNER_ATTESTATION";
+
+function factsChangedBy(input: { decisionKinds: ReadonlyArray<DecisionKind>; acceptedFactActions: ReadonlyArray<AcceptedFactAction> }) {
+  return input.decisionKinds.some((kind) => kind !== "UNRESOLVED") ||
+    input.acceptedFactActions.some((action) => action !== "RETAIN");
+}
+
 export function planDocumentCreation(input: {
   hasValidCurrentSnapshot: boolean;
   reviewable: boolean;
   includeCoverLetter: boolean;
-  decisionKinds: ReadonlyArray<"UNRESOLVED" | "SOURCE_CORRECTION" | "OWNER_ATTESTATION">;
-  acceptedFactActions: ReadonlyArray<"RETAIN" | "REMOVE" | "REPLACE_OWNER_ATTESTATION">;
+  decisionKinds: ReadonlyArray<DecisionKind>;
+  acceptedFactActions: ReadonlyArray<AcceptedFactAction>;
 }): DocumentCreationPlan {
-  const factsChanged = input.decisionKinds.some((kind) => kind !== "UNRESOLVED") ||
-    input.acceptedFactActions.some((action) => action !== "RETAIN");
+  const factsChanged = factsChangedBy(input);
   if (!input.hasValidCurrentSnapshot && !input.reviewable) return { ok: false, reason: "SCORE_FIRST" };
   if (factsChanged && !input.reviewable) return { ok: false, reason: "RECHECK_FIRST" };
   const steps: DocumentCreationStep[] = [];
@@ -35,6 +42,27 @@ export function planDocumentCreation(input: {
   steps.push("resume");
   if (input.includeCoverLetter) steps.push("cover");
   return { ok: true, steps };
+}
+
+export type CoverLetterOnlyPlan =
+  | { ok: true; steps: ["cover"] }
+  | { ok: false; reason: "NO_CURRENT_RESUME" | "FACTS_CHANGED" | "REVIEW_NOT_SAVED" };
+
+// "Just the cover letter": for a job whose tailored résumé is already good, so it isn't rewritten
+// (or paid for) again. Only when nothing would change the evidence both documents rest on — the
+// saved review is in force and no line is being added, changed or removed — so the new letter and
+// the existing résumé stay grounded in the same facts. The server still checks everything itself.
+export function planCoverLetterOnly(input: {
+  // A tailored résumé for this job that is ready to use against the current evidence.
+  hasCurrentResume: boolean;
+  hasValidCurrentSnapshot: boolean;
+  decisionKinds: ReadonlyArray<DecisionKind>;
+  acceptedFactActions: ReadonlyArray<AcceptedFactAction>;
+}): CoverLetterOnlyPlan {
+  if (!input.hasCurrentResume) return { ok: false, reason: "NO_CURRENT_RESUME" };
+  if (factsChangedBy(input)) return { ok: false, reason: "FACTS_CHANGED" };
+  if (!input.hasValidCurrentSnapshot) return { ok: false, reason: "REVIEW_NOT_SAVED" };
+  return { ok: true, steps: ["cover"] };
 }
 
 export function stepMaximumMicros(step: DocumentCreationStep, quote: DocumentCreationQuote) {

@@ -7,6 +7,7 @@ import {
 import {
   assertTailoredResumeKeepRule,
   carryTailoredResumeReversions,
+  completeSplitFactParts,
   completeTailoredResume,
   containsComparableText as containsComparable,
   revertUnverifiedResumeLines
@@ -99,7 +100,7 @@ export function finalizeTailoredResume<T extends TailoredResumeClaimsOutput>(
   payload: ApplicationDocumentPayload,
   output: T
 ): T {
-  const reverted = revertUnverifiedResumeLines(payload, output);
+  const reverted = completeSplitFactParts(payload, revertUnverifiedResumeLines(payload, output));
   const final = validateTailoredResumeClaims(
     payload,
     validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, reverted))

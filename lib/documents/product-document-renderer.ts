@@ -51,7 +51,8 @@ function docxRuns(paragraph:ProductDocumentParagraph,layout:ProductDocumentLayou
     runs.push(run(paragraph.bullet.marker,"regular",{characterSpacing:twips(Math.max(0,gap))}));
   }
   const texts=paragraph.runs.map(entry=>entry.text);
-  if(paragraph.dates)texts[texts.length-1]+=paragraph.dates.separator;
+  // The tab carries the dates to the margin, so a separator mark (", ", " – ") would dangle.
+  if(paragraph.dates)texts[texts.length-1]+=paragraph.dates.gap;
   // Split runs where the layout started a new line; a break precedes each continuation line.
   const breaks=paragraph.lineBreakOffsets??[];
   let offset=0;
@@ -65,7 +66,7 @@ function docxRuns(paragraph:ProductDocumentParagraph,layout:ProductDocumentLayou
     offset+=text.length;
   });
   if(paragraph.dates) {
-    const tab=paragraph.dates.separator.includes("\t")?[]:[new Tab()];
+    const tab=paragraph.dates.gap.includes("\t")?[]:[new Tab()];
     runs.push(new TextRun({...base,children:[...tab,paragraph.dates.text]}));
   }
   return runs;
