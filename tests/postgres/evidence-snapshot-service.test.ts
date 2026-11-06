@@ -9,6 +9,7 @@ import type { MatchInput } from "@/lib/ai/job-match";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   acceptedEvidenceFactsFromSnapshot,
+  type AcceptedFactActionInput,
   type EvidenceSnapshotSaveInput,
   reviewedEvidenceFromSnapshot
 } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -214,6 +215,77 @@ test("v2 retain rejects source provenance that does not match the current submit
       decisions: [],
       acceptedFactActions: [{ factId, action: "RETAIN" }]
     }), (error: unknown) => errorCode(error) === "EVIDENCE_REVIEW_INVALID");
+  } finally {
+    await client.user.delete({ where: { id: fixture.user.id } });
+    await client.$disconnect();
+  }
+});
+
+test("owner facts with pasted notes or stray quote marks are refused when added, changed or kept", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "owner-fact-cleanup");
+  const dirty = "Synthetic owner ran onboarding through go-live.\u201d Adjust it to what actually happened.";
+  try {
+    const added = sourceRequest(fixture, `dirty-owner-added-${randomUUID()}`);
+    added.decisions = [{ gapId: "gap:0", kind: "OWNER_ATTESTATION", attestedFact: dirty,
+      ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false }];
+    await assert.rejects(saveEvidenceSnapshot(fixture.user.id, fixture.job.id, added),
+      (error: unknown) => errorCode(error) === "OWNER_FACT_NEEDS_CLEANUP");
+
+    const factId = "fact:dirty-owner-attestation";
+    const snapshot = await client.evidenceSnapshot.create({ data: {
+      userId: fixture.user.id,
+      jobPostingId: fixture.job.id,
+      resumeId: fixture.resume.id,
+      reviewedAnalysisId: fixture.analysis.id,
+      requestId: `dirty-owner-${randomUUID()}`,
+      requestHash: "a".repeat(64),
+      sourceResumeUpdatedAt: fixture.resume.updatedAt,
+      snapshotHash: "b".repeat(64),
+      sourceProjectionHash: "c".repeat(64),
+      gapProjectionHash: "d".repeat(64),
+      reviewPayload: {
+        schema: "apply-pilot/evidence-snapshot-payload/v2",
+        facts: [{
+          factId,
+          originGapId: "gap:0",
+          fact: dirty,
+          provenance: { kind: "OWNER_ATTESTED", ownerAttested: true },
+          reuseScope: "JOB_ONLY",
+          masterProfileOptIn: false
+        }],
+        unresolvedGapIds: []
+      }
+    } });
+    await client.jobPosting.update({ where: { id: fixture.job.id }, data: {
+      currentEvidenceSnapshotId: snapshot.id,
+      evidenceSnapshotGeneration: { increment: 1 }
+    } });
+    const runner = createJobMatchRunner({ prismaClient: client, score: async (input) => reassessmentResult(input) });
+    await runner(fixture.user.id, fixture.job.id, { force: true });
+    const reassessment = await client.aIAnalysis.findFirstOrThrow({ where: {
+      userId: fixture.user.id, jobPostingId: fixture.job.id, evidenceSnapshotId: snapshot.id,
+      type: "JOB_MATCH" }, orderBy: { createdAt: "desc" } });
+    const request = (action: AcceptedFactActionInput[]): EvidenceSnapshotSaveInput => ({
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId: `dirty-owner-save-${randomUUID()}`,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: reassessment.id, inputHash: reassessment.inputHash!, model: JOB_MATCH_MODEL,
+        promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [],
+      acceptedFactActions: action
+    });
+    const needsCleanup = (error: unknown) => errorCode(error) === "OWNER_FACT_NEEDS_CLEANUP";
+    await assert.rejects(saveEvidenceSnapshot(fixture.user.id, fixture.job.id, request([{ factId, action: "RETAIN" }])), needsCleanup);
+    await assert.rejects(saveEvidenceSnapshot(fixture.user.id, fixture.job.id, request([{ factId, action: "REPLACE_OWNER_ATTESTATION",
+      attestedFact: `${dirty} Again.`, ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false }])), needsCleanup);
+    const clean = "Synthetic owner ran onboarding through go-live.";
+    const saved = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, request([{ factId, action: "REPLACE_OWNER_ATTESTATION",
+      attestedFact: clean, ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false }]));
+    const savedSnapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: saved.snapshot.id } });
+    assert.deepEqual(reviewedEvidenceFromSnapshot(savedSnapshot).facts.map((item) => item.fact), [clean]);
   } finally {
     await client.user.delete({ where: { id: fixture.user.id } });
     await client.$disconnect();
