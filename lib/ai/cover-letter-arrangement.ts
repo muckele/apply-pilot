@@ -145,8 +145,9 @@ export function arrangeCoverLetterByRecord<T extends CoverLetterOutput>(payload:
     !paragraph.some((item) => item.claim) && !paragraph.every((item) => leadIn.test(item.text)))) return output;
 
   const employers = employersOf(payload);
-  const firstClaim = run.findIndex((item) => item.claim);
-  const lastClaim = run.findLastIndex((item) => item.claim);
+  const claimPositions = run.flatMap((item, position) => item.claim ? [position] : []);
+  const firstClaim = claimPositions[0]!;
+  const lastClaim = claimPositions.at(-1)!;
   const opening: string[] = [];
   const closing: string[] = [];
   const units: Unit[] = [];

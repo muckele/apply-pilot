@@ -96,3 +96,18 @@ test("cover paragraph planning selects relevant responsibility/result facts with
   assert.match(prompt, /Each complete sentence.*own factId/iu);
   assert.match(prompt, /Do not add an employer prefix/iu);
 });
+
+// Owner's live test 2026-11-06: owner fragments stayed subjectless and paragraphs mixed employers.
+// The server repairs both (tests/cover-letter-readability.test.ts); the prompt asks Gemini to write
+// those forms directly, within the unchanged claim grammar (only I is added).
+test("cover paragraphs follow the employer each fact belongs to and framed fragments read with I", () => {
+  const prompt = source("prompts/coverLetterPrompt.ts");
+  assert.match(prompt, /For source At Example Co, managed renewals end to end\., write At Example Co, I managed renewals end to end\./u);
+  assert.match(prompt, /never add I before a passive verb/iu);
+  assert.match(prompt, /never add an employer to a fact that does not name it/iu);
+  assert.match(prompt, /one paragraph per employer, in résumé order/iu);
+  assert.match(prompt, /Open an employer's paragraph with its fact that names the employer/iu);
+  assert.match(prompt, /Never place one employer's fact in another employer's paragraph/iu);
+  assert.match(prompt, /two distinct job priorities/iu);
+  assert.match(prompt, /Do not add an employer prefix/iu);
+});
