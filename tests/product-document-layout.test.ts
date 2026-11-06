@@ -10,6 +10,7 @@ import { realisticDocumentQualityPayload } from "@/evaluation/document-quality-c
 import { defaultResumeFormat } from "@/lib/documents/resume-format";
 import { buildProductDocumentLayout } from "@/lib/documents/product-document-layout";
 import { renderProductDocument } from "@/lib/documents/product-document-renderer";
+import { extractResumeDocxText } from "@/lib/resume-docx-text";
 
 const content = realisticDocumentQualityPayload().resume!.rawText as string;
 const normalize = (text:string) => text.replace(/[•]/gu, "-").replace(/\s+/gu," ").trim();
@@ -33,7 +34,8 @@ test("ordinary product preview, PDF and DOCX share complete ordered multi-job te
   assert.equal(layout.pages.length,2);
   assert.equal(normalize(layout.pages.flatMap(page=>page.blocks).map(block=>block.text).join(" ")),normalize(content));
   const docx=await renderProductDocument({...input,format:"docx"});
-  assert.equal(normalize((await mammoth.extractRawText({buffer:docx})).value),normalize(content));
+  // Bullets are a real Word list (layout v5); the product DOCX reader renders list items with their marker.
+  assert.equal(normalize(await extractResumeDocxText(docx)),normalize(content));
   const zip=await JSZip.loadAsync(docx);
   const xml=await zip.file("word/document.xml")!.async("string");
   assert.equal((xml.match(/<w:pageBreakBefore\/>/gu)||[]).length,layout.pages.length-1);

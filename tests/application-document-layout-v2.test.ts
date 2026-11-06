@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import pdf from "pdf-parse";
 
 import {
   SYNTHETIC_CORRECTION_FLOW_FIXTURE
@@ -104,4 +105,31 @@ test("a short last resume page is balanced at a whole section without losing or 
   assert.ok(layout.pages.flatMap((page) => page.blocks)
     .filter((block) => ["bullet", "body"].includes(block.role))
     .every((block) => block.fontSize === 9.5));
+});
+
+test("v2 wraps on measured Helvetica widths with hanging bullets and separator-only contact breaks", async () => {
+  const words = Array.from({ length: 60 }, (_, index) => ["data", "team", "ops", "plan"][index % 4]).join(" ");
+  const contact = Array.from({ length: 9 }, (_, index) => `segment-${index + 1}.contact.example.test`).join(" | ");
+  const content = `Taylor Boundary\n${contact}\nLeader\n\nEXPERIENCE\n•Bullet ${words}`;
+  const layout = buildCanonicalApplicationDocumentLayoutV2({ artifactType: "RESUME", content });
+  const items: Array<{ str: string; x: number; y: number; width: number }> = [];
+  await pdf(new Uint8Array(renderCanonicalApplicationDocumentPdfV2({ artifactType: "RESUME", content })) as unknown as Buffer, {
+    version: "v2.0.550",
+    pagerender: async (page) => {
+      for (const item of (await page.getTextContent()).items) items.push({ str: item.str, x: item.transform[4], y: item.transform[5], width: item.width });
+      return "";
+    }
+  });
+  const right = layout.pageWidth - layout.margin;
+  const first = items.find((item) => item.str.startsWith("Bullet"))!;
+  const fill = first.width / (right - first.x);
+  assert.ok(fill >= 0.95, `bullet line fills only ${(fill * 100).toFixed(1)}%`);
+  assert.ok(first.x + first.width <= right + 0.01);
+  const marker = items.find((item) => item.y === first.y && item.x < first.x);
+  assert.equal(marker?.str.trim(), "-", "the ASCII-safe bullet marker sits left of the text");
+  const continuation = items.filter((item) => item.y < first.y).sort((a, b) => b.y - a.y)[0]!;
+  assert.equal(continuation.x, first.x, "wrapped bullet lines align with the text");
+  const contactLines = items.filter((item) => item.str.includes("contact.example"));
+  assert.ok(contactLines.length >= 2);
+  for (const line of contactLines) assert.doesNotMatch(line.str.trim(), /^\|/u);
 });

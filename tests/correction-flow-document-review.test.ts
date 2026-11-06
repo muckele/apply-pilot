@@ -365,6 +365,7 @@ test("obsolete or altered rendering manifests stop before mocked provider dispat
     { ...current, contractVersion: "2" },
     { ...current, rendering: { ...current.rendering, layoutVersion: "2" } },
     { ...current, rendering: { ...current.rendering, layoutVersion: "3" } },
+    { ...current, rendering: { ...current.rendering, layoutVersion: "4" } },
     { ...current, rendering: { ...current.rendering, resumeFormat: { ...current.rendering.resumeFormat, fontSize: 10 } } }
   ]) {
     assert.throws(() => createCorrectionFlowDocumentReviewRunner({
