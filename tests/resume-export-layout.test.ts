@@ -7,9 +7,10 @@ import { syntheticCorrectionFlowDocumentPayload, syntheticTailoredResumeOutput }
 import { RESUME_EXPORT_LAYOUT_FIXTURE } from "@/evaluation/resume-export-layout-fixture";
 import { assembleCoverLetterProviderOutput, assembleTailoredResumeProviderOutput } from "@/lib/ai/application-document-facts";
 import { verifyCorrectionFlowDocumentExports } from "@/lib/ai/correction-flow-document-review-bundle";
-import { buildProductDocumentLayout, type ProductDocumentInput } from "@/lib/documents/product-document-layout";
+import { buildProductDocument, buildProductDocumentLayout, type ProductDocumentInput } from "@/lib/documents/product-document-layout";
 import { renderProductDocument } from "@/lib/documents/product-document-renderer";
 import { defaultResumeFormat } from "@/lib/documents/resume-format";
+import { parseDatedRecordHeading } from "@/lib/documents/resume-line-structure";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
 
 type PdfItem = { page: number; str: string; x: number; y: number; width: number };
@@ -107,22 +108,26 @@ test("an organization line renders a bold organization, right-aligned dates and 
   assert.equal(comparable((await pdf(new Uint8Array(bytes) as unknown as Buffer, { version: "v2.0.550" })).text), comparable(input.content));
 });
 
-test("a parenthetical organization description stays regular weight and wraps beside fixed dates", async () => {
-  const line = "Riverbend Behavioral Partners (ABA therapy practice, Hudson Valley/Westchester, New York) Mar 2023 – Apr 2026";
+test("a parenthetical organization description stays regular weight and moves under the organization beside fixed dates", async () => {
+  const line = "Riverbend Dental Partners (community dental and orthodontic practice, Riverbend/Lakeside, North Carolina) Mar 2021 – Apr 2024";
   const input = resume(`Synthetic Owner\nEXPERIENCE\n${line}\nFounder and Operations Director`);
   const layout = buildProductDocumentLayout(input);
   const bytes = await renderProductDocument({ ...input, format: "pdf" });
   const runs = drawnRuns(bytes);
   const { items } = await pdfItems(bytes);
-  const organization = runs.find((run) => run.text.trim() === "Riverbend Behavioral Partners")!;
+  const organization = runs.find((run) => run.text.trim() === "Riverbend Dental Partners")!;
   assert.equal(organization.baseFont, "Helvetica-Bold");
-  const aside = runs.filter((run) => run.y <= organization.y && run !== organization && /ABA|Valley|York\)/u.test(run.text));
-  assert.ok(aside.length >= 2, "the parenthetical wraps onto a second line");
+  // The whole lead does not fit beside the dates, so the parenthetical starts its own line rather
+  // than stranding "Carolina)" (or "North Carolina)") under a crowded first line.
+  const aside = runs.filter((run) => run !== organization && /dental|Lakeside|Carolina\)/u.test(run.text));
+  assert.deepEqual(aside.map((run) => run.text), ["(community dental and orthodontic practice, Riverbend/Lakeside, North Carolina)"]);
+  assert.ok(aside[0]!.y < organization.y, "the parenthetical sits under the organization");
+  assert.equal(aside[0]!.x, organization.x);
   assert.ok(aside.every((run) => run.baseFont === "Helvetica"), "the parenthetical is regular weight");
-  const dateItem = items.find((item) => item.str === "Mar 2023 – Apr 2026")!;
+  const dateItem = items.find((item) => item.str === "Mar 2021 – Apr 2024")!;
   assert.equal(dateItem.y, organization.y, "dates stay on the organization's first line");
   assert.ok(Math.abs(dateItem.x + dateItem.width - (layout.pageWidth - layout.margin)) < 0.5);
-  for (const item of items.filter((entry) => /Riverbend|ABA|Valley|York\)/u.test(entry.str))) {
+  for (const item of items.filter((entry) => /Riverbend|dental|Lakeside|Carolina\)/u.test(entry.str))) {
     assert.ok(item.x + item.width <= dateItem.x - 6, `${item.str} runs into the dates`);
     assert.ok(item.x >= layout.margin - 0.01);
   }
@@ -168,7 +173,7 @@ test("a no-space bullet keeps its exact source text in the PDF text layer", asyn
 });
 
 test("contact lines prefer slightly smaller type and break only after a separator", async () => {
-  const owner = "Hudson Valley, NY | (555) 010-0147 | jordan.sample@example.test | linkedin.com/in/jordan-sample-example | jordansample.example";
+  const owner = "Lakeside, NC | (555) 010-0147 | jordan.sample@example.test | linkedin.com/in/jordan-sample-example | jordansample.example";
   const oneLine = buildProductDocumentLayout(resume(`Jordan Sample\n${owner}\nSUMMARY\nSynthetic summary.`));
   const contact = oneLine.pages[0]!.blocks.filter((block) => block.role === "contact");
   assert.equal(new Set(contact.map((block) => block.y)).size, 1, "the owner-sized contact line fits on one line");
@@ -258,4 +263,168 @@ test("the review export verifier still proves exact PDF and DOCX text for the hi
     });
     assert.deepEqual([lines.resume.pdfCriticalFactsPresent, lines.resume.docxRoundTripExact, lines.resume.docxCriticalFactsPresent], [true, true, true], marker);
   }
+});
+
+const docxParagraphs = async (bytes: Buffer) => {
+  const xml = await (await JSZip.loadAsync(bytes)).file("word/document.xml")!.async("string");
+  return [...xml.matchAll(/<w:p>[\s\S]*?<\/w:p>|<w:p [\s\S]*?<\/w:p>/gu)].map((match) => match[0]);
+};
+const docxText = (paragraph: string) => [...paragraph.matchAll(/<w:t xml:space="preserve">([^<]*)<\/w:t>/gu)].map((match) => match[1]).join("");
+
+test("every all-caps section heading the résumé parser recognizes renders as a section heading", async () => {
+  const headings = ["KEY ACHIEVEMENTS", "TECHNICAL PROJECTS", "LICENSES:", "CERTIFICATIONS & LICENSES", "VOLUNTEER EXPERIENCE"];
+  const ordinary = ["HARBOR LABS", "NASA", "Projects delivered on schedule for every sample client.", "Licensed in 3 sample states"];
+  const content = [
+    "Jordan Sample",
+    "jordan.sample@example.test | (555) 010-0147",
+    "SUMMARY",
+    "Synthetic summary of sample experience.",
+    "KEY ACHIEVEMENTS",
+    "• Ranked first of 40 sample representatives.",
+    "TECHNICAL PROJECTS",
+    "Sample Tracker",
+    "• Built a sample referral tracker.",
+    "LICENSES:",
+    "• Sample license in 3 states.",
+    "CERTIFICATIONS & LICENSES",
+    "Licensed in 3 sample states",
+    "VOLUNTEER EXPERIENCE",
+    "HARBOR LABS",
+    "NASA",
+    "Projects delivered on schedule for every sample client."
+  ].join("\n");
+  const input = resume(content);
+  const { layout, paragraphs } = buildProductDocument(input);
+  const roleOf = (text: string) => paragraphs.find((paragraph) => paragraph.runs.map((run) => run.text).join("") === text)?.role;
+  for (const heading of headings) assert.equal(roleOf(heading), "section_heading", heading);
+  for (const line of ordinary) assert.notEqual(roleOf(line), "section_heading", line);
+  const blocks = layout.pages.flatMap((page) => page.blocks);
+  const summary = blocks.find((block) => block.text === "SUMMARY")!;
+  for (const heading of headings) {
+    const block = blocks.find((entry) => entry.text === heading)!;
+    assert.deepEqual([block.bold, block.color, block.fontSize, block.headingRule], [summary.bold, summary.color, summary.fontSize, "bottom"], heading);
+  }
+  const runs = drawnRuns(await renderProductDocument({ ...input, format: "pdf" }));
+  assert.equal(runs.find((run) => run.text === "KEY ACHIEVEMENTS")?.baseFont, "Helvetica-Bold");
+  const docx = await docxParagraphs(await renderProductDocument({ ...input, format: "docx" }));
+  for (const heading of ["KEY ACHIEVEMENTS", "TECHNICAL PROJECTS", "LICENSES:"]) {
+    assert.match(docx.find((paragraph) => docxText(paragraph) === heading)!, /<w:pStyle w:val="Heading1"\/>/u, heading);
+  }
+});
+
+test("skill category labels render bold up to six words while bullets and sentences stay plain", async () => {
+  const labels = ["Sales and business development:", "Revenue operations and customer success:", "Technical:", "Partner operations and program management tools:"];
+  const content = [
+    "Jordan Sample",
+    "SKILLS",
+    "Sales and business development: Prospecting, discovery, negotiation",
+    "Revenue operations and customer success: Onboarding, quarterly reviews, renewals",
+    "Technical: TypeScript, SQL",
+    "CORE COMPETENCIES",
+    "Partner operations and program management tools: Looker",
+    "EXPERIENCE",
+    "Harbor Labs Jan 2020 – Present",
+    "Account Manager",
+    "• Results: renewals rose 20% in the first quarter, and churn fell by half.",
+    "The sample team grew its partner base across three regions: hotels, venues and agencies"
+  ].join("\n");
+  const input = resume(content);
+  const runs = drawnRuns(await renderProductDocument({ ...input, format: "pdf" }));
+  for (const label of labels) assert.equal(runs.find((run) => run.text.trim() === label)?.baseFont, "Helvetica-Bold", label);
+  const bullet = runs.filter((run) => /Results:|renewals rose|churn fell/u.test(run.text));
+  assert.ok(bullet.length > 0 && bullet.every((run) => run.baseFont === "Helvetica"), "a bullet never gets a bold label");
+  const sentence = runs.filter((run) => /sample team|partner base|venues and agencies/u.test(run.text));
+  assert.ok(sentence.length > 0 && sentence.every((run) => run.baseFont === "Helvetica"), "a sentence outside SKILLS is not a label");
+  const docx = await docxParagraphs(await renderProductDocument({ ...input, format: "docx" }));
+  const skill = docx.find((paragraph) => paragraph.includes("Revenue operations and customer success:"))!;
+  assert.match(skill, /<w:b\/>[\s\S]*?<w:t xml:space="preserve">Revenue operations and customer success:<\/w:t>/u);
+});
+
+test("a dated organization line never strands one word on a line of its own", async () => {
+  const dates = "Mar 2021 – Apr 2024";
+  const aside = "(community dental and orthodontic practice, Riverbend/Lakeside, North Carolina)";
+  for (const line of [
+    `Bright Sample Collective ${aside} ${dates}`,
+    `Riverbend Dental Partners ${aside} ${dates}`,
+    `Northlake Regional Travel Marketplace and Hospitality Partner Programs Group International ${dates}`,
+    `Northlake Regional Travel Marketplace and Hospitality Partner Programs Group International (Boston) ${dates}`
+  ]) {
+    const input = resume(`Synthetic Owner\nEXPERIENCE\n${line}\nFounder`);
+    const { layout, paragraphs } = buildProductDocument(input);
+    const heading = paragraphs.find((paragraph) => paragraph.role === "record_heading")!;
+    const blocks = layout.pages[0]!.blocks.filter((block) => block.paragraphId === heading.id && block.text !== dates);
+    const lines = [...new Set(blocks.map((block) => block.y))].map((y) => blocks.filter((block) => block.y === y).map((block) => block.text).join("").trim());
+    assert.ok(lines.length >= 2, `${line} wraps`);
+    for (const text of lines) assert.ok(text.split(/\s+/u).length > 1, `${line} strands "${text}"`);
+    if (!line.includes(aside)) continue;
+    assert.deepEqual(lines, [line.slice(0, line.indexOf(" (")), aside], "the parenthetical moves whole under the organization");
+    const docx = (await docxParagraphs(await renderProductDocument({ ...input, format: "docx" }))).find((paragraph) => paragraph.includes("community dental and orthodontic"))!;
+    assert.match(docxText(docx.split("<w:br/>")[1]!), /^\(community dental and orthodontic/u, "DOCX breaks before the parenthetical too");
+  }
+});
+
+test("separator punctuation before right-aligned dates is not left dangling in PDF or DOCX", async () => {
+  const records = [
+    { line: "Data Analytics Certificate (evening program), Example Academy, Oct 2019 – Feb 2020", lead: "Data Analytics Certificate (evening program), Example Academy", dates: "Oct 2019 – Feb 2020" },
+    { line: "Harbor Labs – Jan 2020 – Present", lead: "Harbor Labs", dates: "Jan 2020 – Present" },
+    { line: "Summit Ridge Software - Aug 2016 - May 2019", lead: "Summit Ridge Software", dates: "Aug 2016 - May 2019" }
+  ];
+  for (const { line, lead, dates } of records) {
+    const parts = parseDatedRecordHeading(line)!;
+    assert.equal(`${parts.organization}${parts.aside}`, lead);
+    assert.equal(parts.dates, dates);
+    assert.equal(`${parts.organization}${parts.aside}${parts.separator}${parts.dates}`, line, "the parse still covers every source character");
+  }
+  const input = resume(`Synthetic Owner\nEDUCATION\n${records.map((record) => record.line).join("\n")}`);
+  const bytes = await renderProductDocument({ ...input, format: "pdf" });
+  const runs = drawnRuns(bytes);
+  for (const { lead, dates } of records) {
+    const dateRun = runs.find((run) => run.text === dates)!;
+    assert.equal(runs.filter((run) => run.y === dateRun.y && run !== dateRun).map((run) => run.text).join("").trimEnd(), lead);
+  }
+  const expected = records.reduce((text, { line, lead, dates }) => text.replace(line, `${lead} ${dates}`), input.content);
+  assert.equal(comparable((await pdf(new Uint8Array(bytes) as unknown as Buffer, { version: "v2.0.550" })).text), comparable(expected));
+  const docx = await docxParagraphs(await renderProductDocument({ ...input, format: "docx" }));
+  for (const { lead, dates } of records) {
+    const paragraph = docx.find((entry) => docxText(entry).startsWith(lead))!;
+    const [beforeTab, afterTab] = paragraph.split("<w:tab/>");
+    assert.equal(docxText(beforeTab!), `${lead} `);
+    assert.equal(docxText(afterTab!), dates);
+  }
+});
+
+test("a paragraph that fits above the bottom margin is not pushed to the next page by its trailing space", () => {
+  for (const lead of [["SUMMARY"], ["SUMMARY", "SKILLS"], ["", "", "SUMMARY"], ["", "", "", "", "SUMMARY", "SKILLS"]]) {
+    const content = ["Synthetic Owner", ...lead, ...Array.from({ length: 60 }, (_, index) => `Sample fact ${index + 1}.`)].join("\n");
+    const layout = buildProductDocumentLayout(resume(content));
+    assert.ok(layout.pages.length >= 2);
+    const facts = layout.pages[0]!.blocks.filter((block) => block.text.startsWith("Sample fact"));
+    const last = facts.at(-1)!;
+    const spaceAfter = facts[1]!.y - facts[0]!.y - facts[0]!.height;
+    const next = layout.pages[1]!.blocks[0]!;
+    assert.ok(last.y + last.height + spaceAfter + next.height > layout.pageHeight - layout.margin,
+      `${next.text} fits under ${last.text} on page 1 (${JSON.stringify(lead)})`);
+  }
+});
+
+test("the review export verifier accepts dated headings whose separator the layout drops", async () => {
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  const tailoredResume = assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput());
+  const coverLetter = assembleCoverLetterProviderOutput(payload, authoredDocumentQualityLetter(payload));
+  // The bullet is not a dated heading: it keeps its comma, even where its wrapped tail looks like one.
+  const resumeText = [
+    "Synthetic Owner",
+    "EXPERIENCE",
+    "Bright Sample Collective (community dental and orthodontic practice, Riverbend/Lakeside, North Carolina), Mar 2021 – Apr 2024",
+    "Founder",
+    "• Promoted to regional account manager for the sample hotel portfolio of the Northeast at Harbor Labs, Jan 2020 – Present",
+    "EDUCATION",
+    "Data Analytics Certificate (evening program), Example Academy, Oct 2019 – Feb 2020",
+    "Harbor Labs – Jan 2020 – Present"
+  ].join("\n");
+  const result = await verifyCorrectionFlowDocumentExports({ tailoredResume: { ...tailoredResume, resumeText }, coverLetter });
+  assert.deepEqual(
+    [result.resume.pdfCriticalFactsPresent, result.resume.docxRoundTripExact, result.resume.docxCriticalFactsPresent],
+    [true, true, true]
+  );
 });

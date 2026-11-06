@@ -1,20 +1,18 @@
 import { PublicApiError } from "@/lib/api-errors";
+import {
+  resumeSectionHeadings,
+  resumeSourceSectionForHeading,
+  type ResumeSourceSectionName,
+  type ResumeTypedSectionName
+} from "@/lib/ai/resume-section-headings";
 
-export type ResumeSourceSectionName =
-  | "contactInfo"
-  | "summary"
-  | "skills"
-  | "workHistory"
-  | "projects"
-  | "education"
-  | "certifications"
-  | "achievements"
-  | "additional";
-
-export type ResumeTypedSectionName = Exclude<
-  ResumeSourceSectionName,
-  "contactInfo" | "additional"
->;
+export {
+  resumeSectionForHeading,
+  resumeSectionHeadings,
+  resumeSourceSectionForHeading,
+  type ResumeSourceSectionName,
+  type ResumeTypedSectionName
+} from "@/lib/ai/resume-section-headings";
 
 export type ResumeSourceCatalogLine = {
   id: string;
@@ -62,36 +60,8 @@ export type ResumeProviderSourceInput = {
   }>;
 };
 
-export const resumeSectionHeadings: Record<ResumeTypedSectionName, RegExp> = {
-  summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
-  skills: /^(?:(?:(?:TECHNICAL|KEY|CORE)\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
-  workHistory: /^(?:WORK|PROFESSIONAL|EMPLOYMENT|CAREER)?\s*(?:EXPERIENCE|HISTORY)$/i,
-  projects: /^(?:(?:SELECTED|PROFESSIONAL|TECHNICAL|PERSONAL|SIDE|KEY|INDEPENDENT|ACADEMIC|RELEVANT)(?:\s+TECHNICAL)?\s+)?PROJECTS?$/i,
-  education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
-  certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
-  achievements: /^(?:(?:KEY|SELECTED|CAREER|NOTABLE|PROFESSIONAL)\s+)?(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|HIGHLIGHTS|AWARDS?|HONORS?)$/i
-};
-
-const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING|\s+EXPERIENCE)?|COMMUNITY\s+(?:INVOLVEMENT|SERVICE)|LEADERSHIP|PROFESSIONAL\s+(?:DEVELOPMENT|AFFILIATIONS?|MEMBERSHIPS?)|TRAINING|COURSES?|COURSEWORK|ACTIVITIES|PUBLICATIONS?|PATENTS?|PRESENTATIONS?|CONFERENCES?|REFERENCES?|ADDITIONAL\s+(?:EXPERIENCE|INFORMATION)|OTHER)$/i;
-
 export function normalizeResumeLineEndings(value: string) {
   return value.replace(/\r\n?/g, "\n");
-}
-
-export function resumeSectionForHeading(line: string): ResumeTypedSectionName | null {
-  const heading = line.trim().replace(/:$/, "");
-  for (const [section, pattern] of Object.entries(resumeSectionHeadings)) {
-    if (pattern.test(heading)) return section as ResumeTypedSectionName;
-  }
-  return null;
-}
-
-export function resumeSourceSectionForHeading(line: string): ResumeSourceSectionName | null {
-  const recognized = resumeSectionForHeading(line);
-  if (recognized) return recognized;
-  const heading = line.trim().replace(/:$/, "");
-  if (/^CONTACT$/i.test(heading)) return "contactInfo";
-  return otherSectionHeading.test(heading) ? "additional" : null;
 }
 
 export function hasResumeSectionHeading(source: string, section: ResumeTypedSectionName) {

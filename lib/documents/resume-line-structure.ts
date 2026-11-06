@@ -1,17 +1,38 @@
+import { resumeSectionForHeading, resumeSourceSectionForHeading } from "@/lib/ai/resume-section-headings";
 import { wrapStyledRuns, type MeasureText, type TextStyle } from "@/lib/documents/document-typography";
 
 // Layout-only reading of résumé lines. Every function returns exact substrings of its input, so
 // renderers can restyle and reposition text without adding, dropping or reordering characters.
+// The one exception is `withoutDatedRecordSeparator`, which states the separator mark a renderer
+// leaves out before right-aligned dates.
 
 export type ResumeBulletParts = Readonly<{ marker: string; separator: string; body: string }>;
 export type DatedRecordHeadingParts = Readonly<{
   organization: string;
   // Parenthetical description or location after the organization, including its leading space.
   aside: string;
+  // Exact source text between the lead and the dates: whitespace, optionally around one separator
+  // mark (", ", " – ", " - ", ": ").
   separator: string;
   dates: string;
 }>;
 export type GroupedSkillParts = Readonly<{ label: string; items: string }>;
+
+// The standard headings in any case (as before), plus every heading the résumé parser recognizes
+// (KEY ACHIEVEMENTS, TECHNICAL PROJECTS, LICENSES, VOLUNTEER EXPERIENCE...) when the line is written
+// in capitals, as a heading line is. A capitalized name ("NASA") or a sentence that merely starts
+// with a heading word stays ordinary text.
+const standardSectionHeading = /^(?:SUMMARY|PROFILE|SKILLS|TECHNICAL SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?):?$/iu;
+
+export function isResumeSectionHeadingLine(line: string) {
+  const trimmed = line.trim();
+  if (standardSectionHeading.test(trimmed)) return true;
+  return trimmed === trimmed.toLocaleUpperCase() && /\p{Lu}/u.test(trimmed) && resumeSourceSectionForHeading(trimmed) !== null;
+}
+
+export function isSkillsSectionHeadingLine(line: string) {
+  return resumeSectionForHeading(line) === "skills";
+}
 
 // Same markers as `isResumeBullet` when whitespace follows. Résumé text extracted from PDFs often
 // drops that space ("•Founded"); the unambiguous bullet glyphs need none, and "-" or "*" count when
@@ -39,7 +60,9 @@ export function resumeBulletGlyph(bullet: ResumeBulletParts, canDraw: (character
 // "02/2022" months. The lead must be a short capitalized header, ignoring parenthetical asides.
 const month = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?";
 const datePoint = `(?:${month}\\s+|\\d{1,2}/)?(?:19|20)\\d{2}`;
-const trailingDateRange = new RegExp(`^(.*?\\S)(\\s+)(${datePoint}\\s*[–—-]\\s*(?:${datePoint}|present|current|now))$`, "iu");
+// The separator may carry one punctuation mark ("Example Academy, Oct 2019 – Feb 2020"); the lazy
+// lead then stops before it, so a renderer can leave the mark out once the dates move to the margin.
+const trailingDateRange = new RegExp(`^(.*?\\S)(\\s*[,;:–—-]\\s+|\\s+)(${datePoint}\\s*[–—-]\\s*(?:${datePoint}|present|current|now))$`, "iu");
 const headerConnectors = new Set(["a", "an", "and", "at", "for", "in", "of", "on", "the", "to"]);
 
 function looksLikeHeaderLead(lead: string) {
@@ -54,11 +77,25 @@ function looksLikeHeaderLead(lead: string) {
 export function parseDatedRecordHeading(line: string): DatedRecordHeadingParts | null {
   if (line.includes("|") || parseResumeBullet(line)) return null;
   const match = trailingDateRange.exec(line);
-  if (!match || !looksLikeHeaderLead(match[1]!)) return null;
+  // The lead is judged with its separator mark attached, exactly as before the mark was split off.
+  if (!match || !looksLikeHeaderLead(`${match[1]}${match[2]}`.trimEnd())) return null;
   const lead = match[1]!;
   const asideStart = lead.search(/\s\(/u);
   const organization = asideStart > 0 ? lead.slice(0, asideStart) : lead;
   return Object.freeze({ organization, aside: lead.slice(organization.length), separator: match[2]!, dates: match[3]! });
+}
+
+// What a renderer keeps between a dated heading's lead and its right-aligned dates: the trailing
+// whitespace of the separator. Once the dates sit at the margin, a separator mark would dangle
+// ("Example Academy,"), so it is left out.
+export function datedRecordGap(parts: DatedRecordHeadingParts) {
+  return /\s+$/u.exec(parts.separator)![0];
+}
+
+// A dated heading line as the export draws it: the source line without its separator mark.
+export function withoutDatedRecordSeparator(line: string) {
+  const parts = parseDatedRecordHeading(line);
+  return parts ? `${parts.organization}${parts.aside}${datedRecordGap(parts)}${parts.dates}` : line;
 }
 
 // The line right after a dated organization line, when it reads as a job or degree title.
@@ -68,9 +105,12 @@ export function looksLikeRecordTitle(line: string) {
 }
 
 // "Category: a, b, c". The label stays attached to its colon; the items keep their leading space.
+// Under a skills heading every line is a category, so a label may run to six words ("Account
+// management and customer success:"); elsewhere only a short label before a comma list counts.
 export function parseGroupedSkillLine(line: string, inSkillsSection: boolean): GroupedSkillParts | null {
-  const match = /^(\p{Lu}[^:|]{0,38}:)(\s+\S.*)$/u.exec(line);
-  if (!match || match[1]!.split(/\s+/u).length > 4) return null;
+  const match = /^(\p{Lu}[^:|]*:)(\s+\S.*)$/u.exec(line);
+  const [maxWords, maxLength] = inSkillsSection ? [6, 60] : [4, 40];
+  if (!match || match[1]!.length > maxLength || match[1]!.split(/\s+/u).length > maxWords) return null;
   if (!inSkillsSection && !match[2]!.includes(",")) return null;
   return Object.freeze({ label: match[1]!, items: match[2]! });
 }
