@@ -175,7 +175,7 @@ test("board discovery syncs followed boards first, then matching directory board
   assert.deepEqual(
     db.fetches.map((fetch) => `${fetch.type}:${fetch.criteria.boardToken}`).sort(),
     ["ASHBY:remoteai", "GREENHOUSE:acme", "GREENHOUSE:saasco"],
-    "followed acme once (not again from the directory), never the opted-out or unmatched boards"
+    "followed acme once (not again from the directory), never the opted-out board; tag-matched boards fill the cap first"
   );
   assert.ok(db.fetches.every((fetch) => fetch.criteria.limit === Number.POSITIVE_INFINITY), "full listings are fetched");
   assert.equal(db.fetches.find((fetch) => fetch.criteria.boardToken === "acme")?.criteria.url, "https://boards.greenhouse.io/acme");
@@ -199,7 +199,7 @@ test("board discovery syncs followed boards first, then matching directory board
   assert.equal(db.closures.length, 3, "each synced board checks for vanished postings");
   assert.ok(db.closures.every((closure) => closure.where.userId === "user-1" && closure.where.status === "ACTIVE"));
 
-  assert.deepEqual(result.boards, { followed: 1, directory: 2, deferred: 0, timeDeferred: 0 });
+  assert.deepEqual(result.boards, { followed: 1, directory: 2, deferred: 1, timeDeferred: 0 }, "the untagged board rotates in later");
   const acmeReport = result.reports.find((report) => report.name === "Acme (Greenhouse)");
   assert.equal(acmeReport?.status, "imported");
   assert.equal(acmeReport?.imported, 1);
@@ -339,4 +339,113 @@ test("a shared listing cache fetches each board once across users in one run", a
   await run();
 
   assert.equal(db.fetches.length, 2);
+});
+
+test("a board's already-imported jobs no longer hold the per-board slots from its new jobs", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  const listing = [1, 2, 3].map((id) => ({
+    id,
+    // Distinct roles: one board listing a role per city is collapsed separately.
+    title: ["Solutions Engineer", "Solutions Engineer, Payments", "Solutions Engineer, Billing"][id - 1],
+    absolute_url: `https://boards.greenhouse.io/acme/jobs/${id}`,
+    location: { name: "Remote" },
+    content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
+  }));
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => listing);
+  const lookups: Array<Record<string, unknown>> = [];
+  stub(t, prisma.jobPosting, "findMany", async ({ where }: { where: Record<string, unknown> }) => {
+    assert.equal(where.userId, "user-1");
+    lookups.push(where);
+    return [{
+      id: "posting-known",
+      userId: "user-1",
+      title: "Solutions Engineer",
+      company: "Acme",
+      location: "Remote",
+      description: "Older copy.",
+      requirements: [],
+      preferredQualifications: [],
+      benefits: [],
+      detectedTechStack: [],
+      sourceType: "GREENHOUSE",
+      sourceUrl: "https://boards.greenhouse.io/acme/jobs/1",
+      applyUrl: "https://boards.greenhouse.io/acme/jobs/1",
+      normalizedApplyUrl: "https://boards.greenhouse.io/acme/jobs/1",
+      normalizedCompany: "acme",
+      normalizedTitle: "solutions engineer",
+      normalizedLocation: "remote"
+    }];
+  });
+
+  const result = await runBoardDiscovery({
+    userId: "user-1",
+    profile,
+    queries: [],
+    location: "",
+    remoteOnly: false,
+    limitPerBoard: 1,
+    maxBoards: 1,
+    index: createRunDedupeIndex(),
+    directory: [],
+    now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.ok(lookups.length >= 1);
+  assert.deepEqual(
+    db.upserts.map((upsert) => upsert.create.sourceUrl).sort(),
+    ["https://boards.greenhouse.io/acme/jobs/1", "https://boards.greenhouse.io/acme/jobs/2"],
+    "the known job is refreshed outside the cap and the one slot goes to a new job"
+  );
+  assert.match(result.reports.find((report) => report.name === "Acme (Greenhouse)")?.details ?? "", /1 more matches over the per-board limit/);
+});
+
+test("one role listed once per city on a board becomes one feed job, keeping the remote listing", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  const cities = ["US - Raleigh", "US - Boston", "US - Atlanta", "US - Remote"];
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () =>
+    cities.map((city, index) => ({
+      id: index + 1,
+      title: "Solutions Engineer (Eastern Time Zone)",
+      absolute_url: `https://boards.greenhouse.io/acme/jobs/${index + 1}`,
+      location: { name: city },
+      content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
+    }))
+  );
+
+  const result = await runBoardDiscovery({
+    userId: "user-1",
+    profile,
+    queries: [],
+    location: "",
+    remoteOnly: false,
+    limitPerBoard: 8,
+    maxBoards: 1,
+    index: createRunDedupeIndex(),
+    directory: [],
+    now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.deepEqual(db.upserts.map((upsert) => upsert.create.location), ["US - Remote"]);
+  assert.match(result.reports.find((report) => report.name === "Acme (Greenhouse)")?.details ?? "", /3 more locations for the same role/);
+});
+
+test("Greenhouse postings get a work style from their location when the board gives none", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => [{
+    id: 1,
+    title: "Solutions Engineer",
+    absolute_url: "https://boards.greenhouse.io/acme/jobs/1",
+    location: { name: "Remote, Canada; Remote, United States" },
+    content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, workflows, and training."
+  }]);
+
+  await runBoardDiscovery({
+    userId: "user-1", profile, queries: [], location: "", remoteOnly: false, limitPerBoard: 8, maxBoards: 1,
+    index: createRunDedupeIndex(), directory: [], now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.equal(db.upserts[0]?.create.remoteStatus, "Remote");
 });

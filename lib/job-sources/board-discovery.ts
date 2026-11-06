@@ -25,8 +25,8 @@ import { prisma } from "@/lib/prisma";
 
 /**
  * Preference discovery over public ATS boards: the user's followed boards first, then boards
- * from the reviewed seed directory whose tags match the user's preferences. The number of
- * boards per run is capped; the rest rotate into later runs.
+ * from the reviewed seed directory, those whose tags match the user's preferences ahead of the
+ * rest. The number of boards per run is capped; the rest rotate into later runs.
  */
 
 export const directorySourceNames: Record<BoardAts, string> = {
@@ -100,6 +100,7 @@ function boardReport(planned: PlannedBoard, result: BoardSyncResult): DiscoveryS
     result.unchanged.length ? `${result.unchanged.length} unchanged.` : "",
     result.duplicates ? `${result.duplicates} already found through another source.` : "",
     result.capped ? `${result.capped} more matches over the per-board limit.` : "",
+    result.otherLocations ? `${result.otherLocations} more locations for the same role kept as one job.` : "",
     result.closed ? `${result.closed} no longer listed and marked expired.` : "",
     !result.imported.length && !result.unchanged.length && result.skipped ? "No jobs passed the current relevance filter." : ""
   ].filter(Boolean);
@@ -173,7 +174,14 @@ export async function runBoardDiscovery({
   const matches = matchDirectoryBoards(directory, directoryPreferencesFrom({ profile, location, remoteOnly })).filter(
     (match) => !knownBoards.has(directoryBoardKey(match.entry))
   );
-  const selection = selectBoardsForRun({ followed, directory: matches, maxBoards, now });
+  const selection = selectBoardsForRun({
+    followed,
+    directory: matches,
+    maxBoards,
+    now,
+    // Tag-matched boards run first; the rest rotate through the remaining slots.
+    priority: (match) => (match.score > 0 ? 1 : 0)
+  });
 
   for (const ats of new Set(selection.directory.map((match) => match.entry.ats))) {
     if (!directorySources.has(ats)) {

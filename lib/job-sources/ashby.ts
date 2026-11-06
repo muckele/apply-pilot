@@ -1,4 +1,5 @@
 import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
+import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { detectTechStack, htmlToText, splitRequirementText, workStyleLabel } from "@/lib/job-sources/utils";
 
@@ -68,7 +69,7 @@ export class AshbyProvider implements JobSourceProvider {
       title: job.title?.trim(),
       company: "",
       location: [...new Set(locations)].join("; ") || undefined,
-      remoteStatus: job.isRemote ? "Remote" : workStyleLabel(job.workplaceType),
+      remoteStatus: job.isRemote ? "Remote" : workStyleLabel(job.workplaceType) ?? workStyleFromLocation(locations.join("; ")),
       ...yearlyUsdSalary(job.compensation?.summaryComponents),
       datePosted: publishedAt ? new Date(publishedAt) : undefined,
       sourceUrl: job.jobUrl ?? job.sourceUrl ?? "",

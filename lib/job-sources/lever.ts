@@ -1,4 +1,5 @@
 import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
+import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import {
   detectTechStack,
@@ -67,7 +68,7 @@ export class LeverProvider implements JobSourceProvider {
       title: job.text,
       company: "",
       location: job.categories?.location,
-      remoteStatus: workStyleLabel(job.workplaceType),
+      remoteStatus: workStyleLabel(job.workplaceType) ?? workStyleFromLocation(job.categories?.location),
       ...yearlyUsdSalary(job.salaryRange),
       datePosted: job.createdAt ? new Date(job.createdAt) : undefined,
       sourceUrl: job.hostedUrl ?? job.sourceUrl ?? "",

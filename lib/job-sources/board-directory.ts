@@ -183,6 +183,12 @@ export function directoryPreferencesFrom({
   };
 }
 
+/**
+ * Ranks directory boards for a user. Industry, city and remote tags raise a board's rank; they
+ * never remove it, because a board tagged with other industries still lists roles in the user's
+ * function (the 2026-11-05 audit found tag exclusion dropped most of one user's relevant supply).
+ * Only a remote-only search removes boards, and only those that list no remote roles.
+ */
 export function matchDirectoryBoards(
   entries: readonly JobBoardDirectoryEntry[],
   preferences: DirectoryPreferences
@@ -218,9 +224,13 @@ export function matchDirectoryBoards(
       reasons.push("Board lists remote roles.");
     }
 
-    if (score > 0 || !hasSignals) {
-      matches.push({ entry, score, reasons: reasons.length ? reasons : ["No industry or location preference set."] });
-    }
+    matches.push({
+      entry,
+      score,
+      reasons: reasons.length
+        ? reasons
+        : [hasSignals ? "Ranked after boards tagged with your industries or locations." : "No industry or location preference set."]
+    });
   }
 
   return matches.sort(
@@ -230,21 +240,36 @@ export function matchDirectoryBoards(
 
 const rotationWindowMs = 86_400_000;
 
+function rotatingWindow<D>(items: readonly D[], slots: number, window: number) {
+  if (slots >= items.length) {
+    return [...items];
+  }
+  if (slots <= 0) {
+    return [];
+  }
+  const offset = (window * slots) % items.length;
+  return Array.from({ length: slots }, (_, index) => items[(offset + index) % items.length]);
+}
+
 /**
  * Picks the boards for one discovery run: followed boards first (least recently synced first),
  * then directory boards in a daily rotating window so a capped run still reaches every
- * matching board over consecutive days without storing a cursor.
+ * matching board over consecutive days without storing a cursor. With `priority`, higher
+ * tiers (for example tag-matched boards) fill the slots first and lower tiers rotate through
+ * whatever slots remain.
  */
 export function selectBoardsForRun<F extends { lastSyncedAt: Date | null }, D>({
   followed,
   directory,
   maxBoards,
-  now = new Date()
+  now = new Date(),
+  priority
 }: {
   followed: readonly F[];
   directory: readonly D[];
   maxBoards: number;
   now?: Date;
+  priority?: (board: D) => number;
 }) {
   const cap = Math.max(0, Math.trunc(maxBoards));
   const orderedFollowed = [...followed].sort(
@@ -252,14 +277,15 @@ export function selectBoardsForRun<F extends { lastSyncedAt: Date | null }, D>({
   );
   const selectedFollowed = orderedFollowed.slice(0, cap);
   const slots = cap - selectedFollowed.length;
-  let selectedDirectory: D[] = [];
-
-  if (slots >= directory.length) {
-    selectedDirectory = [...directory];
-  } else if (slots > 0) {
-    const window = Math.floor(now.getTime() / rotationWindowMs);
-    const offset = (window * slots) % directory.length;
-    selectedDirectory = Array.from({ length: slots }, (_, index) => directory[(offset + index) % directory.length]);
+  const window = Math.floor(now.getTime() / rotationWindowMs);
+  const tiers = new Map<number, D[]>();
+  for (const board of directory) {
+    const tier = priority ? priority(board) : 0;
+    tiers.set(tier, [...(tiers.get(tier) ?? []), board]);
+  }
+  const selectedDirectory: D[] = [];
+  for (const tier of [...tiers.keys()].sort((left, right) => right - left)) {
+    selectedDirectory.push(...rotatingWindow(tiers.get(tier) ?? [], slots - selectedDirectory.length, window));
   }
 
   return {

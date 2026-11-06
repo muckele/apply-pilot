@@ -1,4 +1,5 @@
 import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
+import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { decodeHtmlEntities, detectTechStack, htmlBulletItems, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
 
@@ -43,11 +44,14 @@ export class GreenhouseProvider implements JobSourceProvider {
     // htmlToText flattens every line break, so take requirements from the posting's bullets.
     const bullets = htmlBulletItems(html);
     const postedAt = job.first_published ?? job.updated_at;
+    const location = job.location?.name ?? job.offices?.map((office) => office.name).join(", ");
 
     return {
       title: job.title,
       company: "",
-      location: job.location?.name ?? job.offices?.map((office) => office.name).join(", "),
+      location,
+      // The board API has no work-style field; "Remote, Canada; Remote, United States" says it.
+      remoteStatus: workStyleFromLocation(location),
       datePosted: postedAt ? new Date(postedAt) : undefined,
       sourceUrl: job.absolute_url ?? job.sourceUrl ?? "",
       applyUrl: job.absolute_url ?? job.sourceUrl,
