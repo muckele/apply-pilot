@@ -323,6 +323,21 @@ function assembleEvidence(
   return evidence;
 }
 
+function verbatimSourceLines(payload: ApplicationDocumentPayload) {
+  const lines = new Set<string>();
+  const visit = (value: unknown) => {
+    if (typeof value === "string") {
+      for (const line of value.split(/\r?\n/)) {
+        const normalized = comparable(normalizeApplicationDocumentSourceLine(line));
+        if (normalized) lines.add(normalized);
+      }
+    } else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(payload.resume ?? {});
+  return lines;
+}
+
 export function assembleTailoredResumeProviderOutput(
   payload: ApplicationDocumentPayload,
   wire: TailoredResumeProviderOutput
@@ -373,8 +388,16 @@ export function assembleTailoredResumeProviderOutput(
     });
     return text;
   });
+  // A claim names a whole rendered line, or one semicolon part of it: the fact catalog
+  // splits source lines at semicolons, so a model citing one such fact names that part.
+  // validateTailoredResumeClaims still requires every whole line to be verbatim source or
+  // fully supported, so a part claim cannot carry an unsupported remainder.
   const resumeLines = new Set(wire.resumeText.split(/\r?\n/)
-    .map((line) => comparable(normalizeApplicationDocumentSourceLine(line)))
+    .flatMap((line) => {
+      const normalized = normalizeApplicationDocumentSourceLine(line);
+      return [normalized, ...normalized.split(/;\s+/u)];
+    })
+    .map((line) => comparable(line))
     .filter(Boolean));
   wire.resumeTextClaims.forEach((item, index) => {
     const ids = item.factIds?.length ? item.factIds : item.factId ? [item.factId] : [];
@@ -404,9 +427,22 @@ export function assembleTailoredResumeProviderOutput(
   });
 
   const associatedClaims = new Set(evidence.map(({ claim }) => comparable(claim)));
+  const sourceLines = verbatimSourceLines(payload);
+  const resumeFacts = buildApplicationDocumentFactCatalog(payload).filter((fact) => fact.ref.startsWith("resume."));
   for (const [lineIndex, rawLine] of wire.resumeText.split(/\r?\n/).entries()) {
     const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isResumeSectionHeading(line)) continue;
+    const partlyCited = line.split(/;\s+/u).some((part) => associatedClaims.has(comparable(part)));
+    if (!associatedClaims.has(comparable(line)) && partlyCited && sourceLines.has(comparable(line))) {
+      // The model cited part of a line it copied verbatim from the master résumé (e.g. the
+      // first semicolon part of a skills line), so bind the whole line to the catalog facts
+      // it contains. A line the model associated with nothing is still rejected below.
+      const contained = resumeFacts.filter((fact) => comparable(fact.excerpt) && comparable(line).includes(comparable(fact.excerpt)));
+      if (contained.length) {
+        evidence.push({ claim: line, originFieldPath: `resumeText.line[${lineIndex}]`, facts: contained });
+        associatedClaims.add(comparable(line));
+      }
+    }
     if (!associatedClaims.has(comparable(line))) {
       throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
         code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
