@@ -100,12 +100,43 @@ test("the header names the job with themed text, and the match card is Apply Pil
     const card = harness.container.querySelector("[data-match-card]")!;
     assert.match(card.textContent ?? "", /68%/u);
     assert.match(card.textContent ?? "", /Apply Pilot's estimate, not an employer score/u);
-    assert.match(card.textContent ?? "", /You have 4 of 7 must-haves/u);
+    assert.match(card.textContent ?? "", /Your résumé shows 4 of 6 checked must-haves/u);
+    assert.match(card.textContent ?? "", /1 not checked yet/u);
+    assert.doesNotMatch(card.textContent ?? "", /of 7/u);
     assert.equal(card.querySelectorAll("[data-check=shown]").length, 4);
     assert.equal(card.querySelectorAll("[data-check=not_shown]").length, 1);
     assert.match(card.textContent ?? "", /\+1 more not on your résumé/u);
-    assert.match(card.textContent ?? "", /\+1 not checked/u);
     for (const meta of ["Remote", "$165k–$195k", "2 days ago", "Northwind Service Cloud"]) assert.match(harness.text(), new RegExp(meta.replace(/[$]/gu, "\\$"), "u"));
+  });
+});
+
+test("a mostly unchecked posting never reads as meeting almost nothing", async () => {
+  const many = Array.from({ length: 24 }, (_, index) => `Listed requirement ${index + 1}`);
+  const mixed = buildRequirementChecklist(many, {
+    factualMatches: [{ claim: "Shown", applicantEvidence: [{ ref: "resume.rawText", excerpt: "Résumé line." }], jobEvidence: [{ ref: "job.requirements[3]", excerpt: many[3] }] }],
+    requirementGaps: [{ requirement: many[7], jobRequirement: { ref: "job.requirements[7]", excerpt: many[7] } }]
+  });
+  await withPage({
+    estimate: { ...props().estimate!, score: 82 },
+    checklist: { items: mixed.items, counts: mixed.counts }
+  }, async (harness) => {
+    const card = harness.container.querySelector("[data-match-card]")!.textContent ?? "";
+    assert.match(card, /82%/u);
+    assert.match(card, /Your résumé shows 1 of 2 checked must-haves/u);
+    assert.match(card, /22 not checked yet/u);
+    assert.doesNotMatch(card, /of 24/u);
+    const list = harness.container.querySelector("[data-match-card]")!;
+    assert.equal(list.querySelectorAll("[data-check=not_assessed]").length, 0, "the card lists checked requirements only");
+    assert.equal(list.querySelectorAll("[data-check=shown]").length, 1);
+    assert.equal(list.querySelectorAll("[data-check=not_shown]").length, 1);
+  });
+});
+
+test("when nothing was checked the card says so instead of showing a ratio", async () => {
+  await withPage({ checklist: checklist(false) }, async (harness) => {
+    const card = harness.container.querySelector("[data-match-card]")!.textContent ?? "";
+    assert.match(card, /Apply Pilot didn't check these requirements/u);
+    assert.doesNotMatch(card, /\d+ of \d+/u);
   });
 });
 

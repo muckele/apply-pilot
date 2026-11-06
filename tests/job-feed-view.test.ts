@@ -86,7 +86,7 @@ test("the preview pane shows the match card, tabs and one path into tailoring an
       application: null,
       backHref: "/jobs"
     }));
-    assert.match(harness.container.querySelector("[data-match-card]")!.textContent ?? "", /You have 1 of 2 must-haves/u);
+    assert.match(harness.container.querySelector("[data-match-card]")!.textContent ?? "", /Your résumé shows 1 of 2 must-haves/u);
     const links = Object.fromEntries([...harness.container.querySelectorAll("a")].map((link) => [link.textContent?.trim(), link.getAttribute("href")]));
     assert.equal(links["Tailor your résumé for this job"], "/jobs/job-1#tailor");
     assert.equal(links["Go to Apply Kit"], "/jobs/job-1/apply");

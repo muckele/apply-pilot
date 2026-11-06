@@ -57,6 +57,19 @@ function readOutput(output: unknown): { matches: Match[]; gaps: Gap[] } {
 
 const STATUS_ORDER: Record<ChecklistStatus, number> = { shown: 0, not_shown: 0, not_assessed: 1 };
 
+// The match card's headline. It divides only by requirements the analysis actually checked
+// (shown or not shown); unchecked ones are counted separately, never as "missing".
+export function summarizeChecklist(counts: ChecklistCounts): { heading: string; notChecked: string | null } | null {
+  if (!counts.total) return null;
+  const checked = counts.shown + counts.notShown;
+  if (!checked) return { heading: "Apply Pilot didn't check these requirements", notChecked: null };
+  if (!counts.notAssessed) return { heading: `Your résumé shows ${counts.shown} of ${checked} must-haves`, notChecked: null };
+  return {
+    heading: `Your résumé shows ${counts.shown} of ${checked} checked must-have${checked === 1 ? "" : "s"}`,
+    notChecked: `${counts.notAssessed} not checked yet`
+  };
+}
+
 export function topChecklistItems(items: readonly ChecklistItem[], limit: number) {
   const ordered = items
     .map((item, index) => ({ item, index }))

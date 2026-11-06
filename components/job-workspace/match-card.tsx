@@ -2,7 +2,7 @@ import { Check, Minus, X } from "lucide-react";
 
 import { ScoreJobButton } from "@/components/job-workspace/score-job-button";
 import type { ChecklistView, EstimateView } from "@/lib/jobs/job-view-types";
-import { topChecklistItems, type ChecklistStatus } from "@/lib/jobs/requirement-checklist";
+import { summarizeChecklist, topChecklistItems, type ChecklistStatus } from "@/lib/jobs/requirement-checklist";
 
 export function fitTier(score: number) {
   return score >= 75 ? "high" : score >= 55 ? "medium" : "low";
@@ -61,11 +61,14 @@ export function MatchCard({
     );
   }
   const { counts } = checklist;
-  const top = topChecklistItems(checklist.items, limit);
+  const summary = summarizeChecklist(counts);
+  // List the checked requirements; unchecked ones are summarised in one line, not as rows.
+  const anyChecked = counts.shown + counts.notShown > 0;
+  const top = topChecklistItems(anyChecked ? checklist.items.filter((item) => item.status !== "not_assessed") : checklist.items, limit);
   const more = [
     top.more.shown ? `+${top.more.shown} more you have` : null,
     top.more.notShown ? `+${top.more.notShown} more not on your résumé` : null,
-    top.more.notAssessed ? `+${top.more.notAssessed} not checked` : null
+    !anyChecked && top.more.notAssessed ? `+${top.more.notAssessed} more not checked` : null
   ].filter(Boolean);
   return (
     <section className="job-card job-match-card" data-match-card aria-labelledby={`match-${jobId}`}>
@@ -74,13 +77,7 @@ export function MatchCard({
         <p className={`job-match-score job-fit-${fitTier(estimate.score)}`}>{estimate.score}%</p>
       </div>
       <p className="job-hint">Apply Pilot&apos;s estimate, not an employer score. {BASIS_TEXT[estimate.basis]}</p>
-      {counts.total ? (
-        <p className="job-match-count">
-          {counts.notAssessed === counts.total
-            ? "Apply Pilot didn't check these requirements."
-            : `You have ${counts.shown} of ${counts.total} must-haves`}
-        </p>
-      ) : null}
+      {summary ? <p className="job-match-count">{summary.heading}</p> : null}
       {top.items.length ? (
         <ul className="job-checklist">
           {top.items.map((item, index) => (
@@ -93,6 +90,9 @@ export function MatchCard({
         </ul>
       ) : null}
       {more.length ? <p className="job-hint">{more.join(" · ")}</p> : null}
+      {summary?.notChecked ? (
+        <p className="job-hint" data-not-checked>{summary.notChecked}. Apply Pilot couldn&apos;t judge these either way; see the full breakdown.</p>
+      ) : null}
       {onSeeBreakdown ? (
         <button type="button" className="job-link-button" onClick={onSeeBreakdown}>See full breakdown</button>
       ) : null}

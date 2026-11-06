@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
+import { buildRequirementChecklist, summarizeChecklist } from "@/lib/jobs/requirement-checklist";
 
 const requirements = [
   "Current Quenby certification",
@@ -77,4 +77,31 @@ test("missing or malformed output yields an all-unassessed checklist", () => {
   const checklist = buildRequirementChecklist(requirements, null);
   assert.equal(checklist.counts.notAssessed, 4);
   assert.equal(checklist.counts.shown, 0);
+});
+
+test("the summary divides only by requirements Apply Pilot checked", () => {
+  assert.deepEqual(summarizeChecklist({ shown: 1, notShown: 1, notAssessed: 22, total: 24 }), {
+    heading: "Your résumé shows 1 of 2 checked must-haves",
+    notChecked: "22 not checked yet"
+  });
+  assert.deepEqual(summarizeChecklist({ shown: 1, notShown: 0, notAssessed: 3, total: 4 }), {
+    heading: "Your résumé shows 1 of 1 checked must-have",
+    notChecked: "3 not checked yet"
+  });
+  assert.deepEqual(summarizeChecklist({ shown: 4, notShown: 2, notAssessed: 0, total: 6 }), {
+    heading: "Your résumé shows 4 of 6 must-haves",
+    notChecked: null
+  });
+  assert.deepEqual(summarizeChecklist({ shown: 0, notShown: 3, notAssessed: 1, total: 4 }), {
+    heading: "Your résumé shows 0 of 3 checked must-haves",
+    notChecked: "1 not checked yet"
+  });
+});
+
+test("nothing checked, or nothing listed, never produces a ratio", () => {
+  assert.deepEqual(summarizeChecklist({ shown: 0, notShown: 0, notAssessed: 5, total: 5 }), {
+    heading: "Apply Pilot didn't check these requirements",
+    notChecked: null
+  });
+  assert.equal(summarizeChecklist({ shown: 0, notShown: 0, notAssessed: 0, total: 0 }), null);
 });
