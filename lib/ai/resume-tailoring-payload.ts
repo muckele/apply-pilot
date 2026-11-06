@@ -1,5 +1,22 @@
 import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
 
+// PDF text extraction can glue a bullet glyph to its text ("•Started in sales"). Every résumé check
+// recognizes a list marker only when a space follows, so a glued glyph made each bullet a second,
+// required source line beside the parsed bullet (live case 2026-11-06). Lines starting with •, ▪ or
+// ◦ get that space back; nothing else changes, and "-" or "*" without a space are left alone.
+export function spaceGluedBulletMarkers(value: string) {
+  return value.replace(/^([ \t]*[•▪◦]+)(?=[^\s•▪◦])/gmu, "$1 ");
+}
+
+function spaceGluedBulletsDeep<T>(value: T): T {
+  if (typeof value === "string") return spaceGluedBulletMarkers(value) as T;
+  if (Array.isArray(value)) return value.map(spaceGluedBulletsDeep) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, spaceGluedBulletsDeep(item)])) as T;
+  }
+  return value;
+}
+
 export function buildApplicationDocumentPayload(
   job: unknown,
   resume: unknown,
@@ -65,7 +82,7 @@ export function buildApplicationDocumentPayload(
       "title", "company", "location", "remoteStatus", "salaryMin", "salaryMax",
       "description", "requirements", "preferredQualifications", "detectedTechStack"
     ]),
-    resume: projectedResume,
+    resume: projectedResume ? spaceGluedBulletsDeep(projectedResume) : projectedResume,
     profile: pick(profile, [
       "careerGoals", "preferredRoles", "preferredLocations", "remotePreference",
       "salaryTargetMin", "salaryTargetMax", "skillsToEmphasize", "skillsNotToExaggerate"
@@ -75,7 +92,10 @@ export function buildApplicationDocumentPayload(
   // Only tailoring passes match protection; other documents keep their previous payload shape.
   const protectedCitations = pick(protectedEvidence, ["citations"]);
   if (protectedCitations) {
-    payload.protectedEvidence = { citations: protectedResumeCitations(protectedCitations.citations) };
+    payload.protectedEvidence = {
+      citations: protectedResumeCitations(protectedCitations.citations)
+        .map((citation) => ({ ...citation, excerpt: spaceGluedBulletMarkers(citation.excerpt) }))
+    };
   }
   return payload;
 }

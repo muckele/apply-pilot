@@ -232,7 +232,10 @@ export function faithfulRewordingFailure(claim: string, citations: readonly Cita
   const clauses: Clause[] = citations.flatMap((citation, index) =>
     clausesOf(citation.excerpt).map((clause) => ({ citation: index, tokens: tokens(clause) })));
   const matched = new Set<number>();
-  for (const segmentText of claim.split(segmentBoundary)) {
+  // Sentence ends split segments too (the same segmenter the facts use), so a multi-sentence line
+  // is checked piece by piece; each piece must still come from one cited clause.
+  const segments = [...sentenceSegmenter.segment(claim)].flatMap(({ segment }) => segment.split(segmentBoundary));
+  for (const segmentText of segments) {
     // A connector that joins two kept clauses (", then", "; and") is structure, not a fact.
     const segment = tokens(segmentText.replace(/^\s*(?:and|but|while|then)\s+/iu, ""));
     if (!content(segment).length) continue;

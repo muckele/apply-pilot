@@ -86,7 +86,10 @@ const rawText = [
   "ACHIEVEMENTS", ...ACHIEVEMENTS
 ].join("\n");
 
-function syntheticPayload(protectedCitations: Array<{ ref: string; excerpt: string }> | null = null) {
+// glued: the master résumé as PDF extraction can store it, each bullet glyph glued to its text
+// ("•Closed 38 …") in the raw text, the record source text and the achievements.
+function syntheticPayload(protectedCitations: Array<{ ref: string; excerpt: string }> | null = null, glued = false) {
+  const glue = (text: string) => glued ? text.replaceAll("• ", "•") : text;
   return buildApplicationDocumentPayload(
     {
       title: "Mid-Market Account Executive",
@@ -97,12 +100,12 @@ function syntheticPayload(protectedCitations: Array<{ ref: string; excerpt: stri
       detectedTechStack: ["Salesforce"]
     },
     {
-      rawText,
+      rawText: glue(rawText),
       summary: SUMMARY,
       skills: SKILLS,
-      achievements: ACHIEVEMENTS,
+      achievements: ACHIEVEMENTS.map((item) => glued ? `•${item}` : item),
       workHistory: JOBS.map((job) => ({
-        sourceText: [job.header, ...job.bullets].join("\n"),
+        sourceText: [job.header, ...job.bullets.map((bullet) => glued ? `•${bullet}` : bullet)].join("\n"),
         company: job.company,
         title: job.title,
         location: null,
@@ -544,4 +547,53 @@ test("reverting is idempotent, so validated-cache replays revert nothing", () =>
   const replay = finalizeTailoredResume(payload, structuredClone(final));
   assert.equal(replay.resumeText, final.resumeText);
   assert.deepEqual(tailoredResumeReversions(replay), []);
+});
+
+// Live case 2026-11-06: the owner's stored résumé glues each bullet glyph to its text. Every
+// check treated "•Started …" as a second, required source line beside the parsed bullet, so a
+// normal answer was "completed" with duplicate bullets and then failed the evidence check.
+test("bullet glyphs glued to their text are one source item, not a second required line", () => {
+  const payload = syntheticPayload(null, true);
+  assert.ok(String(payload.resume?.rawText).includes(`• ${JOBS[0]!.bullets[0]}`), "the payload spaces a glued glyph");
+  const { assembled, final } = finalize(payload, completeText);
+  assert.equal(final, assembled, "a complete answer needs no restoration");
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeLeftOut(payload, final), []);
+});
+
+test("with glued glyphs, a failed line still reverts once, in place, without duplicates", () => {
+  const payload = syntheticPayload(null, true);
+  const source = JOBS[1]!.bullets[1]!;
+  const invented = "Researched 900 target companies across twelve verticals.";
+  const { final } = finalize(payload, completeText.replace(`• ${source}`, `• ${invented}`), [{ claim: invented, factExcerpt: source }]);
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeReversions(final).map((entry) => entry.original.map((item) => item.text)), [[source]]);
+});
+
+// Live case 2026-11-06: owner-attested facts are often several sentences. Restored when Gemini
+// left one out, the fact rendered as one line, but its evidence named each sentence separately,
+// so the whole line was "missing source evidence" and the paid résumé was rejected.
+test("an omitted multi-sentence owner-attested fact is restored verbatim as one accepted line", () => {
+  const payload = syntheticPayload();
+  const fact = "I managed a book of 60 merchants. I ran quarterly reviews with each owner.";
+  (payload.reviewedEvidence!.facts as Array<{ fact: string }>)[0]!.fact = fact;
+  const { final } = finalize(payload, withoutLines(completeText, OWNER_FACT));
+  assert.ok(final.resumeText.endsWith(`\n\nADDITIONAL INFORMATION\n${fact}`));
+  for (const sentence of ["I managed a book of 60 merchants.", "I ran quarterly reviews with each owner."]) {
+    assert.ok(final.claimEvidence.some((entry) => entry.claim === sentence &&
+      entry.citations.every((citation) => citation.ref === "reviewedEvidence.facts[0].fact")), sentence);
+  }
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("a line is accepted as an owner fact only when it is exactly that fact", () => {
+  const payload = syntheticPayload();
+  const fact = "I managed a book of 60 merchants. I ran quarterly reviews with each owner.";
+  (payload.reviewedEvidence!.facts as Array<{ fact: string }>)[0]!.fact = fact;
+  const { final } = finalize(payload, withoutLines(completeText, OWNER_FACT));
+  const altered = final.resumeText.replace(fact, "I managed a book of 90 merchants. I ran quarterly reviews with each owner.");
+  assert.throws(
+    () => validateTailoredResumeClaims(payload, { ...final, resumeText: altered }),
+    (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"
+  );
 });

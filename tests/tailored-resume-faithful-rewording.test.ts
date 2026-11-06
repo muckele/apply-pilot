@@ -212,3 +212,24 @@ test("cover letters keep the existing exact-wording grammar", () => {
     (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM"
   );
 });
+
+// Live case 2026-11-06: the line was split into segments at commas, semicolons and conjunctions
+// but not at sentence ends, so a two-sentence line had a segment spanning both facts and failed
+// as "anchor_moved", even copied verbatim (the owner's summary). Sentence ends now split too;
+// each piece must still come from one cited clause.
+const SUMMARY_SENTENCES = [
+  "Account executive with 7+ years of SMB sales.",
+  "Ranked first of 14 reps at Northwind Payments, adding $1.2M in new annual revenue."
+];
+const summaryPayload = { ...payload, resume: { ...payload.resume, summary: SUMMARY_SENTENCES.join(" ") } };
+const summaryCitations = SUMMARY_SENTENCES.map((sentence) => ({ ref: "resume.summary", excerpt: sentence }));
+
+test("a multi-sentence line may keep its cited sentences verbatim or reordered", () => {
+  accepted(SUMMARY_SENTENCES.join(" "), summaryCitations, summaryPayload);
+  accepted([...SUMMARY_SENTENCES].reverse().join(" "), summaryCitations, summaryPayload);
+});
+
+test("splitting at sentence ends never lets numbers or names move between sentences", () => {
+  rejected("Account executive with 14+ years of SMB sales. Ranked first of 7 reps at Northwind Payments, adding $1.2M in new annual revenue.", summaryCitations, summaryPayload);
+  rejected("Account executive with 7+ years of SMB sales at Northwind Payments. Ranked first of 14 reps, adding $1.2M in new annual revenue.", summaryCitations, summaryPayload);
+});

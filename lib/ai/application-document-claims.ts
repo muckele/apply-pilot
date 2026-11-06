@@ -600,10 +600,17 @@ export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutpu
     }
   }
 
+  // Owner-reviewed facts are applicant evidence too: a line that is exactly one of them (as the
+  // keep rule restores an omitted multi-sentence fact) is source text, like a master-résumé line.
+  const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
+    ? payload.reviewedEvidence.facts.flatMap((fact) =>
+      fact && typeof fact === "object" && typeof (fact as { fact?: unknown }).fact === "string" ? [(fact as { fact: string }).fact] : [])
+    : [];
   for (const [lineIndex, rawLine] of output.resumeText.split(/\r?\n/).entries()) {
     const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isHeading(line) ||
       containsExactEvidenceLine(payload.resume ?? {}, line) ||
+      containsExactEvidenceLine(reviewedFacts, line) ||
       containsStandaloneEvidence(payload.resume ?? {}, line)) continue;
     if (!supportedClaims.has(comparable(line))) {
       throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
