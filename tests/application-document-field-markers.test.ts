@@ -164,7 +164,7 @@ test("field markers cannot associate an unrelated generated line", () => {
   for (const field of fields) {
     const { wire, claim } = completeScenario(field, "•", "•");
     wire.resumeText = wire.resumeText.replace(claim, "Invented replacement absent from the selected evidence.");
-    assert.throws(() => assembleTailoredResumeProviderOutput(payload, wire), error => error instanceof PublicApiError &&
+    assert.throws(() => validate(payload, wire), error => error instanceof PublicApiError &&
       ["APPLICATION_DOCUMENT_EVIDENCE_REQUIRED", "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT"].includes(String(error.details?.code)), field);
   }
 });

@@ -448,24 +448,26 @@ export function assembleTailoredResumeProviderOutput(
   for (const [lineIndex, rawLine] of wire.resumeText.split(/\r?\n/).entries()) {
     const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isResumeSectionHeading(line)) continue;
-    const partlyCited = line.split(/;\s+/u).some((part) => associatedClaims.has(comparable(part)));
-    if (!associatedClaims.has(comparable(line)) && partlyCited && sourceLines.has(comparable(line))) {
-      // The model cited part of a line it copied verbatim from the master résumé (e.g. the
-      // first semicolon part of a skills line), so bind the whole line to the catalog facts
-      // it contains. A line the model associated with nothing is still rejected below.
-      const contained = resumeFacts.filter((fact) => comparable(fact.excerpt) && comparable(line).includes(comparable(fact.excerpt)));
+    if (!associatedClaims.has(comparable(line)) && sourceLines.has(comparable(line))) {
+      // A line copied verbatim from the master résumé is the applicant's own text. Cited in part
+      // (e.g. the first semicolon part of a skills line), it is bound to the catalog facts it
+      // contains. Not cited at all, it is bound to the facts it is made of, exactly as the prompt
+      // asks Gemini to cite it; a line with no such fact stays unbound, accepted as source text.
+      const partlyCited = line.split(/;\s+/u).some((part) => associatedClaims.has(comparable(part)));
+      const contained = partlyCited
+        ? resumeFacts.filter((fact) => comparable(fact.excerpt) && comparable(line).includes(comparable(fact.excerpt)))
+        : [...new Set(applicationDocumentAtomicStrings(line).flatMap((atom) => {
+          const fact = resumeFacts.find((candidate) => comparable(candidate.excerpt) === comparable(atom));
+          return fact ? [fact] : [];
+        }))];
       if (contained.length) {
         evidence.push({ claim: line, originFieldPath: `resumeText.line[${lineIndex}]`, facts: contained });
         associatedClaims.add(comparable(line));
       }
     }
-    if (!associatedClaims.has(comparable(line))) {
-      throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
-        code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
-        fieldPath: `resumeText.line[${lineIndex}]`,
-        retryable: false
-      });
-    }
+    // Any other line without evidence is left in place: validateTailoredResumeClaims rejects it,
+    // and finalizeTailoredResume removes it first (tailoredResumeLinesWithoutEvidence), so a
+    // paid answer is not lost to one uncited line.
   }
 
   return {

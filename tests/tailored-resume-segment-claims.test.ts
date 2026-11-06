@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
-import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
+import { validateTailoredResumeClaims, type ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
 import { assembleTailoredResumeProviderOutput, buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
 import { tailoredResumeProviderSchema } from "@/lib/ai/resume";
 
@@ -47,8 +47,9 @@ test("a claim that is only part of a semicolon part is still rejected", () => {
 });
 
 test("a partly cited line that is not verbatim source still needs full evidence", () => {
+  const assembled = assembleTailoredResumeProviderOutput(payload, wire("Technical: TypeScript, SQL", "SKILLS\nTechnical: TypeScript, SQL; Kubernetes administration"));
   assert.throws(
-    () => assembleTailoredResumeProviderOutput(payload, wire("Technical: TypeScript, SQL", "SKILLS\nTechnical: TypeScript, SQL; Kubernetes administration")),
+    () => validateTailoredResumeClaims(payload, assembled),
     (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"
   );
 });
@@ -60,13 +61,13 @@ test("a verbatim source line is bound to the catalog facts it contains", () => {
   assert.deepEqual(whole!.citations.map((citation) => citation.excerpt).sort(), ["AI tools including Claude and ChatGPT", "Technical: TypeScript, SQL"]);
 });
 
-test("a verbatim source line the model cited nothing of is still rejected", () => {
-  assert.throws(
-    () => assembleTailoredResumeProviderOutput(payload, tailoredResumeProviderSchema.parse({
-      professionalSummary: "", professionalSummaryFactId: "__NO_APPLICANT_FACT__",
-      skillsSection: [], bulletRewrites: [], rolesOrProjectsToEmphasize: [],
-      resumeTextClaims: [], unsupportedKeywords: [], formattingWarnings: [], resumeText: `SKILLS\n${skillsLine}`
-    })),
-    (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"
-  );
+test("a verbatim source line the model cited nothing of is bound to the catalog facts it contains", () => {
+  const assembled = assembleTailoredResumeProviderOutput(payload, tailoredResumeProviderSchema.parse({
+    professionalSummary: "", professionalSummaryFactId: "__NO_APPLICANT_FACT__",
+    skillsSection: [], bulletRewrites: [], rolesOrProjectsToEmphasize: [],
+    resumeTextClaims: [], unsupportedKeywords: [], formattingWarnings: [], resumeText: `SKILLS\n${skillsLine}`
+  }));
+  assert.deepEqual(assembled.claimEvidence.map((entry) => entry.claim), [skillsLine]);
+  assert.deepEqual(assembled.claimEvidence[0]!.citations.map((citation) => citation.excerpt).sort(), ["AI tools including Claude and ChatGPT", "Technical: TypeScript, SQL"]);
+  validateTailoredResumeClaims(payload, assembled);
 });

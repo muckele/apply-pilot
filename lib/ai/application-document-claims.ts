@@ -600,27 +600,47 @@ export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutpu
     }
   }
 
+  const [lineIndex] = resumeLinesWithoutEvidence(payload, output.resumeText, supportedClaims);
+  if (lineIndex !== undefined) {
+    throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
+      code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
+      fieldPath: `resumeText.line[${lineIndex}]`,
+      retryable: false
+    });
+  }
+  return output;
+}
+
+// Indexes of rendered résumé lines that are neither source text nor a supported claim: the lines
+// validateTailoredResumeClaims rejects.
+function resumeLinesWithoutEvidence(payload: ApplicationDocumentPayload, resumeText: string, supportedClaims: ReadonlySet<string>) {
   // Owner-reviewed facts are applicant evidence too: a line that is exactly one of them (as the
   // keep rule restores an omitted multi-sentence fact) is source text, like a master-résumé line.
   const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
     ? payload.reviewedEvidence.facts.flatMap((fact) =>
       fact && typeof fact === "object" && typeof (fact as { fact?: unknown }).fact === "string" ? [(fact as { fact: string }).fact] : [])
     : [];
-  for (const [lineIndex, rawLine] of output.resumeText.split(/\r?\n/).entries()) {
+  return resumeText.split(/\r?\n/).flatMap((rawLine, lineIndex) => {
     const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isHeading(line) ||
       containsExactEvidenceLine(payload.resume ?? {}, line) ||
       containsExactEvidenceLine(reviewedFacts, line) ||
-      containsStandaloneEvidence(payload.resume ?? {}, line)) continue;
-    if (!supportedClaims.has(comparable(line))) {
-      throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
-        code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
-        fieldPath: `resumeText.line[${lineIndex}]`,
-        retryable: false
-      });
-    }
-  }
-  return output;
+      containsStandaloneEvidence(payload.resume ?? {}, line) ||
+      supportedClaims.has(comparable(line))) return [];
+    return [lineIndex];
+  });
+}
+
+// The rendered lines that would fail validateTailoredResumeClaims only for lack of evidence, once
+// the claims at excludedClaimIndexes (those failing their own truth check) are set aside.
+export function tailoredResumeLinesWithoutEvidence(
+  payload: ApplicationDocumentPayload,
+  output: Pick<TailoredResumeClaimsOutput, "resumeText" | "claimEvidence">,
+  excludedClaimIndexes: ReadonlySet<number> = new Set()
+) {
+  const supported = new Set(output.claimEvidence.flatMap((entry, index) =>
+    excludedClaimIndexes.has(index) || !entry.claim.trim() || !entry.citations.length ? [] : [comparable(entry.claim.trim())]));
+  return resumeLinesWithoutEvidence(payload, output.resumeText, supported);
 }
 
 function sentenceKey(value: string) {

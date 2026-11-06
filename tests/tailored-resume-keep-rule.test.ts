@@ -640,3 +640,106 @@ test("a skill listed in a mixed source skills line is not added again on its own
   assert.ok(!final.resumeText.split("\n").includes("Salesforce"));
   assert.deepEqual(tailoredResumeRestorations(final), []);
 });
+
+// Live gap 2026-11-06: a line Gemini wrote but cited no fact for (an invented bullet, a reworded
+// job header or contact line) rejected the whole paid résumé. Such a line is now removed and
+// reported, and the keep rule puts back any required source item it displaced.
+function uncitedWire(payload: ApplicationDocumentPayload, resumeText: string, ...uncited: string[]) {
+  const wire = providerWire(payload, resumeText, uncited.map((claim) => ({ claim, factExcerpt: SUMMARY })));
+  return { ...wire, resumeTextClaims: wire.resumeTextClaims.filter((entry) => !uncited.includes(entry.claim)) };
+}
+
+function finalizeUncited(payload: ApplicationDocumentPayload, resumeText: string, ...uncited: string[]) {
+  return finalizeTailoredResume(payload, assembleTailoredResumeProviderOutput(payload, uncitedWire(payload, resumeText, ...uncited)));
+}
+
+test("an invented line Gemini cited nothing for is removed instead of rejecting the paid résumé", () => {
+  const payload = syntheticPayload();
+  const invented = "Led a 12-person enterprise sales team.";
+  const text = completeText.replace(`• ${JOBS[0]!.bullets[0]}`, `• ${JOBS[0]!.bullets[0]}\n• ${invented}`);
+  const final = finalizeUncited(payload, text, invented);
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeReversions(final), [{ rejectedText: invented, reason: "no_source_cited", original: [] }]);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("an uncited reworded job header is removed and the source header comes back in place", () => {
+  const payload = syntheticPayload();
+  const reworded = "Fabrikam Analytics — SDR (2018 to 2021)";
+  const text = completeText.replace(JOBS[1]!.header, reworded);
+  const final = finalizeUncited(payload, text, reworded);
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeReversions(final).map((entry) => [entry.rejectedText, entry.reason]), [[reworded, "no_source_cited"]]);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("an uncited reworded contact line is removed and the source contact line comes back", () => {
+  const payload = syntheticPayload();
+  const reworded = "jordan.sample@example.test · Denver, Colorado";
+  const text = completeText.replace(HEADER[1]!, reworded);
+  const final = finalizeUncited(payload, text, reworded);
+  assert.equal(final.resumeText, completeText);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("a source line copied verbatim without a citation is kept and bound to its source fact", () => {
+  const payload = syntheticPayload();
+  const copied = JOBS[0]!.bullets[1]!;
+  const final = finalizeUncited(payload, completeText, copied);
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeReversions(final), []);
+  assert.ok(final.claimEvidence.some((entry) => entry.claim === copied &&
+    entry.citations.some((citation) => citation.ref === "resume.workHistory[0]" && citation.excerpt === copied)));
+});
+
+test("a line that adds uncited text to a cited part is removed whole", () => {
+  const payload = syntheticPayload();
+  const padded = `${SKILLS[0]}; Kubernetes administration`;
+  const text = completeText.replace(`\n${SKILLS[0]}\n`, `\n${padded}\n`);
+  const wire = providerWire(payload, text, [{ claim: padded, factExcerpt: SKILLS[0]! }]);
+  const claims = wire.resumeTextClaims.map((entry) => entry.claim === padded ? { ...entry, claim: SKILLS[0]! } : entry);
+  const final = finalizeTailoredResume(payload, assembleTailoredResumeProviderOutput(payload, { ...wire, resumeTextClaims: claims }));
+  assert.ok(!final.resumeText.includes("Kubernetes"));
+  assert.deepEqual(tailoredResumeReversions(final).map((entry) => [entry.rejectedText, entry.reason]), [[padded, "no_source_cited"]]);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("removing uncited lines is idempotent, so validated-cache replays remove nothing", () => {
+  const payload = syntheticPayload();
+  const invented = "Led a 12-person enterprise sales team.";
+  const text = completeText.replace(`• ${JOBS[0]!.bullets[0]}`, `• ${JOBS[0]!.bullets[0]}\n• ${invented}`);
+  const final = finalizeUncited(payload, text, invented);
+  const replay = finalizeTailoredResume(payload, structuredClone(final));
+  assert.equal(replay.resumeText, final.resumeText);
+  assert.deepEqual(tailoredResumeReversions(replay), []);
+});
+
+test("outside tailoring, the unchanged claims check still rejects an uncited invented line", () => {
+  const payload = syntheticPayload();
+  const invented = "Led a 12-person enterprise sales team.";
+  const text = completeText.replace(`• ${JOBS[0]!.bullets[0]}`, `• ${JOBS[0]!.bullets[0]}\n• ${invented}`);
+  const assembled = assembleTailoredResumeProviderOutput(payload, uncitedWire(payload, text, invented));
+  assert.throws(
+    () => validateTailoredResumeClaims(payload, assembled),
+    (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"
+  );
+});
+
+test("a verbatim answer that cites nothing is accepted whole, with nothing reverted", () => {
+  const payload = syntheticPayload();
+  const every = completeText.split("\n").map((line) => line.replace(/^• /u, "")).filter((line) => line && !heading.test(line));
+  const final = finalizeUncited(payload, completeText, ...every);
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeReversions(final), []);
+  // Bound to the very facts each line is, never to another record's fact it happens to contain.
+  assert.ok(final.claimEvidence.some((entry) => entry.claim === JOBS[1]!.bullets[0] &&
+    entry.citations.length === 1 && entry.citations[0]!.ref === "resume.workHistory[1]"));
+});
+
+test("an uncited line built from a source item plus an invented one puts the source item back", () => {
+  const payload = syntheticPayload();
+  const padded = `${SKILLS[0]}; Kubernetes administration`;
+  const final = finalizeUncited(payload, completeText.replace(`\n${SKILLS[0]}\n`, `\n${padded}\n`), padded);
+  assert.equal(final.resumeText, completeText);
+  assert.deepEqual(tailoredResumeReversions(final).map((entry) => [entry.rejectedText, entry.original.map((item) => item.text)]), [[padded, [SKILLS[0]]]]);
+});

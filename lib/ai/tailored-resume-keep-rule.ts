@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  tailoredResumeLinesWithoutEvidence,
   unverifiedTailoredResumeClaims,
   validateRestoredResumeClaimEvidence,
   type ApplicationDocumentClaimEvidence,
@@ -1063,7 +1064,9 @@ export function revertUnverifiedResumeLines<T extends ProjectedResumeOutput>(
   output: T
 ): T {
   const failures = unverifiedTailoredResumeClaims(payload, output.claimEvidence);
-  if (!failures.length) return output;
+  // Lines Gemini rendered without citing any fact that supports the whole line are removed too.
+  const uncited = new Set(tailoredResumeLinesWithoutEvidence(payload, output, new Set(failures.map(({ index }) => index))));
+  if (!failures.length && !uncited.size) return output;
   const model = buildSourceModel(payload);
   const keysOf = (line: string) => {
     const normalized = normalizeApplicationDocumentSourceLine(line);
@@ -1072,7 +1075,7 @@ export function revertUnverifiedResumeLines<T extends ProjectedResumeOutput>(
   const failedKeys = new Set(failures.map(({ index }) => lineKey(output.claimEvidence[index]!.claim)));
   const lines = output.resumeText.split(/\r?\n/u);
   const droppedLines = lines.flatMap((line, index) =>
-    !sectionOf(line) && keysOf(line).some((key) => failedKeys.has(key)) ? [index] : []);
+    !sectionOf(line) && (uncited.has(index) || keysOf(line).some((key) => failedKeys.has(key))) ? [index] : []);
   const onPage = new Set(droppedLines.flatMap((index) => keysOf(lines[index]!)));
   const dropped = (value: string) => failedKeys.has(lineKey(value)) || onPage.has(lineKey(value));
   const factIdsOf = (entries: readonly ApplicationDocumentClaimEvidence[]) => new Set(entries.flatMap((entry) =>
@@ -1082,6 +1085,15 @@ export function revertUnverifiedResumeLines<T extends ProjectedResumeOutput>(
       return fact ? [fact.factId] : [];
     })));
   const revertedFactIds = factIdsOf(output.claimEvidence.filter((entry) => onPage.has(lineKey(entry.claim))));
+  // An uncited line may still be built from source items (a skills line with one invented item
+  // added): those items are protected, so the keep rule puts their source wording back.
+  const sourceFactIdsOf = (line: string) => new Set([...keysOf(line), ...applicationDocumentAtomicStrings(line)].flatMap((value) => {
+    const fact = model.factByKey.get(factKey(value));
+    return fact ? [fact.factId] : [];
+  }));
+  for (const index of droppedLines) {
+    if (uncited.has(index)) for (const id of sourceFactIdsOf(lines[index]!)) revertedFactIds.add(id);
+  }
 
   const stripped: T = {
     ...output,
@@ -1104,6 +1116,16 @@ export function revertUnverifiedResumeLines<T extends ProjectedResumeOutput>(
     const current = byLine.get(at) ?? { rejectedText: normalizeApplicationDocumentSourceLine(lines[at]!), reason, factIds: new Set<string>() };
     for (const id of factIdsOf([entry])) current.factIds.add(id);
     byLine.set(at, current);
+  }
+  for (const at of droppedLines) {
+    if (byLine.has(at) || !uncited.has(at)) continue;
+    // Its original is the source item behind any part of the line; none, for a wholly invented line.
+    const keys = new Set(keysOf(lines[at]!));
+    byLine.set(at, {
+      rejectedText: normalizeApplicationDocumentSourceLine(lines[at]!),
+      reason: "no_source_cited",
+      factIds: new Set([...factIdsOf(output.claimEvidence.filter((entry) => keys.has(lineKey(entry.claim)))), ...sourceFactIdsOf(lines[at]!)])
+    });
   }
   const completed = completeTailoredResume(payload, stripped, revertedFactIds);
   reversions.set(completed, Object.freeze([...byLine.entries()].sort(([a], [b]) => a - b).map(([, line]) => Object.freeze({
