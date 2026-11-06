@@ -849,7 +849,41 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
     }).join("").replace(/\s{2,}/gu, " ").trim();
     if (kept) lines.push(kept);
   }
-  let paragraphs = lines.join("\n").split(/\n\s*\n/u).map((paragraph) => paragraph.trim()).filter(Boolean);
+  // Live case 2026-11-06 (second attempt): "Do not repeat an applicant fact to fill the letter".
+  // Each fact is used once and one job-requirement lead-in at most (the prompt's own limit); a
+  // later repeat is removed, whether Gemini wrote it or the binding above produced it.
+  const leadIn = /^(?:your posting highlights|the role calls for)\b/iu;
+  const sourceOf = (entry: ApplicationDocumentClaimEvidence) =>
+    entry.citations.map((citation) => `${citation.ref}\n${comparable(citation.excerpt)}`).join("\n");
+  const claimByText = new Map<string, ApplicationDocumentClaimEvidence>();
+  for (const entry of claims) if (!claimByText.has(comparable(entry.claim))) claimByText.set(comparable(entry.claim), entry);
+  const usedSources = new Set<string>();
+  let leadIns = 0;
+  const once = lines.flatMap((line) => {
+    const trimmed = line.trim();
+    if (!trimmed || (exempt.has(sentenceKey(trimmed)) && !leadIn.test(trimmed))) return [line];
+    const kept = [...sentenceSegmenter.segment(trimmed)].map(({ segment }) => {
+      const sentence = segment.trim();
+      if (!sentence) return segment;
+      if (leadIn.test(sentence) && exempt.has(sentenceKey(sentence))) {
+        leadIns += 1;
+        if (leadIns === 1) return segment;
+        removed.push({ text: sentence, reason: "repeated_lead_in" });
+        return "";
+      }
+      const entry = claimByText.get(comparable(sentence));
+      if (!entry) return segment;
+      const source = sourceOf(entry);
+      if (usedSources.has(source)) {
+        removed.push({ text: sentence, reason: "repeated_fact" });
+        return "";
+      }
+      usedSources.add(source);
+      return segment;
+    }).join("").replace(/\s{2,}/gu, " ").trim();
+    return kept ? [kept] : [];
+  });
+  let paragraphs = once.join("\n").split(/\n\s*\n/u).map((paragraph) => paragraph.trim()).filter(Boolean);
 
   // Reviewed owner facts the letter would miss go back in, verbatim, after the last paragraph
   // that carries evidence.
@@ -880,7 +914,13 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
   }
 
   const coverLetter = paragraphs.join("\n\n");
-  claims = claims.filter((entry) => containsWhole(coverLetter, entry.claim));
+  const listedSources = new Set<string>();
+  claims = claims.filter((entry) => {
+    const source = sourceOf(entry);
+    if (!containsWhole(coverLetter, entry.claim) || listedSources.has(source)) return false;
+    listedSources.add(source);
+    return true;
+  });
   if (coverLetter === output.coverLetter && claims.length === output.claimsUsed.length &&
     claims.every((entry, index) => entry === output.claimsUsed[index]) && !removed.length) return output;
   const repaired = { ...output, coverLetter, claimsUsed: claims };

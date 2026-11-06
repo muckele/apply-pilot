@@ -151,3 +151,48 @@ test("an owner fact written as two clauses that the letter left out goes back in
   validateCoverLetterClaims(local, final);
   assert.ok(final.coverLetter.includes("At Quenby Labs, owned onboarding through go-live. At Fabrikam, managed renewals end to end."), final.coverLetter);
 });
+
+// Live case 2026-11-06 (second attempt): after the repair the letter was rejected with "Do not
+// repeat an applicant fact to fill the letter" (claimsUsed[11]). Whether Gemini repeated a fact
+// or the repair bound a second sentence to a fact already used, the first use stays and a later
+// repeat is removed and reported; the same goes for a second job-requirement lead-in.
+test("a fact repeated later in the letter keeps its first use and loses the repeat", () => {
+  const original = wire();
+  const sentence = original.claimsUsed[3]!.claim;
+  const repeated = { ...original, coverLetter: original.coverLetter.replace("Thank you for your time and consideration.", `${sentence}\n\nThank you for your time and consideration.`) };
+  const final = accept(repeated);
+  assert.equal(final.coverLetter, original.coverLetter);
+  assert.deepEqual(coverLetterRemovals(final), [{ text: sentence, reason: "repeated_fact" }]);
+});
+
+test("a second sentence bound to a fact the letter already used is removed", () => {
+  const original = wire();
+  const sentence = original.claimsUsed[3]!.claim;
+  // The same fact written without "I": the repair binds it to the fact the letter already used.
+  const bare = sentence.replace(/^I (\p{L})/u, (_match, first: string) => first.toLocaleUpperCase());
+  assert.notEqual(bare, sentence);
+  const repeated = { ...original, coverLetter: original.coverLetter.replace(sentence, `${sentence} ${bare}`) };
+  const final = accept(repeated);
+  assert.equal(final.coverLetter, original.coverLetter);
+  assert.deepEqual(coverLetterRemovals(final).map((entry) => entry.reason), ["repeated_fact"]);
+});
+
+test("the same fact listed twice in claimsUsed is listed once", () => {
+  const original = wire();
+  const doubled = { ...original, claimsUsed: [...original.claimsUsed, original.claimsUsed[2]!] };
+  const final = accept(doubled);
+  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.claimsUsed.length, original.claimsUsed.length);
+});
+
+test("only the first job-requirement lead-in is kept", () => {
+  const original = wire();
+  const first = "The role calls for current Quenby certification in enterprise service operations.";
+  const second = "Your posting highlights eight or more years of progressive service operations experience.";
+  const intro = "I am applying for the Service Operations Director position at Northwind Service Cloud.";
+  const withLeadIns = { ...original, coverLetter: original.coverLetter.replace(intro, `${intro} ${first}`).replace("Thank you for your time and consideration.", `${second}\n\nThank you for your time and consideration.`) };
+  const final = accept(withLeadIns);
+  assert.ok(final.coverLetter.includes(first));
+  assert.ok(!final.coverLetter.includes(second));
+  assert.deepEqual(coverLetterRemovals(final), [{ text: second, reason: "repeated_lead_in" }]);
+});
