@@ -3,24 +3,34 @@ import {
   documentFontMeasure,
   winAnsiCode,
   wrapStyledRuns,
+  wrapStyledRunsWithoutLoneLastWord,
   type DocumentFontSet,
+  type MeasureText,
   type PlacedFragment,
   type StyledRun,
   type TextStyle
 } from "@/lib/documents/document-typography";
 import { pdfFontNames, type PdfFont } from "@/lib/documents/pdf-font";
 import {
+  datedRecordGap,
+  isResumeSectionHeadingLine,
+  isSkillsSectionHeadingLine,
   looksLikeRecordTitle,
   parseDatedRecordHeading,
   parseGroupedSkillLine,
   parseResumeBullet,
   resumeBulletGlyph,
+  withoutDatedRecordSeparator,
   wrapSeparatedHeaderLine
 } from "@/lib/documents/resume-line-structure";
 
 // Version 5 (2026-11-05): measured standard-font widths, record hierarchy, hanging bullets and
 // separator-aware header wrapping. Text and its order are unchanged from version 4.
-export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "5";
+// Version 6 (2026-11-06): every all-caps heading the résumé parser knows is a section heading,
+// skills labels may run to six words, a dated organization line that wraps moves its parenthetical
+// under the organization without stranding a word, and the separator mark before right-aligned
+// dates is left out (see `productDocumentExportText`).
+export const PRODUCT_DOCUMENT_LAYOUT_VERSION = "6";
 export type ProductDocumentInput = { content:string; artifactType:"RESUME"|"COVER_LETTER"; resumeFormat:ResumeFormat; pdfFont?:PdfFont };
 export type ProductDocumentBlock = { text:string; sourceText:string; paragraphId:number; role:string; x:number; y:number; width:number; height:number; fontSize:number; bold:boolean; italic?:true; color:string; headingRule?:"left"|"bottom" };
 export type ProductDocumentLayout = { version:string; pageWidth:number; pageHeight:number; margin:number; fontFamily:string; pdfFont:string; pdfBoldFont:string; pdfItalicFont:string; pages:Array<{number:number;blocks:ProductDocumentBlock[]}> };
@@ -39,12 +49,12 @@ export type ProductDocumentParagraph = Readonly<{
   indent:number;
   runs:readonly ProductDocumentRun[];
   bullet?:Readonly<{ marker:string; separator:string; markerIndent:number; textIndent:number; markerWidth:number }>;
-  dates?:Readonly<{ separator:string; text:string }>;
+  // `separator` is the exact source text before the dates; renderers write only its `gap`.
+  dates?:Readonly<{ separator:string; gap:string; text:string }>;
   // Offsets into the joined run text where the layout broke a separated header line.
   lineBreakOffsets?:readonly number[];
 }>;
 
-const headings=/^(SUMMARY|PROFILE|SKILLS|TECHNICAL SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?)[:]?$/iu;
 const textColor="#172033",secondaryColor="#475569";
 // Georgia is wider than the Times metrics that stand in for it in DOCX and the preview.
 const GEORGIA_WIDTH_SCALE=1.15;
@@ -89,6 +99,18 @@ function lineStartOffsets(source:string,lines:readonly (readonly PlacedFragment[
   return offsets;
 }
 
+// A dated heading's lead wraps beside its dates. When it needs more than one line and the
+// organization fits on the first, a parenthetical starts its own line under the organization
+// instead of leaving a word or two of it behind. Otherwise the lead wraps as one, and it does not
+// end on a lone word where an earlier break avoids it.
+function wrapRecordLead(organization:StyledRun,aside:StyledRun,width:number,measure:MeasureText) {
+  const whole=wrapStyledRuns([organization,aside],width,measure);
+  if(whole.length===1)return whole;
+  const organizationLines=wrapStyledRuns([organization],width,measure);
+  if(organizationLines.length>1||!aside.text.trim())return wrapStyledRunsWithoutLoneLastWord([organization,aside],width,measure);
+  return [...organizationLines,...wrapStyledRunsWithoutLoneLastWord([aside],width,measure)];
+}
+
 export function buildProductDocument(input:ProductDocumentInput):{layout:ProductDocumentLayout;paragraphs:readonly ProductDocumentParagraph[]} {
   const f=input.resumeFormat,resume=input.artifactType==="RESUME";
   const pageWidth=f.pageSize==="A4"?595:612,pageHeight=f.pageSize==="A4"?842:792;
@@ -106,9 +128,9 @@ export function buildProductDocument(input:ProductDocumentInput):{layout:Product
     const line=raw.trim();
     if(!line){entries.push({kind:"blank"});previousDated=false;continue;}
     const id=paragraphs.length;
-    const heading=resume&&headings.test(line),bullet=parseResumeBullet(line);
+    const heading=resume&&isResumeSectionHeadingLine(line),bullet=parseResumeBullet(line);
     const dated=resume&&!heading&&id>1?parseDatedRecordHeading(line):null;
-    const skill=resume&&!heading&&id>1?parseGroupedSkillLine(line,/SKILLS/iu.test(section)):null;
+    const skill=resume&&!heading&&id>1?parseGroupedSkillLine(line,isSkillsSectionHeadingLine(section)):null;
     const role:ProductDocumentRole=heading?"section_heading":id===0?"candidate_name":id===1&&/@|\||\+\d/u.test(line)?"contact":bullet?"bullet"
       :line.includes("|")&&!line.includes("@")?"record_heading":dated?"record_heading":resume&&previousDated&&looksLikeRecordTitle(line)?"record_title"
       :skill?"skill_group":/^Dear\b/iu.test(line)?"salutation":"body";
@@ -142,8 +164,9 @@ export function buildProductDocument(input:ProductDocumentInput):{layout:Product
       runs=[{text:dated.organization,style:"bold"},{text:dated.aside,style:"regular"}];
       const width=measure(dated.dates,"regular");
       dates={text:dated.dates,x:margin+contentWidth-width,width};
-      datesInfo={separator:dated.separator,text:dated.dates};
+      datesInfo={separator:dated.separator,gap:datedRecordGap(dated),text:dated.dates};
       wrapWidth=contentWidth-width-fontSize*1.2-WRAP_SAFETY;
+      lines=wrapRecordLead(runs[0]!,runs[1]!,wrapWidth,measure);
     } else if(role==="skill_group"&&skill) {
       runs=[{text:skill.label,style:"bold"},{text:skill.items,style:"regular"}];
     } else if(role==="contact") {
@@ -198,7 +221,8 @@ export function buildProductDocument(input:ProductDocumentInput):{layout:Product
     if(entry.kind==="blank"){y+=blankGap;continue;}
     const plan=entry.plan,{paragraph}=plan;
     const keep=["section_heading","record_heading","record_title"].includes(paragraph.role)?keepWithNext(index):0;
-    if(y+heightOf(plan)+keep>pageHeight-margin&&page.blocks.length)nextPage();
+    // Space after a paragraph need not fit at the foot of a page; the page break absorbs it.
+    if(y+heightOf(plan)-plan.after+keep>pageHeight-margin&&page.blocks.length)nextPage();
     y+=plan.before;
     const block=(placed:Placed,style:TextStyle,lineY:number):ProductDocumentBlock=>({
       text:placed.text,sourceText:plan.sourceText,paragraphId:paragraph.id,role:paragraph.role,x:placed.x,y:lineY,width:placed.width,height:plan.lineHeight,
@@ -235,4 +259,14 @@ export function buildProductDocument(input:ProductDocumentInput):{layout:Product
 
 export function buildProductDocumentLayout(input:ProductDocumentInput):ProductDocumentLayout {
   return buildProductDocument(input).layout;
+}
+
+// The text an export of this document draws, line for line: the source, except that a line laid
+// out as a dated record heading leaves out the separator mark before its right-aligned dates
+// ("Academy, Oct 2019" draws "Academy" and "Oct 2019"). Every other character, including a bullet's
+// own comma before a date, is unchanged. Export verification compares extracted text against this.
+export function productDocumentExportText(input:ProductDocumentInput) {
+  const {paragraphs}=buildProductDocument(input);
+  let id=0;
+  return input.content.split(/\r?\n/u).map(raw=>!raw.trim()?raw:paragraphs[id++]!.dates?withoutDatedRecordSeparator(raw.trim()):raw).join("\n");
 }
