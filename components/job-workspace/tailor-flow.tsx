@@ -52,6 +52,10 @@ export type TailorFlowProps = {
   // remounted when the page refreshes with a new review.
   message?: TailorFlowMessage | null;
   onMessage?: (message: TailorFlowMessage | null) => void;
+  // Off unless set: as of 2026-11-06 no cover letter has been generated in a live run, and
+  // its stricter evidence checks have no fallback yet, so a failure would cost a paid call.
+  // The owner can still tick the box for any job.
+  coverLetterByDefault?: boolean;
 };
 
 export type TailorFlowMessage = { tone: "success" | "error" | "info"; text: string };
@@ -114,12 +118,13 @@ export function TailorFlow({
   hasDocuments,
   onPendingFactChanges,
   message: ownedMessage,
-  onMessage
+  onMessage,
+  coverLetterByDefault = false
 }: TailorFlowProps) {
   const router = useRouter();
   const [gapDrafts, setGapDrafts] = useState<Record<string, GapDraft>>({});
   const [lineDrafts, setLineDrafts] = useState<Record<string, SavedLineDraft>>({});
-  const [includeCover, setIncludeCover] = useState(true);
+  const [includeCover, setIncludeCover] = useState(coverLetterByDefault);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Array<{ step: DocumentCreationStep; state: StepState }>>([]);
   const [localMessage, setLocalMessage] = useState<TailorFlowMessage | null>(null);
