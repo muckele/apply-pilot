@@ -75,7 +75,14 @@ test("cover generation uses an applicant-neutral v14 atomic fact contract", () =
   assert.match(implementation, /buildCoverLetterSystemPrompt/);
   assert.match(implementation, /buildCoverLetterGeminiJsonSchema/);
   assert.match(implementation, /feature: "COVER_LETTER",[\s\S]*promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION/);
-  assert.match(implementation, /validateCoverLetterClaims\(payload, value\)/);
+  // The truth checks run inside the shared finalizer, after the repair step and the grouping by
+  // employer, which falls back to Gemini's order when the grouped letter fails a check.
+  assert.match(implementation, /validate: \(draft\) => finalizeCoverLetter\(payload, draft\)/);
+  const finalizer = source("lib/ai/application-document-quality.ts");
+  assert.match(finalizer, /const value = repairCoverLetterEvidence\(payload, output\);/);
+  assert.match(finalizer, /arrangeCoverLetterByRecord\(payload, value\)/);
+  assert.match(finalizer, /validateCoverLetterQuality\(payload, validateCoverLetterClaims\(payload, arranged\)\)/);
+  assert.match(finalizer, /validateCoverLetterQuality\(payload, validateCoverLetterClaims\(payload, value\)\)/);
 });
 
 test("cover paragraph planning selects relevant responsibility/result facts without composing new claims", () => {

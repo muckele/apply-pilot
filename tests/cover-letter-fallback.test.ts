@@ -28,10 +28,16 @@ const accept = (value: CoverLetterProviderOutput) => {
 };
 const filler = "I am excited to bring this experience to your team.";
 
-test("a clean letter passes through unchanged with nothing removed", () => {
+// A clean letter loses nothing: finalizing only groups its evidence by employer
+// (tests/cover-letter-readability.test.ts), so each repair below must reduce to that letter.
+const clean = () => finalizeCoverLetter(payload, assemble(wire())).coverLetter;
+const sentencesOf = (letter: string) => [...new Intl.Segmenter("en", { granularity: "sentence" }).segment(letter.replace(/\s+/gu, " "))]
+  .map(({ segment }) => segment.trim()).filter(Boolean).sort();
+
+test("a clean letter keeps every sentence and has nothing removed", () => {
   const assembled = assemble(wire());
   const final = finalizeCoverLetter(payload, assembled);
-  assert.equal(final.coverLetter, assembled.coverLetter);
+  assert.deepEqual(sentencesOf(final.coverLetter), sentencesOf(assembled.coverLetter));
   assert.deepEqual(coverLetterRemovals(final), []);
 });
 
@@ -43,7 +49,7 @@ test("a sentence nothing supports is removed instead of rejecting the paid lette
     (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"
   );
   const final = accept(padded);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
   assert.deepEqual(coverLetterRemovals(final), [{ text: filler, reason: "no_source_cited" }]);
 });
 
@@ -52,7 +58,7 @@ test("a filler sentence inside an evidence paragraph is removed and the paragrap
   const sentence = original.claimsUsed[1]!.claim;
   const padded = { ...original, coverLetter: original.coverLetter.replace(sentence, `${sentence} ${filler}`) };
   const final = accept(padded);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
 });
 
 test("a fact sentence Gemini left out of claimsUsed is bound to its fact and kept", () => {
@@ -60,7 +66,7 @@ test("a fact sentence Gemini left out of claimsUsed is bound to its fact and kep
   const dropped = original.claimsUsed[6]!.claim;
   const unlisted = { ...original, claimsUsed: original.claimsUsed.filter((entry) => entry.claim !== dropped) };
   const final = accept(unlisted);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
   assert.ok(final.claimsUsed.some((entry) => entry.claim === dropped));
   assert.deepEqual(coverLetterRemovals(final), []);
 });
@@ -85,7 +91,7 @@ test("a claim that is not in the letter is dropped instead of rejecting the lett
   const original = wire();
   const extra = { ...original, claimsUsed: [...original.claimsUsed, { claim: "I reduced costs by 40%.", factId: original.claimsUsed[2]!.factId }] };
   const final = accept(extra);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
   assert.equal(final.claimsUsed.length, original.claimsUsed.length);
 });
 
@@ -162,7 +168,7 @@ test("a fact repeated later in the letter keeps its first use and loses the repe
   const sentence = original.claimsUsed[3]!.claim;
   const repeated = { ...original, coverLetter: original.coverLetter.replace("Thank you for your time and consideration.", `${sentence}\n\nThank you for your time and consideration.`) };
   const final = accept(repeated);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
   assert.deepEqual(coverLetterRemovals(final), [{ text: sentence, reason: "repeated_fact" }]);
 });
 
@@ -174,7 +180,7 @@ test("a second sentence bound to a fact the letter already used is removed", () 
   assert.notEqual(bare, sentence);
   const repeated = { ...original, coverLetter: original.coverLetter.replace(sentence, `${sentence} ${bare}`) };
   const final = accept(repeated);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
   assert.deepEqual(coverLetterRemovals(final).map((entry) => entry.reason), ["repeated_fact"]);
 });
 
@@ -182,7 +188,7 @@ test("the same fact listed twice in claimsUsed is listed once", () => {
   const original = wire();
   const doubled = { ...original, claimsUsed: [...original.claimsUsed, original.claimsUsed[2]!] };
   const final = accept(doubled);
-  assert.equal(final.coverLetter, original.coverLetter);
+  assert.equal(final.coverLetter, clean());
   assert.equal(final.claimsUsed.length, original.claimsUsed.length);
 });
 

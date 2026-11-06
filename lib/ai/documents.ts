@@ -12,14 +12,11 @@ import {
 } from "@/lib/ai/application-document-facts";
 import {
   buildApplicationDocumentSystemPrompt,
-  carryCoverLetterRemovals,
   coverLetterRemovals,
   getCoverLetterUncitedLines,
-  repairCoverLetterEvidence,
-  validateCoverLetterClaims,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
-import { validateCoverLetterQuality } from "@/lib/ai/application-document-quality";
+import { finalizeCoverLetter } from "@/lib/ai/application-document-quality";
 
 const applicationDocumentCitationSchema = z.object({
   ref: z.string().min(1),
@@ -112,12 +109,9 @@ export async function draftCoverLetter(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     },
-    // Unsupported or unverified sentences are removed first (repairCoverLetterEvidence); the
-    // unchanged truth and structure checks then decide (finalizeCoverLetter, inlined).
-    validate: (draft) => {
-      const value = repairCoverLetterEvidence(payload, draft);
-      return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value)));
-    }
+    // Unsupported or unverified sentences are removed first, the evidence is grouped by employer,
+    // and the unchanged truth and structure checks then decide (finalizeCoverLetter).
+    validate: (draft) => finalizeCoverLetter(payload, draft)
   });
 
   return {

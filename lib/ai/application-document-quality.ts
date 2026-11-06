@@ -20,6 +20,7 @@ import {
   type ApplicationDocumentPayload,
   type TailoredResumeClaimsOutput
 } from "@/lib/ai/application-document-claims";
+import { arrangeCoverLetterByRecord } from "@/lib/ai/cover-letter-arrangement";
 
 type ResumeQualityOutput = {
   resumeText: string;
@@ -123,13 +124,24 @@ function referenceFamily(ref: string) {
 export { coverLetterRemovals, type CoverLetterRemoval } from "@/lib/ai/application-document-claims";
 
 // The whole cover-letter check, as draftCoverLetter runs it: unsupported or unverified sentences
-// are removed (repairCoverLetterEvidence), then the unchanged truth and structure checks run on
-// what is left before it is cached or saved.
+// are removed (repairCoverLetterEvidence), the evidence is grouped by employer
+// (arrangeCoverLetterByRecord, which only reorders sentences), then the unchanged truth and
+// structure checks run on what is left before it is cached or saved. When the grouped letter
+// fails a check, the letter in Gemini's order is checked instead, so grouping never costs a
+// letter that would otherwise pass.
 export function finalizeCoverLetter<T extends CoverLetterQualityOutput>(
   payload: ApplicationDocumentPayload,
   output: T
 ): T {
   const value = repairCoverLetterEvidence(payload, output);
+  const arranged = arrangeCoverLetterByRecord(payload, value);
+  if (arranged !== value) {
+    try {
+      return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, arranged)));
+    } catch (error) {
+      if (!(error instanceof PublicApiError)) throw error;
+    }
+  }
   return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value)));
 }
 
