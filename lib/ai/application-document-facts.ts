@@ -1,4 +1,5 @@
 import { PublicApiError } from "@/lib/api-errors";
+import { comparableEvidenceText } from "@/lib/ai/evidence-text";
 import { resumeSectionHeadings } from "@/lib/ai/resume-source-catalog";
 import type {
   ApplicationDocumentClaimEvidence,
@@ -323,6 +324,11 @@ function assembleEvidence(
   return evidence;
 }
 
+function formattingFreeKey(value: string) {
+  return comparableEvidenceText(normalizeApplicationDocumentSourceLine(value).replace(/^[•▪◦*·-]\s*/u, ""))
+    .replace(/[\s.;:,!]+$/u, "");
+}
+
 function verbatimSourceLines(payload: ApplicationDocumentPayload) {
   const lines = new Set<string>();
   const visit = (value: unknown) => {
@@ -392,13 +398,21 @@ export function assembleTailoredResumeProviderOutput(
   // splits source lines at semicolons, so a model citing one such fact names that part.
   // validateTailoredResumeClaims still requires every whole line to be verbatim source or
   // fully supported, so a part claim cannot carry an unsupported remainder.
-  const resumeLines = new Set(wire.resumeText.split(/\r?\n/)
+  const renderedParts = wire.resumeText.split(/\r?\n/)
     .flatMap((line) => {
       const normalized = normalizeApplicationDocumentSourceLine(line);
       return [normalized, ...normalized.split(/;\s+/u)];
     })
-    .map((line) => comparable(line))
-    .filter(Boolean));
+    .filter((part) => comparable(part));
+  const resumeLines = new Set(renderedParts.map((part) => comparable(part)));
+  // A claim may differ from its rendered line only in formatting (dash or quote style,
+  // end punctuation, bullet glyph, spacing). Such a claim binds to the rendered text, so
+  // the evidence and every later truth check describe what is actually on the page.
+  const renderedByFormattingFreeKey = new Map<string, string[]>();
+  for (const part of renderedParts) {
+    const key = formattingFreeKey(part);
+    renderedByFormattingFreeKey.set(key, [...(renderedByFormattingFreeKey.get(key) ?? []), part]);
+  }
   wire.resumeTextClaims.forEach((item, index) => {
     const ids = item.factIds?.length ? item.factIds : item.factId ? [item.factId] : [];
     const facts = ids.map((id, idIndex) => resolve(id, item.factIds?.length
@@ -409,7 +423,9 @@ export function assembleTailoredResumeProviderOutput(
     const origin = Object.freeze({ factId: fact.factId, originFieldPath: `resumeTextClaims[${index}].claim` });
     // The prompt permits the exact rendered bullet line. Both sides use the same
     // existing single-marker normalization; factual words and resumeText stay intact.
-    const claim = normalizeApplicationDocumentSourceLine(item.claim);
+    let claim = normalizeApplicationDocumentSourceLine(item.claim);
+    const formattingMatches = new Set(renderedByFormattingFreeKey.get(formattingFreeKey(claim)) ?? []);
+    if (!resumeLines.has(comparable(claim)) && formattingMatches.size === 1) claim = [...formattingMatches][0]!;
     if (!resumeLines.has(comparable(claim))) {
       const error = new PublicApiError("Resume-text evidence describes text absent from the generated resume.", 422, {
         code: "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
