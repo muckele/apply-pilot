@@ -12,6 +12,9 @@ import {
   revertUnverifiedResumeLines
 } from "@/lib/ai/tailored-resume-keep-rule";
 import {
+  carryCoverLetterRemovals,
+  repairCoverLetterEvidence,
+  validateCoverLetterClaims,
   validateTailoredResumeClaims,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload,
@@ -115,6 +118,19 @@ export function validateTailoredResumeQuality<T extends ResumeQualityOutput>(
 
 function referenceFamily(ref: string) {
   return ref.replace(/\[\d+\](?:\.fact)?$/u, "");
+}
+
+export { coverLetterRemovals, type CoverLetterRemoval } from "@/lib/ai/application-document-claims";
+
+// The whole cover-letter check, as draftCoverLetter runs it: unsupported or unverified sentences
+// are removed (repairCoverLetterEvidence), then the unchanged truth and structure checks run on
+// what is left before it is cached or saved.
+export function finalizeCoverLetter<T extends CoverLetterQualityOutput>(
+  payload: ApplicationDocumentPayload,
+  output: T
+): T {
+  const value = repairCoverLetterEvidence(payload, output);
+  return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value)));
 }
 
 export function validateCoverLetterQuality<T extends CoverLetterQualityOutput>(

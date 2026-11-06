@@ -148,7 +148,7 @@ export function createCoverLetterRouteHandler(dependencies: CoverLetterRouteDepe
               type: "COVER_LETTER",
               title: drafted.title,
               content: drafted.coverLetter,
-              metadata: { angle: drafted.angle, claimsUsed: drafted.claimsUsed }
+              metadata: { angle: drafted.angle, claimsUsed: drafted.claimsUsed, removed: drafted.removed ?? [] }
             }
           });
           await tx.aIAnalysis.create({

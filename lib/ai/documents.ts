@@ -12,7 +12,10 @@ import {
 } from "@/lib/ai/application-document-facts";
 import {
   buildApplicationDocumentSystemPrompt,
+  carryCoverLetterRemovals,
+  coverLetterRemovals,
   getCoverLetterUncitedLines,
+  repairCoverLetterEvidence,
   validateCoverLetterClaims,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
@@ -109,11 +112,17 @@ export async function draftCoverLetter(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     },
-    validate: (value) => validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value))
+    // Unsupported or unverified sentences are removed first (repairCoverLetterEvidence); the
+    // unchanged truth and structure checks then decide (finalizeCoverLetter, inlined).
+    validate: (draft) => {
+      const value = repairCoverLetterEvidence(payload, draft);
+      return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value)));
+    }
   });
 
   return {
     ...generated.data,
+    removed: [...coverLetterRemovals(generated.data)],
     model: generated.meta.model,
     promptVersion: generated.meta.promptVersion,
     inputHash: generated.meta.requestHash,

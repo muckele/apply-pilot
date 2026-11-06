@@ -350,7 +350,9 @@ test("C2 copy traverses the production cover transport, validators, ledger and a
   assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, wire.coverLetter);
 });
 
-test("an unsupported stubbed cover-letter claim is billed as failed and never persisted or cached", async (t) => {
+// Since 2026-11-06 an invented sentence is removed rather than rejecting the letter outright; a
+// letter left too thin by that is still rejected, billed as failed and never saved or cached.
+test("an unsupported stubbed cover-letter claim is removed, and the too-thin letter is billed as failed and never persisted or cached", async (t) => {
   const prisma = await setup(t);
   const ledger = installLedger(t, prisma);
   let writes = 0;
@@ -377,8 +379,8 @@ test("an unsupported stubbed cover-letter claim is billed as failed and never pe
 
   assert.equal(response.status, 422);
   const body = await response.json();
-  assert.equal(body.code, "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM");
-  assert.equal(body.fieldPath, "claimsUsed[0].claim");
+  assert.equal(body.code, "APPLICATION_DOCUMENT_INCOMPLETE");
+  assert.equal(body.fieldPath, "coverLetter");
   assert.equal(body.billingStatus, "known");
   assert.equal(body.actualCostMicros, 375);
   assert.doesNotMatch(JSON.stringify(body), /14 engineers/);

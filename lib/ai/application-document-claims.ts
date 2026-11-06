@@ -1,6 +1,7 @@
 import { PublicApiError } from "@/lib/api-errors";
 import {
   applicationDocumentAtomicStrings,
+  applicationDocumentFactStartsWithAction,
   buildApplicationDocumentFactCatalog,
   isApplicationDocumentSectionHeading,
   normalizeApplicationDocumentSourceLine
@@ -706,6 +707,185 @@ function coverSentencesRequiringEvidence(payload: ApplicationDocumentPayload, te
       return [...sentenceSegmenter.segment(trimmed)].map(({ segment }) => segment.trim());
     })
     .filter((sentence) => sentence && !exempt.has(sentenceKey(sentence)));
+}
+
+// Live case 2026-11-06: the first cover letter generated live was rejected whole, after the paid
+// call, because one sentence had no supporting fact. Owner decision the same day (the rule the
+// tailored résumé got): before the unchanged checks run, a sentence that is exactly one source fact
+// is bound to that fact; a claim whose wording fails the truth check is removed with its sentence;
+// any other sentence nothing supports is removed; a claim describing text the letter does not
+// contain is dropped; and an owner-attested fact the letter would miss goes back in verbatim at the
+// end of the last evidence paragraph. Every removal is reported. Citation defects are not touched:
+// the unchanged checks that run next still reject them, and still reject a letter left too thin.
+export type CoverLetterRemoval = Readonly<{ text: string; reason: string }>;
+
+const coverLetterRemovalsByOutput = new WeakMap<object, readonly CoverLetterRemoval[]>();
+
+// Sentences removed from this exact output (empty when nothing was removed, including validated-
+// cache replays of an already repaired letter).
+export function coverLetterRemovals(output: object): readonly CoverLetterRemoval[] {
+  return coverLetterRemovalsByOutput.get(output) ?? [];
+}
+
+export function carryCoverLetterRemovals<T extends object>(from: object, to: T): T {
+  const removed = coverLetterRemovalsByOutput.get(from);
+  if (removed && from !== to) coverLetterRemovalsByOutput.set(to, removed);
+  return to;
+}
+
+function coverClaimPasses(payload: ApplicationDocumentPayload, entry: ApplicationDocumentClaimEvidence) {
+  try {
+    validateClaimEvidence(payload, [entry], "claimsUsed");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Why a claim's own wording fails the truth check, or null when it passes or fails only for a
+// citation defect the unchanged checks must still reject.
+function coverClaimWordingFailure(payload: ApplicationDocumentPayload, entry: ApplicationDocumentClaimEvidence) {
+  try {
+    validateClaimEvidence(payload, [entry], "claimsUsed");
+    return null;
+  } catch (error) {
+    const details = error instanceof PublicApiError ? error.details : undefined;
+    if (!details || !REVERTIBLE_CLAIM_CODES.has(String(details.code))) return null;
+    return details.code === "APPLICATION_DOCUMENT_NEGATION_REVERSAL" ? "negation_reversal"
+      : String(details.failureClass ?? "unsupported_claim");
+  }
+}
+
+function wordsOf(value: string) {
+  return value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
+  payload: ApplicationDocumentPayload,
+  output: T
+): T {
+  const removed: CoverLetterRemoval[] = [];
+  const removedKeys = new Set<string>();
+  let claims = output.claimsUsed.filter((entry) => {
+    const failure = coverClaimWordingFailure(payload, entry);
+    if (!failure) return true;
+    removed.push({ text: entry.claim.trim(), reason: failure });
+    removedKeys.add(comparable(entry.claim));
+    return false;
+  });
+
+  // As the prompt asks: a sentence for an action fact reads in the first person ("Built a
+  // dashboard." -> "I built a dashboard."), when the truth check accepts that wording.
+  const firstPerson = (entry: ApplicationDocumentClaimEvidence) => {
+    const text = entry.claim.trim();
+    if (/^i\s+/iu.test(text) || !entry.citations.some((citation) => applicationDocumentFactStartsWithAction(citation.excerpt))) return entry;
+    const candidate = { ...entry, claim: `I ${text[0]!.toLocaleLowerCase()}${text.slice(1)}` };
+    return coverClaimPasses(payload, candidate) ? candidate : entry;
+  };
+  const renamed = new Map<string, string>();
+  claims = claims.map((entry) => {
+    const next = firstPerson(entry);
+    if (next !== entry) renamed.set(comparable(entry.claim), next.claim);
+    return next;
+  });
+
+  const facts = buildApplicationDocumentFactCatalog(payload);
+  const supported = new Set(claims.map((entry) => comparable(entry.claim)));
+  const exempt = new Set(getCoverLetterUncitedLines(payload).map(sentenceKey));
+  // A sentence that is exactly one source fact (within the cover-letter claim grammar) is bound to it.
+  const bind = (sentence: string) => {
+    const sentenceWords = new Set(wordsOf(sentence));
+    for (const fact of facts) {
+      const factWords = wordsOf(fact.excerpt);
+      if (!factWords.length || !factWords.every((word) => sentenceWords.has(word))) continue;
+      const entry = { claim: sentence, citations: [{ ref: fact.ref, excerpt: fact.excerpt }] };
+      if (coverClaimPasses(payload, entry)) return firstPerson(entry);
+    }
+    return null;
+  };
+
+  // Live case 2026-11-06: an owner fact written as two clauses ("At A, …; at B, …") is two catalog
+  // facts, so one sentence holding both can never cite exactly one fact. Such a sentence becomes
+  // one sentence per clause, in the same words (a capital to start, a period to end), each bound
+  // to its own fact; null when any clause has no fact of its own.
+  const splitIntoFacts = (sentence: string) => {
+    const parts = applicationDocumentAtomicStrings(sentence).map((part) => {
+      const capitalized = /^\p{Ll}(?!\p{Lu})/u.test(part) ? `${part[0]!.toLocaleUpperCase()}${part.slice(1)}` : part;
+      return /[.!?]$/u.test(capitalized) ? capitalized : `${capitalized}.`;
+    });
+    if (parts.length < 2) return null;
+    const entries = parts.map(bind);
+    return entries.every(Boolean) ? entries as ApplicationDocumentClaimEvidence[] : null;
+  };
+
+  const lines: string[] = [];
+  for (const line of output.coverLetter.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || exempt.has(sentenceKey(trimmed))) {
+      lines.push(line);
+      continue;
+    }
+    const kept = [...sentenceSegmenter.segment(trimmed)].map(({ segment }) => {
+      const sentence = segment.trim();
+      const trailing = segment.slice(segment.trimEnd().length);
+      const renamedTo = renamed.get(comparable(sentence));
+      if (renamedTo) return `${renamedTo}${trailing}`;
+      if (!sentence || exempt.has(sentenceKey(sentence)) || supported.has(comparable(sentence))) return segment;
+      if (removedKeys.has(comparable(sentence))) return "";
+      const bound = bind(sentence);
+      if (bound) {
+        claims.push(bound);
+        supported.add(comparable(bound.claim));
+        return `${bound.claim}${trailing}`;
+      }
+      const split = splitIntoFacts(sentence);
+      if (split) {
+        claims.push(...split);
+        split.forEach((entry) => supported.add(comparable(entry.claim)));
+        return `${split.map((entry) => entry.claim).join(" ")}${trailing}`;
+      }
+      removed.push({ text: sentence, reason: "no_source_cited" });
+      return "";
+    }).join("").replace(/\s{2,}/gu, " ").trim();
+    if (kept) lines.push(kept);
+  }
+  let paragraphs = lines.join("\n").split(/\n\s*\n/u).map((paragraph) => paragraph.trim()).filter(Boolean);
+
+  // Reviewed owner facts the letter would miss go back in, verbatim, after the last paragraph
+  // that carries evidence.
+  const reviewed: unknown = payload.reviewedEvidence?.facts;
+  const reviewedFacts = Array.isArray(reviewed) ? reviewed : [];
+  for (const [index, item] of reviewedFacts.entries()) {
+    const text = item && typeof item === "object" && typeof (item as { fact?: unknown }).fact === "string"
+      ? normalizeApplicationDocumentSourceLine((item as { fact: string }).fact) : "";
+    const ref = `reviewedEvidence.facts[${index}].fact`;
+    const parts = facts.filter((fact) => fact.ref === ref);
+    if (!text || !parts.length) continue;
+    const letter = paragraphs.join("\n\n");
+    const present = claims.some((entry) => containsWhole(letter, entry.claim) && entry.citations.some((citation) => citation.ref === ref));
+    if (present) continue;
+    const entries = [...sentenceSegmenter.segment(text)].map(({ segment }) => segment.trim()).filter(Boolean)
+      .flatMap((sentence) => {
+        const whole = bind(sentence);
+        return whole ? [whole] : splitIntoFacts(sentence) ?? [null];
+      });
+    if (!entries.length || !entries.every(Boolean)) continue;
+    const restored = (entries as ApplicationDocumentClaimEvidence[]);
+    const at = paragraphs.reduce((last, paragraph, position) =>
+      claims.some((entry) => containsWhole(paragraph, entry.claim)) ? position : last, -1);
+    if (at < 0) continue;
+    const restoredText = restored.map((entry) => entry.claim).join(" ");
+    paragraphs = paragraphs.map((paragraph, position) => position === at ? `${paragraph} ${restoredText}` : paragraph);
+    claims.push(...restored);
+  }
+
+  const coverLetter = paragraphs.join("\n\n");
+  claims = claims.filter((entry) => containsWhole(coverLetter, entry.claim));
+  if (coverLetter === output.coverLetter && claims.length === output.claimsUsed.length &&
+    claims.every((entry, index) => entry === output.claimsUsed[index]) && !removed.length) return output;
+  const repaired = { ...output, coverLetter, claimsUsed: claims };
+  coverLetterRemovalsByOutput.set(repaired, Object.freeze(removed.map((entry) => Object.freeze(entry))));
+  return repaired;
 }
 
 export function validateCoverLetterClaims<T extends CoverLetterClaimsOutput>(
