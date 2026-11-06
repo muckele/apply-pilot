@@ -88,7 +88,11 @@ const rawText = [
 
 // glued: the master résumé as PDF extraction can store it, each bullet glyph glued to its text
 // ("•Closed 38 …") in the raw text, the record source text and the achievements.
-function syntheticPayload(protectedCitations: Array<{ ref: string; excerpt: string }> | null = null, glued = false) {
+function syntheticPayload(
+  protectedCitations: Array<{ ref: string; excerpt: string }> | null = null,
+  glued = false,
+  editRawText: (text: string) => string = (text) => text
+) {
   const glue = (text: string) => glued ? text.replaceAll("• ", "•") : text;
   return buildApplicationDocumentPayload(
     {
@@ -100,7 +104,7 @@ function syntheticPayload(protectedCitations: Array<{ ref: string; excerpt: stri
       detectedTechStack: ["Salesforce"]
     },
     {
-      rawText: glue(rawText),
+      rawText: editRawText(glue(rawText)),
       summary: SUMMARY,
       skills: SKILLS,
       achievements: ACHIEVEMENTS.map((item) => glued ? `•${item}` : item),
@@ -596,4 +600,43 @@ test("a line is accepted as an owner fact only when it is exactly that fact", ()
     () => validateTailoredResumeClaims(payload, { ...final, resumeText: altered }),
     (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"
   );
+});
+
+// Live case 2026-11-06: Gemini ordered jobs by relevance, putting the current role last, although
+// the prompt asks it to keep record chronology. Dated records keep the master résumé's order.
+function moveBlock(text: string, block: string[], before: string) {
+  const lines = text.split("\n").filter((line) => !block.includes(line));
+  lines.splice(lines.indexOf(before), 0, ...block);
+  return lines.join("\n");
+}
+
+test("jobs Gemini reordered by relevance go back to the master résumé's order", () => {
+  const payload = syntheticPayload();
+  const fabrikam = [JOBS[1]!.header, ...JOBS[1]!.bullets.map((bullet) => `• ${bullet}`)];
+  const { final } = finalize(payload, moveBlock(completeText, fabrikam, JOBS[0]!.header));
+  assert.equal(final.resumeText, completeText);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("reordering keeps the blank lines Gemini put between jobs", () => {
+  const payload = syntheticPayload();
+  const block = (job: typeof JOBS[number]) => [job.header, ...job.bullets.map((bullet) => `• ${bullet}`)].join("\n");
+  const sourceOrder = JOBS.map(block).join("\n\n");
+  const geminiOrder = [JOBS[2]!, JOBS[0]!, JOBS[1]!].map(block).join("\n\n");
+  const experience = JOBS.map(block).join("\n");
+  const { final } = finalize(payload, completeText.replace(experience, geminiOrder));
+  assert.equal(final.resumeText, completeText.replace(experience, sourceOrder));
+});
+
+// Live case 2026-11-06: a source skills line that lists a parsed skill beside an item that is not a
+// parsed skill ("Sales tools: Salesforce, Tinman (in-house CRM)") did not count as listing that
+// skill, so a protected skill was added again as a line of its own.
+test("a skill listed in a mixed source skills line is not added again on its own line", () => {
+  const mixed = "Sales tools: Salesforce, Tinman (in-house CRM)";
+  const edit = (text: string) => text.replace("\nSalesforce\n", `\n${mixed}\n`);
+  const payload = syntheticPayload(null, false, edit);
+  const { assembled, final } = finalize(payload, edit(completeText), [{ claim: mixed, factExcerpt: mixed }]);
+  assert.equal(final, assembled, "nothing to restore");
+  assert.ok(!final.resumeText.split("\n").includes("Salesforce"));
+  assert.deepEqual(tailoredResumeRestorations(final), []);
 });

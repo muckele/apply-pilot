@@ -558,10 +558,20 @@ class ResumeDraft {
     const key = this.view().keys[index];
     if (!key || sectionOf(line) || !this.inHomeAt(unit, index)) return false;
     if (unit.lines.some((source) => source.key === key)) return true;
-    if (this.model.ownerKeys.get(key)?.some((owner) => owner !== unit)) return false;
+    const listed = unit.kind === "skill" && unit.lines.length === 1 && listParts(line).items.includes(unit.lines[0]!.key);
+    // A source line owned by another item renders only that item, except that a skills line mixing
+    // parsed skills with other entries ("Sales tools: Salesforce, Tinman (in-house CRM)") still lists
+    // each of its skills.
+    if (this.model.ownerKeys.get(key)?.some((owner) => owner !== unit)) return listed;
     const ids = this.factIds(index);
     if (unit.facts.some((fact) => ids.has(fact.factId))) return true;
-    return unit.kind === "skill" && unit.lines.length === 1 && listParts(line).items.includes(unit.lines[0]!.key);
+    return listed;
+  }
+
+  // The line is a source line owned by an item that is not a skill (such as a mixed skills line).
+  ownedByNonSkill(index: number) {
+    const key = this.view().keys[index];
+    return Boolean(key && this.model.ownerKeys.get(key)?.some((owner) => owner.kind !== "skill"));
   }
 
   renderedLines(unit: Unit) {
@@ -640,6 +650,10 @@ class ResumeDraft {
 
   replaceText(index: number, text: string) {
     this.lines[index] = text;
+    this.cache = null;
+  }
+
+  invalidate() {
     this.cache = null;
   }
 
@@ -882,7 +896,9 @@ function insertSectionUnit(model: SourceModel, draft: ResumeDraft, unit: Unit) {
 function regroupSkills(model: SourceModel, draft: ResumeDraft, restoredSkills: ReadonlySet<Unit>) {
   if (!model.skillCategories.length) return;
   const skills = model.units.filter((unit) => unit.kind === "skill");
-  const kept = new Set(skills.filter((unit) => restoredSkills.has(unit) || draft.renderedLines(unit).length > 0));
+  // A mixed source skills line stays as it is; skills it lists are not listed again.
+  const kept = new Set(skills.filter((unit) => restoredSkills.has(unit) ||
+    draft.renderedLines(unit).some((index) => !draft.ownedByNonSkill(index))));
   if (!kept.size) return;
   const grouped = new Set(model.skillCategories.flatMap((category) => category.skills));
   const lines: RenderedLine[] = [];
@@ -901,11 +917,44 @@ function regroupSkills(model: SourceModel, draft: ResumeDraft, restoredSkills: R
   const range = draft.ensureSection("SKILLS");
   const current = [];
   for (let index = range.start; index < range.end; index += 1) {
-    if (skills.some((unit) => draft.renders(index, unit))) current.push(index);
+    if (!draft.ownedByNonSkill(index) && skills.some((unit) => draft.renders(index, unit))) current.push(index);
   }
   if (current.map((index) => draft.lines[index]!.trim()).join("\n") === lines.map((line) => line.text).join("\n")) return;
   draft.remove(current);
   draft.insert(range.start, lines);
+}
+
+// Dated records (jobs, education, certifications) keep the master résumé's order, as the prompt asks
+// ("Keep record chronology"); Gemini sometimes orders jobs by relevance instead. Each record's block
+// (its header lines through the line before the next record or heading) moves whole; blank lines
+// between blocks are kept. Projects may still be ordered by relevance.
+function orderDatedRecords(model: SourceModel, draft: ResumeDraft) {
+  for (const field of ["workHistory", "education", "certifications"] as const) {
+    const placed = model.records.filter((record) => record.field === field)
+      .flatMap((record) => {
+        const block = draft.recordBlock(record);
+        return block ? [{ record, ...block }] : [];
+      })
+      .sort((a, b) => a.anchor - b.anchor);
+    if (placed.length < 2) continue;
+    const inSourceOrder = [...placed].sort((a, b) => a.record.order - b.record.order);
+    if (placed.every((entry, index) => entry === inSourceOrder[index])) continue;
+    // Only reorder blocks that tile one region of one section, so nothing between them is moved.
+    if (placed.some((entry, index) => index > 0 && placed[index - 1]!.end !== entry.anchor)) continue;
+    if (new Set(placed.map((entry) => draft.sectionAt(entry.anchor))).size !== 1) continue;
+    const start = placed[0]!.anchor;
+    const end = placed.at(-1)!.end;
+    const content = (entry: typeof placed[number]) => {
+      const lines = draft.lines.slice(entry.anchor, entry.end);
+      while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+      return lines;
+    };
+    const separated = placed.slice(0, -1).some((entry) => !draft.lines[entry.end - 1]!.trim());
+    const trailing = draft.lines.slice(draft.contentEnd(start, end), end);
+    const rebuilt = inSourceOrder.flatMap((entry, index) => [...(index > 0 && separated ? [""] : []), ...content(entry)]);
+    draft.lines.splice(start, end - start, ...rebuilt, ...trailing);
+    draft.invalidate();
+  }
 }
 
 const restorations = new WeakMap<object, readonly TailoredResumeItem[]>();
@@ -929,6 +978,7 @@ export function completeTailoredResume<T extends ResumeOutput>(
   const { plan, wholeRecords, leadingRestores } = planRestoration(model, payload, draft, revertedFactIds);
   if (!plan.size && draft.lines.join("\n") === output.resumeText) {
     regroupSkills(model, draft, new Set());
+    orderDatedRecords(model, draft);
     if (draft.lines.join("\n") === output.resumeText) return output;
   }
 
@@ -959,6 +1009,7 @@ export function completeTailoredResume<T extends ResumeOutput>(
     items.push({ id: unit.id, item: unitItem(unit) });
   }
   regroupSkills(model, draft, restoredSkills);
+  orderDatedRecords(model, draft);
 
   if (draft.added.length) validateRestoredResumeClaimEvidence(payload, draft.added);
   const completed: T = { ...output, resumeText: draft.lines.join("\n"), claimEvidence: draft.evidence };
