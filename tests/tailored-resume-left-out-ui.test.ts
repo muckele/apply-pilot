@@ -7,11 +7,11 @@ import { createRoot } from "react-dom/client";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 
 import { JobDocumentWorkspace, type JobResumeVersionOption } from "@/components/job-document-workspace";
-import { readTailoredResumeLeftOut } from "@/lib/ai/tailored-resume-keep-rule";
+import { readTailoredResumeLeftOut, readTailoredResumeReversions } from "@/lib/ai/tailored-resume-keep-rule";
 
 const projectText = "Regional Demo Library | Sales enablement | 2023\n• Recorded twelve product demo videos for new hires.";
 
-function version(leftOut: JobResumeVersionOption["leftOut"]): JobResumeVersionOption {
+function version(leftOut: JobResumeVersionOption["leftOut"], reverted: JobResumeVersionOption["reverted"] = []): JobResumeVersionOption {
   return {
     id: "version-1",
     title: "Example Buyer Co - Account Executive tailored resume",
@@ -21,7 +21,8 @@ function version(leftOut: JobResumeVersionOption["leftOut"]): JobResumeVersionOp
     jobFitScore: null,
     evidenceCurrent: true,
     createdAt: "2026-11-05T00:00:00.000Z",
-    leftOut
+    leftOut,
+    reverted
   };
 }
 
@@ -98,4 +99,31 @@ test("stored left-out metadata is read defensively", () => {
     { ref: "resume.skills[1]", kind: "skill", text: 7 },
     "junk"
   ] }), [{ ref: "resume.skills[0]", kind: "skill", context: null, text: "Gong" }]);
+});
+
+const northwind = "Northwind Software | Account Executive | 2021–Present";
+
+test("lines kept in the master résumé's wording are listed with what Gemini tried", async () => mounted(version([], [{
+  rejectedText: "Closed 400 new enterprise accounts in two years.",
+  reason: "unsupported_word",
+  original: [{ ref: "resume.workHistory[0]", kind: "bullet", context: northwind, text: "Closed 38 new mid-market accounts in two years." }]
+}]), async ({ container }) => {
+  const section = container.querySelector("[data-reverted]");
+  assert.ok(section);
+  assert.match(section.textContent ?? "", /Kept in your original wording \(1\)/u);
+  const items = Array.from(section.querySelectorAll("li"));
+  assert.equal(items.length, 1);
+  assert.match(items[0]!.textContent ?? "", /Closed 38 new mid-market accounts in two years\./u);
+  assert.match(items[0]!.textContent ?? "", /Closed 400 new enterprise accounts/u);
+}));
+
+test("a version with nothing reverted shows no reverted list", async () => mounted(version([]), async ({ container }) => {
+  assert.equal(container.querySelector("[data-reverted]"), null);
+}));
+
+test("stored reverted metadata is read defensively", () => {
+  assert.deepEqual(readTailoredResumeReversions(null), []);
+  assert.deepEqual(readTailoredResumeReversions({ leftOut: [] }), []);
+  const good = { rejectedText: "Led 9 teams.", reason: "unsupported_word", original: [{ ref: "resume.skills[0]", kind: "skill", context: null, text: "Gong" }] };
+  assert.deepEqual(readTailoredResumeReversions({ reverted: [good, { rejectedText: 7 }, "junk"] }), [good]);
 });

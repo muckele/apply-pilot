@@ -26,7 +26,7 @@ export type ApplicationDocumentPayload = {
   protectedEvidence?: Record<string, unknown> | null;
 };
 
-type TailoredResumeClaimsOutput = {
+export type TailoredResumeClaimsOutput = {
   professionalSummary: string;
   skillsSection: string[];
   bulletRewrites: Array<{ original: string; rewrite: string; reason: string }>;
@@ -491,10 +491,11 @@ function validateClaimEvidence(
       }])).values()];
     // A résumé line citing several facts must express each of them, so a citation can never make
     // a half-kept item look whole. A single-fact line keeps the exact grammar or a faithful rewording.
-    const faithful = () => applicantEvidence.every((item) => item.eligible && item.standalone) &&
-      faithfulRewordingFailure(claim, citedFacts) === null;
+    const rewordingFailure = () => applicantEvidence.every((item) => item.eligible && item.standalone)
+      ? faithfulRewordingFailure(claim, citedFacts)
+      : "not_rewordable";
     const relationPreserved = options.faithfulRewording
-      ? (citedFacts.length > 1 ? faithful() : exactRelation || faithful())
+      ? (citedFacts.length > 1 ? rewordingFailure() === null : exactRelation || rewordingFailure() === null)
       : exactRelation;
     if (!relationPreserved) {
       throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
@@ -503,6 +504,7 @@ function validateClaimEvidence(
         relationReason: !applicantEvidence.some(item => item.eligible) ? "ineligible_source"
           : !applicantEvidence.some(item => item.eligible && item.standalone) ? "not_standalone"
             : "ordered_token_mismatch",
+        ...(options.faithfulRewording ? { rewordingFailure: rewordingFailure() } : {}),
         fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
         retryable: false
       });
@@ -510,6 +512,31 @@ function validateClaimEvidence(
     supportedClaims.add(comparable(claim));
   }
   return supportedClaims;
+}
+
+// Owner decision 2026-11-06: a tailored résumé line whose own wording fails the truth check
+// (an unsupported word or job term, a moved number, a dropped qualifier, a reversed negation) is
+// reverted to the master résumé's wording rather than discarding the paid résumé. Only those
+// wording failures qualify: a broken citation (unknown reference, excerpt not in the source,
+// missing evidence) is not about the wording, so it still rejects the result.
+const REVERTIBLE_CLAIM_CODES = new Set(["APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM", "APPLICATION_DOCUMENT_NEGATION_REVERSAL"]);
+
+export function unverifiedTailoredResumeClaims(
+  payload: ApplicationDocumentPayload,
+  claims: readonly ApplicationDocumentClaimEvidence[]
+): Array<{ index: number; reason: string }> {
+  return claims.flatMap((entry, index) => {
+    try {
+      validateClaimEvidence(payload, [entry], "claimEvidence", { faithfulRewording: true });
+      return [];
+    } catch (error) {
+      const details = error instanceof PublicApiError ? error.details : undefined;
+      if (!details || !REVERTIBLE_CLAIM_CODES.has(String(details.code))) return [];
+      const reason = details.code === "APPLICATION_DOCUMENT_NEGATION_REVERSAL" ? "negation_reversal"
+        : String(details.rewordingFailure ?? details.failureClass ?? "unsupported_claim");
+      return [{ index, reason }];
+    }
+  });
 }
 
 // Server-restored résumé lines face the same unchanged excerpt, date, negation and

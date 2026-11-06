@@ -41,7 +41,11 @@ test("resume tailoring uses prompt/cache v14 fact IDs with faithful rewording un
   assert.match(implementation, /buildTailoredResumeSystemPrompt/);
   assert.match(implementation, /buildTailoredResumeGeminiJsonSchema/);
   assert.match(implementation, /feature: "RESUME_TAILOR",[\s\S]*promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION/);
-  assert.match(implementation, /validateTailoredResumeClaims\(applicationPayload, value\)/);
+  // The truth checks run inside the shared finalizer, after unverifiable lines revert to source
+  // wording (owner decision 2026-11-06), and again on the completed résumé.
+  assert.match(implementation, /validate: \(value\) => finalizeTailoredResume\(applicationPayload, value\)/);
+  const finalizer = source("lib/ai/application-document-quality.ts");
+  assert.match(finalizer, /validateTailoredResumeQuality\(payload, validateTailoredResumeClaims\(payload, reverted\)\)/);
 });
 
 test("cover generation uses an applicant-neutral v14 atomic fact contract", () => {

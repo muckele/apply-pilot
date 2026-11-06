@@ -15,13 +15,14 @@ import {
   type TailoredResumeProviderOutput
 } from "@/lib/ai/application-document-facts";
 import { applicationDocumentPriorityOpportunities } from "@/lib/ai/application-document-priorities";
-import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
+import { finalizeTailoredResume, validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
 import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
 import {
   TAILORED_RESUME_FLOORS,
   tailoredResumeLeftOut,
   tailoredResumeProtectedFactIds,
-  tailoredResumeRestorations
+  tailoredResumeRestorations,
+  tailoredResumeReversions
 } from "@/lib/ai/tailored-resume-keep-rule";
 import { PublicApiError } from "@/lib/api-errors";
 
@@ -443,4 +444,104 @@ test("a missing required section heading is restored above its retained content"
   const { completed } = tailor(payload, completeText.replace("\nEDUCATION\n", "\n"));
   const text = completed.resumeText;
   assert.equal(lineIndex(text, "EDUCATION") + 1, lineIndex(text, EDUCATION.header));
+});
+
+// Owner decision 2026-11-06: a reworded line that fails the truth check goes back to the master
+// résumé's own wording instead of discarding the whole paid résumé. Nothing unverified is kept:
+// the final document still passes every unchanged truth check.
+function finalize(
+  payload: ApplicationDocumentPayload,
+  resumeText: string,
+  extraClaims: Array<{ claim: string; factExcerpt: string }> = [],
+  overrides: Partial<TailoredResumeProviderOutput> = {}
+) {
+  const assembled = assembleTailoredResumeProviderOutput(payload, { ...providerWire(payload, resumeText, extraClaims), ...overrides });
+  return { assembled, final: finalizeTailoredResume(payload, assembled) };
+}
+
+test("a reworded line that fails the truth check is put back in its source wording, in place", () => {
+  const payload = syntheticPayload();
+  const source = JOBS[0]!.bullets[0]!;
+  const invented = "Closed 400 new enterprise accounts in two years.";
+  const { final } = finalize(payload, completeText.replace(`• ${source}`, `• ${invented}`), [{ claim: invented, factExcerpt: source }]);
+
+  assert.equal(final.resumeText, completeText);
+  assert.ok(!final.claimEvidence.some((entry) => entry.claim === invented), "the rejected wording leaves the evidence");
+  assert.deepEqual(tailoredResumeReversions(final), [{
+    rejectedText: invented,
+    reason: "unsupported_word",
+    original: [{ ref: "resume.workHistory[0]", kind: "bullet", context: JOBS[0]!.header, text: source }]
+  }]);
+  validateTailoredResumeClaims(payload, final);
+  assert.deepEqual(tailoredResumeLeftOut(payload, final), []);
+});
+
+test("every failed line is reverted, including the summary and an item the keep rule would let go", () => {
+  const payload = syntheticPayload();
+  const achievement = ACHIEVEMENTS[2]!;
+  const fakeAchievement = "Volunteer: Organized a 2024 charity marathon.";
+  const fakeSummary = "Account executive with ten years of enterprise software sales experience.";
+  const text = completeText.replace(achievement, fakeAchievement).replace(SUMMARY, fakeSummary);
+  const { final } = finalize(payload, text, [
+    { claim: fakeAchievement, factExcerpt: achievement },
+    { claim: fakeSummary, factExcerpt: SUMMARY }
+  ], { professionalSummary: fakeSummary });
+
+  assert.equal(final.resumeText, completeText);
+  assert.equal(final.professionalSummary, "", "a reverted summary leaves no unverified summary field");
+  assert.deepEqual(tailoredResumeReversions(final).map((entry) => [entry.rejectedText, entry.original.map((item) => item.text)]), [
+    [fakeSummary, [SUMMARY]],
+    [fakeAchievement, [achievement]]
+  ]);
+  validateTailoredResumeClaims(payload, final);
+});
+
+test("a faithful rewording is kept while a failed line beside it is reverted", () => {
+  const payload = syntheticPayload();
+  const meetings = JOBS[1]!.bullets[0]!;
+  const reworded = "For senior sellers, booked 220 qualified meetings.";
+  const demos = JOBS[0]!.bullets[1]!;
+  const invented = "Ran weekly demos for 50 enterprise prospects.";
+  const text = completeText.replace(`• ${meetings}`, `• ${reworded}`).replace(`• ${demos}`, `• ${invented}`);
+  const { final } = finalize(payload, text, [
+    { claim: reworded, factExcerpt: meetings },
+    { claim: invented, factExcerpt: demos }
+  ]);
+
+  assert.ok(final.resumeText.includes(`• ${reworded}`), "the verified rewording stays");
+  assert.ok(final.resumeText.includes(`• ${demos}`) && !final.resumeText.includes(invented));
+  assert.deepEqual(tailoredResumeReversions(final).map((entry) => entry.rejectedText), [invented]);
+});
+
+test("a clean answer passes through unchanged with nothing reverted", () => {
+  const payload = syntheticPayload();
+  const { assembled, final } = finalize(payload, completeText);
+  assert.equal(final, assembled);
+  assert.deepEqual(tailoredResumeReversions(final), []);
+});
+
+test("a claim with a broken citation is still rejected rather than reverted", () => {
+  const payload = syntheticPayload();
+  const { assembled } = finalize(payload, completeText);
+  const broken = {
+    ...assembled,
+    claimEvidence: [...assembled.claimEvidence, {
+      claim: JOBS[0]!.bullets[0]!,
+      citations: [{ ref: "resume.workHistory[9]", excerpt: JOBS[0]!.bullets[0]! }]
+    }]
+  };
+  assert.throws(
+    () => finalizeTailoredResume(payload, broken),
+    (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_UNKNOWN_REFERENCE"
+  );
+});
+
+test("reverting is idempotent, so validated-cache replays revert nothing", () => {
+  const payload = syntheticPayload();
+  const source = JOBS[0]!.bullets[0]!;
+  const invented = "Closed 400 new enterprise accounts in two years.";
+  const { final } = finalize(payload, completeText.replace(`• ${source}`, `• ${invented}`), [{ claim: invented, factExcerpt: source }]);
+  const replay = finalizeTailoredResume(payload, structuredClone(final));
+  assert.equal(replay.resumeText, final.resumeText);
+  assert.deepEqual(tailoredResumeReversions(replay), []);
 });

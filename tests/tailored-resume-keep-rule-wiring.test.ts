@@ -142,4 +142,11 @@ test("the tailored-resume route binds protection into both evidence reads and st
   const reads = handlers.match(/readApplicationDocumentEvidence\([^)]*protectMatchEvidence: true[^)]*\)/gu) ?? [];
   assert.equal(reads.length, 2);
   assert.match(handlers, /metadata: \{[^}]*claimEvidence: tailored\.claimEvidence[^}]*leftOut/u);
+  assert.match(handlers, /metadata: \{[^}]*reverted: tailored\.reverted \?\? \[\]/u);
+});
+
+test("tailoring reverts unverifiable lines through the shared finalizer and returns what it reverted", () => {
+  const source = readFileSync(new URL("../lib/ai/resume.ts", import.meta.url), "utf8");
+  assert.match(source, /validate: \(value\) => finalizeTailoredResume\(applicationPayload, value\)/u);
+  assert.match(source, /reverted: TailoredResumeReversion\[\] = \[\.\.\.tailoredResumeReversions\(generated\.data\)\]/u);
 });

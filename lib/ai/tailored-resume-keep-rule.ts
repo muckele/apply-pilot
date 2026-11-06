@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  unverifiedTailoredResumeClaims,
   validateRestoredResumeClaimEvidence,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
@@ -30,6 +31,8 @@ import { protectedResumeCitations } from "@/lib/ai/resume-tailoring-payload";
 // - Source headings are kept: a renamed heading (CERTIFICATIONS for LICENSES) is put back.
 // Anything required, protected or below a floor that Gemini omits is restored verbatim from the
 // master résumé instead of discarding a paid result.
+// Owner decision 2026-11-06: a line whose wording fails the truth check is reverted the same way:
+// the line is removed and the source items it cited return verbatim in their own place.
 export const TAILORED_RESUME_FLOORS = Object.freeze({ jobBullets: 2, skills: 10, achievements: 2 });
 
 export type TailoredResumeItemKind =
@@ -717,11 +720,20 @@ function normalizeHeadings(model: SourceModel, draft: ResumeDraft) {
 
 type Action = "replace" | "insert";
 
-function planRestoration(model: SourceModel, payload: ApplicationDocumentPayload, draft: ResumeDraft) {
+function planRestoration(
+  model: SourceModel,
+  payload: ApplicationDocumentPayload,
+  draft: ResumeDraft,
+  revertedFactIds: ReadonlySet<string>
+) {
   const plan = new Map<Unit, Action>();
   const wholeRecords = new Set<SourceRecord>();
   const leadingRestores = new Set<Unit>();
   const protectedSet = protectedUnits(model, payload);
+  // Source items behind a reverted line return like protected items: in place, whole and verbatim.
+  for (const unit of model.units) {
+    if (unit.facts.some((fact) => revertedFactIds.has(fact.factId))) protectedSet.add(unit);
+  }
   const rendered = new Map(model.units.map((unit) => [unit, draft.renderedLines(unit)]));
   const isRendered = (unit: Unit) => (rendered.get(unit)?.length ?? 0) > 0;
   const willHave = (unit: Unit) => isRendered(unit) || plan.has(unit);
@@ -906,11 +918,15 @@ export function tailoredResumeRestorations(output: object): readonly TailoredRes
 
 // Deterministically completes the tailored résumé under the keep rule, verbatim from the master
 // résumé, with exact claim evidence. Returns the same object when nothing needs changing.
-export function completeTailoredResume<T extends ResumeOutput>(payload: ApplicationDocumentPayload, output: T): T {
+export function completeTailoredResume<T extends ResumeOutput>(
+  payload: ApplicationDocumentPayload,
+  output: T,
+  revertedFactIds: ReadonlySet<string> = new Set()
+): T {
   const model = buildSourceModel(payload);
   const draft = new ResumeDraft(model, output);
   normalizeHeadings(model, draft);
-  const { plan, wholeRecords, leadingRestores } = planRestoration(model, payload, draft);
+  const { plan, wholeRecords, leadingRestores } = planRestoration(model, payload, draft, revertedFactIds);
   if (!plan.size && draft.lines.join("\n") === output.resumeText) {
     regroupSkills(model, draft, new Set());
     if (draft.lines.join("\n") === output.resumeText) return output;
@@ -956,6 +972,116 @@ export function completeTailoredResume<T extends ResumeOutput>(payload: Applicat
   }
   restorations.set(completed, Object.freeze(items.sort((a, b) => a.id - b.id).map(({ item }) => Object.freeze(item))));
   return completed;
+}
+
+// One tailored line whose wording failed the truth check and was replaced by the master résumé's
+// own wording: what Gemini wrote, why it failed, and the verbatim source item(s) now in its place.
+export type TailoredResumeReversion = Readonly<{
+  rejectedText: string;
+  reason: string;
+  original: readonly TailoredResumeItem[];
+}>;
+
+const reversions = new WeakMap<object, readonly TailoredResumeReversion[]>();
+
+// Lines reverted to source wording in this exact output (empty when nothing was reverted,
+// including validated-cache replays of an already reverted résumé).
+export function tailoredResumeReversions(output: object): readonly TailoredResumeReversion[] {
+  return reversions.get(output) ?? [];
+}
+
+export function carryTailoredResumeReversions<T extends object>(from: object, to: T): T {
+  const items = reversions.get(from);
+  if (items && to !== from && !reversions.has(to)) reversions.set(to, items);
+  return to;
+}
+
+type ProjectedResumeOutput = ResumeOutput & {
+  professionalSummary?: unknown;
+  skillsSection?: unknown;
+  bulletRewrites?: unknown;
+  rolesOrProjectsToEmphasize?: unknown;
+};
+
+// Removes every rendered line whose wording failed the truth check (a line holding a failed
+// semicolon part goes whole), drops the evidence and typed fields that named it, and restores the
+// cited source items verbatim through the keep rule. Citation defects are not touched here: the
+// unchanged validators that run next still reject them, and still check every remaining line.
+export function revertUnverifiedResumeLines<T extends ProjectedResumeOutput>(
+  payload: ApplicationDocumentPayload,
+  output: T
+): T {
+  const failures = unverifiedTailoredResumeClaims(payload, output.claimEvidence);
+  if (!failures.length) return output;
+  const model = buildSourceModel(payload);
+  const keysOf = (line: string) => {
+    const normalized = normalizeApplicationDocumentSourceLine(line);
+    return [normalized, ...normalized.split(/;\s+/u)].map(lineKey).filter(Boolean);
+  };
+  const failedKeys = new Set(failures.map(({ index }) => lineKey(output.claimEvidence[index]!.claim)));
+  const lines = output.resumeText.split(/\r?\n/u);
+  const droppedLines = lines.flatMap((line, index) =>
+    !sectionOf(line) && keysOf(line).some((key) => failedKeys.has(key)) ? [index] : []);
+  const onPage = new Set(droppedLines.flatMap((index) => keysOf(lines[index]!)));
+  const dropped = (value: string) => failedKeys.has(lineKey(value)) || onPage.has(lineKey(value));
+  const factIdsOf = (entries: readonly ApplicationDocumentClaimEvidence[]) => new Set(entries.flatMap((entry) =>
+    entry.citations.flatMap((citation) => {
+      const fact = model.factByCitation.get(`${citation.ref}\u0000${comparable(citation.excerpt)}`) ??
+        model.factByKey.get(factKey(citation.excerpt));
+      return fact ? [fact.factId] : [];
+    })));
+  const revertedFactIds = factIdsOf(output.claimEvidence.filter((entry) => onPage.has(lineKey(entry.claim))));
+
+  const stripped: T = {
+    ...output,
+    resumeText: lines.filter((_, index) => !droppedLines.includes(index)).join("\n"),
+    claimEvidence: output.claimEvidence.filter((entry) => !dropped(entry.claim))
+  };
+  const keep = (value: unknown) => typeof value !== "string" || !dropped(value);
+  if (typeof output.professionalSummary === "string" && !keep(output.professionalSummary)) stripped.professionalSummary = "";
+  if (Array.isArray(output.skillsSection)) stripped.skillsSection = output.skillsSection.filter(keep);
+  if (Array.isArray(output.rolesOrProjectsToEmphasize)) stripped.rolesOrProjectsToEmphasize = output.rolesOrProjectsToEmphasize.filter(keep);
+  if (Array.isArray(output.bulletRewrites)) {
+    stripped.bulletRewrites = output.bulletRewrites.filter((item) => !isRecord(item) || keep(item.rewrite));
+  }
+
+  const byLine = new Map<number, { rejectedText: string; reason: string; factIds: Set<string> }>();
+  for (const { index, reason } of failures) {
+    const entry = output.claimEvidence[index]!;
+    const at = droppedLines.find((lineIndex) => keysOf(lines[lineIndex]!).includes(lineKey(entry.claim)));
+    if (at === undefined) continue;
+    const current = byLine.get(at) ?? { rejectedText: normalizeApplicationDocumentSourceLine(lines[at]!), reason, factIds: new Set<string>() };
+    for (const id of factIdsOf([entry])) current.factIds.add(id);
+    byLine.set(at, current);
+  }
+  const completed = completeTailoredResume(payload, stripped, revertedFactIds);
+  reversions.set(completed, Object.freeze([...byLine.entries()].sort(([a], [b]) => a - b).map(([, line]) => Object.freeze({
+    rejectedText: line.rejectedText,
+    reason: line.reason,
+    original: Object.freeze(model.units.filter((unit) => unit.facts.some((fact) => line.factIds.has(fact.factId)))
+      .map((unit) => Object.freeze(unitItem(unit))))
+  }))));
+  return completed;
+}
+
+const storedReversionSchema = z.object({
+  rejectedText: z.string().min(1).max(20_000),
+  reason: z.string().min(1).max(200),
+  original: z.array(z.object({
+    ref: z.string().min(1).max(200),
+    kind: z.enum(["skill", "achievement", "bullet", "record", "line", "owner_attested_fact", "profile_skill"]),
+    context: z.string().max(2_000).nullable().default(null),
+    text: z.string().min(1).max(20_000)
+  })).max(50)
+});
+
+// Reads the reverted-line list stored with a ResumeVersion's metadata JSON; malformed entries are skipped.
+export function readTailoredResumeReversions(metadata: unknown): TailoredResumeReversion[] {
+  if (!isRecord(metadata) || !Array.isArray(metadata.reverted)) return [];
+  return metadata.reverted.flatMap((value) => {
+    const parsed = storedReversionSchema.safeParse(value);
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 function incomplete(fieldPath: string, message: string): never {

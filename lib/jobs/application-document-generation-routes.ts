@@ -71,8 +71,9 @@ export function createTailoredResumeRouteHandler(dependencies: TailoredResumeRou
               changeNotes: tailored.rolesOrProjectsToEmphasize.join("; "),
               // D031: keep the validated citations beside the generated text for later edit review.
               // The keep rule's left-out list (trimmed catalog items, paste-ready) and the items the
-              // server restored verbatim live in the same metadata JSON; no schema change.
-              metadata: { claimEvidence: tailored.claimEvidence, leftOut: tailored.leftOut ?? [], restored: tailored.restored ?? [] },
+              // server restored verbatim, and the lines reverted to source wording because their
+              // rewording failed the truth check, live in the same metadata JSON; no schema change.
+              metadata: { claimEvidence: tailored.claimEvidence, leftOut: tailored.leftOut ?? [], restored: tailored.restored ?? [], reverted: tailored.reverted ?? [] },
               atsCompatibility: null,
               jobFitScore: null
             }

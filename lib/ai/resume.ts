@@ -63,16 +63,17 @@ import {
 import { prisma } from "@/lib/prisma";
 import {
   buildApplicationDocumentSystemPrompt,
-  validateTailoredResumeClaims,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
-import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
+import { finalizeTailoredResume } from "@/lib/ai/application-document-quality";
 import {
   tailoredResumeLeftOut,
   tailoredResumeProtectedFactIds,
   tailoredResumeRestorations,
-  type TailoredResumeItem
+  tailoredResumeReversions,
+  type TailoredResumeItem,
+  type TailoredResumeReversion
 } from "@/lib/ai/tailored-resume-keep-rule";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
@@ -4307,20 +4308,20 @@ export async function tailorResume(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     },
-    // Truth checks first, then the keep rule restores omitted required/protected/below-floor items
-    // verbatim, then the completed résumé is checked again in full before caching or persistence.
-    validate: (value) => validateTailoredResumeClaims(
-      applicationPayload,
-      validateTailoredResumeQuality(applicationPayload, validateTailoredResumeClaims(applicationPayload, value))
-    )
+    // Lines whose wording fails the truth check revert to source wording; then the truth checks,
+    // the keep rule (restoring omitted required/protected/below-floor items verbatim) and the
+    // truth checks again run on the completed résumé before caching or persistence.
+    validate: (value) => finalizeTailoredResume(applicationPayload, value)
   });
   const leftOut: TailoredResumeItem[] = tailoredResumeLeftOut(applicationPayload, generated.data);
   const restored: TailoredResumeItem[] = [...tailoredResumeRestorations(generated.data)];
+  const reverted: TailoredResumeReversion[] = [...tailoredResumeReversions(generated.data)];
 
   return {
     ...generated.data,
     leftOut,
     restored,
+    reverted,
     model: generated.meta.model,
     promptVersion: generated.meta.promptVersion,
     inputHash: generated.meta.requestHash,

@@ -6,12 +6,16 @@ import {
 } from "@/lib/ai/application-document-facts";
 import {
   assertTailoredResumeKeepRule,
+  carryTailoredResumeReversions,
   completeTailoredResume,
-  containsComparableText as containsComparable
+  containsComparableText as containsComparable,
+  revertUnverifiedResumeLines
 } from "@/lib/ai/tailored-resume-keep-rule";
-import type {
-  ApplicationDocumentClaimEvidence,
-  ApplicationDocumentPayload
+import {
+  validateTailoredResumeClaims,
+  type ApplicationDocumentClaimEvidence,
+  type ApplicationDocumentPayload,
+  type TailoredResumeClaimsOutput
 } from "@/lib/ai/application-document-claims";
 
 type ResumeQualityOutput = {
@@ -84,6 +88,21 @@ function isStructuralCoverParagraph(payload: ApplicationDocumentPayload, paragra
 // claim evidence that passes the unchanged truth checks) instead of rejecting a paid result.
 // Trimmed skills, achievements, projects, bullets and owner-attested facts are accepted. Returns
 // the same object when nothing needed restoring.
+// The whole tailored-résumé check, as tailorResume runs it: lines whose wording fails the truth
+// check are reverted to source wording, then the unchanged truth checks, the keep rule and the
+// truth checks again run on the completed résumé before it is cached or saved.
+export function finalizeTailoredResume<T extends TailoredResumeClaimsOutput>(
+  payload: ApplicationDocumentPayload,
+  output: T
+): T {
+  const reverted = revertUnverifiedResumeLines(payload, output);
+  const final = validateTailoredResumeClaims(
+    payload,
+    validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, reverted))
+  );
+  return carryTailoredResumeReversions(reverted, final);
+}
+
 export function validateTailoredResumeQuality<T extends ResumeQualityOutput>(
   payload: ApplicationDocumentPayload,
   output: T
