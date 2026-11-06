@@ -260,6 +260,20 @@ test("after a partial run the refreshed page keeps the outcome message but reset
   }
 });
 
+test("a ready tailored résumé offers the cover letter on its own; an outdated one does not", async () => {
+  const base = props();
+  const version = { id: "resume-version-1", title: "Northwind tailored résumé", fullText: "Taylor Boundary\nService operations leader.", summary: null, atsCompatibility: null, jobFitScore: null, evidenceCurrent: true, createdAt: "2026-11-05T11:00:00.000Z" };
+  const tailor = { ...base.tailor, hasValidCurrentSnapshot: true };
+  await withPage({ tailor, documents: { resumeVersions: [version], coverLetters: [] } }, async (harness) => {
+    assert.equal(harness.button("Create cover letter only").disabled, false);
+    assert.equal(harness.button("Create new versions").disabled, false);
+  });
+  await withPage({ tailor, documents: { resumeVersions: [{ ...version, evidenceCurrent: false }], coverLetters: [] } }, async (harness) => {
+    assert.equal(harness.maybeButton("Create cover letter only"), undefined);
+    assert.ok(harness.button("Create new versions"));
+  });
+});
+
 test("ready documents lead to review, then the Apply Kit", async () => {
   await withPage({
     documents: {

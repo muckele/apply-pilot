@@ -22,7 +22,7 @@ export type JobWorkspaceProps = {
   estimate: EstimateView | null;
   checklist: ChecklistView;
   salaryTarget: SalaryTargetView;
-  tailor: Omit<TailorFlowProps, "jobId" | "hasDocuments" | "onPendingFactChanges">;
+  tailor: Omit<TailorFlowProps, "jobId" | "hasDocuments" | "hasCurrentResume" | "onPendingFactChanges">;
   documents: { resumeVersions: JobResumeVersionOption[]; coverLetters: JobCoverLetterOption[] };
   application: { id: string; statusLabel: string } | null;
   masterResumeText: string;
@@ -59,6 +59,8 @@ export function JobWorkspace({
   const [tailorMessage, setTailorMessage] = useState<TailorFlowMessage | null>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
   const hasDocuments = documents.resumeVersions.length > 0 || documents.coverLetters.length > 0;
+  // A tailored résumé ready for export against the current evidence lets the cover letter be made alone.
+  const hasCurrentResume = documents.resumeVersions.some((version) => version.evidenceCurrent);
   const applyKitHref = `/jobs/${job.id}/apply`;
   const scored = Boolean(estimate) || tailor.hasValidCurrentSnapshot;
   const currentStep = hasDocuments ? 3 : scored ? 1 : 0;
@@ -143,6 +145,7 @@ export function JobWorkspace({
               key={tailorReviewIdentity(tailor.review, tailor.hasValidCurrentSnapshot)}
               jobId={job.id}
               hasDocuments={hasDocuments}
+              hasCurrentResume={hasCurrentResume}
               onPendingFactChanges={setPendingFactChanges}
               message={tailorMessage}
               onMessage={setTailorMessage}

@@ -292,6 +292,120 @@ test("the cover letter starts unticked: one click makes the résumé only, and t
   }
 });
 
+// A job that already has a ready tailored résumé, with the saved review in force.
+const readyResume: Partial<TailorFlowProps> = {
+  hasValidCurrentSnapshot: true, hasDocuments: true, hasCurrentResume: true, coverLetterByDefault: undefined
+};
+
+function coverOnlyReason(harness: ReturnType<typeof createDomHarness>) {
+  return harness.container.querySelector("[data-cover-only-reason]")?.textContent ?? null;
+}
+
+test("with a ready résumé and nothing changed, the cover letter alone takes one confirmation of its own maximum and calls only the cover-letter writer", async () => {
+  const calls: Call[] = [];
+  const prompts: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const stub = apiStub(calls);
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => { await gate; return stub(input, init); }) as typeof fetch;
+  const harness = createDomHarness({ fetch: fetchImpl, confirm: (message) => { prompts.push(message); return true; } });
+  try {
+    await harness.render(React.createElement(TailorFlow, props(readyResume)));
+    assert.equal(harness.button("Create new versions").disabled, false, "the main action is still there");
+    const coverOnly = harness.button("Create cover letter only");
+    assert.equal(coverOnly.disabled, false);
+    assert.equal(coverOnlyReason(harness), null);
+    assert.match(harness.container.querySelector("[data-cover-only]")?.textContent ?? "", /at most \$0\.05 in AI costs/u);
+    await harness.click(coverOnly);
+    assert.equal(harness.button("Create cover letter only").disabled, true, "disabled while it runs");
+    assert.equal(harness.button("Create new versions").disabled, true, "nothing else starts while it runs");
+    release();
+    await harness.waitForText(/Your cover letter is ready to review below/u);
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0]!, /to write your cover letter\./u);
+    assert.match(prompts[0]!, /1 AI request could cost up to \$0\.04725/u);
+    assert.doesNotMatch(prompts[0]!, /tailored résumé|fit estimate/u);
+    assert.deepEqual(calls.map((call) => [call.url, call.confirmed]), [
+      ["/api/jobs/job-1/cover-letter", null],
+      ["/api/jobs/job-1/cover-letter", "true"]
+    ]);
+    assert.equal(calls[1]!.data, "true");
+    const progress = harness.container.querySelector("[aria-label=Progress]")?.textContent ?? "";
+    assert.match(progress, /Writing your cover letter/u);
+    assert.doesNotMatch(progress, /résumé|answers|fit estimate/u);
+    assert.ok(harness.window.sessionStorage.getItem("apply-pilot:documents-created:job-1"), "the page scrolls to the new letter after the refresh");
+    assert.ok(harness.refreshes >= 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("declining the cover-letter-only confirmation sends nothing", async () => {
+  const calls: Call[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: () => false });
+  try {
+    await harness.render(React.createElement(TailorFlow, props(readyResume)));
+    await harness.click(harness.button("Create cover letter only"));
+    await harness.waitForText(/Nothing was sent/u);
+    assert.equal(calls.length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the cover letter alone is not offered until the job has a ready tailored résumé", async () => {
+  for (const overrides of [{}, { hasValidCurrentSnapshot: true, hasDocuments: true }, { ...readyResume, hasCurrentResume: false }]) {
+    const harness = createDomHarness({ fetch: apiStub([]) });
+    try {
+      await harness.render(React.createElement(TailorFlow, props(overrides)));
+      assert.equal(harness.maybeButton("Create cover letter only"), undefined);
+    } finally {
+      await harness.close();
+    }
+  }
+});
+
+test("a changed line turns the cover letter alone off and says why; setting it back to Skip turns it on again", async () => {
+  const harness = createDomHarness({ fetch: apiStub([]), confirm: () => true });
+  try {
+    await harness.render(React.createElement(TailorFlow, props(readyResume)));
+    const coverOnly = () => harness.button("Create cover letter only");
+    const gap = gapFieldset(harness, "Current Quenby certification");
+    await harness.click(choice(gap, /I have this/u));
+    assert.equal(coverOnly().disabled, true);
+    await harness.type(gap.querySelector("textarea"), "Earned the Quenby certification in 2024.");
+    await harness.check(gap.querySelector("input[type=checkbox]"));
+    assert.equal(harness.button("Create new versions").disabled, false, "the main action still takes the new line");
+    assert.equal(coverOnly().disabled, true);
+    assert.match(coverOnlyReason(harness) ?? "", /changed lines above/u);
+    await harness.click(choice(gap, /^Skip$/u));
+    assert.equal(coverOnly().disabled, false);
+    assert.equal(coverOnlyReason(harness), null);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("without a saved review, or with writing switched off, the cover letter alone stays disabled", async () => {
+  const unsaved = createDomHarness({ fetch: apiStub([]) });
+  try {
+    await unsaved.render(React.createElement(TailorFlow, props({ ...readyResume, hasValidCurrentSnapshot: false })));
+    assert.equal(unsaved.button("Create cover letter only").disabled, true);
+    assert.equal(unsaved.button("Create new versions").disabled, false);
+    assert.match(coverOnlyReason(unsaved) ?? "", /create both together/u);
+  } finally {
+    await unsaved.close();
+  }
+  const off = createDomHarness({ fetch: apiStub([]) });
+  try {
+    await off.render(React.createElement(TailorFlow, props({ ...readyResume, generationAvailable: false })));
+    assert.equal(off.button("Create cover letter only").disabled, true);
+    assert.match(off.text(), /Document writing is switched off/u);
+  } finally {
+    await off.close();
+  }
+});
+
 test("the gap list never claims to be everything the résumé is missing", async () => {
   const harness = createDomHarness({ fetch: apiStub([]) });
   try {
@@ -322,6 +436,12 @@ test("plain language: no internal jargon, and extracted facts stay behind a disc
   try {
     await harness.render(React.createElement(TailorFlow, props()));
     assert.doesNotMatch(harness.text(), /immutable|snapshot|Correction-first|reassess|Build packet|provenance/iu);
+    for (const overrides of [readyResume, { ...readyResume, hasValidCurrentSnapshot: false }]) {
+      await harness.render(React.createElement(TailorFlow, props(overrides)));
+      assert.ok(harness.maybeButton("Create cover letter only"));
+      assert.doesNotMatch(harness.text(), /immutable|snapshot|Correction-first|reassess|Build packet|provenance/iu);
+    }
+    await harness.render(React.createElement(TailorFlow, props()));
     const facts = harness.container.querySelector("[data-extracted-facts]");
     assert.ok(facts?.closest("details"), "extracted facts are inside a <details>");
     assert.match(facts!.closest("details")!.querySelector("summary")!.textContent ?? "", /everything Apply Pilot read from your résumé/u);

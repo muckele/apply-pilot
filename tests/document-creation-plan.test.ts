@@ -6,6 +6,7 @@ import {
   documentCreationConfirmation,
   documentCreationMaximumMicros,
   formatUsdCentsCeiling,
+  planCoverLetterOnly,
   planDocumentCreation,
   type DocumentCreationQuote
 } from "@/lib/jobs/document-creation-plan";
@@ -91,6 +92,45 @@ test("the short hint rounds the maximum up to whole cents", () => {
 test("a résumé-only plan quotes only the résumé", () => {
   assert.equal(documentCreationMaximumMicros(["resume"], quote), 64_500);
   assert.match(documentCreationConfirmation(["resume"], quote), /1 AI request could cost up to \$0\.0645/u);
+});
+
+test("a ready résumé with the saved review in force and nothing changed plans the cover letter alone", () => {
+  const plan = planCoverLetterOnly({
+    hasCurrentResume: true, hasValidCurrentSnapshot: true,
+    decisionKinds: ["UNRESOLVED", "UNRESOLVED"], acceptedFactActions: ["RETAIN"]
+  });
+  assert.deepEqual(plan, { ok: true, steps: ["cover"] });
+  assert.ok(plan.ok);
+  assert.equal(documentCreationMaximumMicros(plan.steps, quote), 47_250);
+  const message = documentCreationConfirmation(plan.steps, quote);
+  assert.match(message, /to write your cover letter\./u);
+  assert.match(message, /1 AI request could cost up to \$0\.04725/u);
+  assert.doesNotMatch(message, /tailored résumé|fit estimate/u);
+});
+
+test("the cover letter alone needs a ready tailored résumé for this job", () => {
+  assert.deepEqual(planCoverLetterOnly({
+    hasCurrentResume: false, hasValidCurrentSnapshot: true, decisionKinds: [], acceptedFactActions: []
+  }), { ok: false, reason: "NO_CURRENT_RESUME" });
+});
+
+test("any pending line change rules out the cover letter alone", () => {
+  for (const kind of ["OWNER_ATTESTATION", "SOURCE_CORRECTION"] as const) {
+    assert.deepEqual(planCoverLetterOnly({
+      hasCurrentResume: true, hasValidCurrentSnapshot: true, decisionKinds: ["UNRESOLVED", kind], acceptedFactActions: []
+    }), { ok: false, reason: "FACTS_CHANGED" });
+  }
+  for (const action of ["REMOVE", "REPLACE_OWNER_ATTESTATION"] as const) {
+    assert.deepEqual(planCoverLetterOnly({
+      hasCurrentResume: true, hasValidCurrentSnapshot: true, decisionKinds: [], acceptedFactActions: ["RETAIN", action]
+    }), { ok: false, reason: "FACTS_CHANGED" });
+  }
+});
+
+test("without a saved review in force the cover letter alone is not planned", () => {
+  assert.deepEqual(planCoverLetterOnly({
+    hasCurrentResume: true, hasValidCurrentSnapshot: false, decisionKinds: ["UNRESOLVED"], acceptedFactActions: []
+  }), { ok: false, reason: "REVIEW_NOT_SAVED" });
 });
 
 function jsonResponse(status: number, body: unknown) {

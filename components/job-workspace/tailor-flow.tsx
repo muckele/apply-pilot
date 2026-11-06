@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Circle, Loader2, Sparkles, XCircle } from "lucide-react";
+import { CheckCircle2, Circle, FileText, Loader2, Sparkles, XCircle } from "lucide-react";
 
 import { ScoreJobButton } from "@/components/job-workspace/score-job-button";
 import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
@@ -12,6 +12,7 @@ import {
   documentCreationMaximumMicros,
   formatUsdCentsCeiling,
   formatUsdMicros,
+  planCoverLetterOnly,
   planDocumentCreation,
   stepMaximumMicros,
   type DocumentCreationQuote,
@@ -56,6 +57,9 @@ export type TailorFlowProps = {
   // its stricter evidence checks have no fallback yet, so a failure would cost a paid call.
   // The owner can still tick the box for any job.
   coverLetterByDefault?: boolean;
+  // A tailored résumé for this job is ready to use with the current evidence. Then the cover letter
+  // can be written on its own, so a good résumé isn't rewritten (or paid for) again.
+  hasCurrentResume?: boolean;
 };
 
 export type TailorFlowMessage = { tone: "success" | "error" | "info"; text: string };
@@ -83,6 +87,12 @@ const DONE_PHRASES: Record<DocumentCreationStep, string> = {
   resume: "Your résumé was created.",
   cover: "Your cover letter was created."
 };
+
+const READY_MESSAGES = {
+  both: "Your résumé and cover letter are ready to review below.",
+  resume: "Your résumé is ready to review below.",
+  cover: "Your cover letter is ready to review below."
+} as const;
 
 const ENDPOINTS: Record<Exclude<DocumentCreationStep, "save">, string> = {
   rescore: "match",
@@ -119,13 +129,15 @@ export function TailorFlow({
   onPendingFactChanges,
   message: ownedMessage,
   onMessage,
-  coverLetterByDefault = false
+  coverLetterByDefault = false,
+  hasCurrentResume = false
 }: TailorFlowProps) {
   const router = useRouter();
   const [gapDrafts, setGapDrafts] = useState<Record<string, GapDraft>>({});
   const [lineDrafts, setLineDrafts] = useState<Record<string, SavedLineDraft>>({});
   const [includeCover, setIncludeCover] = useState(coverLetterByDefault);
-  const [running, setRunning] = useState(false);
+  const [runningAction, setRunningAction] = useState<"create" | "coverOnly" | null>(null);
+  const running = runningAction !== null;
   const [progress, setProgress] = useState<Array<{ step: DocumentCreationStep; state: StepState }>>([]);
   const [localMessage, setLocalMessage] = useState<TailorFlowMessage | null>(null);
   const message = onMessage ? ownedMessage ?? null : localMessage;
@@ -149,6 +161,14 @@ export function TailorFlow({
   const draftsComplete = (review?.gaps ?? []).every((gap) => gapDraftComplete(gapDraft(gap.id))) &&
     (review?.acceptedFacts ?? []).every((fact) => savedLineDraftComplete(lineDraft(fact.factId)));
   const canCreate = Boolean(review) && plan.ok && draftsComplete && generationAvailable && !running;
+  const coverOnlyPlan = planCoverLetterOnly({
+    hasCurrentResume,
+    hasValidCurrentSnapshot,
+    decisionKinds,
+    acceptedFactActions: acceptedActions
+  });
+  const showCoverOnly = Boolean(review) && hasCurrentResume;
+  const canCreateCoverOnly = Boolean(review) && coverOnlyPlan.ok && generationAvailable && !running;
   const createLabel = hasDocuments ? "Create new versions" : includeCover ? "Create my résumé and cover letter" : "Create my résumé";
 
   useEffect(() => {
@@ -170,14 +190,23 @@ export function TailorFlow({
     setLineDrafts((current) => ({ ...current, [id]: { ...(current[id] ?? EMPTY_SAVED_LINE_DRAFT), ...patch } }));
   }
 
-  async function create() {
-    if (!review || !plan.ok || !canCreate) return;
-    const steps = plan.steps;
+  function create() {
+    if (!plan.ok || !canCreate) return;
+    return run("create", plan.steps);
+  }
+
+  function createCoverOnly() {
+    if (!coverOnlyPlan.ok || !canCreateCoverOnly) return;
+    return run("coverOnly", coverOnlyPlan.steps);
+  }
+
+  async function run(action: "create" | "coverOnly", steps: DocumentCreationStep[]) {
+    if (!review) return;
     if (quote && !window.confirm(documentCreationConfirmation(steps, quote))) {
       setMessage({ tone: "info", text: "Canceled. Nothing was sent and nothing was charged." });
       return;
     }
-    setRunning(true);
+    setRunningAction(action);
     setMessage(null);
     setProgress(steps.map((step) => ({ step, state: "pending" })));
     const mark = (index: number, state: StepState) =>
@@ -212,17 +241,13 @@ export function TailorFlow({
         completed.push(step);
         mark(index, "done");
       }
-      setMessage({
-        tone: "success",
-        text: steps.includes("cover")
-          ? "Your résumé and cover letter are ready to review below."
-          : "Your résumé is ready to review below."
-      });
+      const created = !steps.includes("resume") ? "cover" : steps.includes("cover") ? "both" : "resume";
+      setMessage({ tone: "success", text: READY_MESSAGES[created] });
       setGapDrafts({});
       setLineDrafts({});
       requestId.current = null;
       try {
-        window.sessionStorage.setItem(documentsCreatedKey(jobId), steps.includes("cover") ? "both" : "resume");
+        window.sessionStorage.setItem(documentsCreatedKey(jobId), created);
       } catch {}
       router.refresh();
     } catch (error) {
@@ -238,7 +263,7 @@ export function TailorFlow({
         router.refresh();
       }
     } finally {
-      setRunning(false);
+      setRunningAction(null);
     }
   }
 
@@ -254,6 +279,15 @@ export function TailorFlow({
         : !draftsComplete
           ? "Finish each line you started (with the confirmation box ticked), or set it back to Skip."
           : null;
+  const coverOnlyMaximum = coverOnlyPlan.ok && quote ? documentCreationMaximumMicros(coverOnlyPlan.steps, quote) : null;
+  // The page-wide reason above already says why nothing can be created; this only explains the rest.
+  const coverOnlyBlockedReason = coverOnlyPlan.ok || blockedReason
+    ? null
+    : coverOnlyPlan.reason === "FACTS_CHANGED"
+      ? "You've changed lines above, so your résumé needs a new version too. Create both together."
+      : coverOnlyPlan.reason === "REVIEW_NOT_SAVED"
+        ? "Your answers haven't been saved yet, so create both together this time."
+        : null;
 
   return (
     <div className="job-tailor" data-tailor-flow>
@@ -402,7 +436,7 @@ export function TailorFlow({
         </label>
         <div className="job-create-row">
           <button type="button" className="job-button job-button-primary job-button-large" onClick={create} disabled={!canCreate}>
-            {running ? <Loader2 className="animate-spin" size={18} aria-hidden="true" /> : <Sparkles size={18} aria-hidden="true" />}
+            {runningAction === "create" ? <Loader2 className="animate-spin" size={18} aria-hidden="true" /> : <Sparkles size={18} aria-hidden="true" />}
             {createLabel}
           </button>
           {maximum !== null ? (
@@ -412,6 +446,21 @@ export function TailorFlow({
           ) : null}
         </div>
         {blockedReason ? <p className="job-hint" data-blocked-reason>{blockedReason}</p> : null}
+        {showCoverOnly ? (
+          <div className="job-create-row" data-cover-only>
+            <button type="button" className="job-button" onClick={createCoverOnly} disabled={!canCreateCoverOnly}>
+              {runningAction === "coverOnly" ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+              Create cover letter only
+            </button>
+            {coverOnlyBlockedReason ? (
+              <p className="job-hint" data-cover-only-reason>{coverOnlyBlockedReason}</p>
+            ) : coverOnlyMaximum !== null ? (
+              <p className="job-hint">Keeps your current résumé · at most {formatUsdCentsCeiling(coverOnlyMaximum)} in AI costs, usually less.</p>
+            ) : coverOnlyPlan.ok ? (
+              <p className="job-hint">Keeps your current résumé.</p>
+            ) : null}
+          </div>
+        ) : null}
         {progress.length ? (
           <ol className="job-progress" aria-label="Progress">
             {progress.map(({ step, state }) => (
