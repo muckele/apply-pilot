@@ -23,6 +23,7 @@ import {
   buildCurrentJobMatchInput,
   currentJobMatchInputHash
 } from "@/lib/jobs/current-job-match";
+import { assertKeptOwnerFactsClean, assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
 import { prisma } from "@/lib/prisma";
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -84,10 +85,17 @@ function effectiveAcceptedFacts(
   actions: readonly AcceptedFactActionInput[],
   decisions: ReturnType<typeof normalizeEvidenceCorrectionDecisions>
 ): AcceptedEvidenceFact[] {
+  // Kept owner facts saved before the cleanup check existed must be clean too, so a multi-step
+  // document plan stops here, before any paid step, rather than at the résumé.
+  assertKeptOwnerFactsClean(actions.flatMap((action, index) => {
+    const prior = acceptedFacts[index];
+    return action.action === "RETAIN" && prior?.factId === action.factId && prior.provenance.kind === "OWNER_ATTESTED" ? [prior.fact] : [];
+  }));
   const retained = actions.flatMap((action, index): AcceptedEvidenceFact[] => {
     const prior = acceptedFacts[index];
     if (!prior || action.factId !== prior.factId || action.action === "REMOVE") return [];
     if (action.action === "RETAIN") return [validateRetainedAcceptedFact(review, prior)];
+    assertOwnerFactClean(action.attestedFact);
     const replacement = {
       factId: "",
       originGapId: prior.originGapId,
@@ -321,6 +329,7 @@ export async function saveEvidenceSnapshot(
           input.decisions as EvidenceCorrectionDecision[]
         );
       } catch (error) {
+        if (error instanceof PublicApiError) throw error;
         throw evidenceError(
           error instanceof Error ? error.message : "The evidence review was invalid.",
           422,

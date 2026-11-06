@@ -1,6 +1,7 @@
 import { JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 import { hasEvidenceNegationCue } from "@/lib/evidence-negation";
 import type { AcceptedEvidenceFact } from "@/lib/jobs/evidence-snapshot-contracts";
+import { assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
 
 export type EvidenceFactSection =
   | "raw_source"
@@ -339,6 +340,7 @@ function normalizeDecision(
   if (!decision.ownerAttested || !decision.attestedFact.trim()) {
     throw new Error("Owner-attested evidence requires an explicit attestation and fact.");
   }
+  assertOwnerFactClean(decision.attestedFact);
   return {
     gapId: gap.id,
     status: "RESOLVED",

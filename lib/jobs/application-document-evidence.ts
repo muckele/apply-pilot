@@ -6,6 +6,7 @@ import {
   CURRENT_EVIDENCE_SNAPSHOT_SELECT,
   resolveCurrentReviewedEvidence
 } from "@/lib/jobs/evidence-snapshot-contracts";
+import { assertReviewedOwnerFactsClean } from "@/lib/jobs/owner-fact-cleanup";
 
 type SourceClient = PrismaClient | Prisma.TransactionClient;
 
@@ -49,6 +50,8 @@ export async function readApplicationDocumentEvidence(
     client.userProfile.findUnique({ where: { userId } })
   ]);
   const evidence = resolveCurrentReviewedEvidence(job, resume);
+  // Owner facts go onto the document as typed; one with pasted notes stops here, before any paid call.
+  assertReviewedOwnerFactsClean(evidence.reviewedEvidence);
   if (!evidence.currentEvidenceSourceValid || !evidence.effectiveEvidenceSnapshotId) {
     throw new PublicApiError("Save the current evidence review before generating application documents.", 409, {
       code: evidence.currentEvidenceSourceValid ? "EVIDENCE_SNAPSHOT_REQUIRED" : "EVIDENCE_SOURCE_STALE"
