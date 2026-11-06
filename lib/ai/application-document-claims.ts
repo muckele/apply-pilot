@@ -7,6 +7,7 @@ import {
   normalizeApplicationDocumentSourceLine
 } from "@/lib/ai/application-document-facts";
 import { faithfulRewordingFailure, type RewordingSourceKind } from "@/lib/ai/application-document-rewording";
+import { firstPersonCoverSentence } from "@/lib/ai/cover-letter-first-person";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -775,11 +776,18 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
   });
 
   // As the prompt asks: a sentence for an action fact reads in the first person ("Built a
-  // dashboard." -> "I built a dashboard."), when the truth check accepts that wording.
+  // dashboard." -> "I built a dashboard."), when the truth check accepts that wording. Owner's
+  // live test 2026-11-06: a fragment behind a framing phrase reads in the first person too
+  // ("At <Org>, owned …" -> "At <Org>, I owned …"); lib/ai/cover-letter-first-person.ts decides
+  // where the I may go, and the unchanged truth check still decides whether the wording stands.
   const firstPerson = (entry: ApplicationDocumentClaimEvidence) => {
     const text = entry.claim.trim();
-    if (/^i\s+/iu.test(text) || !entry.citations.some((citation) => applicationDocumentFactStartsWithAction(citation.excerpt))) return entry;
-    const candidate = { ...entry, claim: `I ${text[0]!.toLocaleLowerCase()}${text.slice(1)}` };
+    if (/^i\s+/iu.test(text)) return entry;
+    const wording = entry.citations.some((citation) => applicationDocumentFactStartsWithAction(citation.excerpt))
+      ? `I ${text[0]!.toLocaleLowerCase()}${text.slice(1)}`
+      : firstPersonCoverSentence(text);
+    if (!wording) return entry;
+    const candidate = { ...entry, claim: wording };
     return coverClaimPasses(payload, candidate) ? candidate : entry;
   };
   const renamed = new Map<string, string>();

@@ -125,7 +125,8 @@ test("finalizing is idempotent, so validated-cache replays remove nothing", () =
 
 // Live case 2026-11-06: an owner fact written as two clauses ("At A, …; at B, …") is two catalog
 // facts, so a letter sentence holding both can never cite exactly one fact. It becomes one
-// sentence per clause in the owner's words, each bound to its own clause.
+// sentence per clause in the owner's words, each bound to its own clause; each clause reads in
+// the first person ("At <Org>, I …"), the only word the claim grammar lets it add.
 test("an owner fact written as two clauses becomes two sentences, each citing its clause", () => {
   const twoClauses = "At Quenby Labs, owned onboarding through go-live; at Fabrikam, managed renewals end to end.";
   const base = syntheticCorrectionFlowDocumentPayload();
@@ -136,7 +137,7 @@ test("an owner fact written as two clauses becomes two sentences, each citing it
   const letter = original.coverLetter.replace(SYNTHETIC_CORRECTION_FLOW_FACT, `${SYNTHETIC_CORRECTION_FLOW_FACT} ${twoClauses}`);
   const final = finalizeCoverLetter(local, assembleCoverLetterProviderOutput(local, { ...original, coverLetter: letter }));
   validateCoverLetterClaims(local, final);
-  assert.ok(final.coverLetter.includes("At Quenby Labs, owned onboarding through go-live. At Fabrikam, managed renewals end to end."), final.coverLetter);
+  assert.ok(final.coverLetter.includes("At Quenby Labs, I owned onboarding through go-live. At Fabrikam, I managed renewals end to end."), final.coverLetter);
   assert.ok(!final.coverLetter.includes(twoClauses));
   assert.deepEqual(coverLetterRemovals(final), []);
 });
@@ -149,7 +150,7 @@ test("an owner fact written as two clauses that the letter left out goes back in
   reviewed.push({ ...reviewed[0]!, gapId: "gap:extra", fact: twoClauses });
   const final = finalizeCoverLetter(local, assembleCoverLetterProviderOutput(local, syntheticCoverLetterOutput(base)));
   validateCoverLetterClaims(local, final);
-  assert.ok(final.coverLetter.includes("At Quenby Labs, owned onboarding through go-live. At Fabrikam, managed renewals end to end."), final.coverLetter);
+  assert.ok(final.coverLetter.includes("At Quenby Labs, I owned onboarding through go-live. At Fabrikam, I managed renewals end to end."), final.coverLetter);
 });
 
 // Live case 2026-11-06 (second attempt): after the repair the letter was rejected with "Do not
