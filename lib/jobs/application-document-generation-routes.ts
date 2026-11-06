@@ -38,7 +38,8 @@ export function createTailoredResumeRouteHandler(dependencies: TailoredResumeRou
       const userId = await dependencies.requireUserId();
       await dependencies.checkRateLimit(`tailor-resume:${userId}`, 12, 60_000);
       const { id } = await params;
-      const sources = await dependencies.readApplicationDocumentEvidence(dependencies.prismaClient, userId, id);
+      // Tailoring binds the résumé items the current job match cited, so they are never trimmed.
+      const sources = await dependencies.readApplicationDocumentEvidence(dependencies.prismaClient, userId, id, { protectMatchEvidence: true });
 
       const tailored = await dependencies.tailorResume(
         sources.payload,
@@ -50,7 +51,7 @@ export function createTailoredResumeRouteHandler(dependencies: TailoredResumeRou
       try {
         version = await dependencies.prismaClient.$transaction(async (tx) => {
           await tx.$queryRaw`SELECT "id" FROM "JobPosting" WHERE "id" = ${id} AND "userId" = ${userId} FOR UPDATE`;
-          const fresh = await dependencies.readApplicationDocumentEvidence(tx, userId, id);
+          const fresh = await dependencies.readApplicationDocumentEvidence(tx, userId, id, { protectMatchEvidence: true });
           if (hashAiInput("resumeTailorPrompt", tailored.promptVersion, fresh.payload) !== tailored.inputHash) {
             throw new PublicApiError("Evidence changed while the resume was being generated. Generate it again.", 409, {
               code: "APPLICATION_DOCUMENT_INPUT_STALE"
@@ -69,7 +70,10 @@ export function createTailoredResumeRouteHandler(dependencies: TailoredResumeRou
               fullText: tailored.resumeText,
               changeNotes: tailored.rolesOrProjectsToEmphasize.join("; "),
               // D031: keep the validated citations beside the generated text for later edit review.
-              metadata: { claimEvidence: tailored.claimEvidence },
+              // The keep rule's left-out list (trimmed catalog items, paste-ready) and the items the
+              // server restored verbatim, and the lines reverted to source wording because their
+              // rewording failed the truth check, live in the same metadata JSON; no schema change.
+              metadata: { claimEvidence: tailored.claimEvidence, leftOut: tailored.leftOut ?? [], restored: tailored.restored ?? [], reverted: tailored.reverted ?? [] },
               atsCompatibility: null,
               jobFitScore: null
             }

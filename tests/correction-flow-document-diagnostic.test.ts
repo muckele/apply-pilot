@@ -97,7 +97,7 @@ function runnerFor({
   });
 }
 
-test("the two-document manifest freezes prompt v12, the 70-fact catalog, both wires, and the exact cap", () => {
+test("the two-document manifest freezes prompt v14, the 70-fact catalog, both wires, and the exact cap", () => {
   const value = manifest();
   assert.equal(value.contractVersion, "2");
   assert.equal(value.callCount, 2);
@@ -108,7 +108,7 @@ test("the two-document manifest freezes prompt v12, the 70-fact catalog, both wi
   assert.equal(value.rawOutputRetention, false);
   assert.equal(value.outputEmission, false);
   assert.equal(value.factCatalogCount, 70);
-  assert.equal(value.factCatalogHash, "c5568c3d726939b0d942aee27011f6892f172300899c86e043422b2e0867c1ac");
+  assert.equal(value.factCatalogHash, "52411db9c100e37fa92d82920408812ecc081c4c3ad5401a935647dc671a5d29");
   assert.equal(value.payloadHash, "5d14da2d3089bddd18ed973ccccf46084e421d019a327ffdc7bab4d0076ed0ae");
   assert.equal(value.reviewedEvidenceHash, "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708");
   assert.deepEqual(value.calls.map((call) => [
@@ -121,10 +121,10 @@ test("the two-document manifest freezes prompt v12, the 70-fact catalog, both wi
     call.maximumCostMicros,
     call.wireRequestHash
   ]), [
-    ["tailored_resume", "gemini-3.8-flash", "12", "LOW", 56_000, 6_000, 64_500,
-      "ed5859b5052df38166238d6d229546fdaa33001ab5d7a7939cb2e6359ef13955"],
-    ["cover_letter", "gemini-3.8-flash", "12", "LOW", 56_000, 1_500, 47_625,
-      "36aadfcdb8fc4edbfb5b6340b97085fd3c1ceae050bd0944e1a59f8f1d2e704d"]
+    ["tailored_resume", "gemini-3.8-flash", "14", "LOW", 36_000, 12_000, 72_000,
+      "02329818a75ec1ea94891b93584bb4df2ad95ff0ef8bc588ffd180806eace90a"],
+    ["cover_letter", "gemini-3.8-flash", "14", "LOW", 36_000, 6_000, 49_500,
+      "213db36395cc0fc4d435093b4cb9fa1ad91f61bdc5afc8e86ac5df163f84ea4a"]
   ]);
   assert.deepEqual(value.calls.map((call) => call.pricingSnapshot), [
     {
@@ -142,7 +142,7 @@ test("the two-document manifest freezes prompt v12, the 70-fact catalog, both wi
       validUntil: "2027-01-01T00:00:00.000Z"
     }
   ]);
-  assert.equal(value.conservativeReservationMicros, 112_125);
+  assert.equal(value.conservativeReservationMicros, 121_500);
 
   const changed = syntheticCorrectionFlowDocumentPayload();
   if (!changed.resume) throw new Error("Expected synthetic resume.");
@@ -186,7 +186,7 @@ test("the runner sends two ordered production requests and retains hashes rather
   assert.equal(requests.length, 2);
   assert.deepEqual(requests.map((request) =>
     ((request.body as Record<string, unknown>).generationConfig as Record<string, unknown>).maxOutputTokens
-  ), [6_000, 1_500]);
+  ), [12_000, 6_000]);
   for (const request of requests) {
     const body = request.body as Record<string, unknown>;
     assert.match(String(request.url), /\/models\/gemini-3\.8-flash:generateContent$/u);

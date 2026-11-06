@@ -1,4 +1,6 @@
 import { PublicApiError } from "@/lib/api-errors";
+import { comparableEvidenceText } from "@/lib/ai/evidence-text";
+import { resumeSectionHeadings } from "@/lib/ai/resume-source-catalog";
 import type {
   ApplicationDocumentClaimEvidence,
   ApplicationDocumentPayload
@@ -35,7 +37,8 @@ export type TailoredResumeProviderOutput = {
   skillsSection: Array<{ text: string; factId: string }>;
   bulletRewrites: Array<{ factId: string; rewrite: string; reason: string }>;
   rolesOrProjectsToEmphasize: Array<{ text: string; factId: string }>;
-  resumeTextClaims: Array<{ claim: string; factId: string }>;
+  // A résumé line cites every fact it uses (factIds); the legacy single factId is still accepted.
+  resumeTextClaims: Array<{ claim: string; factIds?: string[]; factId?: string }>;
   unsupportedKeywords: string[];
   formattingWarnings: string[];
   resumeText: string;
@@ -93,9 +96,55 @@ export function normalizeApplicationDocumentSourceLine(value: string) {
   return value.trim().replace(/^[-*•▪◦–—]\s+/u, "");
 }
 
+export type ApplicationDocumentSection =
+  | "SUMMARY" | "SKILLS" | "EXPERIENCE" | "PROJECTS" | "EDUCATION" | "CERTIFICATIONS" | "ACHIEVEMENTS"
+  | "ADDITIONAL INFORMATION";
+
+const standardHeading =
+  /^(?:summary|profile|skills|experience|work experience|projects|education|certifications|achievements|additional(?: information)?)$/iu;
+const typedSection: Record<keyof typeof resumeSectionHeadings, ApplicationDocumentSection> = {
+  summary: "SUMMARY",
+  skills: "SKILLS",
+  workHistory: "EXPERIENCE",
+  projects: "PROJECTS",
+  education: "EDUCATION",
+  certifications: "CERTIFICATIONS",
+  achievements: "ACHIEVEMENTS"
+};
+
+// One heading vocabulary for application documents. The standard headings are recognized in any
+// case; the parser's other typed headings (LICENSES, PROFESSIONAL EXPERIENCE, CORE COMPETENCIES...)
+// are recognized when written as an all-caps heading line, so a tailored résumé can keep the
+// source's own heading instead of renaming it.
+export function applicationDocumentSectionOf(value: string): ApplicationDocumentSection | null {
+  const line = value.trim();
+  if (!line) return null;
+  if (standardHeading.test(line)) {
+    const upper = line.toLocaleUpperCase();
+    if (upper === "PROFILE") return "SUMMARY";
+    if (upper === "WORK EXPERIENCE") return "EXPERIENCE";
+    if (upper === "ADDITIONAL") return "ADDITIONAL INFORMATION";
+    return upper as ApplicationDocumentSection;
+  }
+  if (line !== line.toLocaleUpperCase() || !/\p{Lu}/u.test(line)) return null;
+  if (/^ADDITIONAL\s+INFORMATION$/u.test(line)) return "ADDITIONAL INFORMATION";
+  for (const [section, pattern] of Object.entries(resumeSectionHeadings) as Array<[keyof typeof resumeSectionHeadings, RegExp]>) {
+    if (pattern.test(line)) return typedSection[section];
+  }
+  return null;
+}
+
+export function isApplicationDocumentSectionHeading(value: string) {
+  return applicationDocumentSectionOf(value) !== null;
+}
+
 function isResumeSectionHeading(value: string) {
-  return /^(?:summary|profile|skills|experience|work experience|projects|education|certifications|achievements|additional(?: information)?)$/iu
-    .test(value.trim());
+  return isApplicationDocumentSectionHeading(value);
+}
+
+// The same atomic split the catalog uses, so a source line maps to exactly its catalog facts.
+export function applicationDocumentAtomicStrings(value: unknown): string[] {
+  return atomicStrings(value);
 }
 
 function atomicStrings(value: unknown): string[] {
@@ -223,27 +272,76 @@ function factResolver(payload: ApplicationDocumentPayload) {
 }
 
 function assembleEvidence(
-  entries: Array<{ claim: string; fact: ApplicationDocumentFact; originFieldPath: string }>
+  entries: Array<{ claim: string; facts: readonly ApplicationDocumentFact[]; originFieldPath: string }>
 ): ApplicationDocumentClaimEvidence[] {
-  const claims = new Map<string, ApplicationDocumentClaimEvidence>();
-  const origins: ApplicationDocumentClaimOrigin[] = [];
-  for (const { claim, fact, originFieldPath } of entries) {
-    const key = `${comparable(claim)}\u0000${fact.factId}`;
-    if (!key) continue;
-    const citation = { ref: fact.ref, excerpt: fact.excerpt };
+  const claims = new Map<string, ApplicationDocumentClaimEvidence & { origin: ApplicationDocumentClaimOrigin; multi: boolean }>();
+  for (const { claim, facts, originFieldPath } of entries) {
+    if (!facts.length) continue;
+    const key = `${comparable(claim)}\u0000${[...new Set(facts.map((fact) => fact.factId))].sort().join(",")}`;
+    const citations = facts.map((fact) => ({ ref: fact.ref, excerpt: fact.excerpt }));
     const existing = claims.get(key);
     if (!existing) {
-      claims.set(key, { claim, citations: [citation] });
-      origins.push(Object.freeze({ factId: fact.factId, originFieldPath }));
-      continue;
-    }
-    if (!existing.citations.some((value) => value.ref === citation.ref && value.excerpt === citation.excerpt)) {
-      existing.citations.push(citation);
+      claims.set(key, {
+        claim,
+        citations: citations.filter((citation, index) => citations.findIndex((value) =>
+          value.ref === citation.ref && value.excerpt === citation.excerpt) === index),
+        origin: Object.freeze({ factId: facts[0]!.factId, originFieldPath }),
+        multi: new Set(facts.map((fact) => fact.factId)).size > 1
+      });
     }
   }
-  const evidence = [...claims.values()];
-  claimOrigins.set(evidence, Object.freeze(origins));
+  // A line citing several facts absorbs single-fact selections of the same text, so the line is
+  // validated once against every fact it claims (each must be expressed). Single-fact entries of
+  // other text stay separate, so a correct duplicate cannot mask a wrong per-item fact selection.
+  const merged: Array<ApplicationDocumentClaimEvidence & { origin: ApplicationDocumentClaimOrigin }> = [];
+  const multiByClaim = new Map<string, ApplicationDocumentClaimEvidence & { origin: ApplicationDocumentClaimOrigin }>();
+  for (const entry of claims.values()) {
+    if (!entry.multi) continue;
+    const claimKey = comparable(entry.claim);
+    const target = multiByClaim.get(claimKey);
+    if (target) {
+      for (const citation of entry.citations) {
+        if (!target.citations.some((value) => value.ref === citation.ref && value.excerpt === citation.excerpt)) target.citations.push(citation);
+      }
+      continue;
+    }
+    const copy = { claim: entry.claim, citations: [...entry.citations], origin: entry.origin };
+    multiByClaim.set(claimKey, copy);
+  }
+  for (const entry of claims.values()) {
+    const target = multiByClaim.get(comparable(entry.claim));
+    if (!target) {
+      merged.push({ claim: entry.claim, citations: entry.citations, origin: entry.origin });
+      continue;
+    }
+    if (!merged.includes(target)) merged.push(target);
+    for (const citation of entry.citations) {
+      if (!target.citations.some((value) => value.ref === citation.ref && value.excerpt === citation.excerpt)) target.citations.push(citation);
+    }
+  }
+  const evidence = merged.map(({ claim, citations }) => ({ claim, citations }));
+  claimOrigins.set(evidence, Object.freeze(merged.map((entry) => entry.origin)));
   return evidence;
+}
+
+function formattingFreeKey(value: string) {
+  return comparableEvidenceText(normalizeApplicationDocumentSourceLine(value).replace(/^[•▪◦*·-]\s*/u, ""))
+    .replace(/[\s.;:,!]+$/u, "");
+}
+
+function verbatimSourceLines(payload: ApplicationDocumentPayload) {
+  const lines = new Set<string>();
+  const visit = (value: unknown) => {
+    if (typeof value === "string") {
+      for (const line of value.split(/\r?\n/)) {
+        const normalized = comparable(normalizeApplicationDocumentSourceLine(line));
+        if (normalized) lines.add(normalized);
+      }
+    } else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object") Object.values(value).forEach(visit);
+  };
+  visit(payload.resume ?? {});
+  return lines;
 }
 
 export function assembleTailoredResumeProviderOutput(
@@ -251,7 +349,7 @@ export function assembleTailoredResumeProviderOutput(
   wire: TailoredResumeProviderOutput
 ): AssembledTailoredResumeOutput {
   const resolve = factResolver(payload);
-  const evidence: Array<{ claim: string; fact: ApplicationDocumentFact; originFieldPath: string }> = [];
+  const evidence: Array<{ claim: string; facts: readonly ApplicationDocumentFact[]; originFieldPath: string }> = [];
   // Typed projections and evidence use the same single-marker convention as
   // resumeText line association. The rendered resume itself is preserved.
   const summary = normalizeApplicationDocumentSourceLine(wire.professionalSummary);
@@ -266,7 +364,7 @@ export function assembleTailoredResumeProviderOutput(
     evidence.push({
       claim: summary,
       originFieldPath: "professionalSummary",
-      fact: resolve(wire.professionalSummaryFactId, "professionalSummaryFactId")
+      facts: [resolve(wire.professionalSummaryFactId, "professionalSummaryFactId")]
     });
   } else if (wire.professionalSummaryFactId !== NO_APPLICATION_DOCUMENT_FACT_ID) {
     throw new PublicApiError("Empty application document summary must not select an applicant fact.", 422, {
@@ -278,13 +376,13 @@ export function assembleTailoredResumeProviderOutput(
 
   const skillsSection = wire.skillsSection.map((item, index) => {
     const text = normalizeApplicationDocumentSourceLine(item.text);
-    evidence.push({ claim: text, fact: resolve(item.factId, `skillsSection[${index}].factId`), originFieldPath: `skillsSection[${index}].text` });
+    evidence.push({ claim: text, facts: [resolve(item.factId, `skillsSection[${index}].factId`)], originFieldPath: `skillsSection[${index}].text` });
     return text;
   });
   const bulletRewrites = wire.bulletRewrites.map((item, index) => {
     const fact = resolve(item.factId, `bulletRewrites[${index}].factId`);
     const rewrite = normalizeApplicationDocumentSourceLine(item.rewrite);
-    evidence.push({ claim: rewrite, fact, originFieldPath: `bulletRewrites[${index}].rewrite` });
+    evidence.push({ claim: rewrite, facts: [fact], originFieldPath: `bulletRewrites[${index}].rewrite` });
     return { original: fact.excerpt, rewrite, reason: item.reason };
   });
   const rolesOrProjectsToEmphasize = wire.rolesOrProjectsToEmphasize.map((item, index) => {
@@ -292,19 +390,42 @@ export function assembleTailoredResumeProviderOutput(
     evidence.push({
       claim: text,
       originFieldPath: `rolesOrProjectsToEmphasize[${index}].text`,
-      fact: resolve(item.factId, `rolesOrProjectsToEmphasize[${index}].factId`)
+      facts: [resolve(item.factId, `rolesOrProjectsToEmphasize[${index}].factId`)]
     });
     return text;
   });
-  const resumeLines = new Set(wire.resumeText.split(/\r?\n/)
-    .map((line) => comparable(normalizeApplicationDocumentSourceLine(line)))
-    .filter(Boolean));
+  // A claim names a whole rendered line, or one semicolon part of it: the fact catalog
+  // splits source lines at semicolons, so a model citing one such fact names that part.
+  // validateTailoredResumeClaims still requires every whole line to be verbatim source or
+  // fully supported, so a part claim cannot carry an unsupported remainder.
+  const renderedParts = wire.resumeText.split(/\r?\n/)
+    .flatMap((line) => {
+      const normalized = normalizeApplicationDocumentSourceLine(line);
+      return [normalized, ...normalized.split(/;\s+/u)];
+    })
+    .filter((part) => comparable(part));
+  const resumeLines = new Set(renderedParts.map((part) => comparable(part)));
+  // A claim may differ from its rendered line only in formatting (dash or quote style,
+  // end punctuation, bullet glyph, spacing). Such a claim binds to the rendered text, so
+  // the evidence and every later truth check describe what is actually on the page.
+  const renderedByFormattingFreeKey = new Map<string, string[]>();
+  for (const part of renderedParts) {
+    const key = formattingFreeKey(part);
+    renderedByFormattingFreeKey.set(key, [...(renderedByFormattingFreeKey.get(key) ?? []), part]);
+  }
   wire.resumeTextClaims.forEach((item, index) => {
-    const fact = resolve(item.factId, `resumeTextClaims[${index}].factId`);
+    const ids = item.factIds?.length ? item.factIds : item.factId ? [item.factId] : [];
+    const facts = ids.map((id, idIndex) => resolve(id, item.factIds?.length
+      ? `resumeTextClaims[${index}].factIds[${idIndex}]`
+      : `resumeTextClaims[${index}].factId`));
+    if (!facts.length) resolve("", `resumeTextClaims[${index}].factIds`);
+    const fact = facts[0]!;
     const origin = Object.freeze({ factId: fact.factId, originFieldPath: `resumeTextClaims[${index}].claim` });
     // The prompt permits the exact rendered bullet line. Both sides use the same
     // existing single-marker normalization; factual words and resumeText stay intact.
-    const claim = normalizeApplicationDocumentSourceLine(item.claim);
+    let claim = normalizeApplicationDocumentSourceLine(item.claim);
+    const formattingMatches = new Set(renderedByFormattingFreeKey.get(formattingFreeKey(claim)) ?? []);
+    if (!resumeLines.has(comparable(claim)) && formattingMatches.size === 1) claim = [...formattingMatches][0]!;
     if (!resumeLines.has(comparable(claim))) {
       const error = new PublicApiError("Resume-text evidence describes text absent from the generated resume.", 422, {
         code: "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
@@ -317,21 +438,36 @@ export function assembleTailoredResumeProviderOutput(
     evidence.push({
       claim,
       originFieldPath: origin.originFieldPath,
-      fact
+      facts
     });
   });
 
   const associatedClaims = new Set(evidence.map(({ claim }) => comparable(claim)));
+  const sourceLines = verbatimSourceLines(payload);
+  const resumeFacts = buildApplicationDocumentFactCatalog(payload).filter((fact) => fact.ref.startsWith("resume."));
   for (const [lineIndex, rawLine] of wire.resumeText.split(/\r?\n/).entries()) {
     const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isResumeSectionHeading(line)) continue;
-    if (!associatedClaims.has(comparable(line))) {
-      throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
-        code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
-        fieldPath: `resumeText.line[${lineIndex}]`,
-        retryable: false
-      });
+    if (!associatedClaims.has(comparable(line)) && sourceLines.has(comparable(line))) {
+      // A line copied verbatim from the master résumé is the applicant's own text. Cited in part
+      // (e.g. the first semicolon part of a skills line), it is bound to the catalog facts it
+      // contains. Not cited at all, it is bound to the facts it is made of, exactly as the prompt
+      // asks Gemini to cite it; a line with no such fact stays unbound, accepted as source text.
+      const partlyCited = line.split(/;\s+/u).some((part) => associatedClaims.has(comparable(part)));
+      const contained = partlyCited
+        ? resumeFacts.filter((fact) => comparable(fact.excerpt) && comparable(line).includes(comparable(fact.excerpt)))
+        : [...new Set(applicationDocumentAtomicStrings(line).flatMap((atom) => {
+          const fact = resumeFacts.find((candidate) => comparable(candidate.excerpt) === comparable(atom));
+          return fact ? [fact] : [];
+        }))];
+      if (contained.length) {
+        evidence.push({ claim: line, originFieldPath: `resumeText.line[${lineIndex}]`, facts: contained });
+        associatedClaims.add(comparable(line));
+      }
     }
+    // Any other line without evidence is left in place: validateTailoredResumeClaims rejects it,
+    // and finalizeTailoredResume removes it first (tailoredResumeLinesWithoutEvidence), so a
+    // paid answer is not lost to one uncited line.
   }
 
   return {
@@ -358,7 +494,7 @@ export function assembleCoverLetterProviderOutput(
     claimsUsed: assembleEvidence(wire.claimsUsed.map((entry, index) => ({
       claim: entry.claim,
       originFieldPath: `claimsUsed[${index}].claim`,
-      fact: resolve(entry.factId, `claimsUsed[${index}].factId`)
+      facts: [resolve(entry.factId, `claimsUsed[${index}].factId`)]
     })))
   };
 }

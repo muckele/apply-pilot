@@ -155,6 +155,8 @@ async function setup(t: TestContext) {
   stub(t, prisma.resume, "findFirst", async () => resume);
   stub(t, prisma.userProfile, "findUnique", async () => profile);
   stub(t, prisma.aIResponseCache, "findFirst", async () => null);
+  // Tailoring reads the latest job match for protected résumé citations; none by default.
+  stub(t, prisma.aIAnalysis, "findFirst", async () => null);
   stub(t, prisma.aIBudgetReservation, "findMany", async () => []);
   stub(t, prisma.aIBudgetReservation, "findFirst", async () => null);
   stub(t, prisma.aISettings, "upsert", async () => ({
@@ -187,7 +189,8 @@ function installLedger(t: TestContext, prisma: Awaited<ReturnType<typeof setup>>
       create: (args: unknown) => prisma.generatedDocument.create(args as never)
     },
     aIAnalysis: {
-      create: (args: unknown) => prisma.aIAnalysis.create(args as never)
+      create: (args: unknown) => prisma.aIAnalysis.create(args as never),
+      findFirst: (args: unknown) => prisma.aIAnalysis.findFirst(args as never)
     },
     aIBudgetLedger: {
       upsert: async () => ({ id: "ledger-1" }),
@@ -244,7 +247,7 @@ test("both application-document routes require the private-data consent contract
     assert.equal(body.dataType, "application_packet");
     assert.equal(body.provider, "gemini");
     assert.equal(body.model, "gemini-3.8-flash");
-    assert.equal(body.promptVersion, "12");
+    assert.equal(body.promptVersion, "14");
   }
   assert.equal(providerCalls, 0);
   assert.equal(writes, 0);
@@ -308,7 +311,7 @@ test("a supported stubbed résumé result is persisted only after v8 atomic-fact
   assert.ok(persistedClaims.length > 0);
   assert.deepEqual(persistedClaims, ((await response.clone().json()) as { tailored: { claimEvidence: unknown } }).tailored.claimEvidence);
   assert.equal(persistedAnalysis.confidence, null);
-  assert.equal(persistedAnalysis.promptVersion, "12");
+  assert.equal(persistedAnalysis.promptVersion, "14");
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
 });
@@ -338,12 +341,12 @@ test("C2 copy traverses the production cover transport, validators, ledger and a
   });
   assert.equal(calls, 1);
   assert.equal(result.coverLetter, wire.coverLetter);
-  assert.equal(result.promptVersion, "12");
+  assert.equal(result.promptVersion, "14");
   assert.equal(result.claimsUsed.length, wire.claimsUsed.length);
   assert.ok(result.claimsUsed.every(entry => entry.citations.length === 1));
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
-  assert.equal(ledger.cacheWrites[0].promptVersion, "12");
+  assert.equal(ledger.cacheWrites[0].promptVersion, "14");
   assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, wire.coverLetter);
 });
 
@@ -382,4 +385,137 @@ test("an unsupported stubbed cover-letter claim is billed as failed and never pe
   assert.equal(writes, 0);
   assert.equal(ledger.reconciliations[0].status, "FAILED");
   assert.equal(ledger.cacheWrites.length, 0);
+});
+
+test("a mocked Gemini answer that omits a job and trims skills still succeeds: the job is restored and the version saved", async (t) => {
+  const prisma = await setup(t);
+  const ledger = installLedger(t, prisma);
+  const skills = [
+    "TypeScript", "PostgreSQL", "Node.js", "GraphQL", "Terraform", "Docker",
+    "Redis", "Linux", "Bash", "Git", "Figma", "Watercolor painting"
+  ];
+  const jobs = [
+    { header: "Example Co | Platform Engineer | 2022–Present", company: "Example Co", title: "Platform Engineer", startDate: "2022", endDate: "Present",
+      bullets: ["Built reliable TypeScript services.", "Reduced deploy time from 40 minutes to 12 minutes."] },
+    { header: "Sample Labs | Software Engineer | 2019–2022", company: "Sample Labs", title: "Software Engineer", startDate: "2019", endDate: "2022",
+      bullets: ["Maintained PostgreSQL schemas for billing.", "Wrote integration tests for payment flows."] }
+  ];
+  const summary = "Platform engineer who built reliable TypeScript services.";
+  const sourceText = [
+    "Synthetic Applicant", "applicant@example.test | Remote", "",
+    "SUMMARY", summary, "",
+    "SKILLS", ...skills, "",
+    "EXPERIENCE", ...jobs.flatMap((entry) => [entry.header, ...entry.bullets.map((bullet) => `• ${bullet}`)])
+  ].join("\n");
+  const keepRuleResume = {
+    ...resume,
+    rawText: sourceText,
+    summary,
+    skills,
+    achievements: [],
+    workHistory: jobs.map((entry) => ({
+      sourceText: [entry.header, ...entry.bullets].join("\n"),
+      company: entry.company,
+      title: entry.title,
+      location: null,
+      startDate: entry.startDate,
+      endDate: entry.endDate,
+      bullets: entry.bullets
+    }))
+  };
+  stub(t, prisma.resume, "findFirst", async () => keepRuleResume);
+  const matchQueries: unknown[] = [];
+  stub(t, prisma.aIAnalysis, "findFirst", async (query: unknown) => {
+    matchQueries.push(query);
+    return { output: { factualMatches: [{ applicantEvidence: [{ ref: "resume.skills[11]", excerpt: "Watercolor painting" }] }] } };
+  });
+  const { buildApplicationDocumentPayload } = await import("@/lib/ai/resume-tailoring-payload");
+  const catalog = buildApplicationDocumentFactCatalog(buildApplicationDocumentPayload(job, keepRuleResume, profile, { facts: [] }));
+  const factId = (excerpt: string) => {
+    const id = catalog.find((fact) => fact.excerpt === excerpt)?.factId;
+    assert.ok(id, `missing fact: ${excerpt}`);
+    return id;
+  };
+  // Gemini drops Sample Labs entirely and four of twelve skills, one of them cited by the job match.
+  // Restoring the protected skill leaves 9, so the floor of 10 brings back the first missing skill.
+  const dropped = new Set(["Bash", "Git", "Figma", "Watercolor painting", jobs[1]!.header, ...jobs[1]!.bullets]);
+  const resumeText = sourceText.split("\n").filter((line) => !dropped.has(line.replace(/^• /u, ""))).join("\n");
+  const headings = new Set(["SUMMARY", "SKILLS", "EXPERIENCE"]);
+  const keptSkills = skills.filter((skill) => !dropped.has(skill));
+  const output = {
+    professionalSummary: summary,
+    professionalSummaryFactId: factId(summary),
+    skillsSection: keptSkills.map((text) => ({ text, factId: factId(text) })),
+    bulletRewrites: [],
+    rolesOrProjectsToEmphasize: [],
+    resumeTextClaims: resumeText.split("\n").map((line) => line.replace(/^• /u, "")).filter((line) => line && !headings.has(line))
+      .map((claim) => ({ claim, factId: factId(claim) })),
+    unsupportedKeywords: ["Kubernetes"],
+    formattingWarnings: [],
+    resumeText
+  };
+  const requests: Array<Record<string, unknown>> = [];
+  stub(t, globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
+    requests.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return geminiResponse(output, 6_035);
+  });
+  let versionData: Record<string, unknown> | null = null;
+  let analysisData: Record<string, unknown> | null = null;
+  stub(t, prisma.resumeVersion, "create", async ({ data }: { data: Record<string, unknown> }) => {
+    versionData = data;
+    return { id: "version-keep-rule", ...data };
+  });
+  stub(t, prisma.aIAnalysis, "create", async ({ data }: { data: Record<string, unknown> }) => {
+    analysisData = data;
+    return { id: "analysis-keep-rule", ...data };
+  });
+  stub(t, prisma.auditLog, "create", async () => ({ id: "audit-1" }));
+  const { POST } = await import("../app/api/jobs/[id]/tailored-resume/route");
+  const response = await invokeRoute("/api/jobs/job-1/tailored-resume", () => POST(
+    new Request("http://localhost/api/jobs/job-1/tailored-resume", {
+      method: "POST",
+      headers: { "x-ai-cost-confirmed": "true", "x-ai-data-confirmed": "true" }
+    }) as NextRequest,
+    { params: Promise.resolve({ id: job.id }) }
+  ));
+
+  assert.equal(response.status, 200, JSON.stringify(await response.clone().json()));
+  assert.equal(requests.length, 1, "exactly one paid call");
+  const generation = requests[0]!.generationConfig as Record<string, unknown>;
+  assert.equal(generation.maxOutputTokens, 12_000);
+  const sentPayload = JSON.parse((requests[0]!.contents as Array<{ parts: Array<{ text: string }> }>)[0]!.parts[0]!.text);
+  assert.deepEqual(sentPayload.protectedEvidence, { citations: [{ ref: "resume.skills[11]", excerpt: "Watercolor painting" }] });
+  const prompt = (requests[0]!.systemInstruction as { parts: Array<{ text: string }> }).parts[0]!.text;
+  assert.match(prompt, new RegExp(`Protected factIds[^\\n]*${factId("Watercolor painting")}`, "u"));
+  assert.equal(matchQueries.length, 2, "both the generation read and the transactional re-read bind protection");
+
+  const persisted = versionData as unknown as Record<string, unknown>;
+  const fullText = String(persisted.fullText);
+  for (const line of [jobs[1]!.header, ...jobs[1]!.bullets, "Bash", "Watercolor painting"]) {
+    assert.ok(fullText.includes(line), `restored: ${line}`);
+  }
+  assert.equal(fullText.includes("Figma"), false);
+  assert.equal(fullText.split("\n").includes("Git"), false);
+  assert.ok(fullText.indexOf(jobs[1]!.header) > fullText.indexOf(jobs[0]!.bullets[1]!));
+  const metadata = persisted.metadata as {
+    claimEvidence: Array<{ claim: string; citations: Array<{ ref: string; excerpt: string }> }>;
+    leftOut: unknown[];
+    restored: Array<{ ref: string; kind: string }>;
+  };
+  assert.deepEqual(metadata.leftOut, [
+    { ref: "resume.skills[9]", kind: "skill", context: null, text: "Git" },
+    { ref: "resume.skills[10]", kind: "skill", context: null, text: "Figma" }
+  ]);
+  assert.deepEqual(metadata.restored.map((item) => [item.ref, item.kind]), [
+    ["resume.skills[8]", "skill"], ["resume.skills[11]", "skill"], ["resume.workHistory[1]", "record"]
+  ]);
+  assert.ok(metadata.claimEvidence.some((entry) => entry.claim === jobs[1]!.header &&
+    entry.citations.some((citation) => citation.ref === "resume.workHistory[1]")));
+  assert.deepEqual(persisted.skills, [...keptSkills, "Bash", "Watercolor painting"]);
+  const analysis = analysisData as unknown as { output: { leftOut: unknown[] } };
+  assert.deepEqual(analysis.output.leftOut, metadata.leftOut);
+  assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
+  assert.equal(ledger.cacheWrites.length, 1);
+  assert.ok(String((ledger.cacheWrites[0].output as { resumeText: string }).resumeText).includes(jobs[1]!.header),
+    "the validated cache keeps the completed résumé");
 });

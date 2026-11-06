@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 
-import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
+import { buildApplicationDocumentPayload, protectedResumeCitations } from "@/lib/ai/resume-tailoring-payload";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   CURRENT_EVIDENCE_SNAPSHOT_SELECT,
@@ -9,10 +9,29 @@ import {
 
 type SourceClient = PrismaClient | Prisma.TransactionClient;
 
+export type ApplicationDocumentEvidenceOptions = Readonly<{
+  // Tailoring keeps every résumé item the job's current match analysis cited as evidence.
+  protectMatchEvidence?: boolean;
+}>;
+
+function matchCitations(output: unknown) {
+  const matches = output && typeof output === "object" && !Array.isArray(output)
+    ? (output as Record<string, unknown>).factualMatches
+    : null;
+  if (!Array.isArray(matches)) return [];
+  return protectedResumeCitations(matches.flatMap((match) => {
+    const evidence = match && typeof match === "object" && !Array.isArray(match)
+      ? (match as Record<string, unknown>).applicantEvidence
+      : null;
+    return Array.isArray(evidence) ? evidence : [];
+  }));
+}
+
 export async function readApplicationDocumentEvidence(
   client: SourceClient,
   userId: string,
-  jobPostingId: string
+  jobPostingId: string,
+  options: ApplicationDocumentEvidenceOptions = {}
 ) {
   const [job, resume, profile] = await Promise.all([
     client.jobPosting.findFirstOrThrow({
@@ -35,10 +54,30 @@ export async function readApplicationDocumentEvidence(
       code: evidence.currentEvidenceSourceValid ? "EVIDENCE_SNAPSHOT_REQUIRED" : "EVIDENCE_SOURCE_STALE"
     });
   }
+  // The latest JOB_MATCH for this job and the current evidence snapshot. Its citations index the
+  // same master résumé the snapshot is bound to; stale or unknown ones protect nothing.
+  const match = options.protectMatchEvidence
+    ? await client.aIAnalysis.findFirst({
+        where: {
+          userId,
+          jobPostingId: job.id,
+          type: "JOB_MATCH",
+          evidenceSnapshotId: evidence.effectiveEvidenceSnapshotId
+        },
+        orderBy: { createdAt: "desc" },
+        select: { output: true }
+      })
+    : null;
   return {
     job,
     resume,
     profile,
-    payload: buildApplicationDocumentPayload(job, resume, profile, evidence.reviewedEvidence)
+    payload: buildApplicationDocumentPayload(
+      job,
+      resume,
+      profile,
+      evidence.reviewedEvidence,
+      options.protectMatchEvidence ? { citations: matchCitations(match?.output) } : null
+    )
   };
 }

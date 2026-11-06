@@ -64,7 +64,7 @@ test("the offline documents are complete relative to their available source reco
   );
 });
 
-test("resume completeness rejects omission of a source work record while preserving factual checks", () => {
+test("an omitted work-record header is restored in place instead of rejected, preserving factual checks", () => {
   const payload = syntheticCorrectionFlowDocumentPayload();
   const resume = assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput());
   const omittedCompany = String((payload.resume?.workHistory as Array<{ company: string }>)[1]?.company);
@@ -76,29 +76,38 @@ test("resume completeness rejects omission of a source work record while preserv
     !entry.citations.some((citation) => citation.ref === "resume.workHistory[1]")
   );
 
-  assert.throws(
-    () => validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, incomplete)),
-    (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "APPLICATION_DOCUMENT_INCOMPLETE" &&
-      error.details?.fieldPath === "resume.workHistory[1]"
-  );
+  const completed = validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, incomplete));
+  // The header returns directly above that job's retained bullets, so no bullet is duplicated.
+  assert.equal(completed.resumeText, resume.resumeText);
+  assert.ok(completed.claimEvidence.some((entry) => entry.claim.startsWith(omittedCompany) &&
+    entry.citations.every((citation) => citation.ref === "resume.workHistory[1]" && citation.excerpt === entry.claim)));
+  validateTailoredResumeClaims(payload, completed);
 });
 
-test("resume completeness rejects omission of one supported bullet inside a retained work record", () => {
+test("an omitted job-priority bullet is restored at the top of its retained work record", () => {
   const payload = syntheticCorrectionFlowDocumentPayload();
   const output = assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput());
   const omitted = "Improved monthly service-level reporting accuracy by 18% through documented SQL validation checks.";
   const changed = {
     ...output,
-    resumeText: output.resumeText.replace(`${omitted}\n`, ""),
+    resumeText: output.resumeText.replace(`• ${omitted}\n`, ""),
     claimEvidence: output.claimEvidence.filter((entry) => entry.claim !== omitted)
   };
-  assert.throws(
-    () => validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, changed)),
-    (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "APPLICATION_DOCUMENT_INCOMPLETE" &&
-      error.details?.fieldPath === "resume.workHistory[1]"
-  );
+  const completed = validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, changed));
+  assert.equal(completed.resumeText, output.resumeText);
+  validateTailoredResumeClaims(payload, completed);
+});
+
+test("a trimmed lower-priority bullet inside a retained work record is accepted", () => {
+  const payload = syntheticCorrectionFlowDocumentPayload();
+  const output = assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput());
+  const trimmed = "Coordinated incident communications among customer leaders, support specialists, and engineering owners.";
+  const changed = {
+    ...output,
+    resumeText: output.resumeText.replace(`• ${trimmed}\n`, ""),
+    claimEvidence: output.claimEvidence.filter((entry) => entry.claim !== trimmed)
+  };
+  assert.equal(validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, changed)), changed);
 });
 
 test("cover-letter completeness rejects a truthful but insubstantial one-fact letter", () => {
@@ -201,12 +210,13 @@ test("resume completeness does not treat SQL as present inside PostgreSQL", () =
       citations: [{ ref: "resume.workHistory[0]", excerpt: "PostgreSQL" }]
     }]
   };
-  assert.throws(
-    () => validateTailoredResumeQuality(payload, output),
-    (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "APPLICATION_DOCUMENT_INCOMPLETE" &&
-      error.details?.fieldPath === "resume.workHistory[0]"
-  );
+  // A work record is always kept: the SQL fact is not "present" inside PostgreSQL, so it is restored.
+  const completed = validateTailoredResumeQuality(payload, output);
+  assert.equal(completed.resumeText, "Taylor Boundary\ntaylor@example.test\nSQL\nPostgreSQL");
+  assert.deepEqual(completed.claimEvidence.at(-1), {
+    claim: "SQL",
+    citations: [{ ref: "resume.workHistory[0]", excerpt: "SQL" }]
+  });
 });
 
 test("cover-letter structure does not count one repeated body fact as varied evidence", () => {

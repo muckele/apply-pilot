@@ -25,7 +25,7 @@ test("the résumé diagnostic launcher binds one displayed call before reading t
         const parsed = JSON.parse(value);
         manifestHash = parsed.safeManifest.manifestHash;
         assert.equal(parsed.safeManifest.callCount, 1);
-        assert.equal(parsed.safeManifest.conservativeReservationMicros, 64_500);
+        assert.equal(parsed.safeManifest.conservativeReservationMicros, 72_000);
         events.push("manifest");
       }
     },
@@ -42,7 +42,7 @@ test("the résumé diagnostic launcher binds one displayed call before reading t
         manifestHash,
         exactHead,
         providerMode: "live_synthetic",
-        conservativeReservationMicros: 64_500,
+        conservativeReservationMicros: 72_000,
         providerCallsStarted: 1,
         providerCallsCompleted: 1,
         providerHttpStatus: 200,

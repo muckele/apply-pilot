@@ -63,11 +63,18 @@ import {
 import { prisma } from "@/lib/prisma";
 import {
   buildApplicationDocumentSystemPrompt,
-  validateTailoredResumeClaims,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
-import { validateTailoredResumeQuality } from "@/lib/ai/application-document-quality";
+import { finalizeTailoredResume } from "@/lib/ai/application-document-quality";
+import {
+  tailoredResumeLeftOut,
+  tailoredResumeProtectedFactIds,
+  tailoredResumeRestorations,
+  tailoredResumeReversions,
+  type TailoredResumeItem,
+  type TailoredResumeReversion
+} from "@/lib/ai/tailored-resume-keep-rule";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
@@ -1341,10 +1348,11 @@ export const tailoredResumeProviderSchema: z.ZodType<
     reason: z.string()
   }).strict()),
   rolesOrProjectsToEmphasize: z.array(providerFactSelectionSchema),
-  resumeTextClaims: z.array(z.object({
-    claim: z.string().min(1),
-    factId: z.string().min(1)
-  }).strict()),
+  // Each résumé line cites every fact it uses; the legacy single factId form is still accepted.
+  resumeTextClaims: z.array(z.union([
+    z.object({ claim: z.string().min(1), factIds: z.array(z.string().min(1)).min(1) }).strict(),
+    z.object({ claim: z.string().min(1), factId: z.string().min(1) }).strict()
+  ])),
   unsupportedKeywords: z.array(z.string()),
   formattingWarnings: z.array(z.string()),
   resumeText: z.string()
@@ -1352,7 +1360,8 @@ export const tailoredResumeProviderSchema: z.ZodType<
 
 export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
   const priorities = applicationDocumentPriorityOpportunities(payload).map(({ ref, leadingFactIds }) => ({ ref, leadingFactIds }));
-  return buildApplicationDocumentSystemPrompt(`${resumeTailorPrompt.trim()}\n\nConditional within-record priority opportunities: ${JSON.stringify(priorities)}`, payload);
+  const protectedFactIds = tailoredResumeProtectedFactIds(payload);
+  return buildApplicationDocumentSystemPrompt(`${resumeTailorPrompt.trim()}\n\nConditional within-record priority opportunities: ${JSON.stringify(priorities)}\nProtected factIds (never trim): ${JSON.stringify(protectedFactIds)}`, payload);
 }
 
 export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {
@@ -1394,8 +1403,8 @@ export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocument
         items: {
           type: "object",
           additionalProperties: false,
-          properties: { claim: { type: "string" }, factId },
-          required: ["claim", "factId"]
+          properties: { claim: { type: "string" }, factIds: { type: "array", items: factId, minItems: 1 } },
+          required: ["claim", "factIds"]
         }
       },
       unsupportedKeywords: tailoredResumeStringArray,
@@ -4299,14 +4308,20 @@ export async function tailorResume(
       promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
       ...options
     },
-    validate: (value) => validateTailoredResumeQuality(
-      applicationPayload,
-      validateTailoredResumeClaims(applicationPayload, value)
-    )
+    // Lines whose wording fails the truth check revert to source wording; then the truth checks,
+    // the keep rule (restoring omitted required/protected/below-floor items verbatim) and the
+    // truth checks again run on the completed résumé before caching or persistence.
+    validate: (value) => finalizeTailoredResume(applicationPayload, value)
   });
+  const leftOut: TailoredResumeItem[] = tailoredResumeLeftOut(applicationPayload, generated.data);
+  const restored: TailoredResumeItem[] = [...tailoredResumeRestorations(generated.data)];
+  const reverted: TailoredResumeReversion[] = [...tailoredResumeReversions(generated.data)];
 
   return {
     ...generated.data,
+    leftOut,
+    restored,
+    reverted,
     model: generated.meta.model,
     promptVersion: generated.meta.promptVersion,
     inputHash: generated.meta.requestHash,

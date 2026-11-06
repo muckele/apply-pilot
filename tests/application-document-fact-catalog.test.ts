@@ -228,18 +228,25 @@ test("a correct duplicate claim cannot mask a wrong per-item fact selection", ()
 });
 
 test("every factual resume-text line requires an assembled per-item fact association", () => {
+  const uncited = (resumeText: string) => assembleTailoredResumeProviderOutput(payload, {
+    professionalSummary: "",
+    professionalSummaryFactId: "__NO_APPLICANT_FACT__",
+    skillsSection: [],
+    bulletRewrites: [],
+    rolesOrProjectsToEmphasize: [],
+    resumeTextClaims: [],
+    unsupportedKeywords: [],
+    formattingWarnings: [],
+    resumeText
+  });
+  // A line copied verbatim from the résumé is associated by the server with the fact it is.
+  const copied = uncited(`EXPERIENCE\n${quotedFact}`);
+  assert.deepEqual(copied.claimEvidence, [{ claim: quotedFact, citations: [{ ref: "resume.workHistory[0]", excerpt: quotedFact }] }]);
+  // Any other uncited line has no association, and the claims check rejects it.
+  const invented = uncited("EXPERIENCE\nBuilt workflows for 40 regional teams.");
+  assert.deepEqual(invented.claimEvidence, []);
   assert.throws(
-    () => assembleTailoredResumeProviderOutput(payload, {
-      professionalSummary: "",
-      professionalSummaryFactId: "__NO_APPLICANT_FACT__",
-      skillsSection: [],
-      bulletRewrites: [],
-      rolesOrProjectsToEmphasize: [],
-      resumeTextClaims: [],
-      unsupportedKeywords: [],
-      formattingWarnings: [],
-      resumeText: `EXPERIENCE\n${quotedFact}`
-    }),
+    () => validateTailoredResumeClaims(payload, tailoredResumeSchema.parse(invented)),
     (error) => publicError(error, "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED", "resumeText.line[1]")
   );
 });

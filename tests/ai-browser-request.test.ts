@@ -96,7 +96,7 @@ test("application packet confirmation names Gemini, projected private data, call
       ? new Response(JSON.stringify({
           error: "Confirm application packet data and cost.",
           code: "AI_COST_CONFIRMATION_REQUIRED",
-          maximumCostMicros: 64_500,
+          maximumCostMicros: 72_000,
           provider: "gemini",
           dataType: "application_packet",
           feature: "RESUME_TAILOR",
@@ -117,7 +117,7 @@ test("application packet confirmation names Gemini, projected private data, call
   assert.match(confirmation, /gemini-3\.8-flash/);
   assert.match(confirmation, /prompt\/cache version 6/i);
   assert.match(confirmation, /no automatic retry/i);
-  assert.match(confirmation, /\$0\.0645(?:\D|$)/);
+  assert.match(confirmation, /\$0\.072(?:\D|$)/);
   assert.equal(requests.length, 2);
   assert.equal(new Headers(requests[1].headers).get("x-ai-data-confirmed"), "true");
   assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");

@@ -1,8 +1,11 @@
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  applicationDocumentAtomicStrings,
   buildApplicationDocumentFactCatalog,
+  isApplicationDocumentSectionHeading,
   normalizeApplicationDocumentSourceLine
 } from "@/lib/ai/application-document-facts";
+import { faithfulRewordingFailure, type RewordingSourceKind } from "@/lib/ai/application-document-rewording";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -19,9 +22,11 @@ export type ApplicationDocumentPayload = {
   resume?: Record<string, unknown> | null;
   profile?: Record<string, unknown> | null;
   reviewedEvidence?: Record<string, unknown> | null;
+  // Résumé items cited by the job's current match analysis; tailoring must not trim them.
+  protectedEvidence?: Record<string, unknown> | null;
 };
 
-type TailoredResumeClaimsOutput = {
+export type TailoredResumeClaimsOutput = {
   professionalSummary: string;
   skillsSection: string[];
   bulletRewrites: Array<{ original: string; rewrite: string; reason: string }>;
@@ -371,10 +376,33 @@ function unsupportedApplicantTerms(payload: ApplicationDocumentPayload) {
     .filter((term) => !evidenceContainsWhole(qualificationEvidence, term));
 }
 
+// Which cited facts a tailored résumé line may reword (lib/ai/application-document-rewording.ts).
+function rewordingSourceKind(payload: ApplicationDocumentPayload, ref: string, excerpt: string): RewordingSourceKind {
+  if (ref === "resume.summary" || /^resume\.achievements\[\d+\]$/u.test(ref) ||
+    /^reviewedEvidence\.facts\[\d+\]\.fact$/u.test(ref)) return "narrative";
+  if (/^(?:resume\.skills\[\d+\]|resume\.rawText|profile\.skillsToEmphasize\[\d+\])$/u.test(ref)) return "list";
+  const record = ref.match(/^resume\.(workHistory|projects|education|certifications)\[(\d+)\]$/u);
+  const values = record ? payload.resume?.[record[1]!] : null;
+  const value = Array.isArray(values) ? values[Number(record![2])] : null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const items = (value as Record<string, unknown>)[record![1] === "education" || record![1] === "certifications" ? "details" : "bullets"];
+  const atoms = Array.isArray(items)
+    ? applicationDocumentAtomicStrings(items.filter((item): item is string => typeof item === "string"))
+    : [];
+  return atoms.some((atom) => comparable(atom) === comparable(normalizeApplicationDocumentSourceLine(excerpt))) ? "narrative" : null;
+}
+
+type ClaimEvidenceOptions = Readonly<{
+  // Tailored résumé lines only: faithful rewording of the cited facts is allowed
+  // (lib/ai/application-document-rewording.ts). Cover letters keep the exact-wording grammar.
+  faithfulRewording?: boolean;
+}>;
+
 function validateClaimEvidence(
   payload: ApplicationDocumentPayload,
   claims: ApplicationDocumentClaimEvidence[],
-  fieldPrefix: "claimEvidence" | "claimsUsed"
+  fieldPrefix: "claimEvidence" | "claimsUsed",
+  options: ClaimEvidenceOptions = {}
 ) {
   const supportedClaims = new Set<string>();
   const unsupportedTerms = unsupportedApplicantTerms(payload);
@@ -452,8 +480,23 @@ function validateClaimEvidence(
         });
       }
     }
-    const relationPreserved = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
+    const exactRelation = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
       eligible && standalone && sameTokens(factualTokens(excerpt, yearRanges), factualTokens(claim, yearRanges)));
+    const citedFacts = [...new Map(entry.citations
+      .filter((citation) => !citation.ref.startsWith("job."))
+      .map((citation) => [`${citation.ref}\u0000${citation.excerpt}`, {
+        ref: citation.ref,
+        excerpt: citation.excerpt,
+        kind: rewordingSourceKind(payload, citation.ref, citation.excerpt)
+      }])).values()];
+    // A résumé line citing several facts must express each of them, so a citation can never make
+    // a half-kept item look whole. A single-fact line keeps the exact grammar or a faithful rewording.
+    const rewordingFailure = () => applicantEvidence.every((item) => item.eligible && item.standalone)
+      ? faithfulRewordingFailure(claim, citedFacts)
+      : "not_rewordable";
+    const relationPreserved = options.faithfulRewording
+      ? (citedFacts.length > 1 ? rewordingFailure() === null : exactRelation || rewordingFailure() === null)
+      : exactRelation;
     if (!relationPreserved) {
       throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
         code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
@@ -461,6 +504,7 @@ function validateClaimEvidence(
         relationReason: !applicantEvidence.some(item => item.eligible) ? "ineligible_source"
           : !applicantEvidence.some(item => item.eligible && item.standalone) ? "not_standalone"
             : "ordered_token_mismatch",
+        ...(options.faithfulRewording ? { rewordingFailure: rewordingFailure() } : {}),
         fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
         retryable: false
       });
@@ -468,6 +512,40 @@ function validateClaimEvidence(
     supportedClaims.add(comparable(claim));
   }
   return supportedClaims;
+}
+
+// Owner decision 2026-11-06: a tailored résumé line whose own wording fails the truth check
+// (an unsupported word or job term, a moved number, a dropped qualifier, a reversed negation) is
+// reverted to the master résumé's wording rather than discarding the paid résumé. Only those
+// wording failures qualify: a broken citation (unknown reference, excerpt not in the source,
+// missing evidence) is not about the wording, so it still rejects the result.
+const REVERTIBLE_CLAIM_CODES = new Set(["APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM", "APPLICATION_DOCUMENT_NEGATION_REVERSAL"]);
+
+export function unverifiedTailoredResumeClaims(
+  payload: ApplicationDocumentPayload,
+  claims: readonly ApplicationDocumentClaimEvidence[]
+): Array<{ index: number; reason: string }> {
+  return claims.flatMap((entry, index) => {
+    try {
+      validateClaimEvidence(payload, [entry], "claimEvidence", { faithfulRewording: true });
+      return [];
+    } catch (error) {
+      const details = error instanceof PublicApiError ? error.details : undefined;
+      if (!details || !REVERTIBLE_CLAIM_CODES.has(String(details.code))) return [];
+      const reason = details.code === "APPLICATION_DOCUMENT_NEGATION_REVERSAL" ? "negation_reversal"
+        : String(details.rewordingFailure ?? details.failureClass ?? "unsupported_claim");
+      return [{ index, reason }];
+    }
+  });
+}
+
+// Server-restored résumé lines face the same unchanged excerpt, date, negation and
+// fabrication checks as provider-selected claims.
+export function validateRestoredResumeClaimEvidence(
+  payload: ApplicationDocumentPayload,
+  claims: ApplicationDocumentClaimEvidence[]
+) {
+  validateClaimEvidence(payload, claims, "claimEvidence", { faithfulRewording: true });
 }
 
 function requireClaims(claims: Set<string>, values: Array<{ value: string; fieldPath: string }>) {
@@ -486,14 +564,14 @@ function requireClaims(claims: Set<string>, values: Array<{ value: string; field
 }
 
 function isHeading(line: string) {
-  return /^(?:SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL INFORMATION)$/i.test(line);
+  return isApplicationDocumentSectionHeading(line);
 }
 
 export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutput>(
   payload: ApplicationDocumentPayload,
   output: T
 ) {
-  const supportedClaims = validateClaimEvidence(payload, output.claimEvidence, "claimEvidence");
+  const supportedClaims = validateClaimEvidence(payload, output.claimEvidence, "claimEvidence", { faithfulRewording: true });
   const requiredClaims = [
     { value: output.professionalSummary, fieldPath: "professionalSummary" },
     ...output.skillsSection.map((value, index) => ({ value, fieldPath: `skillsSection[${index}]` })),
@@ -522,20 +600,47 @@ export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutpu
     }
   }
 
-  for (const [lineIndex, rawLine] of output.resumeText.split(/\r?\n/).entries()) {
+  const [lineIndex] = resumeLinesWithoutEvidence(payload, output.resumeText, supportedClaims);
+  if (lineIndex !== undefined) {
+    throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
+      code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
+      fieldPath: `resumeText.line[${lineIndex}]`,
+      retryable: false
+    });
+  }
+  return output;
+}
+
+// Indexes of rendered résumé lines that are neither source text nor a supported claim: the lines
+// validateTailoredResumeClaims rejects.
+function resumeLinesWithoutEvidence(payload: ApplicationDocumentPayload, resumeText: string, supportedClaims: ReadonlySet<string>) {
+  // Owner-reviewed facts are applicant evidence too: a line that is exactly one of them (as the
+  // keep rule restores an omitted multi-sentence fact) is source text, like a master-résumé line.
+  const reviewedFacts = Array.isArray(payload.reviewedEvidence?.facts)
+    ? payload.reviewedEvidence.facts.flatMap((fact) =>
+      fact && typeof fact === "object" && typeof (fact as { fact?: unknown }).fact === "string" ? [(fact as { fact: string }).fact] : [])
+    : [];
+  return resumeText.split(/\r?\n/).flatMap((rawLine, lineIndex) => {
     const line = normalizeApplicationDocumentSourceLine(rawLine);
     if (!line || isHeading(line) ||
       containsExactEvidenceLine(payload.resume ?? {}, line) ||
-      containsStandaloneEvidence(payload.resume ?? {}, line)) continue;
-    if (!supportedClaims.has(comparable(line))) {
-      throw new PublicApiError("Application document is missing source evidence for generated claim.", 422, {
-        code: "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED",
-        fieldPath: `resumeText.line[${lineIndex}]`,
-        retryable: false
-      });
-    }
-  }
-  return output;
+      containsExactEvidenceLine(reviewedFacts, line) ||
+      containsStandaloneEvidence(payload.resume ?? {}, line) ||
+      supportedClaims.has(comparable(line))) return [];
+    return [lineIndex];
+  });
+}
+
+// The rendered lines that would fail validateTailoredResumeClaims only for lack of evidence, once
+// the claims at excludedClaimIndexes (those failing their own truth check) are set aside.
+export function tailoredResumeLinesWithoutEvidence(
+  payload: ApplicationDocumentPayload,
+  output: Pick<TailoredResumeClaimsOutput, "resumeText" | "claimEvidence">,
+  excludedClaimIndexes: ReadonlySet<number> = new Set()
+) {
+  const supported = new Set(output.claimEvidence.flatMap((entry, index) =>
+    excludedClaimIndexes.has(index) || !entry.claim.trim() || !entry.citations.length ? [] : [comparable(entry.claim.trim())]));
+  return resumeLinesWithoutEvidence(payload, output.resumeText, supported);
 }
 
 function sentenceKey(value: string) {

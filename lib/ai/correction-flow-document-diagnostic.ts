@@ -70,7 +70,7 @@ const FROZEN_SYNTHETIC_PAYLOAD_HASH =
 const FROZEN_SYNTHETIC_REVIEWED_EVIDENCE_HASH =
   "46fb6df5fa80cc28988eddce47d24d1554feeceaf8de8fe04a4210f371ee0708";
 const FROZEN_SYNTHETIC_FACT_CATALOG_HASH =
-  "c5568c3d726939b0d942aee27011f6892f172300899c86e043422b2e0867c1ac";
+  "52411db9c100e37fa92d82920408812ecc081c4c3ad5401a935647dc671a5d29";
 const FROZEN_SYNTHETIC_FACT_COUNT = 70;
 
 const providerModeSchema = z.enum(["offline_stubbed", "live_synthetic"]);
@@ -414,7 +414,7 @@ export const correctionFlowDocumentReviewConsent = z.object({
   exactHead: z.string().regex(/^[a-f0-9]{40}$/u),
   providerMode: providerModeSchema,
   approvedCallCount: z.literal(CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_CALL_COUNT),
-  approvedConservativeReservationMicros: z.literal(112_125),
+  approvedConservativeReservationMicros: z.literal(121_500),
   approvedStepTimeoutMs: z.literal(CORRECTION_FLOW_DOCUMENT_DIAGNOSTIC_STEP_TIMEOUT_MS),
   syntheticApplicantDataSharingApproved: z.literal(true),
   existingCredentialUseApproved: z.boolean(),

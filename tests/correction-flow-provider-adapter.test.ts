@@ -195,8 +195,8 @@ test("the manifest-bound adapter executes exactly four ordered SDK requests with
   }), [
     [8_192, { thinkingLevel: "MEDIUM" }],
     [8_192, { thinkingLevel: "MEDIUM" }],
-    [6_000, { thinkingLevel: "LOW" }],
-    [1_500, { thinkingLevel: "LOW" }]
+    [12_000, { thinkingLevel: "LOW" }],
+    [6_000, { thinkingLevel: "LOW" }]
   ]);
   for (const body of capturedBodies) {
     const generation = (body as { generationConfig: Record<string, unknown> }).generationConfig;

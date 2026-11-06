@@ -12,4 +12,16 @@ For example, source facts `Directed service delivery across support, engineering
 
 Free connective prose, new causal explanations and synthesized qualifications remain outside the strict factual grammar. Better flow comes from selection, ordering, supported first-person prefixes and paragraph grouping. A materially freer writing architecture would need its own evidence contract and review rather than weakening these checks.
 
+**2026-11-05 note:** prompt/cache version **14** supersedes this for both documents. Résumé and cover-letter limits changed in `lib/ai/policy.ts`; see [the diagnostics note](CORRECTION_FLOW_RESUME_DIAGNOSTIC.md#2026-11-05-note-values-re-pinned-because-production-limits-and-prompt-changed).
+
+What changed for résumé tailoring:
+- **Trimming:** skills, achievements, projects and individual bullets may be trimmed (floors: two bullets per job, ten skills, two achievements). Every job, education and certification record is always kept.
+- **Restoration:** omitted required or protected items are restored verbatim instead of rejecting the paid result. Protected items are job-match citations, owner-attested facts and requirement-matched skills.
+- **Faithful rewording:** bullets, the summary, achievements and owner-attested facts may be reworded (`lib/ai/application-document-rewording.ts`). Every word, number, name and qualifier still comes from the cited facts, and record headers keep the exact grammar.
+- **Whole items:** a kept item is always whole, never a semicolon fragment.
+- **Headings:** the source's own section headings are kept.
+- **Ordering:** the within-record ordering rule applies to kept bullets.
+
+Cover letters keep the exact-wording grammar below.
+
 Both generation features use prompt/cache version **12**. Existing v11 cached outputs cannot satisfy the new versioned request. The 70-fact synthetic source and reviewed-evidence payload are unchanged; version-bound catalog and request hashes are refreshed explicitly in diagnostic fixtures. Model `gemini-3.8-flash`, LOW thinking, token/spending ceilings, no retries/fallbacks, sequential failure stops, actual PDF/DOCX verification and owner review remain unchanged. No paid attempt is authorized by this candidate. The lost c4616f4 receipt and its actual decisions/usage/cost remain unknown.

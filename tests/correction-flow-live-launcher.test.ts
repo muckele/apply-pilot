@@ -307,7 +307,7 @@ function passedReceipt(manifestHash: string): CorrectionFlowQualificationReceipt
     manifestHash,
     exactHead,
     providerMode: "live_synthetic",
-    conservativeReservationMicros: 257_565,
+    conservativeReservationMicros: 266_940,
     providerCallsStarted: 4,
     providerCallsCompleted: 4,
     knownInputTokens: 400,

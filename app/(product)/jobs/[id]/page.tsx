@@ -10,6 +10,7 @@ import { RequirementGapList } from "@/components/requirement-gap-list";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { buildDocumentReviewView } from "@/lib/documents/document-review";
+import { readTailoredResumeLeftOut, readTailoredResumeReversions } from "@/lib/ai/tailored-resume-keep-rule";
 import {
   acceptedEvidenceFactsFromSnapshot,
   CURRENT_EVIDENCE_SNAPSHOT_SELECT
@@ -186,6 +187,8 @@ async function getJobDetail(id: string) {
             resumeFormat: { template:version.template as ResumeFormat["template"], pageSize:version.pageSize as ResumeFormat["pageSize"], fontFamily:version.fontFamily as ResumeFormat["fontFamily"], accentColor:version.accentColor, fontSize:version.fontSize, lineSpacing:version.lineSpacing },
             evidenceCurrent: review.exportReady,
             review,
+            leftOut: readTailoredResumeLeftOut(metadata),
+            reverted: readTailoredResumeReversions(metadata),
             createdAt: version.createdAt.toISOString()
           };
         }

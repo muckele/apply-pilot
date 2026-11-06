@@ -4,6 +4,8 @@ Status: bounded prompt-version `7` hosted conformance and the first attendance-d
 
 This matrix bounds what the coordinated correction proves. It complements the targeted independent review; it is not a claim that the whole repository or every future provider response is defect-free.
 
+**2026-11-05 note: values re-pinned because production limits and prompt changed.** The owner approved a new tailoring rule: a tailored résumé may trim extras but always keeps every job. With it (and a same-day extension after the owner's first live run: faithful rewording bound to cited facts, multi-fact résumé lines, whole items only, protected owner-attested facts and kept source headings), production moved to application-document prompt/cache `14`, tailored-résumé limits of 36,000 input / 12,000 output tokens (maximum `$0.072000`) and cover-letter limits of 36,000 / 6,000 (maximum `$0.049500`). The correction-flow tools mirror production, so their pins were updated: the four-call qualification ceiling is now `$0.266940` (was `$0.257565`), the two-document diagnostic and visible-review ceiling is `$0.121500` (was `$0.112125`), and the version-bound fact-catalog and wire-request hashes changed. See [the diagnostics note](CORRECTION_FLOW_RESUME_DIAGNOSTIC.md#2026-11-05-note-values-re-pinned-because-production-limits-and-prompt-changed) for the full table. The shared validators they call now accept faithful résumé rewording bound to the cited facts and restore omitted or partially kept required and protected items whole instead of failing. Any earlier offline review or manifest approval covered the old values only. Re-review before running. These remain prepared but unexecuted, and this note authorizes no paid run.
+
 | Surface or failure mode | Synthetic proof | Status and boundary |
 |---|---|---|
 | Extraction and parse authority | Complete synthetic DOCX extraction → stubbed provider JSON → v9 validation → route persistence → canonical consumers; omission, invention, reordering, and adjacent-record merge negatives | Tested locally; no real provider or private résumé used |
@@ -58,7 +60,7 @@ The same clean-head gate can execute the four-call adapter entirely offline:
 npm run correction-flow:adapter:offline -- --expected-head=<full-reviewed-git-sha>
 ```
 
-This command creates one manifest-bound authorization covering the exact four Gemini stages, uses only a compiled dummy credential and local stub transport, and emits hashes plus usage metadata rather than prompts, provider bodies, or credentials. The conservative four-call reservation is $0.257565. It exercises the adapter only.
+This command creates one manifest-bound authorization covering the exact four Gemini stages, uses only a compiled dummy credential and local stub transport, and emits hashes plus usage metadata rather than prompts, provider bodies, or credentials. The conservative four-call reservation is $0.266940 (re-pinned 2026-11-05 from $0.257565; see the note above). It exercises the adapter only.
 
 The complete durable flow can be run offline against the guarded disposable local PostgreSQL database:
 

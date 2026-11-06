@@ -1,5 +1,41 @@
 # Synthetic application-document diagnostics
 
+## 2026-11-05 note: values re-pinned because production limits and prompt changed
+
+On 2026-11-05 the owner approved a new tailoring rule: a tailored résumé may trim extras but always keeps every job. Production limits and the application-document prompt changed with it. Later the same day, after the owner's first live run, the rule was extended (prompt/cache `14`):
+
+- Résumé lines may faithfully reword their cited facts (`lib/ai/application-document-rewording.ts`).
+- A résumé line may cite several facts (`resumeTextClaims[].factIds`).
+- Kept items are always whole.
+- Owner-attested facts and requirement-matched skills are protected.
+- Source section headings are kept.
+
+These diagnostics mirror production, so their pinned values were re-pinned twice. Their code paths were not otherwise changed.
+
+| Value | Before (v12) | Now (v14) |
+|---|---|---|
+| Application-document prompt/cache version | `12` | `14` (passed through `13`) |
+| Tailored résumé input / output (including thinking) | 56,000 / 6,000 tokens | 36,000 / 12,000 tokens |
+| Tailored résumé maximum | `$0.064500` | `$0.072000` |
+| Cover letter input / output (including thinking) | 56,000 / 1,500 tokens | 36,000 / 6,000 tokens |
+| Cover letter maximum | `$0.047625` | `$0.049500` |
+| Two-document diagnostic and visible-review ceiling (consent literal) | `$0.112125` (`112_125`) | `$0.121500` (`121_500`) |
+| Four-call qualification ceiling (job matches unchanged at `$0.072720` each) | `$0.257565` | `$0.266940` |
+| Version-bound 70-fact catalog hash | `c5568c3d…` | `52411db9…` (`ac0a1614…` at v13) |
+| Tailored-résumé provider schema hash | `3717d6f6…` | `c53a750c…` |
+| Tailored résumé / cover wire-request hash | `ed5859b5…` / `36aadfcd…` | `02329818…` / `213db363…` (`ba5c3632…` / `213db363…` at v13) |
+
+The synthetic payload and reviewed-evidence hashes are unchanged. Every manifest hash built from these values changes. The shared validators these tools call now apply the extended rule:
+
+- résumé claims may be faithful rewordings, still bound to their cited facts;
+- omitted required or protected items are restored whole from the source;
+- partially kept items are completed in place;
+- trimmed skills, achievements, projects and bullets are accepted.
+
+The synthetic résumé request now measures 34,643 conservative bytes against the 36,000-token conservative bound.
+
+Any earlier offline review, manifest approval or consent covered the old values only. Re-review the new manifests before running any of these tools. They remain prepared but unexecuted, and this note authorizes no paid run.
+
 ## Offline correction for alternate résumé evidence fields
 
 A review-only probe at `ff21e13e27cc1fc03c8ae3aa9e2d0248eb98351d` reproduced another marker-association false positive: moving the same synthetic fact from `resumeTextClaims` to `bulletRewrites` passed when the rewrite was marker-free, but adding its exact generated leading bullet failed assembly with `APPLICATION_DOCUMENT_EVIDENCE_REQUIRED` at `resumeText.line[14]`. This is a new offline reproduction, not recovered wording or proof of either historical paid failure.
@@ -46,7 +82,7 @@ These changes and native-viewer regressions use synthetic offline fixtures only.
 
 Status: **first live review completed with both documents marked needs revision; offline correction implemented; no repeat paid run**. Contract version `2` now composes the prompt-version `8` résumé-first, cover-letter-second generation path with a one-shot validated bundle and a tokenized `127.0.0.1` review session. The session shows full source résumé and target-job context before two full-width, independently scrollable exact PDFs, page-aligned text fallbacks, and server-resolved evidence bindings. It accepts only ordered approve/needs-revision decisions with affirmative all-pages, writing-quality, and visual-layout attestations for both exact document hashes.
 
-The live envelope remains exactly two Gemini 3.8 Flash LOW calls, no JOB_MATCH call, no retry, no fallback, 180 seconds per call, and a `$0.112125` conservative ceiling. Raw provider output is never retained. A validated first document can exist transiently while the second bounded call and export verification finish. Once the two-document bundle is ready, its validated strings and mutable PDF buffers remain only in the local process for a review session capped at 15 minutes; they are released on completion, cancellation, signal, startup/output failure, or timeout. The safe receipt contains only hashes, bounded disposition/reason categories, attestations, usage, cost, and bounded failure metadata. It creates no database row and grants no preparation, export-for-use, Fill, employer, submission, merge, or deployment authority.
+The live envelope remains exactly two Gemini 3.8 Flash LOW calls, no JOB_MATCH call, no retry, no fallback, 180 seconds per call, and a `$0.121500` conservative ceiling (re-pinned 2026-11-05 from `$0.112125`; see the note at the top). Raw provider output is never retained. A validated first document can exist transiently while the second bounded call and export verification finish. Once the two-document bundle is ready, its validated strings and mutable PDF buffers remain only in the local process for a review session capped at 15 minutes; they are released on completion, cancellation, signal, startup/output failure, or timeout. The safe receipt contains only hashes, bounded disposition/reason categories, attestations, usage, cost, and bounded failure metadata. It creates no database row and grants no preparation, export-for-use, Fill, employer, submission, merge, or deployment authority.
 
 After independent review, a clean pushed exact head, and green exact-head CI, the supported command is:
 

@@ -1,11 +1,21 @@
 import { PublicApiError } from "@/lib/api-errors";
 import { validateCoverLetterWriting, validateResumePriorityOrder } from "@/lib/ai/application-document-writing-quality";
 import {
-  buildApplicationDocumentFactCatalog
+  buildApplicationDocumentFactCatalog,
+  isApplicationDocumentSectionHeading
 } from "@/lib/ai/application-document-facts";
-import type {
-  ApplicationDocumentClaimEvidence,
-  ApplicationDocumentPayload
+import {
+  assertTailoredResumeKeepRule,
+  carryTailoredResumeReversions,
+  completeTailoredResume,
+  containsComparableText as containsComparable,
+  revertUnverifiedResumeLines
+} from "@/lib/ai/tailored-resume-keep-rule";
+import {
+  validateTailoredResumeClaims,
+  type ApplicationDocumentClaimEvidence,
+  type ApplicationDocumentPayload,
+  type TailoredResumeClaimsOutput
 } from "@/lib/ai/application-document-claims";
 
 type ResumeQualityOutput = {
@@ -18,24 +28,9 @@ type CoverLetterQualityOutput = {
   claimsUsed: ApplicationDocumentClaimEvidence[];
 };
 
-const sectionHeading = /^(SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?)$/iu;
 
 function comparable(value: string) {
   return value.trim().replace(/^[-*•▪◦–—]\s+/u, "").replace(/\s+/gu, " ").toLocaleLowerCase();
-}
-
-function escapeRegularExpression(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function containsComparable(haystack: string, value: string) {
-  const normalizedHaystack = comparable(haystack);
-  const normalizedValue = comparable(value);
-  if (!normalizedValue) return false;
-  const left = /^[\p{L}\p{N}]/u.test(normalizedValue) ? "(?:^|[^\\p{L}\\p{N}])" : "";
-  const right = /[\p{L}\p{N}]$/u.test(normalizedValue) ? "(?![\\p{L}\\p{N}])" : "";
-  return new RegExp(`${left}${escapeRegularExpression(normalizedValue)}${right}`, "u")
-    .test(normalizedHaystack);
 }
 
 function incomplete(fieldPath: string, message: string): never {
@@ -52,30 +47,6 @@ function claimRefsPresentInText(text: string, evidence: ApplicationDocumentClaim
       ? entry.citations.map((citation) => citation.ref)
       : []
   ));
-}
-
-function factAppearsInTextOrEvidence(
-  text: string,
-  evidence: ApplicationDocumentClaimEvidence[],
-  fact: Readonly<{ ref: string; excerpt: string }>
-) {
-  if (containsComparable(text, fact.excerpt)) return true;
-  return evidence.some((entry) =>
-    containsComparable(text, entry.claim) &&
-    entry.citations.some((citation) =>
-      citation.ref === fact.ref && comparable(citation.excerpt) === comparable(fact.excerpt)
-    )
-  );
-}
-
-function requiredIndexedRefs(payload: ApplicationDocumentPayload, catalogRefs: ReadonlySet<string>) {
-  return ["skills", "achievements", "workHistory", "projects", "education", "certifications"]
-    .flatMap((field) => {
-      const values = payload.resume?.[field];
-      return Array.isArray(values)
-        ? values.map((_, index) => `resume.${field}[${index}]`).filter((ref) => catalogRefs.has(ref))
-        : [];
-    });
 }
 
 function requiredReviewedRefs(payload: ApplicationDocumentPayload, catalogRefs: ReadonlySet<string>) {
@@ -95,18 +66,10 @@ function sourceHeaderLines(payload: ApplicationDocumentPayload) {
   const lines: string[] = [];
   for (const rawLine of payload.resume.rawText.split(/\r?\n/u)) {
     const line = rawLine.trim();
-    if (sectionHeading.test(line)) break;
+    if (isApplicationDocumentSectionHeading(line)) break;
     if (line) lines.push(line);
   }
   return lines.slice(0, 3);
-}
-
-function sourceHeadings(payload: ApplicationDocumentPayload) {
-  if (typeof payload.resume?.rawText !== "string") return [];
-  return [...new Set(payload.resume.rawText.split(/\r?\n/u)
-    .map((line) => line.trim().toLocaleUpperCase())
-    .filter((line) => sectionHeading.test(line))
-    .map((line) => line === "ADDITIONAL" ? "ADDITIONAL INFORMATION" : line))];
 }
 
 function isStructuralCoverParagraph(payload: ApplicationDocumentPayload, paragraph: string) {
@@ -120,49 +83,34 @@ function isStructuralCoverParagraph(payload: ApplicationDocumentPayload, paragra
   return false;
 }
 
+// Applies the owner-approved keep rule (lib/ai/tailored-resume-keep-rule.ts): omitted required,
+// match-protected or below-floor items are restored verbatim from the master résumé (with exact
+// claim evidence that passes the unchanged truth checks) instead of rejecting a paid result.
+// Trimmed skills, achievements, projects, bullets and owner-attested facts are accepted. Returns
+// the same object when nothing needed restoring.
+// The whole tailored-résumé check, as tailorResume runs it: lines whose wording fails the truth
+// check are reverted to source wording, then the unchanged truth checks, the keep rule and the
+// truth checks again run on the completed résumé before it is cached or saved.
+export function finalizeTailoredResume<T extends TailoredResumeClaimsOutput>(
+  payload: ApplicationDocumentPayload,
+  output: T
+): T {
+  const reverted = revertUnverifiedResumeLines(payload, output);
+  const final = validateTailoredResumeClaims(
+    payload,
+    validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, reverted))
+  );
+  return carryTailoredResumeReversions(reverted, final);
+}
+
 export function validateTailoredResumeQuality<T extends ResumeQualityOutput>(
   payload: ApplicationDocumentPayload,
   output: T
 ) {
-  const text = comparable(output.resumeText);
-  const facts = buildApplicationDocumentFactCatalog(payload);
-  const catalogRefs = new Set(facts.map((fact) => fact.ref));
-  for (const [index, headerLine] of sourceHeaderLines(payload).entries()) {
-    if (!text.includes(comparable(headerLine))) {
-      incomplete(`resume.rawText.header[${index}]`, "Tailored resume omitted source identity or contact context.");
-    }
-  }
-
-  const outputHeadings = new Set(output.resumeText.split(/\r?\n/u)
-    .map((line) => line.trim().toLocaleUpperCase())
-    .filter((line) => sectionHeading.test(line))
-    .map((line) => line === "ADDITIONAL" ? "ADDITIONAL INFORMATION" : line));
-  for (const heading of sourceHeadings(payload)) {
-    const accepted = heading === "SUMMARY"
-      ? outputHeadings.has("SUMMARY") || outputHeadings.has("PROFILE")
-      : heading === "EXPERIENCE"
-        ? outputHeadings.has("EXPERIENCE") || outputHeadings.has("WORK EXPERIENCE")
-        : outputHeadings.has(heading);
-    if (!accepted) incomplete("resumeText", `Tailored resume omitted the ${heading} source section.`);
-  }
-
-  const coveredRefs = claimRefsPresentInText(output.resumeText, output.claimEvidence);
-  if (typeof payload.resume?.summary === "string" && payload.resume.summary.trim() &&
-    !coveredRefs.has("resume.summary")) {
-    incomplete("resume.summary", "Tailored resume omitted the source summary.");
-  }
-  for (const ref of [...requiredIndexedRefs(payload, catalogRefs), ...requiredReviewedRefs(payload, catalogRefs)]) {
-    if (!coveredRefs.has(ref)) {
-      incomplete(ref, "Tailored resume omitted an available source record.");
-    }
-  }
-  for (const fact of facts) {
-    if (!factAppearsInTextOrEvidence(output.resumeText, output.claimEvidence, fact)) {
-      incomplete(fact.ref, "Tailored resume omitted an available source fact.");
-    }
-  }
-  validateResumePriorityOrder(payload, output.resumeText, output.claimEvidence);
-  return output;
+  const completed = completeTailoredResume(payload, output);
+  assertTailoredResumeKeepRule(payload, completed);
+  validateResumePriorityOrder(payload, completed.resumeText, completed.claimEvidence);
+  return completed;
 }
 
 function referenceFamily(ref: string) {
