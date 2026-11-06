@@ -1,4 +1,5 @@
-import { isResumeBullet, stripResumeBullet } from "@/lib/documents/resume-format";
+import { measureStandardFontText, wrapStyledRuns, type MeasureText } from "@/lib/documents/document-typography";
+import { parseResumeBullet, resumeBulletGlyph, wrapSeparatedHeaderLine } from "@/lib/documents/resume-line-structure";
 
 export const CANONICAL_APPLICATION_DOCUMENT_PROFILE_V2 = Object.freeze({
   profileVersion: 2,
@@ -57,22 +58,25 @@ const profile = CANONICAL_APPLICATION_DOCUMENT_PROFILE_V2;
 const contentWidth = profile.pageWidth - profile.margin * 2;
 const resumeSectionHeading = /^(?:SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?)$/iu;
 
-function wrapLine(text: string, width: number, fontSize: number) {
-  const maxCharacters = Math.max(24, Math.floor(width / (fontSize * 0.52)));
-  const words = text.trim().split(/\s+/u).filter(Boolean);
-  if (!words.length) return [""];
-  const lines: string[] = [];
-  let current = "";
-  for (const word of words) {
-    if (!current) current = word;
-    else if (current.length + 1 + word.length <= maxCharacters) current = `${current} ${word}`;
-    else {
-      lines.push(current);
-      current = word;
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
+// Keeps measured text a hair inside the margin for viewers that substitute metric-compatible fonts.
+const WRAP_SAFETY = 1.5;
+const BULLET_MARKER_INDENT = 4;
+
+// Wraps on the exact widths of the ASCII-safe text this PDF draws (Helvetica / Helvetica-Bold).
+function measureFor(fontSize: number, bold: boolean): MeasureText {
+  const font = bold ? profile.boldFont : profile.bodyFont;
+  return (value) => measureStandardFontText(normalizeApplicationDocumentPdfText(value), font, fontSize);
+}
+
+function wrapLine(text: string, width: number, fontSize: number, bold = false) {
+  const lines = wrapStyledRuns([{ text, style: "regular" }], width - WRAP_SAFETY, measureFor(fontSize, bold));
+  return lines.length ? lines.map((line) => line.map((fragment) => fragment.text).join("")) : [""];
+}
+
+// A contact line separated by " | " breaks only after a separator, never before one.
+function wrapHeaderLine(text: string, width: number, fontSize: number, bold = false) {
+  const { lines } = wrapSeparatedHeaderLine(text, "regular", width - WRAP_SAFETY, measureFor(fontSize, bold));
+  return lines.length ? lines.map((line) => line.map((fragment) => fragment.text).join("")) : [""];
 }
 
 function resumeRole(line: string, contentIndex: number) {
@@ -88,7 +92,7 @@ function resumeRole(line: string, contentIndex: number) {
   if (resumeSectionHeading.test(line)) {
     return { role: "section_heading" as const, fontSize: 10.5, bold: true, color: profile.accentColor, indent: 0, before: 10, after: 5 };
   }
-  if (isResumeBullet(line)) {
+  if (parseResumeBullet(line)) {
     return { role: "bullet" as const, fontSize: 9.5, bold: false, color: profile.textColor, indent: 14, before: 1, after: 2 };
   }
   if (line.includes("|") && !/@/u.test(line)) {
@@ -115,19 +119,35 @@ function buildResumeLayout(content: string): MutablePage[] {
       continue;
     }
     const style = resumeRole(trimmed, contentIndex);
-    const text = style.role === "bullet" ? stripResumeBullet(trimmed) : trimmed.replace(/:$/u, "");
+    const bullet = style.role === "bullet" ? parseResumeBullet(trimmed) : null;
+    const text = bullet ? bullet.body : trimmed.replace(/:$/u, "");
     const width = contentWidth - style.indent;
-    const wrapped = wrapLine(text, width - (style.role === "bullet" ? 10 : 0), style.fontSize);
+    const wrapped = style.role === "contact"
+      ? wrapHeaderLine(text, width, style.fontSize, style.bold)
+      : wrapLine(text, width, style.fontSize, style.bold);
     const lineHeight = Math.ceil(style.fontSize * 1.28);
     const requiredHeight = style.before + wrapped.length * lineHeight + style.after;
     const keepWithNext = style.role === "section_heading" ? 24 : 0;
     if (y + requiredHeight + keepWithNext > profile.pageHeight - profile.margin && page.blocks.length) newPage();
     y += style.before;
     wrapped.forEach((part, index) => {
-      const prefix = style.role === "bullet" && index === 0 ? "• " : "";
+      // The marker hangs left of the text so wrapped lines align with the text, not the bullet.
+      if (bullet && index === 0) {
+        page.blocks.push(Object.freeze({
+          role: style.role,
+          text: `${resumeBulletGlyph(bullet, (character) => character === "•" || /^[\x20-\x7E]$/u.test(character))}${bullet.separator ? " " : ""}`,
+          x: profile.margin + BULLET_MARKER_INDENT,
+          y,
+          width: style.indent - BULLET_MARKER_INDENT,
+          height: lineHeight,
+          fontSize: style.fontSize,
+          bold: style.bold,
+          color: style.color
+        }));
+      }
       page.blocks.push(Object.freeze({
         role: style.role,
-        text: `${prefix}${part}`,
+        text: part,
         x: profile.margin + style.indent,
         y,
         width,
@@ -212,7 +232,7 @@ function buildCoverLetterLayout(content: string): MutablePage[] {
     }
     previousBlank = false;
     const style = coverRole(line, contentIndex);
-    const wrapped = wrapLine(line, contentWidth, style.fontSize);
+    const wrapped = wrapLine(line, contentWidth, style.fontSize, style.bold);
     const lineHeight = Math.ceil(style.fontSize * 1.45);
     const requiredHeight = wrapped.length * lineHeight + 4;
     if (y + requiredHeight > profile.pageHeight - profile.margin && page.blocks.length) newPage();
