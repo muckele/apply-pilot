@@ -1,6 +1,6 @@
 # Apply Pilot — MVP Bible
 
-Version 1.0 | 2026-11-03, America/Los_Angeles | Owner: Mathew
+Version 1.1 | 2026-11-04, America/Los_Angeles | Owner: Mathew
 Baseline: `origin/main` at `d603542` (PR #30, 2026-10-05) plus the open draft stack PR #31–#35 (`origin/codex/job-match-gap-evidence-v33` at `3fa3b93`)
 
 **This is the working source of truth for what the Apply Pilot MVP is, where it stands, and what to build next.** Every agent working on Apply Pilot reads this file first, then `AGENTS.md`. When this file and an older roadmap disagree about *MVP scope or order*, this file wins (see §10, decision D026). It does not override the mandatory database rules in `AGENTS.md`, and it does not erase history: older roadmap, decision, and acceptance documents stay as dated records.
@@ -50,13 +50,25 @@ The MVP is done when **all** of these are true and recorded with evidence (commi
 5. One AI provider path and one budget ledger cover every AI feature, with a hard monthly cap per user.
 6. CI is green on `main`, and production runs that `main` commit.
 
+### Owner-requested goals: plans, trial and guided sign-up (2026-11-04)
+
+The owner added these to the MVP goals on 2026-11-04 and said they may not be top priority. They are MVP goals, not yet approved build scope: each waits on the owner decisions listed in §7 ("Plans, trial and guided sign-up"), and joins the Definition of done above once those are made. "AI apply" conflicts with D027 and is not approved scope at all.
+
+| # | Goal | Done when | Recommended placement |
+|---|---|---|---|
+| G-1 | **Guided sign-up.** Simple questions, one per screen, that build the career profile the recommendations use | A new user answers one question per screen, with Back, Next, Skip on optional questions and a progress bar, and can leave and resume where they stopped. The answers fill the existing profile and job-preference fields that discovery and job match read, and the dashboard checklist's profile and preferences steps tick from them. | WP2.6, first in M2 |
+| G-2 | **Recommendations first.** Apply Pilot recommends jobs; the user chooses and applies. "AI apply" (Apply Pilot applying on the user's behalf from match scores and their goals) is a later option | After sign-up the user lands on a ranked feed of recommended jobs, each with its match reasons and gaps. Nothing reaches an employer unless the user presses Submit. | Already the MVP (P-2, P-4). AI apply after MVP, and only if D027 is amended |
+| G-3 | **Monthly application allowance per plan** | Each plan allows a set number of applications a month. The user sees how many are used and when the count resets. At the limit, new ones are refused with a clear message, but the tracker, Apply Kits already prepared, and recording an application already made keep working. Tests cover the limit, the reset and owner isolation. | WP2.7, M2 |
+| G-4 | **7-day free trial, card up front, auto-renewal** | Before the card is asked for, sign-up shows the price after the trial, the date of the first charge, how often it renews and how to cancel, with a separate unticked box to agree to automatic renewal. The card is typed only into the payment processor's hosted page. A confirmation with the same terms and a cancel link follows, and a reminder goes out before the trial converts. Cancelling during the trial means no charge. Tested end to end in test mode. | WP2.4: test mode in M2, live in M3 |
+| G-5 | **Cancellation from Settings** | Settings has a Cancel button that ends the trial or stops renewal at once, with no email, call or wait for staff. It shows when access ends and sends a confirmation. Contacting the owner stays as an extra route, never the only one. | Ships with G-4, in the same PR |
+
 ## 3. Where we are today
 
 Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a summary of the PR #31–#35 stack. "Working" means the code path exists end to end on `main`; it does not mean it was re-run in production in this survey.
 
 | Pillar | Status on `main` | What is missing for MVP |
 |---|---|---|
-| Auth / onboarding | Google sign-in, production email allowlist, database sessions. **No onboarding flow.** | First-run checklist; email sign-in option for non-Google users before invited beta |
+| Auth / onboarding | Google sign-in, production email allowlist, database sessions. **No onboarding flow.** | First-run checklist; email sign-in option for non-Google users before invited beta; guided one-question-per-screen sign-up (G-1) |
 | P-1 Master resume | **Working** (needs Gemini key): PDF/DOCX/TXT/paste, V9 source-span parse, stored file, read-only master readback | Editable profile/fact review after parse; clearer errors when AI is unavailable |
 | P-2 Discovery | **Partial.** 12 providers registered: Greenhouse, Lever, Ashby, Workable, USAJOBS, Remotive, Adzuna, TheirStack, SerpApi, RSS, company careers page, manual. Deterministic prefilter, then capped AI scoring. Daily cron syncs configured sources only. LinkedIn/Indeed/ZipRecruiter blocked by design. | Preference search does **not** query Greenhouse/Lever/Ashby (they need per-company tokens); no company directory; cron does not run preference queries; no cross-source dedupe evidence; no fetcher tests |
 | Match / fit | **Working** on Gemini 3.8 Flash with evidence references and budget reservation | Production-quality acceptance (the long-pending qualification run) |
@@ -65,7 +77,7 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 | P-4 Apply | **Owner-only.** Answer Vault, deterministic answer packet (18 question classes; sensitive questions left to the user), local Playwright companion that inspects and fills six field types, user submits, then marks complete. Fill needs `FILL_AND_REVIEW` mode, which has **no UI toggle**. None of it works for a hosted end user. | Apply Kit for every user and every job; UI toggle for assisted Fill; the genuine P0.4 trial |
 | P-5 Tracker | **Working.** 11 statuses, event timeline, follow-up due dates, contacts, tasks, reminders, documents shown per application | Board view, CSV export, "documents sent" frozen at apply time |
 | P-6 Interview prep | **Partial.** Prep brief, likely questions, STAR stories, post-interview feedback, thank-you draft, question/STAR library, consented audio upload (legacy OpenAI path) | Mock-interview practice; move to the single provider |
-| Billing | **Absent** (no Stripe, plans, or credits) | Needed before public paid launch, not for self-beta |
+| Billing | **Absent** (no Stripe, plans, or credits) | Plans with a monthly application allowance, 7-day card trial with auto-renewal, cancellation in Settings (G-3 to G-5). Test mode in M2, live in M3; not needed for self-beta |
 | AI cost controls | **Split.** Gemini paths use a hard ledger ($5 hard cap, $1.50 automation cap, per-request max, cache). Legacy OpenAI paths use a soft check whose budget can be set to $1,000 | One ledger, one cap, for every feature |
 | Landing / dashboard | **Working** | Copy refresh to match the six pillars |
 
@@ -214,16 +226,56 @@ Milestones run in order; work packages inside a milestone can run in parallel wh
 | WP2.1 | Email (magic-link) sign-in in addition to Google; invite codes on top of the allowlist | Non-Google user can join by invite |
 | WP2.2 | Per-user rate limits and abuse controls on AI and discovery | Limits tested |
 | WP2.3 | Privacy policy, terms, AI-usage disclosure, data retention; export and delete already exist | Pages live; owner approved wording |
-| WP2.4 | Billing in Stripe **test mode**: plans and AI-credit ledger separate from money; no live charges until M3 | Test-mode checkout and credit accounting tested |
+| WP2.4 | Billing in Stripe **test mode**: plans and AI-credit ledger separate from money; 7-day trial with the card on the processor's hosted page, auto-renewal disclosure and consent, confirmation, a reminder before conversion, and self-serve cancellation in Settings (G-4, G-5); no live charges until M3 | Test-mode checkout and credit accounting tested; trial to paid, cancelling during the trial and cancelling after conversion all tested; Apply Pilot stores no card data |
 | WP2.5 | Feedback loop: in-app feedback, weekly beta review, bug triage | First beta cohort onboarded |
+| WP2.6 | **Guided sign-up** (G-1): one question per screen, resumable, saved to the existing profile and preference fields; first in M2 | A new user finishes it and lands on recommended jobs; tests |
+| WP2.7 | **Monthly application allowance per plan** (G-3), sized against the AI cap | Limit, reset and owner isolation tested; recording an application already made is never blocked |
 
 ### M3 — Public launch
 
-Live billing; marketing site matching real capabilities; support process; production monitoring and incident runbook; delivery decision for assisted Fill for non-technical users (optional Chrome extension *or* the hosted managed workspace from the old P2 — decided from M2 evidence, see `docs/MANAGED_APPLICATION_WORKSPACE.md`).
+Live billing, including the 7-day trial and auto-renewal, only after a lawyer has reviewed the sign-up disclosure, the reminder and the cancellation flow; marketing site matching real capabilities; support process; production monitoring and incident runbook; delivery decision for assisted Fill for non-technical users (optional Chrome extension *or* the hosted managed workspace from the old P2 — decided from M2 evidence, see `docs/MANAGED_APPLICATION_WORKSPACE.md`).
+
+### Plans, trial and guided sign-up (owner-requested 2026-11-04)
+
+The goals are G-1 to G-5 in §2. This is their recommended order, the conflicts they raise, and the decisions the owner still has to make.
+
+**Recommended order and why:**
+
+1. **Guided sign-up (G-1) first, at the start of M2.** It needs no money, no third-party account and no legal review, and it feeds the recommendations that are the product's core value. The profile already has most of the fields it would ask about: target roles, locations, remote preference, salary range, industries, deal-breakers, career goals, skills to emphasize or not exaggerate, and availability. So it should need little or no schema change. It matters most when new users arrive in the invited beta (Definition of done item 1). The owner already has a profile, so it does not go ahead of M1. It can start once the onboarding checklist (#37) has landed.
+2. **Recommendations first (G-2) is already the plan.** There is nothing new to build beyond G-1's better profile. "Recommendations" here means recommended jobs (P-2 and job match). Suggesting new target roles from the sign-up answers would be a small add-on on the same profile, if the owner wants it. AI apply stays after MVP (see below).
+3. **Allowance, trial and cancellation (G-3 to G-5) together, as the M2 billing slice.** They are one flow: a plan sets the allowance, the trial starts the plan, and cancellation ends it. Build them in Stripe test mode with WP2.4, with cancellation in the same PR as the trial. Take live charges only in M3, after a lawyer has reviewed the sign-up wording, the reminder and the cancellation flow. None of this displaces M1: nobody pays during the owner's self-beta, and billing surprises are the category's most common complaint (§5), so getting this right matters more than getting it early.
+
+**Conflicts, flagged rather than decided here:**
+
+- **AI apply vs. who presses Submit.** Applying on the user's behalf means Apply Pilot activates the employer's Submit. The current rules forbid that:
+  - D027 and non-negotiable 3: the user submits in the MVP.
+  - `AGENTS.md`: the agent never activates employer Submit in P0–P2.
+  - `PRODUCT_ROADMAP.md` P4: autonomous submission needs its own grant, bound to the user, the exact job, the approved documents, an expiry and a spend limit.
+
+  It also cuts against "Human-Submit by design" (§5, win 3) while employers add bot and mass-apply flags, and 27% of talent leaders say they would block AI-agent applications. Our match score is an internal estimate, not the employer's ATS score (non-negotiable 2), so "apply based on ATS scores" would really mean applying on our own fit score. Even preparing Apply Kits automatically for the top matches, with the user still submitting, is a queue (old P3), which §4 keeps after MVP. So AI apply is recorded as an **owner-requested goal that needs an explicit amendment of D027 and its own P4 decision**, not as approved scope. If granted, it would attach to the existing `ApplicationAutomationPolicy` (prepare-only by default, minimum fit 85, five a day).
+- **Card details go only to the payment processor.** The card is typed into the processor's hosted page, for example Stripe Checkout. Apply Pilot stores only the processor's customer and subscription IDs, the plan, its status and the trial end date. Card numbers are never stored, never logged and never sent to an AI model, which keeps PCI scope minimal.
+- **Auto-renewing trials carry legal duties.** This is our reading of summaries of the current rules, not legal advice:
+  - The auto-renewal terms are shown clearly before the card is collected, and the user gives express, affirmative consent to them (California's Automatic Renewal Law as amended by AB 2863, in force since July 2025; the federal ROSCA).
+  - A confirmation after sign-up repeats the terms and says how to cancel.
+  - A reminder goes out before the trial converts. Visa's free-trial rules call for express consent at enrollment, a reminder with a cancellation link before the first charge, and a simple online way to cancel. Their reminder timing depends on trial length, and some state reminder rules only apply to trials longer than 31 days. We send a reminder for the 7-day trial either way.
+  - California requires a sign-up made online to be cancellable online, at will, without obstruction, and other states have similar "as easy as sign-up" rules. So cancellation is **self-serve in Settings**. "Reach out to me" can stay as an extra route but not the only one, and a cancellation request takes effect without waiting for staff.
+  - The FTC's 2024 click-to-cancel rule was vacated in July 2025 and the FTC has since restarted rulemaking, so these rules are still moving.
+  - **The owner should confirm the details with a lawyer** before live charges in M3.
+- **The allowance has to fit the AI cost controls.** The allowance counts applications and the budget ledger counts dollars. They stay separate counters, and money stays separate from both (WP2.4). Today every user has a $5 monthly hard AI cap, a $1.50 automation allowance and a per-request maximum (10¢ on this branch; PR #46 proposes 15¢ for the January 2027 price). One application uses several AI calls. At the January 2027 price, the worst-case reservations for job match, tailored resume and cover letter come to about 37¢ (PR #46 figures), before interview prep. Actual spend is usually lower, but each plan's allowance must still fit its AI cap at worst case, or users hit the cap before the allowance. So each plan sets both numbers together, and the cap may need to vary by plan. The allowance is a ceiling, not a target: no prompts to "use up" applications (§5, quality over volume).
+- **Sign-up questions and the non-negotiables.** Sign-up collects preferences and goals. Career facts still come only from the master resume (non-negotiable 2). Sensitive questions (work authorization, demographics, disability, veteran status, criminal history) stay optional, are the user's own answer and are never sent to an AI model (non-negotiable 3). Non-Google users need email sign-in (WP2.1) first.
+- **Free tier.** §5 lists a free tier as table stakes. A card-up-front trial either replaces it or sits beside it; that is part of the plan-tier decision below.
+
+**Owner decisions needed** before WP2.4 and WP2.7 start (decision numbers are assigned when they are made):
+
+1. **Plan tiers and allowance numbers**, including whether a free tier stays.
+2. **Price**, billing period and refund policy. §5 promises plain pricing and easy refunds; the field charges about $20–$50 a month.
+3. **Payment processor.** Recommended: Stripe, which WP2.4 already assumes. Its hosted Checkout and customer portal cover the trial, renewal and cancellation flows.
+4. **Whether AI apply is ever in MVP scope.** Recommended: no. Keep D027 and revisit after M3 with evidence.
+5. **What counts as one application** against the allowance. Recommended: a job counts once, when its first tailored resume or cover letter is generated, because that is where the AI cost is. Regenerating for the same job does not count again, and marking "I applied" never uses allowance, so honest tracking is never discouraged.
 
 ### After MVP
 
-Auto-submit on proven ATS variants with per-application consent (old P4); voice mock interviews; salary and offer comparison; LinkedIn profile guidance; recruiter CRM and referrals; email-based outcome tracking; calendar integration; mobile PWA.
+Auto-submit on proven ATS variants with per-application consent (old P4), which is where the owner's "AI apply" goal sits unless D027 is amended (see "Plans, trial and guided sign-up" above); voice mock interviews; salary and offer comparison; LinkedIn profile guidance; recruiter CRM and referrals; email-based outcome tracking; calendar integration; mobile PWA.
 
 ## 8. Non-negotiables
 
@@ -262,7 +314,7 @@ These carry over from `AGENTS.md`, `PRODUCT_ROADMAP.md` §5 and the decision log
 | D030 | **Agent git authority: push branches and open draft PRs.** Agents commit to feature branches, push them and open draft PRs. Only the owner merges to `main`, which deploys to production. No deploys, spending, live employer interaction or real submissions by agents. | Owner-approved 2026-11-03 |
 | D032 | **Stay on Gemini 3.8 Flash through its 2027-01-01 price increase.** Google's Standard price doubles that day ($0.75/$3.75 to $1.50/$7.50 per million input/output tokens); the registry records both prices. After the increase, the owner revisits the model and whether to stay on Gemini or move to another AI platform. Until then, no model or provider switch. The compiled per-request maximum rises from 10¢ to 15¢ so every feature still fits at the new price; the other caps are unchanged. | Owner-approved 2026-11-04 |
 
-Open, not yet needed: pricing and credit allowances (before M2 billing); paid job-data sources (after M1 evidence); hosted workspace vs optional extension (M3); invited-beta size and who.
+Open, not yet needed: plan tiers, price, payment processor, the monthly application allowance and what counts as one application (before M2 billing; see §7, "Plans, trial and guided sign-up"); whether AI apply ever enters MVP scope (needs a D027 amendment); paid job-data sources (after M1 evidence); hosted workspace vs optional extension (M3); invited-beta size and who.
 
 ## 11. MVP metrics
 
@@ -270,6 +322,7 @@ Primary: **interviews per applicant-hour.** Supporting: minutes of active effort
 
 ## 12. Change log
 
+- 2026-11-04 — v1.1. Added the owner's plan, trial and guided sign-up goals (G-1 to G-5) with acceptance lines, their recommended order, the conflicts they raise (AI apply vs. D027, auto-renewal law, AI cost caps) and the open owner decisions.
 - 2026-11-03 — v1.0. Created from the owner's MVP direction, the Four-Project Master Source (2026-10-27), the September roadmap pack, a code survey of `main` `d603542`, and market and job-data research.
 
 ## 13. Key sources (retrieved 2026-11-03)
@@ -281,3 +334,4 @@ Primary: **interviews per applicant-hour.** Supporting: minutes of active effort
 - Employer defences and sentiment: [Greenhouse spam protection](https://support.greenhouse.io/hc/en-us/articles/115005448066) · [Greenhouse Real Talent](https://www.greenhouse.com/blog/introducing-greenhouse-real-talent) · [Ashby spam protection](https://docs.ashbyhq.com/job-board-application-spam-protection) · [Fortune on Greenhouse CEO, July 2026](https://fortune.com/2026/07/27/greenhouse-ceo-daniel-chait-ai-doom-loop-job-seekers-spam-interview-applications-unemployment/) · [Recruitics survey, Oct 2026](https://www.financialcontent.com/article/gnwcq-2026-10-20-more-than-1-in-4-talent-acquisition-leaders-would-block-ai-agents-from-applying-to-jobs-recruitics-survey-finds) · [Robert Half survey, Mar 2026](https://press.roberthalf.com/2026-03-10-Robert-Half-survey-67-of-HR-leaders-report-AI-generated-applications-are-slowing-hiring)
 - Self-ID rules: [DOL OFCCP self-ID forms](https://www.dol.gov/agencies/ofccp/self-id-forms) · [GDPR Art. 9](https://gdpr-info.eu/art-9-gdpr/)
 - Interview AI risk: [ITPro on Amazon interview AI ban](https://itpro.com/business/careers-and-training/amazon-bans-ai-tools-during-job-interviews)
+- Subscriptions and free trials (retrieved 2026-11-04; law-firm and processor summaries, not the statutes): [California AB 2863 summary (Barnes & Thornburg, 2025)](https://btlaw.com/en/insights/alerts/2025/california-expands-automatic-renewal-law-new-requirements-now-in-effect) · [Visa trial subscription rules](https://usa.visa.com/content/dam/VCOM/global/support-legal/documents/visa-new-subscription-rules-flier.pdf) · [FTC negative-option rulemaking restart and ROSCA (Gibson Dunn, 2026)](https://www.gibsondunn.com/ftc-restarts-negative-option-rulemaking-after-eighth-circuit-vacatur-enforcement-under-rosca-continues/)
