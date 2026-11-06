@@ -241,7 +241,7 @@ test("after a partial run the refreshed page keeps the outcome message but reset
     await harness.render(React.createElement(JobWorkspace, props()));
     const gap = harness.container.querySelector("fieldset[data-gap]")!;
     await harness.click([...gap.querySelectorAll("label")].find((label) => /^Skip$/u.test(label.textContent ?? ""))?.querySelector("input"));
-    await harness.click(harness.button("Create my résumé and cover letter"));
+    await harness.click(harness.button("Create my résumé"));
     await harness.waitForText(/The writer is unavailable/u);
     const before = props();
     // What router.refresh() delivers: the saved review is now in force and bound to a new analysis.

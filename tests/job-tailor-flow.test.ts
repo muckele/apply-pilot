@@ -56,6 +56,8 @@ function props(overrides: Partial<TailorFlowProps> = {}): TailorFlowProps {
     quote,
     generationAvailable: true,
     hasDocuments: false,
+    // Most tests here exercise the cover-letter path; the product default is checked on its own below.
+    coverLetterByDefault: true,
     ...overrides
   };
 }
@@ -258,6 +260,29 @@ test("the résumé-only choice drops the cover letter from the plan and the quot
     await harness.render(React.createElement(TailorFlow, props()));
     const coverToggle = [...harness.container.querySelectorAll("label")].find((node) => /Include a cover letter/u.test(node.textContent ?? ""))?.querySelector("input");
     await harness.check(coverToggle, false);
+    await harness.click(harness.button("Create my résumé"));
+    await harness.waitForText(/ready to review/u);
+    assert.match(prompts[0]!, /up to \$0\.0645/u);
+    assert.equal(calls.some((call) => call.url.endsWith("/cover-letter")), false);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the cover letter starts unticked: one click makes the résumé only, and ticking it adds the letter back", async () => {
+  const calls: Call[] = [];
+  const prompts: string[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: (message) => { prompts.push(message); return true; } });
+  try {
+    // What the job page renders: no coverLetterByDefault prop.
+    await harness.render(React.createElement(TailorFlow, props({ coverLetterByDefault: undefined })));
+    const coverToggle = () => [...harness.container.querySelectorAll("label")]
+      .find((node) => /Include a cover letter/u.test(node.textContent ?? ""))?.querySelector("input");
+    assert.equal(coverToggle()?.checked, false);
+    assert.equal(harness.container.textContent?.includes("Apply Pilot writes a résumé for this job"), true);
+    await harness.check(coverToggle(), true);
+    assert.ok(harness.button("Create my résumé and cover letter"));
+    await harness.check(coverToggle(), false);
     await harness.click(harness.button("Create my résumé"));
     await harness.waitForText(/ready to review/u);
     assert.match(prompts[0]!, /up to \$0\.0645/u);
