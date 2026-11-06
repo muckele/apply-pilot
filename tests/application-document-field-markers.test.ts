@@ -120,7 +120,7 @@ test("a decorated approved verb rewrite retains its source original and complete
   const rewrite = original.replace(/^Built /u, "Created ");
   wire.resumeTextClaims = wire.resumeTextClaims.filter(entry => entry !== item);
   wire.resumeText = wire.resumeText.replace(original, rewrite);
-  wire.bulletRewrites = [{ factId: item.factId, rewrite: `• ${rewrite}`, reason: "Existing permitted leading-action substitution." }];
+  wire.bulletRewrites = [{ factId: item.factId!, rewrite: `• ${rewrite}`, reason: "Existing permitted leading-action substitution." }];
   const output = validate(payload, wire);
   assert.equal(output.bulletRewrites[0].rewrite, rewrite);
   assert.equal(output.bulletRewrites[0].original, original);
@@ -134,7 +134,9 @@ test("decorative normalization cannot weaken factual or per-item source validati
     ["Maintained C# and ASP.NET service-level tools.", "Maintained C++ and ASP-NET service level tools."],
     ["Credential ID: CSOP-24017", "Credential ID: CSOP-24071"],
     ["Built safe workflows for 12 teams.", "Built safe workflows for 12 teams. Led hiring."],
-    ["Maintained service-level tools.", "Maintained service level tools."]
+    // Faithful rewording (2026-11-05) may write an ordinary hyphenated word with a space
+    // ("service-level" / "service level"), but an identifier's separator stays exact.
+    ["Credential ID: CSOP-24017", "Credential ID: CSOP 24017"]
   ];
   for (const field of fields) for (const marker of markers.slice(1)) for (const [source, changed] of changes) {
     const sourcePayload = { resume: { rawText: source, workHistory: [{ bullets: [source] }] } };

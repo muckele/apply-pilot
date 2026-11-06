@@ -8,19 +8,28 @@ import {
 } from "@/lib/ai/application-document-claims";
 import {
   applicationDocumentAtomicStrings,
+  applicationDocumentSectionOf,
   buildApplicationDocumentFactCatalog,
   normalizeApplicationDocumentSourceLine,
-  type ApplicationDocumentFact
+  type ApplicationDocumentFact,
+  type ApplicationDocumentSection
 } from "@/lib/ai/application-document-facts";
 import { applicationDocumentPriorityOpportunities } from "@/lib/ai/application-document-priorities";
 import { protectedResumeCitations } from "@/lib/ai/resume-tailoring-payload";
 
 // Owner-approved tailoring rule (2026-11-05): a tailored résumé may trim extras but always keeps
-// every job. Always kept: identity/contact header lines, the summary, every work-history record
-// header (title, company, dates), every education record and every certification/licence record.
-// Skills, achievements, projects and individual bullets may be trimmed down to these floors.
-// Anything Gemini omits that the rule requires, or that the job match cited as applicant evidence,
-// is restored here verbatim from the master résumé instead of discarding a paid result.
+// every job.
+// - Always kept: identity/contact header lines, the summary, every work-history record header
+//   (title, company, dates), every education record and every certification/licence record.
+// - May be trimmed: skills, achievements, projects and bullets, down to the floors below.
+// - Protected: résumé items the job match cited, every owner-attested fact saved for this job,
+//   and skills whose words all appear in the job's requirements.
+// - Whole items only: a kept bullet, achievement, summary line or skill is its complete source
+//   item (reworded faithfully or verbatim), never part of an item split at a semicolon or comma.
+//   A partial rendering is replaced in place by the complete source line.
+// - Source headings are kept: a renamed heading (CERTIFICATIONS for LICENSES) is put back.
+// Anything required, protected or below a floor that Gemini omits is restored verbatim from the
+// master résumé instead of discarding a paid result.
 export const TAILORED_RESUME_FLOORS = Object.freeze({ jobBullets: 2, skills: 10, achievements: 2 });
 
 export type TailoredResumeItemKind =
@@ -42,9 +51,7 @@ export type TailoredResumeItem = Readonly<{
 
 type ResumeOutput = { resumeText: string; claimEvidence: ApplicationDocumentClaimEvidence[] };
 
-type Section =
-  | "SUMMARY" | "SKILLS" | "EXPERIENCE" | "PROJECTS" | "EDUCATION" | "CERTIFICATIONS" | "ACHIEVEMENTS"
-  | "ADDITIONAL INFORMATION";
+type Section = ApplicationDocumentSection;
 type Placement = Section | "HEADER";
 type RecordField = "workHistory" | "projects" | "education" | "certifications";
 type UnitKind =
@@ -61,6 +68,7 @@ type Unit = {
   order: number;
   lines: SourceLine[];
   facts: ApplicationDocumentFact[];
+  attachRef: string | null;
 };
 type SourceRecord = {
   ref: string;
@@ -70,6 +78,7 @@ type SourceRecord = {
   bullets: Unit[];
   leading: Unit[];
 };
+type SkillCategory = Readonly<{ label: string | null; fact: ApplicationDocumentFact | undefined; skills: readonly Unit[] }>;
 type SourceModel = {
   factByKey: ReadonlyMap<string, ApplicationDocumentFact>;
   factByCitation: ReadonlyMap<string, ApplicationDocumentFact>;
@@ -77,8 +86,11 @@ type SourceModel = {
   records: SourceRecord[];
   sectionOrder: Section[];
   requiredSections: Section[];
+  sourceHeadingText: ReadonlyMap<Section, string>;
   sourceLineKeys: ReadonlySet<string>;
   bulletedSourceLines: ReadonlySet<string>;
+  ownerKeys: ReadonlyMap<string, readonly Unit[]>;
+  skillCategories: readonly SkillCategory[];
 };
 
 const RECORD_FIELDS: readonly RecordField[] = ["workHistory", "projects", "education", "certifications"];
@@ -91,17 +103,10 @@ const RECORD_SECTION: Record<RecordField, Section> = {
 const DEFAULT_SECTION_ORDER: readonly Section[] = [
   "SUMMARY", "SKILLS", "EXPERIENCE", "PROJECTS", "EDUCATION", "CERTIFICATIONS", "ACHIEVEMENTS", "ADDITIONAL INFORMATION"
 ];
-const headingPattern =
-  /^(?:SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?)$/iu;
 const markerPattern = /^([-*•▪◦–—])\s+/u;
 
 function sectionOf(line: string): Section | null {
-  const value = line.trim().toLocaleUpperCase();
-  if (!headingPattern.test(value)) return null;
-  if (value === "PROFILE") return "SUMMARY";
-  if (value === "WORK EXPERIENCE") return "EXPERIENCE";
-  if (value === "ADDITIONAL") return "ADDITIONAL INFORMATION";
-  return value as Section;
+  return applicationDocumentSectionOf(line);
 }
 
 // The catalog's own de-duplication key, and the same key for a rendered (possibly bulleted) line.
@@ -141,13 +146,20 @@ function uniqueFacts(facts: readonly ApplicationDocumentFact[]) {
   const seen = new Set<string>();
   return facts.filter((fact) => !seen.has(fact.factId) && Boolean(seen.add(fact.factId)));
 }
+// "Label: a, b, c" -> label and lower-cased items (the same parse the rewording list check uses).
+function listParts(text: string) {
+  const trimmed = normalizeApplicationDocumentSourceLine(text).replace(/[.;]+$/u, "");
+  const labelled = trimmed.match(/^([^:,;|]{1,40}):\s*(.+)$/u);
+  const items = (labelled ? labelled[2]! : trimmed).split(/\s*[,;|·•]\s*/u).map(factKey).filter(Boolean);
+  return { label: labelled ? labelled[1]!.trim() : null, items };
+}
 
 export function tailoredResumeSourceHeaderLines(payload: ApplicationDocumentPayload) {
   if (typeof payload.resume?.rawText !== "string") return [];
   const lines: string[] = [];
   for (const rawLine of payload.resume.rawText.split(/\r?\n/u)) {
     const line = rawLine.trim();
-    if (headingPattern.test(line)) break;
+    if (sectionOf(line)) break;
     if (line) lines.push(line);
   }
   return lines.slice(0, 3);
@@ -164,11 +176,11 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
     return { text: normalized, key: factKey(normalized), facts: factsOf(text) };
   };
   const units: Unit[] = [];
-  const add = (input: Omit<Unit, "id" | "facts">) => {
+  const add = (input: Omit<Unit, "id" | "facts" | "attachRef"> & { attachRef?: string | null }) => {
     const lines = input.lines.filter((line) => line.text && line.facts.length);
     const unitFacts = uniqueFacts(lines.flatMap((line) => line.facts));
     if (!unitFacts.length) return null;
-    const unit: Unit = { ...input, lines, facts: unitFacts, id: units.length };
+    const unit: Unit = { ...input, attachRef: input.attachRef ?? null, lines, facts: unitFacts, id: units.length };
     units.push(unit);
     return unit;
   };
@@ -250,18 +262,20 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
 
   const resumeCovered = new Set(units.flatMap((unit) => unit.facts.map((fact) => fact.factId)));
   const unitLineKeys = new Set(units.flatMap((unit) => unit.lines.map((line) => line.key)));
-  // Raw-only lines that are not résumé content of their own: unrecognized section headings
-  // (e.g. PROFESSIONAL EXPERIENCE) and list lines whose every part is already a parsed item
-  // (e.g. "Salesforce, HubSpot, Gong" when each skill is its own record).
+  const skillsByKey = new Map(units.filter((unit) => unit.kind === "skill" && unit.lines.length === 1)
+    .map((unit) => [unit.lines[0]!.key, unit]));
+  // Raw-only lines that are not résumé content of their own: unrecognized section headings and
+  // list lines whose every part is already a parsed item (e.g. "Sales tools: Salesforce, Gong").
   const structuralOrDuplicate = (text: string) => {
     if (/^[\p{Lu}][\p{Lu}\s&/+,-]{1,48}$/u.test(text) && !/\p{Ll}/u.test(text)) return true;
-    const parts = text.replace(/^[^:,;|]{1,40}:\s*/u, "").split(/\s*[,;|·•]\s*/u)
-      .map((part) => factKey(part.replace(/[.;]+$/u, ""))).filter(Boolean);
+    const parts = listParts(text).items;
     return parts.length >= 2 && parts.every((part) => unitLineKeys.has(part));
   };
   const sourceLineKeys = new Set<string>();
   const bulletedSourceLines = new Set<string>();
   const sourceHeadings: Section[] = [];
+  const headingTexts = new Map<Section, Set<string>>();
+  const skillCategories: SkillCategory[] = [];
   if (typeof payload.resume?.rawText === "string") {
     let placement: Placement = "HEADER";
     let order = 0;
@@ -271,12 +285,20 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
       if (heading) {
         placement = heading;
         if (!sourceHeadings.includes(heading)) sourceHeadings.push(heading);
+        headingTexts.set(heading, (headingTexts.get(heading) ?? new Set()).add(raw.trim()));
         continue;
       }
       if (!raw.trim()) continue;
       const line = sourceLine(raw);
       sourceLineKeys.add(line.key);
       if (markerPattern.test(raw.trim())) bulletedSourceLines.add(line.key);
+      if (placement === "SKILLS") {
+        const parts = listParts(raw);
+        const skills = parts.items.map((item) => skillsByKey.get(item));
+        if ((parts.label !== null || skills.length >= 2) && skills.length && skills.every(Boolean)) {
+          skillCategories.push({ label: parts.label, fact: factByKey.get(line.key), skills: skills as Unit[] });
+        }
+      }
       if (!line.facts.length || line.facts.every((fact) => resumeCovered.has(fact.factId)) || seen.has(line.key) ||
         structuralOrDuplicate(line.text)) continue;
       seen.add(line.key);
@@ -291,8 +313,11 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
       if (!isRecord(value) || typeof value.fact !== "string") return;
       const lines = nonblankLines(value.fact).map(sourceLine);
       if (lines.flatMap((line) => line.facts).every((fact) => applicantCovered.has(fact.factId))) return;
+      const attachRef = typeof value.sourceRef === "string" &&
+        records.some((record) => record.ref === value.sourceRef) ? value.sourceRef : null;
       const unit = add({
-        ref: `reviewedEvidence.facts[${index}].fact`, kind: "owner_attested_fact", placement: null, record: null, order: index, lines
+        ref: `reviewedEvidence.facts[${index}].fact`, kind: "owner_attested_fact", placement: "ADDITIONAL INFORMATION",
+        record: null, order: index, lines, attachRef
       });
       unit?.facts.forEach((fact) => applicantCovered.add(fact.factId));
     });
@@ -310,6 +335,10 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
     });
   }
 
+  const ownerKeys = new Map<string, Unit[]>();
+  for (const unit of units) {
+    for (const line of unit.lines) ownerKeys.set(line.key, [...(ownerKeys.get(line.key) ?? []), unit]);
+  }
   const hasUnits = (kind: UnitKind) => units.some((unit) => unit.kind === kind);
   const hasRecords = (field: RecordField) => records.some((record) => record.field === field);
   const requiredContent: Array<[Section, boolean]> = [
@@ -328,26 +357,24 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
     sectionOrder: [...sourceHeadings, ...DEFAULT_SECTION_ORDER.filter((section) => !sourceHeadings.includes(section))],
     requiredSections: requiredContent.flatMap(([section, present]) =>
       present && sourceHeadings.includes(section) ? [section] : []),
+    sourceHeadingText: new Map([...headingTexts].flatMap(([section, texts]) =>
+      texts.size === 1 ? [[section, [...texts][0]!] as const] : [])),
     sourceLineKeys,
-    bulletedSourceLines
+    bulletedSourceLines,
+    ownerKeys,
+    skillCategories
   };
 }
 
-type Inclusion = Readonly<{
-  included(fact: ApplicationDocumentFact): boolean;
-  full(unit: Unit): boolean;
-  touched(unit: Unit): boolean;
-}>;
-
 // A fact is in the document when its exact excerpt appears (whole words) or when a claim that
-// appears in the document cites it. These are the completeness semantics of the previous validator.
-function inclusion(output: ResumeOutput): Inclusion {
+// appears in the document cites it.
+function globallyIncluded(output: ResumeOutput) {
   const haystack = comparable(output.resumeText);
   const cited = new Set(output.claimEvidence
     .filter((entry) => containsNormalized(haystack, entry.claim))
     .flatMap((entry) => entry.citations.map((citation) => `${citation.ref}\u0000${comparable(citation.excerpt)}`)));
   const cache = new Map<string, boolean>();
-  const included = (fact: ApplicationDocumentFact) => {
+  return (fact: ApplicationDocumentFact) => {
     let value = cache.get(fact.factId);
     if (value === undefined) {
       value = containsNormalized(haystack, fact.excerpt) || cited.has(`${fact.ref}\u0000${comparable(fact.excerpt)}`);
@@ -355,11 +382,14 @@ function inclusion(output: ResumeOutput): Inclusion {
     }
     return value;
   };
-  return {
-    included,
-    full: (unit) => unit.facts.every(included),
-    touched: (unit) => unit.facts.some(included)
-  };
+}
+
+const JOB_GENERIC = new Set(
+  "a an the and or of to in for on at by with from as is are be experience experienced proven strong skill skills ability knowledge working years year plus preferred required".split(" ")
+);
+function jobWords(value: string) {
+  return value.toLocaleLowerCase().split(/[^\p{L}\p{N}+#]+/u).filter((word) => word && !JOB_GENERIC.has(word))
+    .map((word) => word.length > 4 ? word.replace(/(?:ing|ed|es|s)$/u, "") : word);
 }
 
 function protectedUnits(model: SourceModel, payload: ApplicationDocumentPayload) {
@@ -377,10 +407,22 @@ function protectedUnits(model: SourceModel, payload: ApplicationDocumentPayload)
       : ref === "resume.rawText" ? containing.slice(0, 1) : containing;
     for (const unit of chosen) selected.add(unit);
   }
+  // Owner-attested facts saved for this job are deliberate additions: always used.
+  for (const unit of model.units) if (unit.kind === "owner_attested_fact") selected.add(unit);
+  // A skill whose words all appear in the job's requirements is kept.
+  const requirements = Array.isArray(payload.job?.requirements)
+    ? new Set(payload.job.requirements.flatMap((value) => typeof value === "string" ? jobWords(value) : []))
+    : new Set<string>();
+  for (const unit of model.units) {
+    if (unit.kind !== "skill") continue;
+    const words = jobWords(unit.lines.map((line) => line.text).join(" "));
+    if (words.length && words.every((word) => requirements.has(word))) selected.add(unit);
+  }
   return selected;
 }
 
-// Fact IDs Gemini must keep because the job's current match analysis cited them as applicant evidence.
+// Fact IDs Gemini must keep: résumé items the job match cited, owner-attested facts for this job,
+// and skills whose words all appear in the job's requirements.
 export function tailoredResumeProtectedFactIds(payload: ApplicationDocumentPayload) {
   const model = buildSourceModel(payload);
   const selected = protectedUnits(model, payload);
@@ -406,22 +448,34 @@ function sourceBulleted(model: SourceModel, unit: Unit) {
   const key = unit.lines[0]?.key ?? "";
   return model.sourceLineKeys.has(key) ? model.bulletedSourceLines.has(key) : unit.kind === "bullet";
 }
+function unitText(unit: Unit) {
+  return unit.lines.map((line) => line.text).join(" ");
+}
 function recordText(model: SourceModel, record: SourceRecord, bullets = record.bullets) {
   return [
-    ...record.headers.map((unit) => unit.lines.map((line) => line.text).join(" ")),
-    ...bullets.map((unit) => `${sourceBulleted(model, unit) ? "• " : ""}${unit.lines.map((line) => line.text).join(" ")}`)
+    ...record.headers.map(unitText),
+    ...bullets.map((unit) => `${sourceBulleted(model, unit) ? "• " : ""}${unitText(unit)}`)
   ].join("\n");
 }
-function unitItem(unit: Unit, facts: "all" | readonly ApplicationDocumentFact[]): TailoredResumeItem {
-  return {
-    ref: unit.ref,
-    kind: itemKind(unit),
-    context: unit.record ? recordContext(unit.record) : null,
-    text: facts === "all"
-      ? unit.lines.map((line) => line.text).join(" ")
-      : facts.map((fact) => fact.excerpt).join(" ")
-  };
+function unitItem(unit: Unit): TailoredResumeItem {
+  return { ref: unit.ref, kind: itemKind(unit), context: unit.record ? recordContext(unit.record) : null, text: unitText(unit) };
 }
+
+// Where a unit may be rendered: a skill in SKILLS, an achievement in ACHIEVEMENTS, the summary in
+// SUMMARY, contact lines above the first heading, and record content outside those sections.
+function inHome(unit: Unit, section: Placement) {
+  switch (unit.kind) {
+    case "header": return section === "HEADER";
+    case "summary": return section === "SUMMARY";
+    case "skill": return section === "SKILLS";
+    case "achievement": return section === "ACHIEVEMENTS";
+    case "record_header":
+    case "bullet": return section !== "SUMMARY" && section !== "SKILLS" && section !== "ACHIEVEMENTS";
+    default: return true;
+  }
+}
+
+type RenderedLine = { text: string; facts: readonly ApplicationDocumentFact[]; claim?: ApplicationDocumentClaimEvidence };
 
 // Mutable rendering of the tailored résumé text plus the claim evidence that backs each line.
 class ResumeDraft {
@@ -430,7 +484,7 @@ class ResumeDraft {
   readonly added: ApplicationDocumentClaimEvidence[] = [];
   private readonly claimFacts = new Map<string, Set<string>>();
   private readonly evidenceKeys = new Set<string>();
-  private lineIds: Array<Set<string>> | null = null;
+  private cache: { keys: string[]; ids: Array<Set<string>>; sections: Placement[] } | null = null;
 
   constructor(private readonly model: SourceModel, output: ResumeOutput) {
     this.lines = output.resumeText.split(/\r?\n/u);
@@ -449,25 +503,74 @@ class ResumeDraft {
     this.claimFacts.set(key, ids);
   }
 
-  private factIds(index: number) {
-    if (!this.lineIds) {
-      this.lineIds = this.lines.map((line) => {
-        const key = lineKey(line);
-        const ids = new Set(this.claimFacts.get(key) ?? []);
-        const direct = this.model.factByKey.get(key);
-        if (direct) ids.add(direct.factId);
-        return ids;
-      });
+  private view() {
+    if (!this.cache) {
+      let section: Placement = "HEADER";
+      const keys = this.lines.map(lineKey);
+      this.cache = {
+        keys,
+        ids: keys.map((key) => {
+          const ids = new Set(this.claimFacts.get(key) ?? []);
+          const direct = this.model.factByKey.get(key);
+          if (direct) ids.add(direct.factId);
+          return ids;
+        }),
+        sections: this.lines.map((line) => {
+          section = sectionOf(line) ?? section;
+          return section;
+        })
+      };
     }
-    return this.lineIds[index] ?? new Set<string>();
+    return this.cache;
   }
 
+  factIds(index: number) {
+    return this.view().ids[index] ?? new Set<string>();
+  }
+
+  sectionAt(index: number): Placement {
+    return this.view().sections[index] ?? "HEADER";
+  }
+
+  // Any line naming this unit (anchor search for records).
   matches(index: number, unit: Unit) {
-    const key = lineKey(this.lines[index] ?? "");
+    const key = this.view().keys[index];
     if (!key) return false;
     if (unit.lines.some((line) => line.key === key)) return true;
     const ids = this.factIds(index);
     return unit.facts.some((fact) => ids.has(fact.factId));
+  }
+
+  // A unit's home section; when the document has no heading for that home, anywhere counts.
+  private inHomeAt(unit: Unit, index: number) {
+    const home = unit.kind === "summary" ? "SUMMARY" : unit.kind === "skill" ? "SKILLS"
+      : unit.kind === "achievement" ? "ACHIEVEMENTS" : null;
+    if (home && this.headingIndex(home) < 0) return true;
+    return inHome(unit, this.sectionAt(index));
+  }
+
+  // A line that renders this unit in its home section (verbatim, reworded or as a list item).
+  renders(index: number, unit: Unit) {
+    const line = this.lines[index] ?? "";
+    const key = this.view().keys[index];
+    if (!key || sectionOf(line) || !this.inHomeAt(unit, index)) return false;
+    if (unit.lines.some((source) => source.key === key)) return true;
+    if (this.model.ownerKeys.get(key)?.some((owner) => owner !== unit)) return false;
+    const ids = this.factIds(index);
+    if (unit.facts.some((fact) => ids.has(fact.factId))) return true;
+    return unit.kind === "skill" && unit.lines.length === 1 && listParts(line).items.includes(unit.lines[0]!.key);
+  }
+
+  renderedLines(unit: Unit) {
+    const out: number[] = [];
+    for (let index = 0; index < this.lines.length; index += 1) if (this.renders(index, unit)) out.push(index);
+    return out;
+  }
+
+  // Every fact of the unit is expressed by the lines that render it there.
+  wholeAt(unit: Unit, lines: readonly number[]) {
+    return unit.facts.every((fact) => lines.some((index) =>
+      this.factIds(index).has(fact.factId) || containsComparableText(this.lines[index] ?? "", fact.excerpt)));
   }
 
   find(unit: Unit, start = 0, end = this.lines.length) {
@@ -507,20 +610,38 @@ class ResumeDraft {
     return "•";
   }
 
-  insert(index: number, rendered: ReadonlyArray<{ text: string; facts: readonly ApplicationDocumentFact[] } | "">) {
+  private addEvidence(entry: ApplicationDocumentClaimEvidence) {
+    const keys = entry.citations.map((citation) => `${comparable(entry.claim)}\u0000${citation.ref}\u0000${citation.excerpt}`);
+    if (keys.every((key) => this.evidenceKeys.has(key))) return;
+    this.evidence.push(entry);
+    this.added.push(entry);
+    this.note(entry);
+  }
+
+  insert(index: number, rendered: ReadonlyArray<RenderedLine | "">) {
     this.lines.splice(index, 0, ...rendered.map((line) => line === "" ? "" : line.text));
     for (const line of rendered) {
       if (line === "") continue;
+      if (line.claim) this.addEvidence(line.claim);
       for (const fact of line.facts) {
-        const entry = { claim: fact.excerpt, citations: [{ ref: fact.ref, excerpt: fact.excerpt }] };
-        const key = `${comparable(entry.claim)}\u0000${fact.ref}\u0000${fact.excerpt}`;
-        if (this.evidenceKeys.has(key)) continue;
-        this.evidence.push(entry);
-        this.added.push(entry);
-        this.note(entry);
+        this.addEvidence({ claim: fact.excerpt, citations: [{ ref: fact.ref, excerpt: fact.excerpt }] });
       }
     }
-    this.lineIds = null;
+    this.cache = null;
+  }
+
+  remove(indices: readonly number[]) {
+    for (const index of [...indices].sort((a, b) => b - a)) this.lines.splice(index, 1);
+    this.cache = null;
+  }
+
+  replaceText(index: number, text: string) {
+    this.lines[index] = text;
+    this.cache = null;
+  }
+
+  headingText(section: Section) {
+    return this.model.sourceHeadingText.get(section) ?? section;
   }
 
   ensureSection(section: Placement) {
@@ -534,11 +655,11 @@ class ResumeDraft {
     });
     if (next < 0) {
       const tail = this.contentEnd(0, this.lines.length);
-      this.lines.splice(tail, this.lines.length - tail, ...(tail > 0 ? [""] : []), target);
+      this.lines.splice(tail, this.lines.length - tail, ...(tail > 0 ? [""] : []), this.headingText(target));
     } else {
-      this.lines.splice(next, 0, ...(next > 0 && this.lines[next - 1]!.trim() ? [""] : []), target, "");
+      this.lines.splice(next, 0, ...(next > 0 && this.lines[next - 1]!.trim() ? [""] : []), this.headingText(target), "");
     }
-    this.lineIds = null;
+    this.cache = null;
     return this.sectionRange(target)!;
   }
 
@@ -550,7 +671,7 @@ class ResumeDraft {
   recordBlock(record: SourceRecord) {
     let anchor = -1;
     for (let index = 0; index < this.lines.length && anchor < 0; index += 1) {
-      if (record.headers.some((unit) => this.matches(index, unit))) anchor = index;
+      if (record.headers.some((unit) => this.renders(index, unit))) anchor = index;
     }
     if (anchor < 0) return null;
     let end = anchor + 1;
@@ -562,24 +683,53 @@ class ResumeDraft {
 
   firstRecordLine(record: SourceRecord) {
     for (let index = 0; index < this.lines.length; index += 1) {
-      if ([...record.headers, ...record.bullets].some((unit) => this.matches(index, unit))) return index;
+      if ([...record.headers, ...record.bullets].some((unit) => this.renders(index, unit))) return index;
     }
     return -1;
   }
 }
 
-type RestorePlan = Map<Unit, "all" | readonly ApplicationDocumentFact[]>;
+function renderUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, range: { start: number; end: number }, bulleted = sourceBulleted(model, unit)): RenderedLine[] {
+  const prefix = bulleted ? `${draft.marker(range.start, range.end)} ` : "";
+  return unit.lines.map((line, index) => ({ text: `${index === 0 ? prefix : ""}${line.text}`, facts: line.facts }));
+}
 
-function planRestoration(model: SourceModel, payload: ApplicationDocumentPayload, inc: Inclusion) {
-  const plan: RestorePlan = new Map();
+// Puts back the source's own section headings (LICENSES stays LICENSES) and adds a missing
+// required heading above its retained content.
+function normalizeHeadings(model: SourceModel, draft: ResumeDraft) {
+  for (let index = 0; index < draft.lines.length; index += 1) {
+    const section = sectionOf(draft.lines[index]!);
+    const source = section ? model.sourceHeadingText.get(section) : undefined;
+    if (source && draft.lines[index]!.trim() !== source) draft.replaceText(index, source);
+  }
+  for (const section of model.requiredSections) {
+    if (draft.headingIndex(section) >= 0) continue;
+    const owners = model.units.filter((unit) => unit.placement === section && unit.kind !== "other" && unit.kind !== "owner_attested_fact");
+    let first = -1;
+    for (let index = 0; index < draft.lines.length && first < 0; index += 1) {
+      if (owners.some((unit) => draft.matches(index, unit))) first = index;
+    }
+    if (first < 0) continue;
+    const text = draft.headingText(section);
+    draft.insert(first, first > 0 && draft.lines[first - 1]!.trim() ? ["", { text, facts: [] }] : [{ text, facts: [] }]);
+  }
+}
+
+type Action = "replace" | "insert";
+
+function planRestoration(model: SourceModel, payload: ApplicationDocumentPayload, draft: ResumeDraft) {
+  const plan = new Map<Unit, Action>();
   const wholeRecords = new Set<SourceRecord>();
   const leadingRestores = new Set<Unit>();
   const protectedSet = protectedUnits(model, payload);
+  const rendered = new Map(model.units.map((unit) => [unit, draft.renderedLines(unit)]));
+  const isRendered = (unit: Unit) => (rendered.get(unit)?.length ?? 0) > 0;
+  const willHave = (unit: Unit) => isRendered(unit) || plan.has(unit);
   const restore = (unit: Unit) => {
-    if (plan.has(unit) || inc.full(unit)) return;
-    plan.set(unit, inc.touched(unit) ? unit.facts.filter((fact) => !inc.included(fact)) : "all");
+    if (plan.has(unit)) return;
+    if (!isRendered(unit)) plan.set(unit, "insert");
+    else if (!draft.wholeAt(unit, rendered.get(unit)!)) plan.set(unit, "replace");
   };
-  const willHave = (unit: Unit) => plan.has(unit) || inc.touched(unit);
   const fillFloor = (units: Unit[], floor: number) => {
     let missing = Math.min(floor, units.length) - units.filter(willHave).length;
     for (const unit of units) {
@@ -591,19 +741,21 @@ function planRestoration(model: SourceModel, payload: ApplicationDocumentPayload
     }
   };
 
+  // Whole items only: anything kept is completed in place.
+  for (const unit of model.units) if (isRendered(unit)) restore(unit);
   for (const unit of model.units) if (unit.kind === "header" || unit.kind === "summary") restore(unit);
   for (const record of model.records) {
     const all = [...record.headers, ...record.bullets];
     const required = record.field !== "projects";
     const protectedHere = all.filter((unit) => protectedSet.has(unit));
-    if (!all.some(inc.touched)) {
+    if (!all.some(isRendered)) {
       if (!required && !protectedHere.length) continue;
       wholeRecords.add(record);
-      for (const unit of all) plan.set(unit, "all");
+      for (const unit of all) plan.set(unit, "insert");
       continue;
     }
     if (required) record.headers.forEach(restore);
-    else if (record.headers.length && !record.headers.some(inc.touched)) restore(record.headers[0]!);
+    else if (record.headers.length && !record.headers.some(isRendered)) restore(record.headers[0]!);
     protectedHere.forEach(restore);
     if (record.field === "education" || record.field === "certifications") record.bullets.forEach(restore);
     // Within-record job priority: when every leading fact was dropped, the first one returns
@@ -616,32 +768,10 @@ function planRestoration(model: SourceModel, payload: ApplicationDocumentPayload
     }
     if (record.field === "workHistory") fillFloor(record.bullets, TAILORED_RESUME_FLOORS.jobBullets);
   }
-  for (const unit of model.units) {
-    if (protectedSet.has(unit) && !unit.record) restore(unit);
-  }
+  for (const unit of model.units) if (protectedSet.has(unit) && !unit.record) restore(unit);
   fillFloor(model.units.filter((unit) => unit.kind === "skill"), TAILORED_RESUME_FLOORS.skills);
   fillFloor(model.units.filter((unit) => unit.kind === "achievement"), TAILORED_RESUME_FLOORS.achievements);
   return { plan, wholeRecords, leadingRestores };
-}
-
-function ensureRequiredHeadings(model: SourceModel, draft: ResumeDraft) {
-  for (const section of model.requiredSections) {
-    if (draft.headingIndex(section) >= 0) continue;
-    const owners = model.units.filter((unit) => unit.placement === section && unit.kind !== "other");
-    let first = -1;
-    for (let index = 0; index < draft.lines.length && first < 0; index += 1) {
-      if (owners.some((unit) => draft.matches(index, unit))) first = index;
-    }
-    if (first < 0) continue;
-    draft.insert(first, first > 0 && draft.lines[first - 1]!.trim() ? ["", { text: section, facts: [] }] : [{ text: section, facts: [] }]);
-  }
-}
-
-function renderUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, facts: "all" | readonly ApplicationDocumentFact[], range: { start: number; end: number }) {
-  const prefix = sourceBulleted(model, unit) ? `${draft.marker(range.start, range.end)} ` : "";
-  return facts === "all"
-    ? unit.lines.map((line) => ({ text: `${prefix}${line.text}`, facts: line.facts }))
-    : facts.map((fact) => ({ text: `${prefix}${fact.excerpt}`, facts: [fact] }));
 }
 
 function insertWholeRecord(model: SourceModel, draft: ResumeDraft, record: SourceRecord) {
@@ -652,7 +782,7 @@ function insertWholeRecord(model: SourceModel, draft: ResumeDraft, record: Sourc
   const separated = anchors.some(({ at }) => at > range.start && !draft.lines[at - 1]!.trim());
   const leading = record.leading[0];
   const bullets = leading ? [leading, ...record.bullets.filter((unit) => unit !== leading)] : record.bullets;
-  const rendered = [...record.headers, ...bullets].flatMap((unit) => renderUnit(model, draft, unit, "all", range));
+  const rendered = [...record.headers, ...bullets].flatMap((unit) => renderUnit(model, draft, unit, range));
   const next = anchors.filter(({ candidate }) => candidate.order > record.order).sort((a, b) => a.candidate.order - b.candidate.order)[0];
   if (next) {
     draft.insert(next.at, separated ? [...rendered, ""] : rendered);
@@ -660,10 +790,26 @@ function insertWholeRecord(model: SourceModel, draft: ResumeDraft, record: Sourc
     const at = draft.contentEnd(range.start, range.end);
     draft.insert(at, separated && at > range.start ? ["", ...rendered] : rendered);
   }
-  return [...record.headers, ...bullets];
+  return bullets;
 }
 
-function insertRecordUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, facts: "all" | readonly ApplicationDocumentFact[], leading: boolean) {
+// Replaces a partial rendering of a unit with its complete source line, in the same place.
+function replaceWhole(model: SourceModel, draft: ResumeDraft, unit: Unit) {
+  const lines = draft.renderedLines(unit);
+  if (!lines.length) return false;
+  const owned = lines.filter((index) => {
+    const ids = draft.factIds(index);
+    return unit.lines.some((line) => line.key === lineKey(draft.lines[index]!)) ||
+      (ids.size > 0 && [...ids].every((id) => unit.facts.some((fact) => fact.factId === id)));
+  });
+  const first = owned.length ? owned[0]! : lines.at(-1)! + 1;
+  const bulleted = owned.length ? markerPattern.test(draft.lines[first]!.trim()) || sourceBulleted(model, unit) : sourceBulleted(model, unit);
+  draft.remove(owned);
+  draft.insert(first, renderUnit(model, draft, unit, { start: Math.max(0, first - 3), end: first + 3 }, bulleted));
+  return true;
+}
+
+function insertRecordUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, leading: boolean) {
   const record = unit.record!;
   const block = draft.recordBlock(record);
   if (unit.kind === "record_header") {
@@ -672,19 +818,18 @@ function insertRecordUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, fa
       const first = draft.firstRecordLine(record);
       const section = first >= 0 ? null : draft.ensureSection(RECORD_SECTION[record.field]);
       const at = section ? draft.contentEnd(section.start, section.end) : first;
-      draft.insert(at, renderUnit(model, draft, unit, facts, { start: at, end: at }));
+      draft.insert(at, renderUnit(model, draft, unit, { start: at, end: at }));
       return;
     }
     const later = record.headers.filter((candidate) => candidate.order > unit.order)
       .map((candidate) => draft.find(candidate, block.anchor, block.end)).filter((at) => at >= 0);
     const at = later.length ? Math.min(...later) : block.headerEnd;
-    draft.insert(at, renderUnit(model, draft, unit, facts, { start: block.anchor, end: block.end }));
+    draft.insert(at, renderUnit(model, draft, unit, { start: block.anchor, end: block.end }));
     return;
   }
   if (!block) {
-    // A required header is always restored before its bullets; this is only a defensive fallback.
     const range = draft.ensureSection(RECORD_SECTION[record.field]);
-    draft.insert(draft.contentEnd(range.start, range.end), renderUnit(model, draft, unit, facts, range));
+    draft.insert(draft.contentEnd(range.start, range.end), renderUnit(model, draft, unit, range));
     return;
   }
   const range = { start: block.headerEnd, end: block.end };
@@ -696,19 +841,59 @@ function insertRecordUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, fa
       .map((candidate) => draft.find(candidate, range.start, range.end)).filter((index) => index >= 0);
     if (later.length) at = Math.min(...later);
   }
-  draft.insert(at, renderUnit(model, draft, unit, facts, range));
+  draft.insert(at, renderUnit(model, draft, unit, range));
 }
 
-function insertSectionUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, facts: "all" | readonly ApplicationDocumentFact[]) {
+function insertSectionUnit(model: SourceModel, draft: ResumeDraft, unit: Unit) {
+  if (unit.attachRef) {
+    const record = model.records.find((candidate) => candidate.ref === unit.attachRef);
+    const block = record ? draft.recordBlock(record) : null;
+    if (block) {
+      const at = draft.contentEnd(block.headerEnd, block.end);
+      draft.insert(at, renderUnit(model, draft, unit, { start: block.headerEnd, end: block.end }, true));
+      return;
+    }
+  }
   const placement = unit.placement ?? "ADDITIONAL INFORMATION";
   const range = draft.ensureSection(placement);
   const later = model.units.filter((candidate) => candidate.kind === unit.kind && candidate.placement === placement &&
     candidate.order > unit.order).map((candidate) => draft.find(candidate, range.start, range.end)).filter((at) => at >= 0);
   const at = later.length ? Math.min(...later) : draft.contentEnd(range.start, range.end);
-  const rendered = renderUnit(model, draft, unit, facts, range);
+  const rendered = renderUnit(model, draft, unit, range);
   const needsGap = placement === "HEADER" && at === range.end && at < draft.lines.length && sectionOf(draft.lines[at]!) !== null &&
     (at === 0 || draft.lines[at - 1]!.trim() !== "");
   draft.insert(at, needsGap ? [...rendered, ""] : rendered);
+}
+
+// When the source groups skills ("Sales tools: a, b, c"), the tailored SKILLS section lists the
+// kept skills the same way, dropping only trimmed ones. Each line cites its category line and skills.
+function regroupSkills(model: SourceModel, draft: ResumeDraft, restoredSkills: ReadonlySet<Unit>) {
+  if (!model.skillCategories.length) return;
+  const skills = model.units.filter((unit) => unit.kind === "skill");
+  const kept = new Set(skills.filter((unit) => restoredSkills.has(unit) || draft.renderedLines(unit).length > 0));
+  if (!kept.size) return;
+  const grouped = new Set(model.skillCategories.flatMap((category) => category.skills));
+  const lines: RenderedLine[] = [];
+  for (const category of model.skillCategories) {
+    const items = category.skills.filter((unit) => kept.has(unit));
+    if (!items.length) continue;
+    const label = category.label !== null && category.fact ? category.label : null;
+    const text = `${label ? `${label}: ` : ""}${items.map(unitText).join(", ")}`;
+    const facts = items.flatMap((unit) => unit.facts);
+    const citations = [...(label ? [category.fact!] : []), ...facts].map((fact) => ({ ref: fact.ref, excerpt: fact.excerpt }));
+    lines.push({ text, facts, claim: { claim: text, citations } });
+  }
+  for (const unit of skills) {
+    if (kept.has(unit) && !grouped.has(unit)) lines.push({ text: unitText(unit), facts: unit.facts });
+  }
+  const range = draft.ensureSection("SKILLS");
+  const current = [];
+  for (let index = range.start; index < range.end; index += 1) {
+    if (skills.some((unit) => draft.renders(index, unit))) current.push(index);
+  }
+  if (current.map((index) => draft.lines[index]!.trim()).join("\n") === lines.map((line) => line.text).join("\n")) return;
+  draft.remove(current);
+  draft.insert(range.start, lines);
 }
 
 const restorations = new WeakMap<object, readonly TailoredResumeItem[]>();
@@ -719,42 +904,55 @@ export function tailoredResumeRestorations(output: object): readonly TailoredRes
   return restorations.get(output) ?? [];
 }
 
-// Deterministically restores every omitted required, protected or below-floor item, verbatim from
-// the master résumé, with exact claim evidence. Returns the same object when nothing is missing.
+// Deterministically completes the tailored résumé under the keep rule, verbatim from the master
+// résumé, with exact claim evidence. Returns the same object when nothing needs changing.
 export function completeTailoredResume<T extends ResumeOutput>(payload: ApplicationDocumentPayload, output: T): T {
   const model = buildSourceModel(payload);
-  const inc = inclusion(output);
-  const { plan, wholeRecords, leadingRestores } = planRestoration(model, payload, inc);
   const draft = new ResumeDraft(model, output);
-  ensureRequiredHeadings(model, draft);
-  if (!plan.size && !draft.added.length && draft.lines.join("\n") === output.resumeText) return output;
+  normalizeHeadings(model, draft);
+  const { plan, wholeRecords, leadingRestores } = planRestoration(model, payload, draft);
+  if (!plan.size && draft.lines.join("\n") === output.resumeText) {
+    regroupSkills(model, draft, new Set());
+    if (draft.lines.join("\n") === output.resumeText) return output;
+  }
 
+  const regrouping = model.skillCategories.length > 0;
+  const restoredSkills = new Set<Unit>();
   const items: Array<{ id: number; item: TailoredResumeItem }> = [];
   const done = new Set<Unit>();
   for (const unit of model.units) {
-    const facts = plan.get(unit);
-    if (!facts || done.has(unit)) continue;
+    const action = plan.get(unit);
+    if (!action || done.has(unit)) continue;
     if (unit.record && wholeRecords.has(unit.record)) {
-      const inserted = insertWholeRecord(model, draft, unit.record);
-      inserted.forEach((member) => done.add(member));
-      items.push({ id: unit.id, item: { ref: unit.record.ref, kind: "record", context: null, text: recordText(model, unit.record, inserted.filter((member) => member.kind === "bullet")) } });
+      const bullets = insertWholeRecord(model, draft, unit.record);
+      [...unit.record.headers, ...unit.record.bullets].forEach((member) => done.add(member));
+      items.push({ id: unit.id, item: { ref: unit.record.ref, kind: "record", context: null, text: recordText(model, unit.record, bullets) } });
       continue;
     }
     done.add(unit);
-    if (unit.record) insertRecordUnit(model, draft, unit, facts, leadingRestores.has(unit));
-    else insertSectionUnit(model, draft, unit, facts);
-    items.push({ id: unit.id, item: unitItem(unit, facts) });
+    if (unit.kind === "skill" && regrouping) {
+      if (action === "insert") restoredSkills.add(unit);
+      else if (!replaceWhole(model, draft, unit)) restoredSkills.add(unit);
+    } else if (action === "replace") {
+      if (!replaceWhole(model, draft, unit)) insertSectionUnit(model, draft, unit);
+    } else if (unit.record) {
+      insertRecordUnit(model, draft, unit, leadingRestores.has(unit));
+    } else {
+      insertSectionUnit(model, draft, unit);
+    }
+    items.push({ id: unit.id, item: unitItem(unit) });
   }
+  regroupSkills(model, draft, restoredSkills);
 
   if (draft.added.length) validateRestoredResumeClaimEvidence(payload, draft.added);
   const completed: T = { ...output, resumeText: draft.lines.join("\n"), claimEvidence: draft.evidence };
   const skillsSection = (output as { skillsSection?: unknown }).skillsSection;
   if (Array.isArray(skillsSection)) {
-    const restoredSkills = model.units.filter((unit) => unit.kind === "skill" && plan.get(unit) === "all" &&
+    const restoredSkillTexts = model.units.filter((unit) => unit.kind === "skill" && plan.get(unit) === "insert" &&
       unit.lines.length === 1 && unit.facts.length === 1 && unit.lines[0]!.key === factKey(unit.facts[0]!.excerpt))
       .map((unit) => unit.facts[0]!.excerpt)
       .filter((skill) => !skillsSection.some((existing) => typeof existing === "string" && factKey(existing) === factKey(skill)));
-    (completed as { skillsSection?: unknown }).skillsSection = [...skillsSection, ...restoredSkills];
+    (completed as { skillsSection?: unknown }).skillsSection = [...skillsSection, ...restoredSkillTexts];
   }
   restorations.set(completed, Object.freeze(items.sort((a, b) => a.id - b.id).map(({ item }) => Object.freeze(item))));
   return completed;
@@ -771,26 +969,34 @@ function incomplete(fieldPath: string, message: string): never {
 // The keep rule as a check. After completeTailoredResume this only fails on an internal defect.
 export function assertTailoredResumeKeepRule(payload: ApplicationDocumentPayload, output: ResumeOutput) {
   const model = buildSourceModel(payload);
-  const inc = inclusion(output);
+  const draft = new ResumeDraft(model, output);
   const protectedSet = protectedUnits(model, payload);
+  const rendered = new Map(model.units.map((unit) => [unit, draft.renderedLines(unit)]));
+  const kept = (unit: Unit) => (rendered.get(unit)?.length ?? 0) > 0;
   for (const unit of model.units) {
-    if (unit.kind === "header" && !inc.full(unit)) {
+    if (kept(unit) && !draft.wholeAt(unit, rendered.get(unit)!)) {
+      incomplete(unit.ref, "Tailored resume kept only part of a source item.");
+    }
+    if (unit.kind === "header" && !kept(unit)) {
       incomplete(`resume.rawText.header[${unit.order}]`, "Tailored resume omitted source identity or contact context.");
     }
-    if (unit.kind === "summary" && !inc.full(unit)) incomplete("resume.summary", "Tailored resume omitted the source summary.");
+    if (unit.kind === "summary" && !kept(unit)) incomplete("resume.summary", "Tailored resume omitted the source summary.");
+    if (protectedSet.has(unit) && !kept(unit)) {
+      incomplete(unit.ref, "Tailored resume omitted a protected résumé item.");
+    }
   }
   for (const record of model.records) {
     const all = [...record.headers, ...record.bullets];
     if (record.field === "projects") {
-      if (all.some(inc.touched) && record.headers.length && !record.headers.some(inc.touched)) {
+      if (all.some(kept) && record.headers.length && !record.headers.some(kept)) {
         incomplete(record.ref, "Tailored resume kept project content without its project header.");
       }
       continue;
     }
     const required = record.field === "workHistory" ? record.headers : all;
-    if (!required.every(inc.full)) incomplete(record.ref, "Tailored resume omitted a required source record.");
+    if (!required.every(kept)) incomplete(record.ref, "Tailored resume omitted a required source record.");
     if (record.field === "workHistory" &&
-      record.bullets.filter(inc.touched).length < Math.min(TAILORED_RESUME_FLOORS.jobBullets, record.bullets.length)) {
+      record.bullets.filter(kept).length < Math.min(TAILORED_RESUME_FLOORS.jobBullets, record.bullets.length)) {
       incomplete(record.ref, "Tailored resume trimmed a job below its bullet floor.");
     }
   }
@@ -799,42 +1005,48 @@ export function assertTailoredResumeKeepRule(payload: ApplicationDocumentPayload
     ["achievement", TAILORED_RESUME_FLOORS.achievements, "resume.achievements"]
   ] as const) {
     const units = model.units.filter((unit) => unit.kind === kind);
-    if (units.filter(inc.touched).length < Math.min(floor, units.length)) {
+    if (units.filter(kept).length < Math.min(floor, units.length)) {
       incomplete(fieldPath, `Tailored resume trimmed ${kind === "skill" ? "skills" : "achievements"} below the floor.`);
     }
   }
-  for (const unit of model.units) {
-    if (protectedSet.has(unit) && !inc.full(unit)) {
-      incomplete(unit.ref, "Tailored resume omitted a résumé item cited by the job match.");
+  const headings = output.resumeText.split(/\r?\n/u).flatMap((line) => {
+    const section = sectionOf(line);
+    return section ? [{ section, text: line.trim() }] : [];
+  });
+  for (const section of model.requiredSections) {
+    if (!headings.some((heading) => heading.section === section)) {
+      incomplete("resumeText", `Tailored resume omitted the ${section} source section.`);
     }
   }
-  const headings = new Set(output.resumeText.split(/\r?\n/u).flatMap((line) => sectionOf(line) ?? []));
-  for (const section of model.requiredSections) {
-    if (!headings.has(section)) incomplete("resumeText", `Tailored resume omitted the ${section} source section.`);
+  for (const heading of headings) {
+    const source = model.sourceHeadingText.get(heading.section);
+    if (source && source !== heading.text) incomplete("resumeText", "Tailored resume renamed a source section heading.");
   }
 }
 
-// Catalog items the final tailored résumé does not include, as paste-ready verbatim source text.
+// Catalog items the final tailored résumé does not include, as whole paste-ready source items.
 export function tailoredResumeLeftOut(payload: ApplicationDocumentPayload, output: ResumeOutput): TailoredResumeItem[] {
   const model = buildSourceModel(payload);
-  const inc = inclusion(output);
+  const draft = new ResumeDraft(model, output);
+  const included = globallyIncluded(output);
+  const kept = (unit: Unit) => draft.renderedLines(unit).length > 0;
+  const mentioned = (unit: Unit) => unit.facts.every(included);
   const items: TailoredResumeItem[] = [];
   const handled = new Set<SourceRecord>();
-  const missing = (unit: Unit) => inc.touched(unit) ? unit.facts.filter((fact) => !inc.included(fact)) : "all" as const;
   for (const unit of model.units) {
     const record = unit.record;
     if (record) {
       if (handled.has(record)) continue;
       handled.add(record);
       const all = [...record.headers, ...record.bullets];
-      if (!all.some(inc.touched)) {
-        items.push({ ref: record.ref, kind: "record", context: null, text: recordText(model, record) });
+      if (!all.some(kept)) {
+        if (!all.every(mentioned)) items.push({ ref: record.ref, kind: "record", context: null, text: recordText(model, record) });
         continue;
       }
-      for (const member of all) if (!inc.full(member)) items.push(unitItem(member, missing(member)));
+      for (const member of all) if (!kept(member) && !mentioned(member)) items.push(unitItem(member));
       continue;
     }
-    if (!inc.full(unit)) items.push(unitItem(unit, missing(unit)));
+    if (!kept(unit) && !mentioned(unit)) items.push(unitItem(unit));
   }
   return items;
 }

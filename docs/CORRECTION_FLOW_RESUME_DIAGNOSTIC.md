@@ -2,21 +2,37 @@
 
 ## 2026-11-05 note: values re-pinned because production limits and prompt changed
 
-On 2026-11-05 the owner approved a new tailoring rule: a tailored résumé may trim extras but always keeps every job. Production limits and the application-document prompt changed with it. These diagnostics mirror production, so their pinned values were re-pinned. Their code paths were not otherwise changed.
+On 2026-11-05 the owner approved a new tailoring rule: a tailored résumé may trim extras but always keeps every job. Production limits and the application-document prompt changed with it. Later the same day, after the owner's first live run, the rule was extended (prompt/cache `14`):
 
-| Value | Before | Now |
+- Résumé lines may faithfully reword their cited facts (`lib/ai/application-document-rewording.ts`).
+- A résumé line may cite several facts (`resumeTextClaims[].factIds`).
+- Kept items are always whole.
+- Owner-attested facts and requirement-matched skills are protected.
+- Source section headings are kept.
+
+These diagnostics mirror production, so their pinned values were re-pinned twice. Their code paths were not otherwise changed.
+
+| Value | Before (v12) | Now (v14) |
 |---|---|---|
-| Application-document prompt/cache version | `12` | `13` |
+| Application-document prompt/cache version | `12` | `14` (passed through `13`) |
 | Tailored résumé input / output (including thinking) | 56,000 / 6,000 tokens | 36,000 / 12,000 tokens |
 | Tailored résumé maximum | `$0.064500` | `$0.072000` |
 | Cover letter input / output (including thinking) | 56,000 / 1,500 tokens | 36,000 / 6,000 tokens |
 | Cover letter maximum | `$0.047625` | `$0.049500` |
 | Two-document diagnostic and visible-review ceiling (consent literal) | `$0.112125` (`112_125`) | `$0.121500` (`121_500`) |
 | Four-call qualification ceiling (job matches unchanged at `$0.072720` each) | `$0.257565` | `$0.266940` |
-| Version-bound 70-fact catalog hash | `c5568c3d…` | `ac0a1614…` |
-| Tailored résumé / cover wire-request hash | `ed5859b5…` / `36aadfcd…` | `ba5c3632…` / `213db363…` |
+| Version-bound 70-fact catalog hash | `c5568c3d…` | `52411db9…` (`ac0a1614…` at v13) |
+| Tailored-résumé provider schema hash | `3717d6f6…` | `c53a750c…` |
+| Tailored résumé / cover wire-request hash | `ed5859b5…` / `36aadfcd…` | `02329818…` / `213db363…` (`ba5c3632…` / `213db363…` at v13) |
 
-The synthetic payload, reviewed-evidence and résumé schema hashes are unchanged. Every manifest hash built from these values changes. The shared quality validator these tools call now applies the keep rule: omitted required or job-match-protected items are restored verbatim from the source, and trimmed skills, achievements, projects, bullets and owner-attested facts are accepted. The synthetic résumé request now measures 35,061 conservative bytes against the 36,000-token conservative bound.
+The synthetic payload and reviewed-evidence hashes are unchanged. Every manifest hash built from these values changes. The shared validators these tools call now apply the extended rule:
+
+- résumé claims may be faithful rewordings, still bound to their cited facts;
+- omitted required or protected items are restored whole from the source;
+- partially kept items are completed in place;
+- trimmed skills, achievements, projects and bullets are accepted.
+
+The synthetic résumé request now measures 34,643 conservative bytes against the 36,000-token conservative bound.
 
 Any earlier offline review, manifest approval or consent covered the old values only. Re-review the new manifests before running any of these tools. They remain prepared but unexecuted, and this note authorizes no paid run.
 

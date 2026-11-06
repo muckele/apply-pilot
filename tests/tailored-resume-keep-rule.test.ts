@@ -291,9 +291,11 @@ test("a protected match-cited skill and bullet that Gemini dropped are restored 
   ]);
   const catalog = buildApplicationDocumentFactCatalog(payload);
   const factId = (excerpt: string) => catalog.find((fact) => fact.excerpt === excerpt)!.factId;
+  // Résumé match citations (not job or owner-attested refs) plus, since the live review, every
+  // owner-attested fact for this job and every skill whose words all appear in the requirements.
   assert.deepEqual(tailoredResumeProtectedFactIds(payload), [
-    factId("Woodworking"), factId(JOBS[0]!.bullets[2]!)
-  ], "only résumé citations are protected; owner-attested facts stay optional");
+    factId("Salesforce"), factId("Pipeline forecasting"), factId("Woodworking"), factId(JOBS[0]!.bullets[2]!), factId(OWNER_FACT)
+  ]);
 
   const trimmed = withoutLines(completeText,
     "Public speaking", "Event planning", "Photography", "Woodworking", JOBS[0]!.bullets[2]!, OWNER_FACT);
@@ -303,9 +305,9 @@ test("a protected match-cited skill and bullet that Gemini dropped are restored 
   assert.ok(lineIndex(text, "Woodworking") < lineIndex(text, "EXPERIENCE"));
   assert.ok(lineIndex(text, JOBS[0]!.bullets[2]!) > lineIndex(text, JOBS[0]!.bullets[1]!));
   assert.ok(lineIndex(text, JOBS[0]!.bullets[2]!) < lineIndex(text, JOBS[1]!.header));
-  assert.equal(lineIndex(text, OWNER_FACT), -1, "a cited owner-attested fact is never forced");
+  assert.ok(lineIndex(text, OWNER_FACT) > lineIndex(text, "ADDITIONAL INFORMATION"), "an omitted attested fact is restored");
   assert.deepEqual(tailoredResumeLeftOut(payload, completed).map((item) => item.text), [
-    "Public speaking", "Event planning", "Photography", OWNER_FACT
+    "Public speaking", "Event planning", "Photography"
   ]);
 });
 
@@ -314,7 +316,7 @@ test("protection binds to the payload: stale or unknown match citations protect 
     { ref: "resume.skills[99]", excerpt: "Woodworking" },
     { ref: "resume.workHistory[0]", excerpt: "Led a lunar logistics program" }
   ]);
-  assert.deepEqual(tailoredResumeProtectedFactIds(payload), []);
+  assert.deepEqual(tailoredResumeProtectedFactIds(payload), tailoredResumeProtectedFactIds(syntheticPayload()));
 });
 
 test("an invented fact is still rejected, even when restoration would otherwise apply", () => {
@@ -349,16 +351,17 @@ test("restoration never launders an unsupported claim into accepted evidence", (
   );
 });
 
-test("an omitted owner-attested fact is accepted and listed as left out", () => {
+test("an omitted owner-attested fact for this job is restored, never left out", () => {
   const payload = syntheticPayload();
-  const { assembled, completed } = tailor(payload, withoutLines(completeText, OWNER_FACT));
-  assert.equal(completed, assembled);
-  assert.deepEqual(tailoredResumeLeftOut(payload, completed), [{
+  const { completed } = tailor(payload, withoutLines(completeText, OWNER_FACT));
+  assert.ok(completed.resumeText.endsWith(`\n\nADDITIONAL INFORMATION\n${OWNER_FACT}`));
+  assert.deepEqual(tailoredResumeRestorations(completed), [{
     ref: "reviewedEvidence.facts[0].fact",
     kind: "owner_attested_fact",
     context: null,
     text: OWNER_FACT
   }]);
+  assert.deepEqual(tailoredResumeLeftOut(payload, completed), []);
 });
 
 test("a used owner-attested fact keeps its OWNER_ATTESTED provenance in the evidence", () => {
@@ -388,8 +391,7 @@ test("the left-out list matches exactly what was trimmed, in source order, with 
       kind: "record",
       context: null,
       text: [PROJECT.header, ...PROJECT.bullets.map((bullet) => `• ${bullet}`)].join("\n")
-    },
-    { ref: "reviewedEvidence.facts[0].fact", kind: "owner_attested_fact", context: null, text: OWNER_FACT }
+    }
   ]);
 });
 
@@ -430,8 +432,10 @@ test("source heading variants and combined skill lines are not reported as left 
   const assembled = assembleTailoredResumeProviderOutput(payload, providerWire(payload, trimmed));
   const completed = validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, assembled));
   assert.deepEqual(tailoredResumeLeftOut(payload, completed).map((item) => item.text), [
-    "Public speaking", "Event planning", "Photography", "Woodworking", OWNER_FACT
+    "Public speaking", "Event planning", "Photography", "Woodworking"
   ]);
+  // The source's own (recognized) heading is kept rather than Gemini's rename.
+  assert.ok(completed.resumeText.includes("\nPROFESSIONAL EXPERIENCE\n"));
 });
 
 test("a missing required section heading is restored above its retained content", () => {

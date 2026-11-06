@@ -1,8 +1,11 @@
 import { PublicApiError } from "@/lib/api-errors";
 import {
+  applicationDocumentAtomicStrings,
   buildApplicationDocumentFactCatalog,
+  isApplicationDocumentSectionHeading,
   normalizeApplicationDocumentSourceLine
 } from "@/lib/ai/application-document-facts";
+import { faithfulRewordingFailure, type RewordingSourceKind } from "@/lib/ai/application-document-rewording";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -373,10 +376,33 @@ function unsupportedApplicantTerms(payload: ApplicationDocumentPayload) {
     .filter((term) => !evidenceContainsWhole(qualificationEvidence, term));
 }
 
+// Which cited facts a tailored résumé line may reword (lib/ai/application-document-rewording.ts).
+function rewordingSourceKind(payload: ApplicationDocumentPayload, ref: string, excerpt: string): RewordingSourceKind {
+  if (ref === "resume.summary" || /^resume\.achievements\[\d+\]$/u.test(ref) ||
+    /^reviewedEvidence\.facts\[\d+\]\.fact$/u.test(ref)) return "narrative";
+  if (/^(?:resume\.skills\[\d+\]|resume\.rawText|profile\.skillsToEmphasize\[\d+\])$/u.test(ref)) return "list";
+  const record = ref.match(/^resume\.(workHistory|projects|education|certifications)\[(\d+)\]$/u);
+  const values = record ? payload.resume?.[record[1]!] : null;
+  const value = Array.isArray(values) ? values[Number(record![2])] : null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const items = (value as Record<string, unknown>)[record![1] === "education" || record![1] === "certifications" ? "details" : "bullets"];
+  const atoms = Array.isArray(items)
+    ? applicationDocumentAtomicStrings(items.filter((item): item is string => typeof item === "string"))
+    : [];
+  return atoms.some((atom) => comparable(atom) === comparable(normalizeApplicationDocumentSourceLine(excerpt))) ? "narrative" : null;
+}
+
+type ClaimEvidenceOptions = Readonly<{
+  // Tailored résumé lines only: faithful rewording of the cited facts is allowed
+  // (lib/ai/application-document-rewording.ts). Cover letters keep the exact-wording grammar.
+  faithfulRewording?: boolean;
+}>;
+
 function validateClaimEvidence(
   payload: ApplicationDocumentPayload,
   claims: ApplicationDocumentClaimEvidence[],
-  fieldPrefix: "claimEvidence" | "claimsUsed"
+  fieldPrefix: "claimEvidence" | "claimsUsed",
+  options: ClaimEvidenceOptions = {}
 ) {
   const supportedClaims = new Set<string>();
   const unsupportedTerms = unsupportedApplicantTerms(payload);
@@ -454,8 +480,22 @@ function validateClaimEvidence(
         });
       }
     }
-    const relationPreserved = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
+    const exactRelation = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
       eligible && standalone && sameTokens(factualTokens(excerpt, yearRanges), factualTokens(claim, yearRanges)));
+    const citedFacts = [...new Map(entry.citations
+      .filter((citation) => !citation.ref.startsWith("job."))
+      .map((citation) => [`${citation.ref}\u0000${citation.excerpt}`, {
+        ref: citation.ref,
+        excerpt: citation.excerpt,
+        kind: rewordingSourceKind(payload, citation.ref, citation.excerpt)
+      }])).values()];
+    // A résumé line citing several facts must express each of them, so a citation can never make
+    // a half-kept item look whole. A single-fact line keeps the exact grammar or a faithful rewording.
+    const faithful = () => applicantEvidence.every((item) => item.eligible && item.standalone) &&
+      faithfulRewordingFailure(claim, citedFacts) === null;
+    const relationPreserved = options.faithfulRewording
+      ? (citedFacts.length > 1 ? faithful() : exactRelation || faithful())
+      : exactRelation;
     if (!relationPreserved) {
       throw new PublicApiError("Application document contains an unsupported applicant claim.", 422, {
         code: "APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM",
@@ -478,7 +518,7 @@ export function validateRestoredResumeClaimEvidence(
   payload: ApplicationDocumentPayload,
   claims: ApplicationDocumentClaimEvidence[]
 ) {
-  validateClaimEvidence(payload, claims, "claimEvidence");
+  validateClaimEvidence(payload, claims, "claimEvidence", { faithfulRewording: true });
 }
 
 function requireClaims(claims: Set<string>, values: Array<{ value: string; fieldPath: string }>) {
@@ -497,14 +537,14 @@ function requireClaims(claims: Set<string>, values: Array<{ value: string; field
 }
 
 function isHeading(line: string) {
-  return /^(?:SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL INFORMATION)$/i.test(line);
+  return isApplicationDocumentSectionHeading(line);
 }
 
 export function validateTailoredResumeClaims<T extends TailoredResumeClaimsOutput>(
   payload: ApplicationDocumentPayload,
   output: T
 ) {
-  const supportedClaims = validateClaimEvidence(payload, output.claimEvidence, "claimEvidence");
+  const supportedClaims = validateClaimEvidence(payload, output.claimEvidence, "claimEvidence", { faithfulRewording: true });
   const requiredClaims = [
     { value: output.professionalSummary, fieldPath: "professionalSummary" },
     ...output.skillsSection.map((value, index) => ({ value, fieldPath: `skillsSection[${index}]` })),

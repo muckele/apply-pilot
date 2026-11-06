@@ -1,7 +1,8 @@
 import { PublicApiError } from "@/lib/api-errors";
 import { validateCoverLetterWriting, validateResumePriorityOrder } from "@/lib/ai/application-document-writing-quality";
 import {
-  buildApplicationDocumentFactCatalog
+  buildApplicationDocumentFactCatalog,
+  isApplicationDocumentSectionHeading
 } from "@/lib/ai/application-document-facts";
 import {
   assertTailoredResumeKeepRule,
@@ -23,7 +24,6 @@ type CoverLetterQualityOutput = {
   claimsUsed: ApplicationDocumentClaimEvidence[];
 };
 
-const sectionHeading = /^(SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|ACHIEVEMENTS|ADDITIONAL(?: INFORMATION)?)$/iu;
 
 function comparable(value: string) {
   return value.trim().replace(/^[-*•▪◦–—]\s+/u, "").replace(/\s+/gu, " ").toLocaleLowerCase();
@@ -62,7 +62,7 @@ function sourceHeaderLines(payload: ApplicationDocumentPayload) {
   const lines: string[] = [];
   for (const rawLine of payload.resume.rawText.split(/\r?\n/u)) {
     const line = rawLine.trim();
-    if (sectionHeading.test(line)) break;
+    if (isApplicationDocumentSectionHeading(line)) break;
     if (line) lines.push(line);
   }
   return lines.slice(0, 3);

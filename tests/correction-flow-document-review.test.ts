@@ -490,7 +490,7 @@ test("decorated bulletRewrites alone associate their lines through transport and
     const association = wire.resumeTextClaims.find(item => item.claim === claim)!;
     wire.resumeTextClaims = wire.resumeTextClaims.filter(item => item !== association);
     wire.resumeText = wire.resumeText.replace(rawLine, `${glyph} ${claim}`);
-    wire.bulletRewrites = [{ factId: association.factId, rewrite: `${glyph} ${claim}`, reason: "Synthetic alternate-field association." }];
+    wire.bulletRewrites = [{ factId: association.factId!, rewrite: `${glyph} ${claim}`, reason: "Synthetic alternate-field association." }];
     let calls = 0;
     let reviews = 0;
     const pdfs: Buffer[] = [];

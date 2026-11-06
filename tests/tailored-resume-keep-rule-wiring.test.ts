@@ -28,8 +28,8 @@ test("tailoring and cover-letter limits match the owner-approved live numbers an
   assert.match(policy, /\$0\.0495/u);
 });
 
-test("application documents use prompt/cache version 13 for the trim-but-keep-every-job rule", () => {
-  assert.equal(APPLICATION_DOCUMENT_PROMPT_VERSION, "13");
+test("application documents use prompt/cache version 14 for faithful rewording and whole items", () => {
+  assert.equal(APPLICATION_DOCUMENT_PROMPT_VERSION, "14");
 });
 
 test("the tailoring prompt tells Gemini what is required, what may be trimmed, the floors and protected facts", () => {
@@ -46,7 +46,7 @@ test("the tailoring prompt tells Gemini what is required, what may be trimmed, t
   assert.match(prompt, /min\(2, its bullet count\) bullets/u);
   assert.match(prompt, /min\(10, total\) skills/u);
   assert.match(prompt, /min\(2, total\) achievements/u);
-  assert.match(prompt, /Owner-attested[^.]*optional/isu);
+  assert.match(prompt, /Use every owner-attested reviewed fact at least once/isu);
   assert.match(prompt, /never trim[^.]*protected/isu);
   assert.doesNotMatch(prompt, /Represent every available skills item/u);
   const mentored = buildApplicationDocumentFactCatalog(payload).find((fact) =>

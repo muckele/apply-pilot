@@ -1,7 +1,7 @@
 import { PublicApiError } from "@/lib/api-errors";
 import type { ApplicationDocumentClaimEvidence, ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
 import { applicationDocumentPriorityOpportunities } from "@/lib/ai/application-document-priorities";
-import { applicationDocumentFactStartsWithAction } from "@/lib/ai/application-document-facts";
+import { applicationDocumentFactStartsWithAction, isApplicationDocumentSectionHeading } from "@/lib/ai/application-document-facts";
 
 function comparable(value: string) { return value.trim().replace(/^[-*•▪◦–—]\s+/u, "").replace(/\s+/gu, " ").toLocaleLowerCase(); }
 const sentences = new Intl.Segmenter("en", { granularity: "sentence" });
@@ -10,7 +10,8 @@ function revision(fieldPath: string, message: string): never {
 }
 
 export function validateResumePriorityOrder(payload: ApplicationDocumentPayload, text: string, evidence: ApplicationDocumentClaimEvidence[]) {
-  const lines = text.split(/\r?\n/u).map(comparable);
+  const rawLines = text.split(/\r?\n/u);
+  const lines = rawLines.map(comparable);
   const sourceBullets = (["workHistory", "projects"] as const).flatMap(field => {
     const records = payload.resume?.[field];
     return Array.isArray(records) ? records.flatMap((value, index) => {
@@ -36,7 +37,7 @@ export function validateResumePriorityOrder(payload: ApplicationDocumentPayload,
     if (starts.length !== 1) revision(opportunity.ref, "Retain exactly one owning record header for this source record.");
     const start = starts[0] + 1;
     const next = lines.findIndex((line, index) => index >= start &&
-      (recordHeaders.some(record => matchesHeader(line, record)) || /^(?:summary|profile|skills|experience|work experience|projects|education|certifications|achievements|additional information)$/u.test(line)));
+      (recordHeaders.some(record => matchesHeader(line, record)) || isApplicationDocumentSectionHeading(rawLines[index] ?? "")));
     const end = next < 0 ? lines.length : next;
     const block = lines.slice(start, end);
     const foreignBullet = evidence.some(entry => block.includes(comparable(entry.claim)) && entry.citations.some(citation =>

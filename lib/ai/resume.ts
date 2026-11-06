@@ -1347,10 +1347,11 @@ export const tailoredResumeProviderSchema: z.ZodType<
     reason: z.string()
   }).strict()),
   rolesOrProjectsToEmphasize: z.array(providerFactSelectionSchema),
-  resumeTextClaims: z.array(z.object({
-    claim: z.string().min(1),
-    factId: z.string().min(1)
-  }).strict()),
+  // Each résumé line cites every fact it uses; the legacy single factId form is still accepted.
+  resumeTextClaims: z.array(z.union([
+    z.object({ claim: z.string().min(1), factIds: z.array(z.string().min(1)).min(1) }).strict(),
+    z.object({ claim: z.string().min(1), factId: z.string().min(1) }).strict()
+  ])),
   unsupportedKeywords: z.array(z.string()),
   formattingWarnings: z.array(z.string()),
   resumeText: z.string()
@@ -1401,8 +1402,8 @@ export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocument
         items: {
           type: "object",
           additionalProperties: false,
-          properties: { claim: { type: "string" }, factId },
-          required: ["claim", "factId"]
+          properties: { claim: { type: "string" }, factIds: { type: "array", items: factId, minItems: 1 } },
+          required: ["claim", "factIds"]
         }
       },
       unsupportedKeywords: tailoredResumeStringArray,
