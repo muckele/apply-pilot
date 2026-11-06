@@ -86,7 +86,7 @@ function optionalText(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function readTenure(value: unknown): TenureGapPresentation | null {
+export function readTenure(value: unknown): TenureGapPresentation | null {
   if (!isRecord(value)) return null;
   const summary = optionalText(value.summary);
   if (!summary) return null;

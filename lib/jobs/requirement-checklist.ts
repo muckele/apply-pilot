@@ -1,7 +1,10 @@
 // Turns a JOB_MATCH analysis into a per-requirement checklist using only the analysis's own
 // citations: a requirement is "shown" when a factual match cites it and no gap does, "not_shown"
 // when a gap cites it, and "not_assessed" otherwise. "Not shown" is about the résumé text, not
-// proof that the person lacks the skill.
+// proof that the person lacks the skill. A years-of-experience gap also carries the duration and
+// roles Apply Pilot counted from work-history titles and dates (lib/ai/job-match-tenure.ts).
+
+import { readTenure, type TenureGapPresentation } from "@/lib/jobs/fit-presentation";
 
 export type ChecklistStatus = "shown" | "not_shown" | "not_assessed";
 
@@ -11,6 +14,7 @@ export type ChecklistItem = {
   status: ChecklistStatus;
   claim: string | null;
   resumeLines: string[];
+  tenure: TenureGapPresentation | null;
 };
 
 export type ChecklistCounts = { shown: number; notShown: number; notAssessed: number; total: number };
@@ -24,7 +28,7 @@ export type RequirementChecklist = {
 
 type Citation = { ref: string; excerpt: string };
 type Match = { claim: string; applicantEvidence: Citation[]; jobEvidence: Citation[] };
-type Gap = { requirement: string; jobRequirement: Citation | null };
+type Gap = { requirement: string; jobRequirement: Citation | null; tenure: TenureGapPresentation | null };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -49,7 +53,7 @@ function readOutput(output: unknown): { matches: Match[]; gaps: Gap[] } {
     : [];
   const gaps = Array.isArray(output.requirementGaps)
     ? output.requirementGaps.flatMap((value): Gap[] => isRecord(value) && typeof value.requirement === "string"
-      ? [{ requirement: value.requirement, jobRequirement: citation(value.jobRequirement) }]
+      ? [{ requirement: value.requirement, jobRequirement: citation(value.jobRequirement), tenure: readTenure(value.tenure) }]
       : [])
     : [];
   return { matches, gaps };
@@ -103,19 +107,23 @@ export function buildRequirementChecklist(requirements: readonly string[], outpu
   if (requirements.length) {
     return finish("requirements", requirements.map((requirement, index) => {
       const ref = `job.requirements[${index}]`;
-      const gapped = gaps.some((gap) => gap.jobRequirement?.ref === ref);
+      const gapped = gaps.filter((gap) => gap.jobRequirement?.ref === ref);
       const matched = matches.filter((match) => match.jobEvidence.some((item) => item.ref === ref));
-      if (gapped) return { requirement, jobRef: ref, status: "not_shown" as const, claim: null, resumeLines: [] };
+      if (gapped.length) {
+        const tenure = gapped.find((gap) => gap.tenure)?.tenure ?? null;
+        return { requirement, jobRef: ref, status: "not_shown" as const, claim: null, resumeLines: [], tenure };
+      }
       if (matched.length) {
         return {
           requirement,
           jobRef: ref,
           status: "shown" as const,
           claim: matched[0]!.claim,
-          resumeLines: [...new Set(matched.flatMap((match) => match.applicantEvidence.map((item) => item.excerpt)))]
+          resumeLines: [...new Set(matched.flatMap((match) => match.applicantEvidence.map((item) => item.excerpt)))],
+          tenure: null
         };
       }
-      return { requirement, jobRef: ref, status: "not_assessed" as const, claim: null, resumeLines: [] };
+      return { requirement, jobRef: ref, status: "not_assessed" as const, claim: null, resumeLines: [], tenure: null };
     }));
   }
   return finish("analysis", [
@@ -124,14 +132,16 @@ export function buildRequirementChecklist(requirements: readonly string[], outpu
       jobRef: match.jobEvidence[0]?.ref ?? null,
       status: "shown" as const,
       claim: match.claim,
-      resumeLines: [...new Set(match.applicantEvidence.map((item) => item.excerpt))]
+      resumeLines: [...new Set(match.applicantEvidence.map((item) => item.excerpt))],
+      tenure: null
     })),
     ...gaps.map((gap) => ({
       requirement: gap.requirement,
       jobRef: gap.jobRequirement?.ref ?? null,
       status: "not_shown" as const,
       claim: null,
-      resumeLines: []
+      resumeLines: [],
+      tenure: gap.tenure
     }))
   ]);
 }

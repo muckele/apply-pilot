@@ -3,6 +3,7 @@
 import { useId, useRef, useState, type KeyboardEvent } from "react";
 
 import { CHECK_LABEL, CheckIcon } from "@/components/job-workspace/match-card";
+import { countedRoleLabel } from "@/components/requirement-gap-list";
 import type { ChecklistView, EstimateView, JobDetailView, JobTab, SalaryTargetView } from "@/lib/jobs/job-view-types";
 
 const TABS: Array<[JobTab, string]> = [["overview", "Overview"], ["match", "Match"], ["salary", "Salary"]];
@@ -132,6 +133,16 @@ export function JobDetailTabs({
                     <div>
                       <p className="job-breakdown-requirement">{item.requirement}</p>
                       {estimate ? <p className="job-hint">{CHECK_LABEL[item.status]}</p> : null}
+                      {estimate && item.status === "not_shown" && item.tenure ? (
+                        <div className="job-hint" data-tenure>
+                          <p>{item.tenure.summary}</p>
+                          <p>
+                            {item.tenure.countedRoles.length
+                              ? `Counted from work-history titles and dates: ${item.tenure.countedRoles.map(countedRoleLabel).join("; ")}`
+                              : "Counted from work-history titles and dates; no listed role names this kind of work."}
+                          </p>
+                        </div>
+                      ) : null}
                       {item.status === "shown" && item.resumeLines.length ? (
                         <ul className="job-quotes">
                           {item.resumeLines.map((line) => <li key={line}><blockquote>From your résumé: “{line}”</blockquote></li>)}

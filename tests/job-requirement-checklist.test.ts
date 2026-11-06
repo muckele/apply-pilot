@@ -73,6 +73,24 @@ test("postings without a requirements list fall back to the analysis's own cited
   assert.equal(checklist.source, "analysis");
 });
 
+test("a years-of-experience gap carries the duration and roles Apply Pilot counted; other items carry none", () => {
+  const tenure = {
+    method: "work_history_titles_and_dates",
+    summary: "Your résumé shows about 4 years of service operations; this job asks for 8+ years.",
+    countedRoles: [{ ref: "resume.workHistory[0]", excerpt: "Service Operations Manager", title: "Service Operations Manager", company: "Contoso", startDate: "2021-06", endDate: "Present" }]
+  };
+  const tenureGap = { requirement: requirements[1]!, jobRequirement: { ref: "job.requirements[1]", excerpt: requirements[1]! }, missingKeywords: [], tenure };
+  const expected = { summary: tenure.summary, countedRoles: [{ title: "Service Operations Manager", company: "Contoso", dates: "2021-06 – Present" }] };
+
+  const listed = buildRequirementChecklist(requirements, { ...output, factualMatches: [output.factualMatches[1]], requirementGaps: [...output.requirementGaps, tenureGap] });
+  assert.equal(listed.items[1]!.status, "not_shown");
+  assert.deepEqual(listed.items[1]!.tenure, expected);
+  assert.deepEqual(listed.items.map((item) => item.tenure === null), [true, false, true, true]);
+
+  const fallback = buildRequirementChecklist([], { factualMatches: [], requirementGaps: [tenureGap] });
+  assert.deepEqual(fallback.items[0]!.tenure, expected);
+});
+
 test("missing or malformed output yields an all-unassessed checklist", () => {
   const checklist = buildRequirementChecklist(requirements, null);
   assert.equal(checklist.counts.notAssessed, 4);

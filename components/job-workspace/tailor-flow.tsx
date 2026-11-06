@@ -276,6 +276,7 @@ export function TailorFlow({
               return (
                 <fieldset key={gap.id} className="job-gap" data-gap={gap.id}>
                   <legend className="job-gap-requirement">{gap.requirement}</legend>
+                  {gap.tenureSummary ? <p className="job-hint" data-tenure>{gap.tenureSummary}</p> : null}
                   <div className="job-gap-choices" role="radiogroup" aria-label={`What to do about: ${gap.requirement}`}>
                     {CHOICES.map(([value, label]) => (
                       <label key={value} className="job-choice" data-checked={draft.choice === value}>

@@ -168,6 +168,43 @@ test("tabs switch between overview, the full match breakdown, and salary without
   });
 });
 
+test("a years-of-experience shortfall shows what Apply Pilot counted, in the gaps step and the full breakdown", async () => {
+  const summary = "Your résumé shows about 4 years of service operations; this job asks for 8+ years.";
+  const tenureOutput = {
+    ...output,
+    factualMatches: output.factualMatches.filter((match) => match.jobEvidence[0]!.ref !== "job.requirements[1]"),
+    requirementGaps: [...output.requirementGaps, {
+      requirement: requirements[1], jobRequirement: { ref: "job.requirements[1]", excerpt: requirements[1] }, missingKeywords: [],
+      tenure: {
+        method: "work_history_titles_and_dates",
+        summary,
+        countedRoles: [{ ref: "resume.workHistory[0]", excerpt: "Service Operations Manager", title: "Service Operations Manager", company: "Contoso", startDate: "2021-06", endDate: "Present" }]
+      }
+    }]
+  };
+  const built = buildRequirementChecklist(requirements, tenureOutput);
+  const base = props();
+  await withPage({
+    checklist: { items: built.items, counts: built.counts },
+    tailor: {
+      ...base.tailor,
+      review: buildEvidenceCorrectionReview({
+        jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+        resume: { rawText: "Service operations leader." }, analysisId: "analysis-1", analysisInputHash: "a".repeat(64),
+        analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.4", analysisOutput: tenureOutput
+      })
+    }
+  }, async (harness) => {
+    const gap = [...harness.container.querySelectorAll("fieldset[data-gap]")].find((node) => node.querySelector("legend")?.textContent === requirements[1]);
+    assert.ok(gap, "tenure gap in the gaps step");
+    assert.ok((gap.textContent ?? "").includes(summary), "gaps step shows the counted duration");
+    await harness.click(harness.button("See full breakdown"));
+    const panel = harness.container.querySelector("[role=tabpanel]")!.textContent ?? "";
+    assert.ok(panel.includes(summary), "breakdown shows the counted duration");
+    assert.ok(panel.includes("Counted from work-history titles and dates: Service Operations Manager, Contoso (2021-06 – Present)"), "breakdown names the counted roles");
+  });
+});
+
 test("an unscored job shows Score this job in the match card", async () => {
   await withPage({ estimate: null, checklist: checklist(false) }, async (harness) => {
     const card = harness.container.querySelector("[data-match-card]")!;
