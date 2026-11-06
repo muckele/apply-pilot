@@ -86,7 +86,7 @@ function optionalText(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function readTenure(value: unknown): TenureGapPresentation | null {
+export function readTenure(value: unknown): TenureGapPresentation | null {
   if (!isRecord(value)) return null;
   const summary = optionalText(value.summary);
   if (!summary) return null;
@@ -116,7 +116,7 @@ function readV3RequirementGaps(output: Record<string, unknown>): RequirementGapP
   });
 }
 
-function compensationExplanation(reason: unknown) {
+export function compensationExplanation(reason: unknown) {
   switch (reason) {
     case "missing_applicant_salary_target":
       return "Unknown because the applicant salary target is missing.";

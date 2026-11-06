@@ -100,7 +100,12 @@ test("Dashboard and Jobs style their real content and result states, not only pr
   assert.match(jobs, /product-page product-page-themed/);
   assert.match(dashboard, /product-themed-title/);
   assert.match(dashboard, /product-divider/);
-  assert.match(jobs, /product-surface/);
+  // The feed's cards and panels are themed through product.css variables (job-card, feed-card).
+  assert.match(jobs, /job-card/);
+  assert.match(source("components/job-feed/feed-card.tsx"), /feed-card/);
+  const productCss = source("app/(product)/product.css");
+  assert.match(productCss, /\.job-card \{[^}]*background:var\(--product-surface\)/u);
+  assert.match(productCss, /\.feed-card \{[^}]*background:var\(--product-surface\)/u);
   assert.match(jobCard, /product-surface-raised/);
   for (const resultClass of ["product-callout-success", "product-callout-warning", "product-callout-danger"]) {
     assert.match(discovery, new RegExp(resultClass));
@@ -113,10 +118,12 @@ test("Jobs keeps labeled filters and the expanded import-only workflow", () => {
   const BrandedManualJobImportForm = ManualJobImportForm as (props: { tone?: UiTone }) => React.JSX.Element;
   const form = renderToStaticMarkup(createElement(BrandedManualJobImportForm, { tone: "branded" }));
 
-  for (const label of ["Search jobs", "Source", "Status", "Work style", "Date posted", "Company", "Role type", "Minimum fit score"]) {
-    assert.match(jobs, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  const filters = source("components/job-feed/feed-filter-bar.tsx");
+  assert.match(jobs, /FeedFilterBar/);
+  for (const label of ["Job title, company or keyword", "Location", "Source", "Status", "Work style", "Posted within", "Seniority", "Salary listed", "Remote", "Company", "Title contains", "Minimum fit estimate", "Sort: "]) {
+    assert.match(filters, new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
-  assert.match(jobs, /product-filter-grid/);
+  assert.match(filters, /method="get" action="\/jobs" role="search"/);
   assert.match(form, /class="space-y-4 product-form"/);
   assert.match(form, /name="salaryMin"/);
   assert.match(form, /name="requirements"/);

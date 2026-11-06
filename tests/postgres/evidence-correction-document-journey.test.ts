@@ -87,6 +87,7 @@ test("actual owned product job route reviews full career and exports current fil
     page.on("pageerror",error=>errors.push(error.message));
     const response=await page.goto(`${origin}/jobs/${job.id}`,{waitUntil:"networkidle"});
     assert.equal(response?.status(),200,nextServer.getLogs());
+    await page.locator("summary").filter({hasText:/^Your master résumé$/}).click();
     await page.locator("[data-product-source]").getByText(/Harbor Customer Solutions/).waitFor();
     assert.equal(await page.locator("[data-product-source]").getByText(/480-hour/).count(),1);
     const source=await page.locator("[data-product-source]").boundingBox();assert.ok(source&&source.width>=450);
@@ -98,16 +99,14 @@ test("actual owned product job route reviews full career and exports current fil
         await page.locator(`[data-theme-choice="${theme}"] input`).check({force:true});
         await page.locator("summary").filter({hasText:/^Appearance$/}).click();
         if(theme==="system"){await page.emulateMedia({colorScheme:"dark"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");await page.emulateMedia({colorScheme:"light"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="light");}
-        await page.getByRole("button",{name:"1. Background and target job",exact:true}).click();
+        await page.locator("[data-job-workspace] h1").scrollIntoViewIfNeeded();
         await page.screenshot({path:`${outputDir}/${name}-${theme}-source.png`});
-        await page.getByRole("button",{name:"Continue to corrections",exact:true}).click();
-        assert.match(await page.locator('[data-product-review-stage="corrections"]').innerText(),/Current accepted job-only facts/u);
-        await page.getByRole("button",{name:"Continue to documents",exact:true}).click();
+        assert.match(await page.locator("#tailor").innerText(),/Lines you.ve added for this job/u);
         await page.getByRole("button",{name:"Review cover letter",exact:true}).click();
         if(theme!=="light") {
           await page.emulateMedia({colorScheme:"dark"});
           if(theme==="system")await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");
-          const contrasts=await page.locator('.application-review-top > p, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
+          const contrasts=await page.locator('[data-job-workspace] h1, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
             let ancestor:Element|null=element,background="";
             while(ancestor){background=getComputedStyle(ancestor).backgroundColor;if(background!=="rgba(0, 0, 0, 0)"&&background!=="transparent")break;ancestor=ancestor.parentElement;}
             const [a,b]=[getComputedStyle(element).color,background].map(value=>value.match(/[\d.]+/g)!.slice(0,3).map(Number).map(channel=>{const s=channel/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i]!,0));
@@ -127,7 +126,6 @@ test("actual owned product job route reviews full career and exports current fil
     assert.deepEqual(api,[]);assert.deepEqual(errors,[]);
     assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration);
     await page.reload({waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
-    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
     await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Edit document text$/}).click();
     const draft=tailored.resumeText+"\nUnsaved synthetic owner edit";
     await page.getByLabel("Tailored résumé text").fill(draft);
@@ -239,9 +237,8 @@ test("actual owned product job route reviews full career and exports current fil
     assert.ok(confirmedReview.documentReview.flags[0]!.confirmedAt);
     for(const format of ["pdf","docx","markdown"] as const){const accepted=await editor.request.post(origin+"/api/documents/export",{data:{resumeVersionId:customVersion.id,format}});assert.equal(accepted.status(),200);const bytes=await accepted.body();if(format==="markdown")assert.equal(bytes.toString("utf8"),ownerEdit);assert.doesNotMatch(bytes.toString("latin1"),/your edit/iu);}
     await editor.close();
-    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
     await page.getByRole("button",{name:"Review résumé",exact:true}).click();
-    assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).count(),1,JSON.stringify({stage:await page.locator('[data-product-review-stage="documents"]').getAttribute("hidden"),buttons:await page.locator('[data-product-documents] button').allTextContents()}));
+    assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).count(),1,JSON.stringify({stage:"documents",buttons:await page.locator('[data-product-documents] button').allTextContents()}));
     let releaseDelayed!:()=>void,markDelayedSeen!:()=>void,markDelayedDone!:()=>void;
     const delayed=new Promise<void>(resolve=>{releaseDelayed=resolve;}),seen=new Promise<void>(resolve=>{markDelayedSeen=resolve;}),done=new Promise<void>(resolve=>{markDelayedDone=resolve;});
     await page.route("**/api/documents/export",async route=>{const result=await route.fetch();markDelayedSeen();await delayed;await route.fulfill({response:result}).catch(()=>undefined);markDelayedDone();});
@@ -250,19 +247,26 @@ test("actual owned product job route reviews full career and exports current fil
     assert.equal(await page.locator("[data-actual-product-pdf]").count(),0,"A delayed résumé response cannot publish into a different selected document.");
     await page.unroute("**/api/documents/export");
     await page.getByRole("button",{name:"Preview actual PDF",exact:true}).click();await page.locator("[data-actual-product-pdf] iframe").waitFor();
-    await page.getByRole("button",{name:"2. Missing-fact corrections",exact:true}).click();await page.getByRole("button",{name:"Save reviewed evidence",exact:true}).click();
-    await page.getByText(/Saved reviewed snapshot/).waitFor();
-    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
+    // Changing a saved line is a pending fact change: previews and exports wait until new versions exist.
+    const savedLine=page.locator("[data-saved-line]").first();
+    await savedLine.getByLabel("Change",{exact:true}).check();
+    await savedLine.getByLabel("New line",{exact:true}).fill(replacementOwnerFact);
+    await savedLine.getByLabel(/This is true/u).check();
     assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
     assert.equal(await page.locator("[data-actual-product-pdf]").count(),0);
-    let matchCalls=0;
-    await page.route(`**/api/jobs/${job.id}/match`,async route=>{matchCalls++;if(matchCalls===1){await route.fulfill({status:428,contentType:"application/json",body:JSON.stringify({code:"AI_COST_CONFIRMATION_REQUIRED",maximumCostMicros:72720})});return;}assert.equal(route.request().headers()["x-ai-cost-confirmed"],"true");await matcher(user.id,job.id,{force:true});await route.fulfill({status:200,contentType:"application/json",body:"{}"});});
-    page.on("dialog",dialog=>void dialog.accept());
-    await page.getByRole("button",{name:"2. Missing-fact corrections",exact:true}).click();await page.getByRole("button",{name:/Reassess/}).click();
-    await page.waitForFunction(()=>!document.querySelector('[data-product-review-stage="documents"] fieldset[disabled]'));
+    const rescore=createJobMatchRunner({prismaClient:client,score:async matchInput=>{assert.ok(matchInput.reviewedEvidence?.facts.some(fact=>fact.fact===replacementOwnerFact));return noGapMatch(matchInput);}});
+    let matchCalls=0;const documentCalls:string[]=[];const dialogs:string[]=[];
+    await page.route(`**/api/jobs/${job.id}/match`,async route=>{matchCalls++;if(matchCalls===1){await route.fulfill({status:428,contentType:"application/json",body:JSON.stringify({code:"AI_COST_CONFIRMATION_REQUIRED",maximumCostMicros:72720})});return;}assert.equal(route.request().headers()["x-ai-cost-confirmed"],"true");await rescore(user.id,job.id,{force:true});await route.fulfill({status:200,contentType:"application/json",body:"{}"});});
+    for(const kind of ["tailored-resume","cover-letter"] as const)await page.route(`**/api/jobs/${job.id}/${kind}`,async route=>{documentCalls.push(`${kind}:${route.request().headers()["x-ai-cost-confirmed"]??"unconfirmed"}`);await route.fulfill(route.request().headers()["x-ai-cost-confirmed"]==="true"?{status:200,contentType:"application/json",body:"{}"}:{status:428,contentType:"application/json",body:JSON.stringify({code:"AI_COST_CONFIRMATION_REQUIRED",maximumCostMicros:1,dataType:"application_packet"})});});
+    page.on("dialog",dialog=>{dialogs.push(dialog.message());void dialog.accept();});
+    await page.getByRole("button",{name:"Create new versions",exact:true}).click();
+    await page.getByText(/Your résumé and cover letter are ready/u).first().waitFor({timeout:30_000});
+    assert.equal(dialogs.length,1,"One confirmation covers the re-score and both documents.");
     assert.equal(matchCalls,2);
-    await page.getByRole("button",{name:"3. Tailored documents",exact:true}).click();
+    assert.deepEqual(documentCalls,["tailored-resume:unconfirmed","tailored-resume:true","cover-letter:unconfirmed","cover-letter:true"]);
+    assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration+1);
     const stale=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:version.id,format:"pdf"}});assert.equal(stale.status(),409);
+    await page.waitForFunction(()=>document.querySelector("[data-product-documents]")!==null);
     assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
     await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,explicitPdfFontChecks:fontChecks,docxGeorgiaPreserved:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
     await page.close();

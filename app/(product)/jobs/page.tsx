@@ -1,163 +1,93 @@
-import { Filter, Search } from "lucide-react";
-import type { Prisma } from "@prisma/client";
+import Link from "next/link";
+import { Plus } from "lucide-react";
 
 import { AutomatedJobDiscoveryPanel } from "@/components/automated-job-discovery-panel";
-import { JobCard } from "@/components/job-card";
+import { FeedCard } from "@/components/job-feed/feed-card";
+import { FeedFilterBar } from "@/components/job-feed/feed-filter-bar";
+import { FeedPreview } from "@/components/job-feed/feed-preview";
+import { JobMatchOmissionNotice, summarizeBoundedJobResults } from "@/components/job-match-omission-notice";
 import { ManualJobImportForm } from "@/components/manual-job-import-form";
-import {
-  JobMatchOmissionNotice,
-  summarizeBoundedJobResults
-} from "@/components/job-match-omission-notice";
-import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { Panel, PanelHeader } from "@/components/ui";
+import { formatApplicationStatus } from "@/lib/applications/pipeline";
 import { resolveInitialJobDiscoveryPreferences } from "@/lib/job-sources/discovery-preferences";
 import {
   CURRENT_JOB_MATCH_ANALYSES,
   JOB_MATCH_LIST_CANDIDATE_LIMIT,
-  buildCurrentJobMatchContext,
-  currentJobMatchFields,
-  hasCurrentJobMatchAnalysis,
   readCurrentJobMatchSources
 } from "@/lib/jobs/current-job-match";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
+import { feedHref, feedOrderBy, feedWhere, parseFeedFilters, sortFeedItems, type FeedFilters } from "@/lib/jobs/feed-query";
+import { resolveFitEstimate } from "@/lib/jobs/fit-estimate";
+import { buildEstimateView, buildJobDetailView } from "@/lib/jobs/job-page-view";
+import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
 type SearchParams = Record<string, string | string[] | undefined>;
 
-const postingStatuses = ["ACTIVE", "EXPIRED", "APPLIED", "REJECTED", "INTERVIEW", "OFFER", "ARCHIVED"];
-const sourceTypes = [
-  "GREENHOUSE",
-  "LEVER",
-  "ASHBY",
-  "WORKABLE",
-  "USAJOBS",
-  "REMOTIVE",
-  "ADZUNA",
-  "THEIRSTACK",
-  "SERPAPI",
-  "RSS",
-  "COMPANY_CAREERS",
-  "MANUAL"
-];
-const workStyles = ["Remote", "Hybrid", "On-site"];
+const VISIBLE_JOBS = 40;
 
-function firstParam(params: SearchParams, key: string) {
-  const value = params[key];
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function parseFilters(params: SearchParams = {}) {
+function feedJobInclude(userId: string) {
   return {
-    q: firstParam(params, "q")?.trim() ?? "",
-    source: firstParam(params, "source") ?? "",
-    minFitScore: Number(firstParam(params, "minFitScore") ?? ""),
-    workStyle: firstParam(params, "workStyle") ?? "",
-    datePosted: Number(firstParam(params, "datePosted") ?? ""),
-    status: firstParam(params, "status") ?? "",
-    company: firstParam(params, "company")?.trim() ?? "",
-    roleType: firstParam(params, "roleType")?.trim() ?? ""
-  };
+    aiAnalyses: {
+      ...CURRENT_JOB_MATCH_ANALYSES,
+      select: { ...CURRENT_JOB_MATCH_ANALYSES.select, output: true, createdAt: true }
+    },
+    currentEvidenceSnapshot: { select: { ...CURRENT_EVIDENCE_SNAPSHOT_SELECT, reviewedAnalysisId: true } },
+    applications: { where: { userId }, select: { status: true }, take: 1 }
+  } as const;
 }
 
-async function getJobsForPage(params: SearchParams, userId: string) {
-  const filters = parseFilters(params);
-  const hasMinFitScore = Number.isInteger(filters.minFitScore) && filters.minFitScore > 0;
+async function getFeed(userId: string, filters: FeedFilters) {
   const sources = await readCurrentJobMatchSources(userId);
-  const where: Prisma.JobPostingWhereInput = { userId };
-  const andConditions: Prisma.JobPostingWhereInput[] = [];
-
-  if (filters.q) {
-    andConditions.push({
-      OR: [
-        { title: { contains: filters.q, mode: "insensitive" } },
-        { company: { contains: filters.q, mode: "insensitive" } },
-        { location: { contains: filters.q, mode: "insensitive" } },
-        { description: { contains: filters.q, mode: "insensitive" } }
-      ]
-    });
-  }
-
-  if (filters.source && sourceTypes.includes(filters.source)) {
-    where.sourceType = filters.source as Prisma.JobPostingWhereInput["sourceType"];
-  }
-
-  if (filters.status && postingStatuses.includes(filters.status)) {
-    where.status = filters.status as Prisma.JobPostingWhereInput["status"];
-  }
-
-  if (filters.company) {
-    where.company = { contains: filters.company, mode: "insensitive" };
-  }
-
-  if (filters.roleType) {
-    where.title = { contains: filters.roleType, mode: "insensitive" };
-  }
-
-  if (filters.workStyle) {
-    andConditions.push({
-      OR: [
-        { remoteStatus: { contains: filters.workStyle, mode: "insensitive" } },
-        { location: { contains: filters.workStyle, mode: "insensitive" } }
-      ]
-    });
-  }
-
-  if (Number.isInteger(filters.datePosted) && filters.datePosted > 0) {
-    const since = new Date(Date.now() - filters.datePosted * 86_400_000);
-    andConditions.push({
-      OR: [{ datePosted: { gte: since } }, { firstDiscoveredAt: { gte: since } }]
-    });
-  }
-
-  if (andConditions.length) {
-    where.AND = andConditions;
-  }
-
+  const where = feedWhere(userId, filters);
+  const include = feedJobInclude(userId);
   const [jobs, candidateCount] = await Promise.all([
     prisma.jobPosting.findMany({
       where,
-      include: { aiAnalyses: CURRENT_JOB_MATCH_ANALYSES, currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } },
-      orderBy: [{ overallFitScore: "desc" }, { datePosted: "desc" }, { firstDiscoveredAt: "desc" }],
-      take: hasMinFitScore ? JOB_MATCH_LIST_CANDIDATE_LIMIT : 40
+      include,
+      orderBy: feedOrderBy(filters.sort),
+      take: filters.minFitScore ? JOB_MATCH_LIST_CANDIDATE_LIMIT : VISIBLE_JOBS
     }),
     prisma.jobPosting.count({ where })
   ]);
-
-  const matchingJobs = jobs.map((job) => {
-    const context = buildCurrentJobMatchContext({ job, ...sources });
-    const currentJob = currentJobMatchFields(job, hasCurrentJobMatchAnalysis({
-      ...job,
-      currentEvidenceSourceValid: context.currentEvidenceSourceValid
-    }, context.matchInput));
+  type Row = (typeof jobs)[number];
+  const toItem = (job: Row) => {
+    // Display-only estimate (lib/jobs/fit-estimate.ts); never used to authorise anything.
+    const estimate = resolveFitEstimate({
+      job,
+      resume: sources.resume,
+      profile: sources.profile,
+      latestAnalysis: job.aiAnalyses[0] ?? null,
+      currentSnapshotReviewedAnalysisId: job.currentEvidenceSnapshot?.reviewedAnalysisId ?? null
+    });
     return {
-      id: job.id,
-      title: job.title,
-      company: job.company,
-      location: job.location || "Location not listed",
-      remoteStatus: job.remoteStatus || "Work style not listed",
-      salary:
-        job.salaryMin && job.salaryMax
-          ? `$${Math.round(job.salaryMin / 1000)}k - $${Math.round(job.salaryMax / 1000)}k`
-          : "Salary not listed",
-      datePosted: (job.datePosted ?? job.firstDiscoveredAt).toISOString().slice(0, 10),
-      fitScore: currentJob.overallFitScore,
-      status: job.status,
-      sourceType: job.sourceType,
-      keyReason:
-        currentJob.keyMatchReason ??
-        "Imported from an allowed source. Run fit scoring to generate a targeted match summary."
+      job,
+      estimate,
+      score: estimate?.score ?? null,
+      posted: job.datePosted ?? job.firstDiscoveredAt,
+      salaryTop: job.salaryMax ?? job.salaryMin
     };
-  }).filter((job) => !hasMinFitScore ||
-    (job.fitScore !== null && job.fitScore >= filters.minFitScore));
-  const visibleJobs = matchingJobs.slice(0, 40);
+  };
+  const matching = jobs.map(toItem).filter((item) => !filters.minFitScore || (item.score !== null && item.score >= filters.minFitScore));
+  const visible = sortFeedItems(matching, filters.sort).slice(0, VISIBLE_JOBS);
+  let selected = filters.job ? visible.find((item) => item.job.id === filters.job) ?? null : visible[0] ?? null;
+  if (filters.job && !selected) {
+    const job = await prisma.jobPosting.findFirst({ where: { id: filters.job, userId }, include });
+    selected = job ? toItem(job) : null;
+  }
   return {
-    jobs: visibleJobs,
+    visible,
+    selected,
+    explicitSelection: Boolean(filters.job && selected),
+    scoredCount: visible.filter((item) => item.score !== null).length,
+    profile: sources.profile,
     evaluatedCandidateCount: jobs.length,
     ...summarizeBoundedJobResults({
       evaluatedCandidateCount: jobs.length,
-      evaluatedMatchingCount: matchingJobs.length,
+      evaluatedMatchingCount: matching.length,
       totalCandidateCount: candidateCount,
-      visibleCount: visibleJobs.length
+      visibleCount: visible.length
     })
   };
 }
@@ -169,188 +99,104 @@ type JobsPageProps = {
 export default async function JobsPage({ searchParams }: JobsPageProps) {
   const params = (await searchParams) ?? {};
   const userId = await requirePageUserId();
-  const filters = parseFilters(params);
-  const [jobResult, savedPreference, profile] = await Promise.all([
-    getJobsForPage(params, userId),
+  const filters = parseFeedFilters(params);
+  const [feed, savedPreference, profile] = await Promise.all([
+    getFeed(userId, filters),
     prisma.jobDiscoveryPreference.findUnique({
       where: { userId },
-      select: {
-        targetSearches: true,
-        location: true,
-        limitPerQuery: true,
-        remoteOnly: true,
-        scoreImported: true
-      }
+      select: { targetSearches: true, location: true, limitPerQuery: true, remoteOnly: true, scoreImported: true }
     }),
-    prisma.userProfile.findUnique({
-      where: { userId },
-      select: {
-        preferredRoles: true,
-        preferredLocations: true,
-        location: true
-      }
-    })
+    prisma.userProfile.findUnique({ where: { userId }, select: { preferredRoles: true, preferredLocations: true, location: true } })
   ]);
-  const { jobs, evaluatedCandidateCount, omittedCandidateCount, unevaluatedCandidateCount } = jobResult;
-  const initialDiscoveryPreferences = resolveInitialJobDiscoveryPreferences({
-    savedPreference,
-    profile
-  });
+  const initialDiscoveryPreferences = resolveInitialJobDiscoveryPreferences({ savedPreference, profile });
+  const filtered = feedHref(filters) !== "/jobs";
+  const selected = feed.selected;
+  const summary = `${feed.visible.length} ${feed.visible.length === 1 ? "job" : "jobs"} · ${feed.scoredCount} scored`;
 
   return (
-    <div className="product-page product-page-themed">
-      <PageHeader
-        title="Jobs"
-        description="Discover, import, deduplicate, and score recent jobs from compliant APIs, ATS feeds, RSS feeds, and permitted company career pages."
-        tone="branded"
-      />
-      {omittedCandidateCount > 0 || unevaluatedCandidateCount > 0 ? (
+    <div className="product-page product-page-themed job-feed" data-job-feed>
+      <div className="feed-top">
+        <div>
+          <h1 className="job-title">Jobs for you</h1>
+          <p className="job-card-copy">Openings from employers&apos; own job boards. Fit percentages are Apply Pilot&apos;s estimates from your résumé, not employer scores.</p>
+        </div>
+        <details className="feed-add" open={!feed.visible.length && !filtered ? true : undefined}>
+          <summary className="job-button"><Plus size={16} aria-hidden="true" />Add jobs</summary>
+          <div className="feed-add-panels">
+            <Panel tone="branded">
+              <PanelHeader title="Find jobs automatically" description="Search allowed sources and import matches. Nothing is applied for you." tone="branded" />
+              <div className="p-5">
+                <AutomatedJobDiscoveryPanel key={userId} initialPreferences={initialDiscoveryPreferences} tone="branded" />
+              </div>
+            </Panel>
+            <Panel tone="branded">
+              <PanelHeader title="Paste a job" description="Add a job you found on a permitted site." tone="branded" />
+              <div className="p-5">
+                <ManualJobImportForm tone="branded" />
+              </div>
+            </Panel>
+          </div>
+        </details>
+      </div>
+
+      {feed.omittedCandidateCount > 0 || feed.unevaluatedCandidateCount > 0 ? (
         <div className="mb-4">
           <JobMatchOmissionNotice
-            evaluatedCandidateCount={evaluatedCandidateCount}
-            omittedCandidateCount={omittedCandidateCount}
-            unevaluatedCandidateCount={unevaluatedCandidateCount}
+            evaluatedCandidateCount={feed.evaluatedCandidateCount}
+            omittedCandidateCount={feed.omittedCandidateCount}
+            unevaluatedCandidateCount={feed.unevaluatedCandidateCount}
             viewLabel="jobs view"
           />
         </div>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
-        <section className="space-y-4">
-          <form className="product-surface rounded-xl border p-4" aria-label="Filter jobs">
-            <div className="relative flex-1">
-              <label className="sr-only" htmlFor="job-search">Search jobs</label>
-              <Search className="product-themed-accent absolute left-3 top-3.5" size={17} aria-hidden="true" />
-              <input
-                id="job-search"
-                name="q"
-                defaultValue={filters.q}
-                placeholder="Search title, company, keyword, or location"
-                className="product-filter-control w-full rounded-lg border py-2 pl-9 pr-3 text-sm"
-              />
-            </div>
-            <div className="product-filter-grid mt-3">
-              <label className="sr-only" htmlFor="job-source">Source</label>
-              <select id="job-source" name="source" defaultValue={filters.source} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
-                <option value="">All sources</option>
-                {sourceTypes.map((source) => (
-                  <option key={source} value={source}>
-                    {source.replaceAll("_", " ")}
-                  </option>
-                ))}
-              </select>
-              <label className="sr-only" htmlFor="job-status">Status</label>
-              <select id="job-status" name="status" defaultValue={filters.status} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
-                <option value="">All statuses</option>
-                {postingStatuses.map((status) => (
-                  <option key={status} value={status}>
-                    {status.replaceAll("_", " ")}
-                  </option>
-                ))}
-              </select>
-              <label className="sr-only" htmlFor="job-work-style">Work style</label>
-              <select id="job-work-style" name="workStyle" defaultValue={filters.workStyle} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
-                <option value="">Any work style</option>
-                {workStyles.map((workStyle) => (
-                  <option key={workStyle} value={workStyle}>
-                    {workStyle}
-                  </option>
-                ))}
-              </select>
-              <label className="sr-only" htmlFor="job-date-posted">Date posted</label>
-              <select id="job-date-posted" name="datePosted" defaultValue={filters.datePosted || ""} className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm">
-                <option value="">Any date</option>
-                <option value="7">Last 7 days</option>
-                <option value="14">Last 14 days</option>
-                <option value="30">Last 30 days</option>
-              </select>
-              <input
-                id="job-company"
-                name="company"
-                defaultValue={filters.company}
-                placeholder="Company"
-                aria-label="Company"
-                className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
-              />
-              <input
-                id="job-role-type"
-                name="roleType"
-                defaultValue={filters.roleType}
-                placeholder="Role type"
-                aria-label="Role type"
-                className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
-              />
-              <input
-                id="job-min-fit-score"
-                name="minFitScore"
-                type="number"
-                min={0}
-                max={100}
-                defaultValue={filters.minFitScore || ""}
-                placeholder="Minimum fit score"
-                aria-label="Minimum fit score"
-                className="product-filter-control min-w-0 rounded-lg border px-3 py-2 text-sm"
-              />
-              <button className="product-primary-action inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold">
-                <Filter size={16} aria-hidden="true" />
-                Apply filters
-              </button>
-            </div>
-          </form>
+      <FeedFilterBar filters={filters} resultSummary={summary} />
 
-          <div className="flex flex-wrap gap-2">
-            {[
-              filters.source && `Source: ${filters.source}`,
-              filters.minFitScore && `Score: ${filters.minFitScore}+`,
-              filters.workStyle && `Work style: ${filters.workStyle}`,
-              filters.datePosted && `Posted: ${filters.datePosted} days`,
-              filters.status && `Status: ${filters.status}`,
-              filters.company && `Company: ${filters.company}`,
-              filters.roleType && `Role: ${filters.roleType}`
-            ]
-              .filter(Boolean)
-              .map((filter) => (
-                <StatusBadge key={String(filter)} status={String(filter)} tone="branded" />
-              ))}
-          </div>
-
-          {jobs.length ? (
-            jobs.map((job) => <JobCard key={job.id} job={job} tone="branded" />)
+      <div className="feed-layout" data-explicit-selection={feed.explicitSelection}>
+        <section className="feed-list" aria-label="Jobs">
+          {feed.visible.length ? (
+            <ol className="feed-list-items">
+              {feed.visible.map(({ job, score }) => {
+                const view = buildJobDetailView(job);
+                return (
+                  <li key={job.id}>
+                    <FeedCard job={{
+                      id: view.id, title: view.title, company: view.company, location: view.location, workStyle: view.workStyle,
+                      salary: view.salary, postedAge: view.postedAge, source: view.source, score,
+                      href: feedHref(filters, { job: job.id }, { keepJob: true }),
+                      selected: selected?.job.id === job.id,
+                      trackerStatus: job.applications[0] ? formatApplicationStatus(job.applications[0].status) : null
+                    }} />
+                  </li>
+                );
+              })}
+            </ol>
           ) : (
-            <div className="product-surface rounded-xl border border-dashed p-8 text-center">
-              <p className="product-themed-title text-sm font-semibold">No jobs imported yet</p>
-              <p className="product-themed-muted mt-1 text-sm">Run automated discovery to populate your CRM.</p>
+            <div className="job-card feed-empty">
+              <p className="job-card-title">{filtered ? "No jobs match these filters" : "No jobs yet"}</p>
+              <p className="job-card-copy">
+                {filtered
+                  ? "Try fewer filters or a broader search."
+                  : "Use Add jobs to find openings on employers' job boards, or paste in a job you found."}
+              </p>
+              {filtered ? <Link href="/jobs" className="job-button">Clear filters</Link> : null}
             </div>
           )}
         </section>
-
-        <aside className="space-y-6">
-          <Panel className="h-fit" tone="branded">
-            <PanelHeader
-              title="Automated discovery"
-              description="Search allowed sources and import matches without auto-applying."
-              tone="branded"
-            />
-            <div className="p-5">
-              <AutomatedJobDiscoveryPanel
-                key={userId}
-                initialPreferences={initialDiscoveryPreferences}
-                tone="branded"
-              />
-            </div>
-          </Panel>
-
-          <Panel className="h-fit" tone="branded">
-            <PanelHeader
-              title="Manual job import"
-              description="Paste job details from a permitted source or a job board you reviewed manually."
-              tone="branded"
-            />
-            <div className="p-5">
-              <ManualJobImportForm tone="branded" />
-            </div>
-          </Panel>
-        </aside>
+        {selected ? (
+          <FeedPreview
+            key={selected.job.id}
+            job={buildJobDetailView(selected.job)}
+            estimate={selected.estimate ? buildEstimateView(selected.estimate) : null}
+            checklist={(() => {
+              const checklist = buildRequirementChecklist(selected.job.requirements, selected.estimate?.analysis.output ?? null);
+              return { items: checklist.items, counts: checklist.counts };
+            })()}
+            salaryTarget={feed.profile ? { min: feed.profile.salaryTargetMin, max: feed.profile.salaryTargetMax } : null}
+            application={selected.job.applications[0] ? { statusLabel: formatApplicationStatus(selected.job.applications[0].status) } : null}
+            backHref={feedHref(filters)}
+          />
+        ) : null}
       </div>
     </div>
   );

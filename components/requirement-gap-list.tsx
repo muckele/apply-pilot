@@ -1,6 +1,6 @@
 import type { RequirementGapPresentation } from "@/lib/jobs/fit-presentation";
 
-function countedRoleLabel(role: NonNullable<RequirementGapPresentation["tenure"]>["countedRoles"][number]) {
+export function countedRoleLabel(role: NonNullable<RequirementGapPresentation["tenure"]>["countedRoles"][number]) {
   const name = [role.title, role.company].filter(Boolean).join(", ");
   return role.dates ? `${name} (${role.dates})` : name;
 }
