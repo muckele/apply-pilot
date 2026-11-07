@@ -62,7 +62,12 @@ test("cover generation uses an applicant-neutral v14 atomic fact contract", () =
   assert.match(prompt, /Reduced\/Decreased/);
   assert.match(prompt, /leading verb or immediately follows I/i);
   assert.match(prompt, /Do not substitute any other action verbs/i);
-  assert.match(prompt, /optional I, a, an, the, am, are, have, or is/i);
+  // D033: was/were only before a passive verb; am/is/are only for a present-tense fact; I only
+  // before the fact's own verb.
+  assert.match(prompt, /optional a, an, the, or have/i);
+  assert.match(prompt, /I only directly before the fact's own verb/i);
+  assert.match(prompt, /was or were only before a passive verb/i);
+  assert.match(prompt, /am, is, or are only for the summary, a skill, or the current role/i);
   assert.match(prompt, /every other factual word, preposition, and word order/i);
   assert.match(prompt, /one complete standalone applicant fact/i);
   assert.match(prompt, /Do not freely paraphrase, summarize, combine, or reorder/i);
@@ -75,7 +80,16 @@ test("cover generation uses an applicant-neutral v14 atomic fact contract", () =
   assert.match(implementation, /buildCoverLetterSystemPrompt/);
   assert.match(implementation, /buildCoverLetterGeminiJsonSchema/);
   assert.match(implementation, /feature: "COVER_LETTER",[\s\S]*promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION/);
-  assert.match(implementation, /validateCoverLetterClaims\(payload, value\)/);
+  // The truth checks run inside the shared finalizer, after the repair step, the grouping by
+  // employer (Gemini's order when the grouped letter fails a check) and the employer lead lines.
+  assert.match(implementation, /validate: \(draft\) => finalizeCoverLetter\(payload, draft\)/);
+  const finalizer = source("lib/ai/application-document-quality.ts");
+  assert.match(finalizer, /const value = repairCoverLetterEvidence\(payload, output\);/);
+  assert.match(finalizer, /arrangeCoverLetterByRecord\(payload, value\)/);
+  assert.match(finalizer, /const candidates = arranged === value \? \[value\] : \[arranged, value\];/);
+  // D033: each one-record paragraph opens with its employer lead line before the checks run.
+  assert.match(finalizer, /placeLeadLines\(payload, candidate\.coverLetter, candidate\.claimsUsed\)/);
+  assert.match(finalizer, /validateCoverLetterQuality\(payload, validateCoverLetterClaims\(payload, placed\)\)/);
 });
 
 test("cover paragraph planning selects relevant responsibility/result facts without composing new claims", () => {
@@ -87,5 +101,20 @@ test("cover paragraph planning selects relevant responsibility/result facts with
   assert.match(prompt, /responsibility and.*result/iu);
   assert.match(prompt, /Do not repeat.*whole claim.*different fact IDs/iu);
   assert.match(prompt, /Each complete sentence.*own factId/iu);
+  assert.match(prompt, /Do not add an employer prefix/iu);
+});
+
+// Owner's live test 2026-11-06: owner fragments stayed subjectless and paragraphs mixed employers.
+// The server repairs both (tests/cover-letter-readability.test.ts); the prompt asks Gemini to write
+// those forms directly, within the unchanged claim grammar (only I is added).
+test("cover paragraphs follow the employer each fact belongs to and framed fragments read with I", () => {
+  const prompt = source("prompts/coverLetterPrompt.ts");
+  assert.match(prompt, /For source At Example Co, managed renewals end to end\., write At Example Co, I managed renewals end to end\./u);
+  assert.match(prompt, /Before a passive verb such as Promoted to or Selected as, write I was/iu);
+  assert.match(prompt, /never add an employer to a fact that does not name it/iu);
+  assert.match(prompt, /one paragraph per employer, in résumé order/iu);
+  assert.match(prompt, /Open an employer's paragraph with its fact that names the employer/iu);
+  assert.match(prompt, /Never place one employer's fact in another employer's paragraph/iu);
+  assert.match(prompt, /two distinct job priorities/iu);
   assert.match(prompt, /Do not add an employer prefix/iu);
 });
