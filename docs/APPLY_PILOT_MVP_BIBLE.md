@@ -66,6 +66,8 @@ The owner added these to the MVP goals on 2026-11-04 and said they may not be to
 
 Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a summary of the PR #31–#35 stack. "Working" means the code path exists end to end on `main`; it does not mean it was re-run in production in this survey.
 
+**Update 2026-11-06:** #45 landed the M1 stack on `main` and it is deployed (see "Landed and deployed" below). Several items this table lists as missing now exist on `main`. The table itself has not been re-surveyed.
+
 | Pillar | Status on `main` | What is missing for MVP |
 |---|---|---|
 | Auth / onboarding | Google sign-in, production email allowlist, database sessions. **No onboarding flow.** | First-run checklist; email sign-in option for non-Google users before invited beta; guided one-question-per-screen sign-up (G-1) |
@@ -87,9 +89,51 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 **Repository hygiene:** `/Users/Matt/Projects/apply-pilot` is checked out on the stale `feature/form-inspection-answer-packet` (`2e697b0`, 93 commits behind `main`), with older copies of the roadmap docs uncommitted. All new work branches from `origin/main`. Nineteen old worktrees exist; almost all of their branches are already merged.
 
-### In flight (draft PRs opened 2026-11-03, none merged)
+### Landed and deployed (2026-11-06)
 
-**Owner decision 2026-11-04: land everything through one integration PR, #45 (`integration/mvp-m1`).** It merges every PR below off `main` in dependency order, one merge commit each. It gives migration C a unique timestamp and reconciles the env examples. On that branch: unit tests 2,439/2,439, lint, typecheck and build all pass, and the guarded PostgreSQL suite passes 147/148. The one failure is the Playwright Chromium install. Apply migrations A–C from #45's checkout, then merge #45 with a merge commit and close the PRs it supersedes.
+**#45 (`integration/mvp-m1`) was merged into `main` by the owner on 2026-11-06 as merge commit `6735595`.** Its tree is identical to release `ef1895a`. Vercel deployed it to production the same day.
+
+**What it contains:**
+- the stack in the table below;
+- #46–#59, merged into `integration/mvp-m1` first:
+  - #46: Gemini price registry;
+  - #47: WP1.9 measurement;
+  - #48: G-1 to G-5 docs;
+  - #49: feed relevance;
+  - #50: job page and feed redesign;
+  - #51: years-of-experience gaps;
+  - #52, #53, #57, #59: tailored résumé and export layout;
+  - #54: pre-deploy fixes;
+  - #55, #56, #58: cover letter (unticked by default; cover letter only; repair instead of reject).
+
+**How it was deployed:**
+1. A Neon restore-point branch of production was taken first. It expires 2026-11-13.
+2. The owner applied migrations A–C with `prisma migrate deploy`, from a clean detached checkout of `ef1895a`.
+   - The URL was typed at a hidden prompt and not stored.
+   - Both `DATABASE_URL` and `DIRECT_URL` were checked to be production's direct (non-pooler) endpoint before anything ran.
+   - `migrate status` showed exactly A–C pending before the deploy and "up to date" after it.
+3. The owner then merged #45.
+4. The superseded drafts #32–#35, #37–#39 and #41–#44 were closed as landed.
+5. The unused Vercel variables `OPENAI_MODEL`, `OPENAI_ALLOWED_MODELS` and `OPENAI_MOCK_MODE` were deleted.
+
+Rollback: Vercel Instant Rollback to `d603542`. Leave the database as is; the migrations are additive.
+
+**Production checks after the deploy:**
+- **Verified:**
+  - `/api/health` reports version `67355958d0c8`;
+  - `/api/health/readiness` returns 200 `ready`;
+  - signed-out requests are redirected or refused (401);
+  - signed in as the owner: the job feed, a job page, Résumés and Interviews load with no console errors.
+- **Not yet verified on production:** a full tailor → review → Apply Kit → "I applied" flow. The owner's live tailoring and cover-letter proof on 2026-11-06 ran on a local build of the same code.
+
+**Open after the deploy:**
+- #60: cover-letter readability. Owner decisions were given 2026-11-06 and are being recorded as D033 in that PR.
+- The requirement checklist linked only 2 of one job's 24 requirements to the match.
+- Tailoring stays close to the original wording.
+- Two simultaneous first page loads for a new user can collide.
+- Whether to score jobs automatically, which costs money.
+
+**Before the merge (2026-11-04 owner decision):** everything landed through one integration PR, #45. It merged every PR below off `main` in dependency order, one merge commit each, gave migration C a unique timestamp and reconciled the env examples.
 
 | PR | Work package | Base | Migration | Notes |
 |---|---|---|---|---|
@@ -104,9 +148,9 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 | #42 | WP1.1 single Gemini path | #35 | — | Restores interview prep and email on Gemini; removes OpenAI |
 | #43 | WP1.8 mock interview | #42 | **C:** `20261103130000_add_mock_interview_sessions` | |
 
-Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add tables, columns or constraints, and must be deployed before #45 reaches `main`. One Playwright journey test needs `npm run browser:install` locally.
+Production migrations are applied by hand (`DEPLOYMENT.md`). All three only add tables, columns or constraints. They were applied to production on 2026-11-06, before #45 reached `main`. One Playwright journey test needs `npm run browser:install` locally.
 
-**WP1.9 measurement** (draft PR #47 against `integration/mvp-m1`, no migration). A new `/insights` page shows weekly counts: jobs added to the feed, jobs saved, Apply Kits prepared, applications, and interviews. It also shows the supporting metrics: share sent with tailored documents, complete tracking, interview rate, feed save rate, AI spend, and AI cost per application. Every number comes from existing tables and is scoped to the signed-in user. The page says how each number is computed. Where a number can't be computed it says "Not enough data" instead of showing a zero.
+**WP1.9 measurement** (PR #47, landed through #45, no migration). A new `/insights` page shows weekly counts: jobs added to the feed, jobs saved, Apply Kits prepared, applications, and interviews. It also shows the supporting metrics: share sent with tailored documents, complete tracking, interview rate, feed save rate, AI spend, and AI cost per application. Every number comes from existing tables and is scoped to the signed-in user. The page says how each number is computed. Where a number can't be computed it says "Not enough data" instead of showing a zero.
 
 **Effort time is self-reported (owner decision, 2026-11-04).** The Apply Kit's "I applied" step has an optional "Minutes this application took" box, whole minutes from 1 to 600. The answer is stored once, in the APPLIED timeline event's metadata beside the "what I sent" snapshot (`apply-pilot/self-reported-effort/v1`), so there is still no migration. From it the page computes:
 - **Minutes of effort per application:** the average over the week's applications that have minutes.
@@ -322,6 +366,7 @@ Primary: **interviews per applicant-hour.** Supporting: minutes of active effort
 
 ## 12. Change log
 
+- 2026-11-06 — v1.2. Recorded M1 landing and deployment: #45 merged as `6735595` and deployed, migrations A–C applied first, superseded drafts closed. Added what was and wasn't verified on production, and what's still open.
 - 2026-11-04 — v1.1. Added the owner's plan, trial and guided sign-up goals (G-1 to G-5) with acceptance lines, their recommended order, the conflicts they raise (AI apply vs. D027, auto-renewal law, AI cost caps) and the open owner decisions.
 - 2026-11-03 — v1.0. Created from the owner's MVP direction, the Four-Project Master Source (2026-10-27), the September roadmap pack, a code survey of `main` `d603542`, and market and job-data research.
 
