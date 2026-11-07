@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { after, test, type TestContext } from "node:test";
 import type { NextRequest } from "next/server";
 import { buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
+import { getCoverLetterLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 import { syntheticCorrectionFlowDocumentPayload } from "@/evaluation/correction-flow-provider-stub";
 import { authoredDocumentQualityLetter } from "@/evaluation/authored-document-quality-samples";
 
@@ -340,14 +341,20 @@ test("C2 copy traverses the production cover transport, validators, ledger and a
     dataSharingConfirmed: true
   });
   assert.equal(calls, 1);
-  assert.equal(result.coverLetter, wire.coverLetter);
+  // D033: the finalizer opens each one-employer paragraph with that work record's lead line.
+  const [contosoLead, fabrikamLead] = getCoverLetterLeadLines(payload).map((lead) => lead.line);
+  const expected = wire.coverLetter
+    .replace("\n\nI directed ", `\n\n${contosoLead} I directed `)
+    .replace("\n\nI improved ", `\n\n${fabrikamLead} I improved `);
+  assert.notEqual(expected, wire.coverLetter);
+  assert.equal(result.coverLetter, expected);
   assert.equal(result.promptVersion, "14");
   assert.equal(result.claimsUsed.length, wire.claimsUsed.length);
   assert.ok(result.claimsUsed.every(entry => entry.citations.length === 1));
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
   assert.equal(ledger.cacheWrites[0].promptVersion, "14");
-  assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, wire.coverLetter);
+  assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, expected);
 });
 
 // Since 2026-11-06 an invented sentence is removed rather than rejecting the letter outright; a
