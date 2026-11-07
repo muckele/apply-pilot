@@ -7,7 +7,13 @@ import {
   normalizeApplicationDocumentSourceLine
 } from "@/lib/ai/application-document-facts";
 import { faithfulRewordingFailure, type RewordingSourceKind } from "@/lib/ai/application-document-rewording";
-import { firstPersonCoverSentence } from "@/lib/ai/cover-letter-first-person";
+import {
+  firstPersonCoverSentence,
+  firstPersonPlaced,
+  isPassiveParticiple,
+  pastPassiveCoverSentence
+} from "@/lib/ai/cover-letter-first-person";
+import { isCurrentWorkRecord } from "@/lib/ai/cover-letter-lead-lines";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -265,7 +271,11 @@ function sourceYearRanges(ref: string, resolved: unknown, excerpt: string): Sour
   return ranges.filter(range => yearRangePattern(range).test(excerpt));
 }
 
-function factualTokens(value: string, yearRanges: readonly SourceYearRange[] = []) {
+// Owner decision 2026-11-06 (D033): in cover letters only, a past-tense was or were is optional as
+// well, and coverInsertionFailure decides where an added I, am, is, are, was or were may stand.
+const coverLetterOptionalWords = new Set([...nonFactualWords, "was", "were"]);
+
+function claimTokens(value: string, yearRanges: readonly SourceYearRange[] = []) {
   let dateComparable = value;
   for (const range of yearRanges) {
     dateComparable = dateComparable.replace(yearRangePattern(range), (_, boundary: string) =>
@@ -278,8 +288,16 @@ function factualTokens(value: string, yearRanges: readonly SourceYearRange[] = [
     // same negative fact. Keep this equivalence narrow so tense/status changes
     // (was/am, had/have) remain material everywhere else.
     .replace(/\b(?:do|does)\s+not\s+have\b/g, " not ");
-  const tokens = (normalized.match(/[a-z0-9][a-z0-9+#.'-]*%?/g) ?? [])
+  return (normalized.match(/[a-z0-9][a-z0-9+#.'-]*%?/g) ?? [])
     .map((token) => token.replace(/^[.'-]+|[.'-]+$/g, ""));
+}
+
+function factualTokens(
+  value: string,
+  yearRanges: readonly SourceYearRange[] = [],
+  optionalWords: ReadonlySet<string> = nonFactualWords
+) {
+  const tokens = claimTokens(value, yearRanges);
   const actionIndex = tokens[0] === "i" ? 1 : 0;
   return tokens
     .map((token, index) => {
@@ -298,7 +316,60 @@ function factualTokens(value: string, yearRanges: readonly SourceYearRange[] = [
       token === "__improvement_action__" ||
       token === "__reduction_action__" ||
       actionWordSet.has(token) ||
-      !nonFactualWords.has(token));
+      !optionalWords.has(token));
+}
+
+// Owner decisions 2026-11-06 (D033). Once a cover-letter claim has the same factual words as its
+// fact, the optional words it adds must stand where they keep the fact's meaning and tense:
+//   - am, is and are only when the fact is present tense (presentSource);
+//   - was or were only before a passive participle ("I was promoted to …"), and never "I were";
+//   - an added I only where the verb rule puts it (lib/ai/cover-letter-first-person.ts).
+// Words the fact already has in the same place are not additions. Null when every addition fits.
+function coverInsertionFailure(
+  claim: string,
+  excerpt: string,
+  yearRanges: readonly SourceYearRange[],
+  presentSource: boolean
+): string | null {
+  const claimWords = claimTokens(claim, yearRanges);
+  const sourceWords = claimTokens(excerpt, yearRanges);
+  const optional = (token: string) => coverLetterOptionalWords.has(token);
+  // Optional words between consecutive factual words (gap k precedes the k-th factual word).
+  const sourceGaps: string[][] = [[]];
+  for (const token of sourceWords) {
+    if (optional(token)) sourceGaps.at(-1)!.push(token);
+    else sourceGaps.push([]);
+  }
+  let gap = 0;
+  for (const [index, token] of claimWords.entries()) {
+    if (!optional(token)) {
+      gap += 1;
+      continue;
+    }
+    const existing = sourceGaps[gap]?.indexOf(token) ?? -1;
+    if (existing >= 0) {
+      sourceGaps[gap]!.splice(existing, 1);
+      continue;
+    }
+    const next = claimWords[index + 1] ?? "";
+    const after = claimWords[index + 2] ?? "";
+    if ((token === "am" || token === "is" || token === "are") && !presentSource) return "present_tense_unsupported";
+    if (token === "was" || token === "were") {
+      if (!isPassiveParticiple(next, after)) return "past_be_not_passive";
+      if (token === "were" && claimWords[index - 1] === "i") return "past_be_not_passive";
+    }
+  }
+  const added = claimWords.filter((token) => token === "i").length - sourceWords.filter((token) => token === "i").length;
+  if (added > 1 || (added === 1 && !firstPersonPlaced(claim))) return "first_person_position";
+  return null;
+}
+
+// A fact stated in the present tense: the summary, a skill, or a fact from the applicant's current
+// role (lib/ai/cover-letter-lead-lines.ts), or a fact whose own words use am, is or are.
+function presentTenseSource(ref: string, resolved: unknown, excerpt: string) {
+  if (/^(?:resume\.summary|resume\.skills\[\d+\]|profile\.skillsToEmphasize\[\d+\])$/u.test(ref)) return true;
+  if (/^resume\.workHistory\[\d+\]$/u.test(ref) && isCurrentWorkRecord(resolved)) return true;
+  return /\b(?:am|is|are)\b/iu.test(excerpt);
 }
 
 function semanticClauses(value: string) {
@@ -398,6 +469,9 @@ type ClaimEvidenceOptions = Readonly<{
   // Tailored résumé lines only: faithful rewording of the cited facts is allowed
   // (lib/ai/application-document-rewording.ts). Cover letters keep the exact-wording grammar.
   faithfulRewording?: boolean;
+  // Cover letters only: the D033 grammar (optional was/were; added words checked by
+  // coverInsertionFailure).
+  coverLetterGrammar?: boolean;
 }>;
 
 function validateClaimEvidence(
@@ -423,6 +497,7 @@ function validateClaimEvidence(
       standalone: boolean;
       eligible: boolean;
       yearRanges: SourceYearRange[];
+      presentSource: boolean;
     }> = [];
     for (const [citationIndex, citation] of entry.citations.entries()) {
       const resolved = resolveReference(payload, citation.ref);
@@ -449,7 +524,8 @@ function validateClaimEvidence(
           contexts: sourceTexts.flatMap((sourceText) => evidenceContexts(sourceText, excerpt)),
           standalone: containsStandaloneEvidence(resolved, citation.excerpt),
           eligible: referenceCanSupportApplicantClaim(citation.ref),
-          yearRanges: sourceYearRanges(citation.ref, resolved, citation.excerpt)
+          yearRanges: sourceYearRanges(citation.ref, resolved, citation.excerpt),
+          presentSource: presentTenseSource(citation.ref, resolved, citation.excerpt)
         });
       }
     }
@@ -482,8 +558,12 @@ function validateClaimEvidence(
         });
       }
     }
-    const exactRelation = applicantEvidence.some(({ excerpt, standalone, eligible, yearRanges }) =>
-      eligible && standalone && sameTokens(factualTokens(excerpt, yearRanges), factualTokens(claim, yearRanges)));
+    const optionalWords = options.coverLetterGrammar ? coverLetterOptionalWords : nonFactualWords;
+    const tokenMatches = applicantEvidence.filter(({ excerpt, standalone, eligible, yearRanges }) =>
+      eligible && standalone && sameTokens(factualTokens(excerpt, yearRanges, optionalWords), factualTokens(claim, yearRanges, optionalWords)));
+    const exactRelation = options.coverLetterGrammar
+      ? tokenMatches.some(({ excerpt, yearRanges, presentSource }) => !coverInsertionFailure(claim, excerpt, yearRanges, presentSource))
+      : tokenMatches.length > 0;
     const citedFacts = [...new Map(entry.citations
       .filter((citation) => !citation.ref.startsWith("job."))
       .map((citation) => [`${citation.ref}\u0000${citation.excerpt}`, {
@@ -505,7 +585,7 @@ function validateClaimEvidence(
         failureClass: "source_relation_mismatch",
         relationReason: !applicantEvidence.some(item => item.eligible) ? "ineligible_source"
           : !applicantEvidence.some(item => item.eligible && item.standalone) ? "not_standalone"
-            : "ordered_token_mismatch",
+            : tokenMatches.length ? "tense_or_subject" : "ordered_token_mismatch",
         ...(options.faithfulRewording ? { rewordingFailure: rewordingFailure() } : {}),
         fieldPath: `${fieldPrefix}[${claimIndex}].claim`,
         retryable: false
@@ -736,7 +816,7 @@ export function carryCoverLetterRemovals<T extends object>(from: object, to: T):
 
 function coverClaimPasses(payload: ApplicationDocumentPayload, entry: ApplicationDocumentClaimEvidence) {
   try {
-    validateClaimEvidence(payload, [entry], "claimsUsed");
+    validateClaimEvidence(payload, [entry], "claimsUsed", { coverLetterGrammar: true });
     return true;
   } catch {
     return false;
@@ -747,13 +827,14 @@ function coverClaimPasses(payload: ApplicationDocumentPayload, entry: Applicatio
 // citation defect the unchanged checks must still reject.
 function coverClaimWordingFailure(payload: ApplicationDocumentPayload, entry: ApplicationDocumentClaimEvidence) {
   try {
-    validateClaimEvidence(payload, [entry], "claimsUsed");
+    validateClaimEvidence(payload, [entry], "claimsUsed", { coverLetterGrammar: true });
     return null;
   } catch (error) {
     const details = error instanceof PublicApiError ? error.details : undefined;
     if (!details || !REVERTIBLE_CLAIM_CODES.has(String(details.code))) return null;
-    return details.code === "APPLICATION_DOCUMENT_NEGATION_REVERSAL" ? "negation_reversal"
-      : String(details.failureClass ?? "unsupported_claim");
+    if (details.code === "APPLICATION_DOCUMENT_NEGATION_REVERSAL") return "negation_reversal";
+    if (details.relationReason === "tense_or_subject") return "tense_or_subject";
+    return String(details.failureClass ?? "unsupported_claim");
   }
 }
 
@@ -767,33 +848,66 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
 ): T {
   const removed: CoverLetterRemoval[] = [];
   const removedKeys = new Set<string>();
-  let claims = output.claimsUsed.filter((entry) => {
-    const failure = coverClaimWordingFailure(payload, entry);
-    if (!failure) return true;
-    removed.push({ text: entry.claim.trim(), reason: failure });
-    removedKeys.add(comparable(entry.claim));
-    return false;
-  });
 
   // As the prompt asks: a sentence for an action fact reads in the first person ("Built a
   // dashboard." -> "I built a dashboard."), when the truth check accepts that wording. Owner's
   // live test 2026-11-06: a fragment behind a framing phrase reads in the first person too
-  // ("At <Org>, owned …" -> "At <Org>, I owned …"); lib/ai/cover-letter-first-person.ts decides
-  // where the I may go, and the unchanged truth check still decides whether the wording stands.
+  // ("At <Org>, owned …" -> "At <Org>, I owned …"). Owner decision D033: a passive fact reads with
+  // was or were ("Recognized for …" -> "I was recognized for …"; "<Team> playbooks adopted by …" ->
+  // "… were adopted by …"). lib/ai/cover-letter-first-person.ts proposes the wording; the truth
+  // check decides whether it stands.
   const firstPerson = (entry: ApplicationDocumentClaimEvidence) => {
     const text = entry.claim.trim();
     if (/^i\s+/iu.test(text)) return entry;
-    const wording = entry.citations.some((citation) => applicationDocumentFactStartsWithAction(citation.excerpt))
-      ? `I ${text[0]!.toLocaleLowerCase()}${text.slice(1)}`
-      : firstPersonCoverSentence(text);
-    if (!wording) return entry;
-    const candidate = { ...entry, claim: wording };
-    return coverClaimPasses(payload, candidate) ? candidate : entry;
+    const wordings = [
+      firstPersonCoverSentence(text),
+      entry.citations.some((citation) => applicationDocumentFactStartsWithAction(citation.excerpt))
+        ? `I ${text[0]!.toLocaleLowerCase()}${text.slice(1)}` : null,
+      pastPassiveCoverSentence(text)
+    ];
+    for (const wording of wordings) {
+      if (!wording) continue;
+      const candidate = { ...entry, claim: wording };
+      if (coverClaimPasses(payload, candidate)) return candidate;
+    }
+    return entry;
   };
+
+  // Owner decision D033: letters that passed before the tense and subject rules may now fail them.
+  // Such a claim is rewritten from its own cited fact (in the first person or with was/were when
+  // the rules allow, or in the fact's own words when the fact is a whole sentence) instead of
+  // being removed; it is removed only when no such wording passes.
+  const salvage = (entry: ApplicationDocumentClaimEvidence) => {
+    for (const citation of entry.citations.filter((value) => !value.ref.startsWith("job."))) {
+      const source = normalizeApplicationDocumentSourceLine(citation.excerpt);
+      const wholeSentence = /[.!?]$/u.test(source);
+      const sentence = `${source[0]!.toLocaleUpperCase()}${source.slice(1)}${wholeSentence ? "" : "."}`;
+      const own = { claim: sentence, citations: [citation] };
+      const reworded = firstPerson(own);
+      if (reworded !== own) return reworded;
+      if (wholeSentence && coverClaimPasses(payload, own)) return own;
+    }
+    return null;
+  };
+
   const renamed = new Map<string, string>();
+  let claims = output.claimsUsed.flatMap((entry) => {
+    const failure = coverClaimWordingFailure(payload, entry);
+    if (!failure) return [entry];
+    const rewritten = failure === "tense_or_subject" ? salvage(entry) : null;
+    if (rewritten) {
+      renamed.set(comparable(entry.claim), rewritten.claim);
+      return [rewritten];
+    }
+    removed.push({ text: entry.claim.trim(), reason: failure });
+    removedKeys.add(comparable(entry.claim));
+    return [];
+  });
   claims = claims.map((entry) => {
     const next = firstPerson(entry);
-    if (next !== entry) renamed.set(comparable(entry.claim), next.claim);
+    if (next === entry) return next;
+    for (const [from, to] of renamed) if (comparable(to) === comparable(entry.claim)) renamed.set(from, next.claim);
+    renamed.set(comparable(entry.claim), next.claim);
     return next;
   });
 
@@ -940,7 +1054,7 @@ export function validateCoverLetterClaims<T extends CoverLetterClaimsOutput>(
   payload: ApplicationDocumentPayload,
   output: T
 ) {
-  const supportedClaims = validateClaimEvidence(payload, output.claimsUsed, "claimsUsed");
+  const supportedClaims = validateClaimEvidence(payload, output.claimsUsed, "claimsUsed", { coverLetterGrammar: true });
   for (const [claimIndex, entry] of output.claimsUsed.entries()) {
     if (!comparable(output.coverLetter).includes(comparable(entry.claim))) {
       throw new PublicApiError("Cover-letter evidence describes text absent from the generated letter.", 422, {

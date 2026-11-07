@@ -59,10 +59,9 @@ test("a fragment led by a common résumé verb outside the narrow action list re
 });
 
 test("no I is added where it could change who did what or is already there", () => {
+  // Passive verbs with their preposition read "I was …" instead (tests/cover-letter-tense.test.ts).
   for (const sentence of [
-    "In 2019, promoted to Service Delivery Manager.",
-    "Promoted to Service Delivery Manager in 2019.",
-    "At Quenby Labs, selected as regional lead.",
+    "Promoted Service Delivery Manager in 2019.",
     "At Quenby Labs, trained in incident command.",
     "At Quenby Labs, owned by the platform group.",
     "Quenby Service playbooks adopted by 40+ agents: renewals up 12% in one quarter.",
@@ -94,11 +93,11 @@ test("an owner fact the letter left out goes back in with the same first-person 
   assert.ok(final.coverLetter.includes("At Quenby Labs, I owned onboarding through go-live."), final.coverLetter);
 });
 
-test("a passive owner fact is kept in the owner's words", () => {
+test("a passive owner fact reads with I was, never with a bare I (D033)", () => {
   const fact = "In 2019, promoted to Service Delivery Manager.";
   const payload = withOwnerFacts(fact);
   const final = finalize(payload, letterWith(fact));
-  assert.ok(final.coverLetter.includes(fact), final.coverLetter);
+  assert.ok(final.coverLetter.includes("In 2019, I was promoted to Service Delivery Manager."), final.coverLetter);
   assert.ok(!/I promoted/u.test(final.coverLetter));
 });
 
@@ -168,7 +167,7 @@ test("an owner fact that starts with an employer's name joins that employer's pa
   const fact = "Contoso Service Systems playbooks adopted by 40+ agents.";
   const final = finalize(withOwnerFacts(fact), letterWith(fact));
   const contoso = paragraphsOf(final.coverLetter).find((paragraph) => paragraph.includes(directed))!;
-  assert.ok(contoso.includes(fact), final.coverLetter);
+  assert.ok(contoso.includes("Contoso Service Systems playbooks were adopted by 40+ agents."), final.coverLetter);
   assert.ok(contoso.includes(reduced) && contoso.includes(built));
 });
 
@@ -238,6 +237,6 @@ test("a sentence that merely starts with a one-word employer name stays out of t
   ((payload.resume as { workHistory: Array<Record<string, unknown>> }).workHistory[1]!).company = "Fabrikam";
   const paragraphs = paragraphsOf(finalize(payload, letterWith(generic, proper)).coverLetter);
   const fabrikam = paragraphs.find((paragraph) => paragraph.includes(mentored))!;
-  assert.ok(fabrikam.includes(proper), paragraphs.join("\n\n"));
+  assert.ok(fabrikam.includes("Fabrikam Escalation Desk playbooks were adopted by 60+ coordinators."), paragraphs.join("\n\n"));
   assert.ok(!fabrikam.includes(generic), paragraphs.join("\n\n"));
 });
