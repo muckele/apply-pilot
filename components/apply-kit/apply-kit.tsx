@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -14,16 +14,25 @@ import {
   Sparkles
 } from "lucide-react";
 
+import {
+  ApplyReturnCard,
+  ApplyReturnDeclinedNotice,
+  recordApplicationOpened,
+  useApplyReturnAnswer
+} from "@/components/apply-kit/apply-return-card";
 import { CopyButton } from "@/components/apply-kit/copy-button";
 import { DocumentReviewPanel } from "@/components/document-review-panel";
 import { Panel, PanelHeader, PrimaryButton, SecondaryButton } from "@/components/ui";
 import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+import { prefillEffortMinutes } from "@/lib/applications/apply-return";
 import { MAX_EFFORT_MINUTES, parseEffortMinutesInput } from "@/lib/applications/self-reported-effort";
 import type { ApplyKitDocument, ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 
 // Apply Kit (WP1.5): everything needed to apply to this job by hand, with no browser companion.
-// Apply Pilot never opens, fills or submits the employer's form here; the user does, then records
-// "I applied", which freezes exactly which document versions were sent.
+// Apply Pilot never fills or submits the employer's form here; the user opens it in a new tab,
+// submits it, then records "I applied", which freezes exactly which document versions were sent.
+// When they come back from that tab, "Did you apply?" asks whether they submitted it; only their
+// own "Yes" plus the confirmation below records it as applied (D027).
 
 const ANSWER_VAULT_HREF = "/settings/application-answers";
 
@@ -225,7 +234,9 @@ function DocumentSlot({
   );
 }
 
-export function ApplyKit({ view }: { view: ApplyKitView }) {
+type ReturnMoment = { openedAt: number; returnedAt: number };
+
+export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; answeredYes?: boolean }) {
   const router = useRouter();
   const [resumeId, setResumeId] = useState(view.selectedResumeId);
   const [coverId, setCoverId] = useState(view.selectedCoverLetterId ?? view.coverLetters[0]?.id ?? null);
@@ -236,6 +247,17 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
   const [attested, setAttested] = useState(false);
   const [appliedError, setAppliedError] = useState<{ text: string; fixHref: string | null } | null>(null);
   const [effortInput, setEffortInput] = useState("");
+  const [effortPrefilled, setEffortPrefilled] = useState<number | null>(null);
+  // "Did you apply?": an unanswered opened moment from the server (after a reload, the next day or
+  // another device), or a live return to this tab after the user opened the application here.
+  const pending = view.canRecordApplied ? view.applyReturn.pending : null;
+  // Arriving with "Yes" already given on the job page, the card is skipped for the confirmation.
+  const [dismissedOpenedEventId, setDismissedOpenedEventId] = useState<string | null>(answeredYes && pending ? pending.openedEventId : null);
+  const [awaitingReturn, setAwaitingReturn] = useState(false);
+  const [liveReturn, setLiveReturn] = useState<ReturnMoment | null>(null);
+  const awaitingRef = useRef<{ openedAt: number; away: boolean } | null>(null);
+  const shownAtRef = useRef<number | null>(null);
+  const applyReturn = useApplyReturnAnswer(view.job.id);
 
   const resume = view.resumes.find((item) => item.id === resumeId) ?? null;
   const cover = includeCover ? view.coverLetters.find((item) => item.id === coverId) ?? null : null;
@@ -244,6 +266,110 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
     cover && !cover.exportReady ? { text: `Cover letter v${cover.versionNumber} needs attention. Review it, or untick "Include this cover letter".`, href: "#review-cover-letter" } : null
   ].filter((item): item is { text: string; href: string } => item !== null);
   const effort = parseEffortMinutesInput(effortInput);
+  const resumedPrompt = pending && pending.openedEventId !== dismissedOpenedEventId && !awaitingReturn ? pending : null;
+  const showReturnCard = !confirming && (liveReturn !== null || resumedPrompt !== null);
+
+  // The return trigger: after an open from this tab, the page must first be left (hidden or
+  // blurred) and then come back into view before the question is asked.
+  useEffect(() => {
+    const markAway = () => {
+      if (awaitingRef.current) awaitingRef.current.away = true;
+    };
+    const maybeReturn = () => {
+      const awaiting = awaitingRef.current;
+      if (!awaiting || !awaiting.away || document.visibilityState === "hidden") return;
+      awaitingRef.current = null;
+      setAwaitingReturn(false);
+      setLiveReturn({ openedAt: awaiting.openedAt, returnedAt: Date.now() });
+    };
+    const onVisibility = () => (document.visibilityState === "hidden" ? markAway() : maybeReturn());
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("blur", markAway);
+    window.addEventListener("focus", maybeReturn);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("blur", markAway);
+      window.removeEventListener("focus", maybeReturn);
+    };
+  }, []);
+
+  // An unanswered question shown on load counts as "coming back" when it first appears.
+  useEffect(() => {
+    if (resumedPrompt && shownAtRef.current === null) shownAtRef.current = Date.now();
+  }, [resumedPrompt]);
+
+  // Arriving from the job page's "Yes, I applied": go straight to the confirmation.
+  const answeredYesHandled = useRef(false);
+  useEffect(() => {
+    if (!answeredYes || answeredYesHandled.current || !pending) return;
+    answeredYesHandled.current = true;
+    setDismissedOpenedEventId(pending.openedEventId);
+    startConfirming(prefillEffortMinutes(new Date(pending.openedAt), new Date()));
+  }, [answeredYes, pending]);
+
+  function startConfirming(prefill: number | null) {
+    setConfirming(true);
+    setAttested(false);
+    setAppliedError(null);
+    setEffortInput(prefill === null ? "" : String(prefill));
+    setEffortPrefilled(prefill);
+  }
+
+  function handleOpenApplication() {
+    if (!view.canRecordApplied) return;
+    awaitingRef.current = { openedAt: Date.now(), away: false };
+    setAwaitingReturn(true);
+    setLiveReturn(null);
+    applyReturn.clearError();
+    const openedAt = awaitingRef.current.openedAt;
+    void recordApplicationOpened(view.job.id).then((result) => {
+      if (result === "failed") {
+        setMessage("Apply Pilot could not save that you opened this application, so it may not ask about it on your other devices.");
+      } else if (result === "nothing-to-ask") {
+        // Already recorded past "I applied" elsewhere: drop this open's question, live or awaited.
+        if (awaitingRef.current?.openedAt === openedAt) {
+          awaitingRef.current = null;
+          setAwaitingReturn(false);
+        }
+        setLiveReturn((current) => (current?.openedAt === openedAt ? null : current));
+        router.refresh();
+      }
+    });
+  }
+
+  function returnMoment(): ReturnMoment | null {
+    if (liveReturn) return liveReturn;
+    if (!resumedPrompt) return null;
+    return { openedAt: new Date(resumedPrompt.openedAt).getTime(), returnedAt: shownAtRef.current ?? Date.now() };
+  }
+
+  function closeReturnCard() {
+    setLiveReturn(null);
+    shownAtRef.current = null;
+    if (pending) setDismissedOpenedEventId(pending.openedEventId);
+    applyReturn.clearError();
+  }
+
+  function answerYes() {
+    const moment = returnMoment();
+    closeReturnCard();
+    startConfirming(moment ? prefillEffortMinutes(new Date(moment.openedAt), new Date(moment.returnedAt)) : null);
+    requestAnimationFrame(() => window.document.getElementById("record-applied")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+  }
+
+  async function answerNotApplying() {
+    if (await applyReturn.send("NOT_APPLYING")) {
+      closeReturnCard();
+      setMessage("Moved out of your active applications.");
+    }
+  }
+
+  async function undoNotApplying() {
+    if (await applyReturn.send("UNDO_NOT_APPLYING")) {
+      setDismissedOpenedEventId(null);
+      setMessage("Undone. The job is back in your active applications.");
+    }
+  }
 
   async function handleDownload(document: ApplyKitDocument, format: ExportFormat) {
     setBusy({ action: "export", key: `${document.id}:${format}` });
@@ -317,7 +443,21 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
 
   return (
     <div className="space-y-6" data-apply-kit>
-      {view.job.notice ? (
+      {showReturnCard ? (
+        <ApplyReturnCard
+          company={view.job.company}
+          variant="kit"
+          yes={{ onClick: answerYes }}
+          onNotYet={closeReturnCard}
+          onNotApplying={answerNotApplying}
+          busy={applyReturn.busy !== null}
+          error={applyReturn.error}
+        />
+      ) : null}
+      {view.applyReturn.declined ? (
+        <ApplyReturnDeclinedNotice variant="kit" onUndo={undoNotApplying} busy={applyReturn.busy !== null} error={applyReturn.error} />
+      ) : null}
+      {view.job.notice && !view.applyReturn.declined ? (
         <p
           role="status"
           className={`flex gap-2 rounded-lg border px-3 py-2 text-sm ${view.job.notice.tone === "warning" ? "border-amber-300 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-700"}`}
@@ -438,13 +578,17 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
                 href={view.applyLink.href}
                 target="_blank"
                 rel="noopener noreferrer"
+                onClick={handleOpenApplication}
                 className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700"
                 data-apply-link
               >
                 <ExternalLink className="mr-2" size={16} aria-hidden="true" />
                 Open application
               </a>
-              <p>Opens <strong data-apply-host>{view.applyLink.hostname}</strong> in a new tab.</p>
+              <p>
+                Opens <strong data-apply-host>{view.applyLink.hostname}</strong> in a new tab.
+                {view.canRecordApplied ? " When you come back to this tab, Apply Pilot asks whether you submitted it." : null}
+              </p>
               {!view.applyLink.secure ? <p className="text-amber-900">This link does not use HTTPS. Check the address before you enter personal details.</p> : null}
             </>
           ) : (
@@ -460,7 +604,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
 
       <Panel>
         <PanelHeader title="4. I applied" description="Record the application once you have submitted it on the employer's site." />
-        <div className="space-y-3 p-5 text-sm text-slate-700" data-record-applied>
+        <div id="record-applied" className="space-y-3 p-5 text-sm text-slate-700" data-record-applied>
           {view.sent ? (
             <p data-sent-summary>
               Sent: {sentLine(view.sent.resume, "résumé")}, {sentLine(view.sent.coverLetter, "cover letter")}.{" "}
@@ -474,7 +618,7 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
               <Link href={`/applications/${view.application.id}`} className="font-semibold text-brand-700 underline">Open in tracker</Link>
             </p>
           ) : !confirming ? (
-            <PrimaryButton type="button" onClick={() => { setConfirming(true); setAttested(false); setAppliedError(null); setEffortInput(""); }} data-start-applied>
+            <PrimaryButton type="button" onClick={() => startConfirming(null)} data-start-applied>
               <CheckCircle2 className="mr-2" size={15} aria-hidden="true" />
               I applied
             </PrimaryButton>
@@ -517,6 +661,11 @@ export function ApplyKit({ view }: { view: ApplyKitView }) {
                 <p id="effort-minutes-help" className="text-xs text-slate-500">
                   Your own estimate, from reading the posting to submitting the employer&apos;s form. It is used only for your Insights page.
                 </p>
+                {effortPrefilled !== null && effortInput === String(effortPrefilled) ? (
+                  <p className="text-xs text-slate-600" data-effort-prefilled>
+                    Pre-filled with the {effortPrefilled} {effortPrefilled === 1 ? "minute" : "minutes"} between opening the application and coming back. Change it or clear it if that is not right.
+                  </p>
+                ) : null}
                 {!effort.ok ? (
                   <p className="text-xs text-amber-900" data-effort-error>Enter whole minutes from 1 to {MAX_EFFORT_MINUTES}, or leave it blank.</p>
                 ) : null}

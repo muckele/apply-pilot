@@ -1,6 +1,7 @@
 import { CalendarClock, Mail, Plus, TrendingUp } from "lucide-react";
 import { cookies } from "next/headers";
 
+import { ApplyReturnReminder } from "@/components/apply-kit/apply-return-reminder";
 import { JobCard } from "@/components/job-card";
 import { JobMatchOmissionNotice } from "@/components/job-match-omission-notice";
 import { OnboardingChecklist, OnboardingSetupHint } from "@/components/onboarding-checklist";
@@ -14,6 +15,7 @@ import {
   hasCurrentJobMatchAnalysis,
   readCurrentJobMatchSources
 } from "@/lib/jobs/current-job-match";
+import { loadApplyReturnReminders } from "@/lib/applications/apply-return-reminders";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { formatAverageFit } from "@/lib/jobs/fit-presentation";
 import { loadOnboardingChecklist } from "@/lib/onboarding-loader";
@@ -45,7 +47,8 @@ export default async function DashboardPage() {
     openTasks,
     matchSources,
     onboarding,
-    cookieStore
+    cookieStore,
+    applyReturnReminders
   ] = await Promise.all([
     prisma.application.count({ where: { userId, dateSaved: { gte: weekStart } } }),
     prisma.application.count({ where: { userId, dateApplied: { gte: weekStart } } }),
@@ -93,7 +96,8 @@ export default async function DashboardPage() {
     }),
     readCurrentJobMatchSources(userId),
     loadOnboardingChecklist(userId),
-    cookies()
+    cookies(),
+    loadApplyReturnReminders(prisma, { userId })
   ]);
   const onboardingHidden = isOnboardingHiddenForUser(cookieStore.get(ONBOARDING_HIDDEN_COOKIE)?.value, userId);
 
@@ -154,6 +158,12 @@ export default async function DashboardPage() {
         hideAction={hideOnboardingChecklist}
         showAction={showOnboardingChecklist}
       />
+
+      {applyReturnReminders.count > 0 ? (
+        <div className="mb-6">
+          <ApplyReturnReminder reminders={applyReturnReminders} />
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-4 min-[360px]:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
         <MetricCard label="Saved" value={savedThisWeek} detail="This week" tone="branded" />
