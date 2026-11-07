@@ -4,6 +4,7 @@ import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { JobWorkspace } from "@/components/job-workspace/job-workspace";
 import { readTailoredResumeLeftOut, readTailoredResumeReversions } from "@/lib/ai/tailored-resume-keep-rule";
+import { loadApplyReturnState } from "@/lib/applications/apply-return-service";
 import { formatApplicationStatus } from "@/lib/applications/pipeline";
 import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availability";
 import { buildDocumentReviewView } from "@/lib/documents/document-review";
@@ -99,6 +100,7 @@ async function getJobDetail(id: string) {
   ]);
 
   if (!job) return null;
+  const applyReturn = await loadApplyReturnState(prisma, { userId, application });
 
   const context = buildCurrentJobMatchContext({ job, resume: masterResume, profile });
   const matchInput = context.matchInput;
@@ -171,6 +173,7 @@ async function getJobDetail(id: string) {
       };
     }),
     application: application ? { id: application.id, statusLabel: formatApplicationStatus(application.status) } : null,
+    applyReturn,
     contacts,
     salaryTarget: profile ? { min: profile.salaryTargetMin, max: profile.salaryTargetMax } : null,
     evidenceReview: masterResume
@@ -217,6 +220,7 @@ export default async function JobDetailPage({ params }: Props) {
       }}
       documents={{ resumeVersions: data.resumeVersions, coverLetters: data.coverLetters }}
       application={data.application}
+      applyReturn={data.applyReturn}
       masterResumeText={data.sourceText}
       notes={<JobContactNotesForm key="contact-notes" jobPostingId={data.view.id} applicationId={data.application?.id} contacts={data.contacts} />}
     />

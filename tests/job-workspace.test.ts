@@ -76,6 +76,7 @@ function props(overrides: Partial<JobWorkspaceProps> = {}): JobWorkspaceProps {
     },
     documents: { resumeVersions: [], coverLetters: [] },
     application: null,
+    applyReturn: { pending: null, declined: null },
     masterResumeText: "Service operations leader.",
     notes: null,
     ...overrides
@@ -286,5 +287,19 @@ test("ready documents lead to review, then the Apply Kit", async () => {
     assert.ok(documents.querySelector("[data-product-documents]"));
     assert.ok([...documents.querySelectorAll("a")].some((link) => link.textContent?.includes("Go to Apply Kit") && link.getAttribute("href") === "/jobs/job-1/apply"));
     assert.ok(harness.button("Create new versions"));
+  });
+});
+
+test("an unanswered opened application asks 'Did you apply?' on the job page, and only then", async () => {
+  await withPage({}, async (harness) => {
+    assert.equal(harness.container.querySelector("[data-apply-return]") === null, true, "no question without an opened moment");
+  });
+  const pending = { openedEventId: "event-opened", openedAt: "2026-11-06T10:00:00.000Z" };
+  await withPage({ application: { id: "application-1", statusLabel: "Saved" }, applyReturn: { pending, declined: null } }, async (harness) => {
+    const card = harness.container.querySelector("[data-apply-return]");
+    assert.ok(card, "the question is shown");
+    assert.match(card.textContent ?? "", /Did you submit your application to /u);
+    const yes = card.querySelector<HTMLAnchorElement>("[data-apply-return-yes]");
+    assert.match(yes?.getAttribute("href") ?? "", /\/apply\?didYouApply=yes$/u);
   });
 });

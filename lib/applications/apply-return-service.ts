@@ -50,7 +50,8 @@ export async function loadApplyReturnState(db: EventReader, input: {
       select: EVENT_SELECT
     })
   ]);
-  const events = [opened, statusEvent].filter((event): event is ApplyReturnEvent => event !== null);
+  const events: ApplyReturnEvent[] = [];
+  for (const event of [opened, statusEvent]) if (event) events.push(event);
   return resolveApplyReturn({ userId, status: application.status, events });
 }
 

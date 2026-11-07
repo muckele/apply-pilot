@@ -32,7 +32,7 @@ function opened(id: string, iso: string, userId = OWNER): Event {
   };
 }
 
-function declined(id: string, iso: string, previousStatus: ApplicationStatus = "SAVED"): Event {
+function declined(id: string, iso: string, previousStatus: "SAVED" | "INTERESTED" = "SAVED"): Event {
   return {
     id,
     userId: OWNER,

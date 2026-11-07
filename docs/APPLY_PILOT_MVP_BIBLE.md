@@ -116,6 +116,13 @@ Minutes can also be added or corrected later from the application's tracker page
 
 Applications without minutes are left out of both sides, and the page shows how many reported (for example "2 of 3 applications"). This covers the box being left blank, a card moved to Applied in the tracker, and the job page's packet builder, which doesn't ask. The minutes are the user's estimate, not a timer, and they can be corrected but not removed.
 
+**"Did you apply?" (owner-approved 2026-11-06, no migration).** The Apply Kit's "Open application" opens the employer's form in a new tab and records an "opened" moment in a timeline event's metadata (`apply-pilot/apply-return/v1`, `POST /api/jobs/[id]/apply-return`). A job not yet in the tracker is saved there as **Saved** at that point, never Applied. When the user comes back to the tab, or later opens the job page or Apply Kit on any device, an in-page card asks "Did you submit your application to {Company}?":
+- **Yes, I applied** opens the unchanged "I applied" confirmation (attestation, frozen document versions, same route and 409 handling). The minutes box is pre-filled with the whole minutes between opening and coming back, from 1 to 600; a longer gap leaves it blank rather than guessing.
+- **Not yet** records nothing; the card returns on the next visit.
+- **Not applying** sets the application and posting to **Archived** (out of the active tracker lanes and the dashboard's best matches) and can be undone, which restores both earlier statuses.
+
+The dashboard shows "You opened N applications. Did you apply?" with a link to each one's Apply Kit. APPLIED is still only ever recorded by the user's own confirmation (D027).
+
 These §11 metrics still can't be measured honestly from current data:
 - **Jobs seen.** Nothing records which feed jobs the user opened, so the page counts jobs *added* to the feed instead.
 - **Factual-error rate in reviewed documents.** There is no log of errors found in review.
