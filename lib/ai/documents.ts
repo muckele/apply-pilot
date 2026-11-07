@@ -17,6 +17,7 @@ import {
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
 import { finalizeCoverLetter } from "@/lib/ai/application-document-quality";
+import { getCoverLetterLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 
 const applicationDocumentCitationSchema = z.object({
   ref: z.string().min(1),
@@ -58,7 +59,8 @@ export function buildCoverLetterSystemPrompt(payload: ApplicationDocumentPayload
   return buildApplicationDocumentSystemPrompt(
     `${coverLetterPrompt.trim()}\n\n` +
       `Allowed uncited cover-letter lines (exact strings only): ${JSON.stringify(getCoverLetterUncitedLines(payload))}\n` +
-      "Do not write any other uncited line or sentence.",
+      "Do not write any other uncited line or sentence.\n" +
+      `Employer lead lines: the server opens each paragraph whose evidence all comes from one work record with that record's line; do not write them yourself: ${JSON.stringify(getCoverLetterLeadLines(payload).map((lead) => lead.line))}`,
     payload
   );
 }

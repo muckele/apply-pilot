@@ -9,6 +9,7 @@ import {
 import { validateCoverLetterClaims } from "@/lib/ai/application-document-claims";
 import { assembleCoverLetterProviderOutput, type CoverLetterProviderOutput } from "@/lib/ai/application-document-facts";
 import { coverLetterRemovals, finalizeCoverLetter } from "@/lib/ai/application-document-quality";
+import { getCoverLetterLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 import { PublicApiError } from "@/lib/api-errors";
 
 // Live case 2026-11-06: the first cover letter ever generated live was rejected whole, and paid
@@ -37,7 +38,9 @@ const sentencesOf = (letter: string) => [...new Intl.Segmenter("en", { granulari
 test("a clean letter keeps every sentence and has nothing removed", () => {
   const assembled = assemble(wire());
   const final = finalizeCoverLetter(payload, assembled);
-  assert.deepEqual(sentencesOf(final.coverLetter), sentencesOf(assembled.coverLetter));
+  // Plus the employer lead lines the finalizer places (D033).
+  const leads = getCoverLetterLeadLines(payload).map((lead) => lead.line);
+  assert.deepEqual(sentencesOf(final.coverLetter), sentencesOf([...leads, assembled.coverLetter].join(" ")));
   assert.deepEqual(coverLetterRemovals(final), []);
 });
 

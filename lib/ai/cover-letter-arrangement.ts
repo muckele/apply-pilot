@@ -3,6 +3,7 @@ import {
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload
 } from "@/lib/ai/application-document-claims";
+import { withoutLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 
 // Owner's live test 2026-11-06: a repaired cover letter was truthful but its paragraphs mixed
 // employers, so a résumé bullet read as if it belonged to whichever employer the sentence before it
@@ -121,7 +122,17 @@ function sameSentences(paragraph: string, sentences: readonly string[]) {
 // The letter with its evidence grouped by source record, or the same output when there is nothing
 // to regroup or the letter holds a sentence this step does not recognize (the unchanged checks
 // that run next decide such a letter).
+// Employer lead lines (D033) are left out while sentences move; the finalizer puts each back at the
+// start of its record's paragraph.
 export function arrangeCoverLetterByRecord<T extends CoverLetterOutput>(payload: ApplicationDocumentPayload, output: T): T {
+  const coverLetter = withoutLeadLines(payload, output.coverLetter);
+  if (coverLetter === output.coverLetter) return arrange(payload, output);
+  const stripped = { ...output, coverLetter };
+  const arranged = arrange(payload, stripped);
+  return arranged === stripped ? output : arranged;
+}
+
+function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayload, output: T): T {
   const exempt = new Set(getCoverLetterUncitedLines(payload).map(sentenceKey));
   const claimByText = new Map<string, ApplicationDocumentClaimEvidence>();
   for (const entry of output.claimsUsed) {

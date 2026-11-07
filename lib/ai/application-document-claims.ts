@@ -13,7 +13,7 @@ import {
   isPassiveParticiple,
   pastPassiveCoverSentence
 } from "@/lib/ai/cover-letter-first-person";
-import { isCurrentWorkRecord } from "@/lib/ai/cover-letter-lead-lines";
+import { getCoverLetterLeadLines, isCurrentWorkRecord, withoutPlacedLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 
 export type ApplicationDocumentCitation = {
   ref: string;
@@ -808,10 +808,10 @@ export function coverLetterRemovals(output: object): readonly CoverLetterRemoval
   return coverLetterRemovalsByOutput.get(output) ?? [];
 }
 
-export function carryCoverLetterRemovals<T extends object>(from: object, to: T): T {
-  const removed = coverLetterRemovalsByOutput.get(from);
-  if (removed && from !== to) coverLetterRemovalsByOutput.set(to, removed);
-  return to;
+// The output with these removals recorded as its own (when there are any).
+export function withCoverLetterRemovals<T extends object>(output: T, removals: readonly CoverLetterRemoval[]): T {
+  if (removals.length) coverLetterRemovalsByOutput.set(output, Object.freeze(removals.map((entry) => Object.freeze({ ...entry }))));
+  return output;
 }
 
 function coverClaimPasses(payload: ApplicationDocumentPayload, entry: ApplicationDocumentClaimEvidence) {
@@ -913,7 +913,9 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
 
   const facts = buildApplicationDocumentFactCatalog(payload);
   const supported = new Set(claims.map((entry) => comparable(entry.claim)));
-  const exempt = new Set(getCoverLetterUncitedLines(payload).map(sentenceKey));
+  // Employer lead lines (D033) are kept here; the finalizer moves or removes any out of place.
+  const exempt = new Set([...getCoverLetterUncitedLines(payload), ...getCoverLetterLeadLines(payload).map((lead) => lead.line)]
+    .map(sentenceKey));
   // A sentence that is exactly one source fact (within the cover-letter claim grammar) is bound to it.
   const bind = (sentence: string) => {
     const sentenceWords = new Set(wordsOf(sentence));
@@ -1064,7 +1066,9 @@ export function validateCoverLetterClaims<T extends CoverLetterClaimsOutput>(
       });
     }
   }
-  requireClaims(supportedClaims, coverSentencesRequiringEvidence(payload, output.coverLetter).map((value) => ({
+  // An employer lead line (D033) needs no citation only at the start of its own record's paragraph.
+  const letter = withoutPlacedLeadLines(payload, output.coverLetter, output.claimsUsed);
+  requireClaims(supportedClaims, coverSentencesRequiringEvidence(payload, letter).map((value) => ({
     value,
     fieldPath: "coverLetter"
   })));

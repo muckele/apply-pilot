@@ -89,8 +89,9 @@ export function isActiveCoverVerb(word: string) {
 // The words after an added I: an active verb (one -ly adverb may come first), "was" before a
 // passive participle, or am/have/had/"do not", whose own placement the claim grammar checks.
 function verbFollowsI(words: readonly string[]) {
-  let [first = "", second = "", third = "", fourth = ""] = words.map(bare);
-  if (first.length > 3 && first.endsWith("ly")) [first, second, third] = [second, third, fourth];
+  const all = words.map(bare);
+  const adverb = (all[0] ?? "").length > 3 && (all[0] ?? "").endsWith("ly") ? 1 : 0;
+  const [first = "", second = "", third = ""] = all.slice(adverb);
   if (first === "was") return isPassiveParticiple(second, third);
   if (first === "am" || first === "have" || first === "had") return true;
   if (first === "do" || first === "does") return second === "not";

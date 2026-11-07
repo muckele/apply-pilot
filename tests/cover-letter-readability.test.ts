@@ -116,6 +116,9 @@ const sentencesOf = (letter: string) => [...new Intl.Segmenter("en", { granulari
 // Synthetic letter claims: 0 summary, 1-3 Contoso, 4-5 Fabrikam, 6 a project, 7 the owner's fact.
 const [summary, directed, reduced, built, improved, mentored, dashboard] = [0, 1, 2, 3, 4, 5, 6].map(claim);
 const intro = "I am applying for the Service Operations Director position at Northwind Service Cloud.";
+// D033: the finalizer opens a paragraph whose evidence all cites one work record with its lead line.
+const CONTOSO = "Since 2021, I have been Senior Service Operations Manager at Contoso Service Systems.";
+const FABRIKAM = "From 2017 to 2021, I was Service Delivery Manager at Fabrikam Customer Platforms.";
 const letterOf = (...body: string[]) => [
   "Taylor Boundary",
   "taylor.boundary@example.test | +1 555 010 0200 | Seattle, WA | Remote",
@@ -134,17 +137,17 @@ test("evidence is grouped one paragraph per employer in résumé order, then the
   const final = finalize(base(), original);
   assert.deepEqual(paragraphsOf(final.coverLetter).slice(2, -2), [
     `${intro}\n${summary}`,
-    `${directed} ${reduced} ${built}`,
-    `${mentored} ${improved}`,
+    `${CONTOSO} ${directed} ${reduced} ${built}`,
+    `${FABRIKAM} ${mentored} ${improved}`,
     `${dashboard} ${SYNTHETIC_CORRECTION_FLOW_FACT}`
   ]);
-  assert.deepEqual(sentencesOf(final.coverLetter), sentencesOf(original.coverLetter));
+  assert.deepEqual(sentencesOf(final.coverLetter), sentencesOf(`${CONTOSO} ${FABRIKAM} ${original.coverLetter}`));
   assert.deepEqual(final.claimsUsed.map((entry) => entry.claim).sort(), original.claimsUsed.map((entry) => entry.claim).sort());
   assert.deepEqual(coverLetterRemovals(final), []);
 });
 
 test("a letter already grouped by employer is left exactly as written", () => {
-  const original = { ...wire(), coverLetter: letterOf(`${intro} ${summary}`, `${directed} ${reduced} ${built}`, `${mentored} ${improved}`, `${dashboard} ${SYNTHETIC_CORRECTION_FLOW_FACT}`) };
+  const original = { ...wire(), coverLetter: letterOf(`${intro} ${summary}`, `${CONTOSO} ${directed} ${reduced} ${built}`, `${FABRIKAM} ${mentored} ${improved}`, `${dashboard} ${SYNTHETIC_CORRECTION_FLOW_FACT}`) };
   assert.equal(finalize(base(), original).coverLetter, original.coverLetter);
 });
 
@@ -176,8 +179,8 @@ test("an employer fact in the opening paragraph joins its employer; the opening 
   const paragraphs = paragraphsOf(finalize(base(), original).coverLetter).slice(2, -2);
   assert.deepEqual(paragraphs, [
     `${intro} ${summary}`,
-    `${directed} ${reduced} ${built}`,
-    `${mentored} ${improved}`,
+    `${CONTOSO} ${directed} ${reduced} ${built}`,
+    `${FABRIKAM} ${mentored} ${improved}`,
     `${dashboard} ${SYNTHETIC_CORRECTION_FLOW_FACT}`
   ]);
 });
@@ -186,7 +189,7 @@ test("a job-requirement lead-in moves with the sentence after it", () => {
   const leadIn = "The role calls for experience coaching service operations professionals.";
   const original = { ...wire(), coverLetter: letterOf(`${intro} ${summary}`, `${directed} ${reduced} ${leadIn} ${mentored}`, `${built} ${improved} ${dashboard} ${SYNTHETIC_CORRECTION_FLOW_FACT}`) };
   const paragraphs = paragraphsOf(finalize(base(), original).coverLetter);
-  assert.ok(paragraphs.includes(`${leadIn} ${mentored} ${improved}`), paragraphs.join("\n\n"));
+  assert.ok(paragraphs.includes(`${FABRIKAM} ${leadIn} ${mentored} ${improved}`), paragraphs.join("\n\n"));
 });
 
 test("Gemini's order stands when the grouped letter would fail a check", () => {
@@ -221,8 +224,8 @@ test("a sentence with no closing period ends its employer's paragraph so groupin
   const paragraphs = paragraphsOf(finalize(base(), changed).coverLetter).slice(2, -2);
   assert.deepEqual(paragraphs, [
     `${intro} ${summary}`,
-    `${reduced} ${built} ${unterminated}`,
-    `${mentored} ${improved}`,
+    `${CONTOSO} ${reduced} ${built} ${unterminated}`,
+    `${FABRIKAM} ${mentored} ${improved}`,
     `${dashboard} ${SYNTHETIC_CORRECTION_FLOW_FACT}`
   ]);
 });

@@ -13,15 +13,17 @@ import {
   revertUnverifiedResumeLines
 } from "@/lib/ai/tailored-resume-keep-rule";
 import {
-  carryCoverLetterRemovals,
+  coverLetterRemovals,
   repairCoverLetterEvidence,
   validateCoverLetterClaims,
   validateTailoredResumeClaims,
+  withCoverLetterRemovals,
   type ApplicationDocumentClaimEvidence,
   type ApplicationDocumentPayload,
   type TailoredResumeClaimsOutput
 } from "@/lib/ai/application-document-claims";
 import { arrangeCoverLetterByRecord } from "@/lib/ai/cover-letter-arrangement";
+import { leadLineOccurrences, placeLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 
 type ResumeQualityOutput = {
   resumeText: string;
@@ -126,8 +128,9 @@ export { coverLetterRemovals, type CoverLetterRemoval } from "@/lib/ai/applicati
 
 // The whole cover-letter check, as draftCoverLetter runs it: unsupported or unverified sentences
 // are removed (repairCoverLetterEvidence), the evidence is grouped by employer
-// (arrangeCoverLetterByRecord, which only reorders sentences), then the unchanged truth and
-// structure checks run on what is left before it is cached or saved. When the grouped letter
+// (arrangeCoverLetterByRecord, which only reorders sentences), each paragraph whose evidence all
+// cites one work record opens with that record's lead line (D033; placeLeadLines), then the truth
+// and structure checks run on the result before it is cached or saved. When the grouped letter
 // fails a check, the letter in Gemini's order is checked instead, so grouping never costs a
 // letter that would otherwise pass.
 export function finalizeCoverLetter<T extends CoverLetterQualityOutput>(
@@ -136,14 +139,29 @@ export function finalizeCoverLetter<T extends CoverLetterQualityOutput>(
 ): T {
   const value = repairCoverLetterEvidence(payload, output);
   const arranged = arrangeCoverLetterByRecord(payload, value);
-  if (arranged !== value) {
+  const candidates = arranged === value ? [value] : [arranged, value];
+  for (const [index, candidate] of candidates.entries()) {
+    const coverLetter = placeLeadLines(payload, candidate.coverLetter, candidate.claimsUsed);
+    const placed = coverLetter === candidate.coverLetter ? candidate : { ...candidate, coverLetter };
     try {
-      return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, arranged)));
+      const checked = validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, placed));
+      // A lead line Gemini wrote that no longer stands anywhere (grouping or placement took it out).
+      const kept = leadLineOccurrences(payload, checked.coverLetter);
+      const removed = leadLineOccurrences(payload, value.coverLetter).filter((line) => {
+        const at = kept.indexOf(line);
+        if (at < 0) return true;
+        kept.splice(at, 1);
+        return false;
+      });
+      return withCoverLetterRemovals(checked, [
+        ...coverLetterRemovals(value),
+        ...removed.map((text) => ({ text, reason: "misplaced_lead_line" }))
+      ]);
     } catch (error) {
-      if (!(error instanceof PublicApiError)) throw error;
+      if (!(error instanceof PublicApiError) || index === candidates.length - 1) throw error;
     }
   }
-  return carryCoverLetterRemovals(value, validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, value)));
+  throw new Error("unreachable");
 }
 
 export function validateCoverLetterQuality<T extends CoverLetterQualityOutput>(

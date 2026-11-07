@@ -124,7 +124,7 @@ test("the two-document manifest freezes prompt v14, the 70-fact catalog, both wi
     ["tailored_resume", "gemini-3.8-flash", "14", "LOW", 36_000, 12_000, 72_000,
       "02329818a75ec1ea94891b93584bb4df2ad95ff0ef8bc588ffd180806eace90a"],
     ["cover_letter", "gemini-3.8-flash", "14", "LOW", 36_000, 6_000, 49_500,
-      "20fb966eb006b20a4721d34d7e724238c07ea27552e4a85abec18fdc8a987d23"]
+      "71daa7a44f53ec8372ae7c147c39ef30ba8ca137708f2ed5dae86a5c03a085a6"]
   ]);
   assert.deepEqual(value.calls.map((call) => call.pricingSnapshot), [
     {
