@@ -74,6 +74,7 @@ export function fixtures() {
       { id: "cover-foreign", userId: OTHER, jobPostingId: JOB, type: "COVER_LETTER", title: "Foreign", content: "OTHER USER PRIVATE LETTER", evidenceSnapshotId: CURRENT_SNAPSHOT, metadata: null, createdAt: new Date("2026-11-03T02:00:00.000Z") }
     ],
     application: [] as Array<Record<string, unknown>>,
+    applicationEvent: [] as Array<Record<string, unknown>>,
     applicationAnswer: [
       { id: "vault-linkedin", userId: OWNER, category: "LINKS", question: "LinkedIn URL", answer: "https://www.linkedin.com/in/owner", sensitive: false, isActive: true },
       { id: "vault-foreign", userId: OTHER, category: "LINKS", question: "LinkedIn URL", answer: "https://www.linkedin.com/in/OTHER-PRIVATE", sensitive: false, isActive: true }
@@ -100,7 +101,27 @@ export function fakeDb(data: ReturnType<typeof fixtures>) {
       }
     };
   };
+  // Timeline events: evaluates the JSON-path and "in" filters the "Did you apply?" reads use, newest first.
+  const readPath = (value: unknown, path: readonly string[]) =>
+    path.reduce<unknown>((current, key) => (current && typeof current === "object" ? (current as Record<string, unknown>)[key] : undefined), value);
+  const eventMatches = (row: Record<string, unknown>, where: Where) => Object.entries(where).every(([key, value]) => {
+    if (key === "metadata") {
+      const filter = value as { path: string[]; equals: unknown };
+      return readPath(row.metadata, filter.path) === filter.equals;
+    }
+    if (value && typeof value === "object" && "in" in value) return (value as { in: unknown[] }).in.includes(row[key]);
+    return row[key] === value;
+  });
+  const applicationEvent = {
+    async findFirst(args: { where: Where }) {
+      calls.push({ model: "applicationEvent", where: args.where });
+      const rows = data.applicationEvent.filter((row) => eventMatches(row, args.where));
+      rows.sort((left, right) => (right.occurredAt as Date).getTime() - (left.occurredAt as Date).getTime() || String(right.id).localeCompare(String(left.id)));
+      return structuredClone(rows[0] ?? null);
+    }
+  };
   const db = {
+    applicationEvent,
     jobPosting: delegate("jobPosting"),
     resume: delegate("resume"),
     resumeVersion: delegate("resumeVersion"),
