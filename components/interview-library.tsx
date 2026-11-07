@@ -126,7 +126,7 @@ function StoryCard({ story, onChanged }: { story: StoryRecord; onChanged: (messa
   }
 
   return (
-    <article className="rounded-lg border border-slate-200 p-4">
+    <article id={`story-${story.id}`} className="scroll-mt-24 rounded-lg border border-slate-200 p-4">
       <div className="flex items-start justify-between gap-3">
         <input value={draft.title} onChange={(event) => update("title", event.target.value)} className="min-w-0 flex-1 border-0 p-0 text-sm font-semibold text-slate-950 outline-none" />
         <button

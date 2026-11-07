@@ -1,3 +1,4 @@
+import { assertSourceTypeComplianceEnabled } from "@/lib/job-sources/compliance";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import {
   detectTechStack,
@@ -24,6 +25,7 @@ export class RemotiveProvider implements JobSourceProvider {
   sourceType = "REMOTIVE" as const;
 
   async searchJobs(criteria: JobSearchCriteria) {
+    assertSourceTypeComplianceEnabled("REMOTIVE");
     const params = new URLSearchParams();
     if (criteria.query) {
       params.set("search", criteria.query);

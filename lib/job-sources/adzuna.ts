@@ -1,3 +1,4 @@
+import { assertSourceTypeComplianceEnabled } from "@/lib/job-sources/compliance";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { detectTechStack, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
 
@@ -20,6 +21,7 @@ export class AdzunaProvider implements JobSourceProvider {
   sourceType = "ADZUNA" as const;
 
   async searchJobs(criteria: JobSearchCriteria) {
+    assertSourceTypeComplianceEnabled("ADZUNA");
     const appId = process.env.ADZUNA_APP_ID;
     const appKey = process.env.ADZUNA_APP_KEY;
     const country = (process.env.ADZUNA_COUNTRY || "us").toLowerCase();

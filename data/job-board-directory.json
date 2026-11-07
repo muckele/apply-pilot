@@ -1,0 +1,1150 @@
+{
+  "version": 1,
+  "notes": "Reviewed seed directory of public Greenhouse, Lever and Ashby job boards (MVP Bible section 6). Industries are hand-curated. Locations and remote are the most common locations and remote availability on each board at verification time. Each board was verified with one public GET to its board API endpoint on 2026-11-03; boards that returned an error or no listed jobs were dropped. Never add boards by scraping.",
+  "boards": [
+    {
+      "company": "Affirm",
+      "ats": "GREENHOUSE",
+      "token": "affirm",
+      "industries": [
+        "Fintech",
+        "Payments",
+        "Consumer"
+      ],
+      "locations": [
+        "Remote US",
+        "Remote Canada",
+        "Remote Poland",
+        "Remote Spain",
+        "Remote UK",
+        "San Francisco, California, United States"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:56.336Z"
+    },
+    {
+      "company": "Airbnb",
+      "ats": "GREENHOUSE",
+      "token": "airbnb",
+      "industries": [
+        "Travel",
+        "Marketplace",
+        "Consumer"
+      ],
+      "locations": [
+        "United States",
+        "Canada",
+        "London, United Kingdom",
+        "Brazil",
+        "San Francisco, CA",
+        "Paris, France"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:31.136Z"
+    },
+    {
+      "company": "Anduril",
+      "ats": "GREENHOUSE",
+      "token": "andurilindustries",
+      "industries": [
+        "Defense",
+        "Hardware",
+        "AI"
+      ],
+      "locations": [
+        "Costa Mesa, California, United States",
+        "Washington, District of Columbia, United States",
+        "Ashville, Ohio, United States",
+        "Irvine, California, United States",
+        "Santa Ana, California, United States",
+        "Seattle, Washington, United States"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:06.494Z"
+    },
+    {
+      "company": "Anthropic",
+      "ats": "GREENHOUSE",
+      "token": "anthropic",
+      "industries": [
+        "AI"
+      ],
+      "locations": [
+        "San Francisco, CA",
+        "New York City, NY",
+        "Seattle, WA",
+        "Washington, DC",
+        "London, UK",
+        "Remote-Friendly, United States"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:03.212Z"
+    },
+    {
+      "company": "Asana",
+      "ats": "GREENHOUSE",
+      "token": "asana",
+      "industries": [
+        "SaaS",
+        "Productivity"
+      ],
+      "locations": [
+        "Vancouver, BC",
+        "San Francisco",
+        "Warsaw",
+        "Chicago",
+        "Reykjavík",
+        "Tokyo"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:48.103Z"
+    },
+    {
+      "company": "Brex",
+      "ats": "GREENHOUSE",
+      "token": "brex",
+      "industries": [
+        "Fintech",
+        "SaaS"
+      ],
+      "locations": [
+        "San Francisco, California, United States",
+        "New York, New York, United States",
+        "Seattle, Washington, United States",
+        "Vancouver, British Columbia, Canada",
+        "Salt Lake City, Utah, United States",
+        "São Paulo, São Paulo, Brazil"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:57.705Z"
+    },
+    {
+      "company": "Cloudflare",
+      "ats": "GREENHOUSE",
+      "token": "cloudflare",
+      "industries": [
+        "Security",
+        "Cloud infrastructure",
+        "Developer tools"
+      ],
+      "locations": [
+        "Hybrid",
+        "Distributed",
+        "In-Office",
+        "Remote",
+        "Singapore",
+        "Tokyo, Japan"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:45.521Z"
+    },
+    {
+      "company": "Coinbase",
+      "ats": "GREENHOUSE",
+      "token": "coinbase",
+      "industries": [
+        "Crypto",
+        "Fintech"
+      ],
+      "locations": [
+        "Remote - USA",
+        "Manila, Philippines",
+        "Hybrid - New York, NY",
+        "Remote - India",
+        "Remote - Canada",
+        "Remote - UK"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:42.694Z"
+    },
+    {
+      "company": "Databricks",
+      "ats": "GREENHOUSE",
+      "token": "databricks",
+      "industries": [
+        "Data & analytics",
+        "AI",
+        "Cloud infrastructure"
+      ],
+      "locations": [
+        "San Francisco, California",
+        "Mountain View, California",
+        "United States",
+        "Bengaluru, India",
+        "Seattle, Washington",
+        "London, United Kingdom"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:53.606Z"
+    },
+    {
+      "company": "Datadog",
+      "ats": "GREENHOUSE",
+      "token": "datadog",
+      "industries": [
+        "Developer tools",
+        "SaaS",
+        "Cloud infrastructure"
+      ],
+      "locations": [
+        "New York, New York, USA",
+        "Boston, Massachusetts, USA",
+        "Paris, France",
+        "Tokyo, Japan",
+        "San Francisco, California, USA",
+        "Denver, Colorado, USA"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:44.096Z"
+    },
+    {
+      "company": "Discord",
+      "ats": "GREENHOUSE",
+      "token": "discord",
+      "industries": [
+        "Social media",
+        "Consumer",
+        "Gaming"
+      ],
+      "locations": [
+        "San Francisco Bay Area",
+        "San Francisco Bay Area or Remote (U.S.)",
+        "Remote (U.S.)",
+        "Remote (US)",
+        "Remote (West Coast)",
+        "Lisbon, Portugal"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:36.271Z"
+    },
+    {
+      "company": "Dropbox",
+      "ats": "GREENHOUSE",
+      "token": "dropbox",
+      "industries": [
+        "SaaS",
+        "Productivity",
+        "Cloud storage"
+      ],
+      "locations": [
+        "Remote - US: Select locations",
+        "Remote - Canada: Select locations",
+        "Remote - Mexico",
+        "Remote - Poland",
+        "Remote - US: All locations",
+        "Remote - Ireland"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:35.025Z"
+    },
+    {
+      "company": "Duolingo",
+      "ats": "GREENHOUSE",
+      "token": "duolingo",
+      "industries": [
+        "Education",
+        "Consumer"
+      ],
+      "locations": [
+        "New York, NY",
+        "Pittsburgh, PA",
+        "Beijing, China",
+        "Remote - California",
+        "Tokyo, Japan",
+        "London, England"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:49.309Z"
+    },
+    {
+      "company": "Elastic",
+      "ats": "GREENHOUSE",
+      "token": "elastic",
+      "industries": [
+        "Developer tools",
+        "Data & analytics",
+        "Security"
+      ],
+      "locations": [
+        "United States",
+        "Spain",
+        "Canada",
+        "Greece",
+        "United Kingdom",
+        "Ireland"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:02:50.731Z"
+    },
+    {
+      "company": "Figma",
+      "ats": "GREENHOUSE",
+      "token": "figma",
+      "industries": [
+        "Design",
+        "SaaS",
+        "Productivity"
+      ],
+      "locations": [
+        "San Francisco, CA • New York, NY • United States",
+        "London, England",
+        "San Francisco, CA • New York, NY",
+        "Berlin, Germany",
+        "Bengaluru, India",
+        "San Francisco, CA"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:02:33.842Z"
+    },
+    {
+      "company": "Flatiron Health",
+      "ats": "GREENHOUSE",
+      "token": "flatironhealth",
+      "industries": [
+        "Healthcare",
+        "Data & analytics"
+      ],
+      "locations": [
+        "NY office",
+        "London office",
+        "NY office OR Remote - US",
+        "Tokyo office",
+        "東京",
+        "Remote - US"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:11.538Z"
+    },
+    {
+      "company": "GitLab",
+      "ats": "GREENHOUSE",
+      "token": "gitlab",
+      "industries": [
+        "Developer tools",
+        "SaaS",
+        "DevOps"
+      ],
+      "locations": [
+        "Remote, United States",
+        "Remote, Canada",
+        "Remote, United Kingdom",
+        "Bangalore, India",
+        "Remote, Poland",
+        "Remote, Germany"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:09.127Z"
+    },
+    {
+      "company": "Gusto",
+      "ats": "GREENHOUSE",
+      "token": "gusto",
+      "industries": [
+        "HR tech",
+        "Fintech",
+        "SaaS"
+      ],
+      "locations": [
+        "San Francisco, CA - Hybrid",
+        "Denver, CO - Hybrid",
+        "New York, NY - Hybrid",
+        "Atlanta, GA - Hybrid",
+        "Scottsdale, AZ - Hybrid",
+        "Phoenix, AZ - Hybrid"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:58.947Z"
+    },
+    {
+      "company": "Lyft",
+      "ats": "GREENHOUSE",
+      "token": "lyft",
+      "industries": [
+        "Transportation",
+        "Marketplace",
+        "Consumer"
+      ],
+      "locations": [
+        "Toronto, Canada",
+        "San Francisco, CA",
+        "New York, NY",
+        "Montreal, Canada",
+        "Nashville, TN",
+        "Mexico City, Mexico"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:02:40.074Z"
+    },
+    {
+      "company": "MongoDB",
+      "ats": "GREENHOUSE",
+      "token": "mongodb",
+      "industries": [
+        "Developer tools",
+        "Databases",
+        "Cloud infrastructure"
+      ],
+      "locations": [
+        "Gurugram",
+        "New York City",
+        "United States",
+        "Dublin, Ireland",
+        "Austin",
+        "Palo Alto"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:02:52.158Z"
+    },
+    {
+      "company": "Okta",
+      "ats": "GREENHOUSE",
+      "token": "okta",
+      "industries": [
+        "Security",
+        "Identity",
+        "SaaS"
+      ],
+      "locations": [
+        "Bengaluru, India",
+        "San Francisco, California",
+        "Toronto, Ontario, Canada",
+        "Bellevue, Washington",
+        "Chicago, Illinois",
+        "Washington, DC"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:02:54.966Z"
+    },
+    {
+      "company": "Oscar Health",
+      "ats": "GREENHOUSE",
+      "token": "oscar",
+      "industries": [
+        "Healthcare",
+        "Insurance"
+      ],
+      "locations": [
+        "New York, New York, United States",
+        "Remote",
+        "Tempe, Arizona, United States",
+        "Dallas, Texas, United States",
+        "Atlanta, Georgia, United States",
+        "Los Angeles, California, United States"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:10.363Z"
+    },
+    {
+      "company": "Pinterest",
+      "ats": "GREENHOUSE",
+      "token": "pinterest",
+      "industries": [
+        "Social media",
+        "Consumer",
+        "Advertising"
+      ],
+      "locations": [
+        "San Francisco, CA, US",
+        "Remote, US",
+        "Palo Alto, CA, US",
+        "New York, NY, US",
+        "Seattle, WA, US",
+        "Remote, CA, US"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:41.298Z"
+    },
+    {
+      "company": "Reddit",
+      "ats": "GREENHOUSE",
+      "token": "reddit",
+      "industries": [
+        "Social media",
+        "Consumer",
+        "Advertising"
+      ],
+      "locations": [
+        "Remote - United States",
+        "San Francisco, CA",
+        "New York City, NY",
+        "Los Angeles, CA",
+        "Chicago, IL",
+        "Remote - Ontario, Canada"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:37.559Z"
+    },
+    {
+      "company": "Robinhood",
+      "ats": "GREENHOUSE",
+      "token": "robinhood",
+      "industries": [
+        "Fintech",
+        "Consumer"
+      ],
+      "locations": [
+        "Menlo Park, CA",
+        "New York, NY",
+        "Westlake, TX",
+        "Denver, CO",
+        "Chicago, IL",
+        "Toronto, Canada"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:02:38.830Z"
+    },
+    {
+      "company": "Samsara",
+      "ats": "GREENHOUSE",
+      "token": "samsara",
+      "industries": [
+        "IoT",
+        "SaaS",
+        "Transportation"
+      ],
+      "locations": [
+        "Remote - US",
+        "Remote - Canada",
+        "Atlanta, Georgia, United States",
+        "Remote - CA",
+        "Remote - TX",
+        "Remote - AZ"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:00.349Z"
+    },
+    {
+      "company": "Scale AI",
+      "ats": "GREENHOUSE",
+      "token": "scaleai",
+      "industries": [
+        "AI",
+        "Data & analytics"
+      ],
+      "locations": [
+        "San Francisco, CA",
+        "New York, NY",
+        "Washington, DC",
+        "London, UK",
+        "Doha, Qatar",
+        "United States"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:03:07.859Z"
+    },
+    {
+      "company": "Stripe",
+      "ats": "GREENHOUSE",
+      "token": "stripe",
+      "industries": [
+        "Fintech",
+        "Payments",
+        "Developer tools"
+      ],
+      "locations": [
+        "Dublin",
+        "Singapore",
+        "London",
+        "Bengaluru",
+        "San Francisco",
+        "Mexico City"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:32.608Z"
+    },
+    {
+      "company": "Twilio",
+      "ats": "GREENHOUSE",
+      "token": "twilio",
+      "industries": [
+        "Developer tools",
+        "Communications",
+        "SaaS"
+      ],
+      "locations": [
+        "Remote - US",
+        "Remote - United Kingdom",
+        "Remote - Ireland",
+        "Remote - India",
+        "Remote - Colombia",
+        "Remote - Canada"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:02:46.895Z"
+    },
+    {
+      "company": "Vercel",
+      "ats": "GREENHOUSE",
+      "token": "vercel",
+      "industries": [
+        "Developer tools",
+        "Cloud infrastructure"
+      ],
+      "locations": [
+        "Hybrid - San Francisco",
+        "Hybrid - San Francisco, New York City, Austin",
+        "Hybrid - San Francisco, New York City",
+        "Hybrid - London",
+        "Hybrid - London, Berlin",
+        "Remote - United States"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:01.572Z"
+    },
+    {
+      "company": "Zocdoc",
+      "ats": "GREENHOUSE",
+      "token": "zocdoc",
+      "industries": [
+        "Healthcare",
+        "Marketplace",
+        "Consumer"
+      ],
+      "locations": [
+        "New York, NY",
+        "USA Remote",
+        "Pune, Maharashtra, India",
+        "Silicon Valley, CA"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:12.738Z"
+    },
+    {
+      "company": "Binance",
+      "ats": "LEVER",
+      "token": "binance",
+      "industries": [
+        "Crypto",
+        "Fintech"
+      ],
+      "locations": [
+        "Asia",
+        "Hong Kong",
+        "UAE, Dubai",
+        "Pakistan, Islamabad",
+        "Brazil, Sao Paulo",
+        "Argentina, Buenos Aires"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:46.940Z"
+    },
+    {
+      "company": "JumpCloud",
+      "ats": "LEVER",
+      "token": "jumpcloud",
+      "industries": [
+        "Security",
+        "Identity",
+        "SaaS"
+      ],
+      "locations": [
+        "Bangalore, India - Remote",
+        "Mexico City, Mexico - Remote",
+        "Atlanta, GA - Remote",
+        "Denver, CO - Remote",
+        "Guadalajara, Mexico - Remote",
+        "London, England - Remote"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:50.251Z"
+    },
+    {
+      "company": "Palantir",
+      "ats": "LEVER",
+      "token": "palantir",
+      "industries": [
+        "Data & analytics",
+        "Enterprise software",
+        "Defense"
+      ],
+      "locations": [
+        "New York, NY",
+        "Washington, D.C.",
+        "London, United Kingdom",
+        "Palo Alto, CA",
+        "Seattle, WA",
+        "Denver, CO"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:14.525Z"
+    },
+    {
+      "company": "Pigment",
+      "ats": "LEVER",
+      "token": "pigment",
+      "industries": [
+        "SaaS",
+        "Business planning",
+        "Data & analytics"
+      ],
+      "locations": [
+        "Paris",
+        "London",
+        "New York",
+        "Toronto",
+        "US",
+        "Austin, Texas"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:55.391Z"
+    },
+    {
+      "company": "Shield AI",
+      "ats": "LEVER",
+      "token": "shieldai",
+      "industries": [
+        "Defense",
+        "AI",
+        "Hardware"
+      ],
+      "locations": [
+        "Seattle, Washington",
+        "Dallas, Texas",
+        "San Diego, California",
+        "Washington, D.C.",
+        "San Mateo, California",
+        "Boston, Massachusetts"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:29.629Z"
+    },
+    {
+      "company": "Spotify",
+      "ats": "LEVER",
+      "token": "spotify",
+      "industries": [
+        "Media",
+        "Music",
+        "Consumer"
+      ],
+      "locations": [
+        "London",
+        "Stockholm",
+        "New York, NY",
+        "Toronto",
+        "Tokyo",
+        "Jakarta"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:15.721Z"
+    },
+    {
+      "company": "Veeva Systems",
+      "ats": "LEVER",
+      "token": "veeva",
+      "industries": [
+        "Healthcare",
+        "Life sciences",
+        "SaaS"
+      ],
+      "locations": [
+        "Massachusetts - Boston",
+        "United Kingdom - London",
+        "Spain - Barcelona",
+        "New York - New York City",
+        "Germany - Berlin",
+        "Pennsylvania - Philadelphia"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:20.382Z"
+    },
+    {
+      "company": "Zoox",
+      "ats": "LEVER",
+      "token": "zoox",
+      "industries": [
+        "Autonomous vehicles",
+        "Transportation",
+        "Hardware"
+      ],
+      "locations": [
+        "Foster City, CA",
+        "Seattle, WA",
+        "San Diego, CA",
+        "Boston, MA",
+        "Hayward, CA",
+        "San Francisco, CA"
+      ],
+      "remote": false,
+      "verifiedAt": "2026-11-04T03:03:17.052Z"
+    },
+    {
+      "company": "1Password",
+      "ats": "ASHBY",
+      "token": "1password",
+      "industries": [
+        "Security",
+        "SaaS"
+      ],
+      "locations": [
+        "United States",
+        "Austin, TX",
+        "London, UK",
+        "New York, NY"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:20.113Z"
+    },
+    {
+      "company": "Abridge",
+      "ats": "ASHBY",
+      "token": "abridge",
+      "industries": [
+        "Healthcare",
+        "AI"
+      ],
+      "locations": [
+        "SF Office",
+        "NYC Office",
+        "CHI Office",
+        "United States - Remote",
+        "PGH Office",
+        "Washington, D.C."
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:23.724Z"
+    },
+    {
+      "company": "Airwallex",
+      "ats": "ASHBY",
+      "token": "airwallex",
+      "industries": [
+        "Fintech",
+        "Payments"
+      ],
+      "locations": [
+        "SG - Singapore",
+        "US - San Francisco",
+        "UK - London",
+        "AU - Sydney",
+        "CN - Shanghai",
+        "AU - Melbourne"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:21.375Z"
+    },
+    {
+      "company": "Cohere",
+      "ats": "ASHBY",
+      "token": "cohere",
+      "industries": [
+        "AI",
+        "Enterprise software"
+      ],
+      "locations": [
+        "Toronto",
+        "New York",
+        "Montreal",
+        "Canada",
+        "London",
+        "San Francisco"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:16.633Z"
+    },
+    {
+      "company": "Cursor",
+      "ats": "ASHBY",
+      "token": "cursor",
+      "industries": [
+        "AI",
+        "Developer tools"
+      ],
+      "locations": [
+        "San Francisco",
+        "New York",
+        "Remote",
+        "Singapore",
+        "Australia",
+        "Japan"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:06.185Z"
+    },
+    {
+      "company": "ElevenLabs",
+      "ats": "ASHBY",
+      "token": "elevenlabs",
+      "industries": [
+        "AI",
+        "Media"
+      ],
+      "locations": [
+        "United States",
+        "United Kingdom",
+        "New York",
+        "Poland",
+        "Remote",
+        "San Francisco"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:08.556Z"
+    },
+    {
+      "company": "Harvey",
+      "ats": "ASHBY",
+      "token": "harvey",
+      "industries": [
+        "AI",
+        "Legal tech"
+      ],
+      "locations": [
+        "San Francisco",
+        "New York",
+        "London",
+        "Dublin",
+        "Chicago",
+        "Toronto"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:09.745Z"
+    },
+    {
+      "company": "Hightouch",
+      "ats": "ASHBY",
+      "token": "hightouch",
+      "industries": [
+        "Data & analytics",
+        "SaaS",
+        "Marketing tech"
+      ],
+      "locations": [
+        "San Francisco"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:24.858Z"
+    },
+    {
+      "company": "Linear",
+      "ats": "ASHBY",
+      "token": "linear",
+      "industries": [
+        "SaaS",
+        "Developer tools",
+        "Productivity"
+      ],
+      "locations": [
+        "North America",
+        "Europe",
+        "Singapore",
+        "Australia",
+        "London"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:02.731Z"
+    },
+    {
+      "company": "Modal",
+      "ats": "ASHBY",
+      "token": "modal",
+      "industries": [
+        "AI",
+        "Cloud infrastructure",
+        "Developer tools"
+      ],
+      "locations": [
+        "New York",
+        "San Francisco",
+        "Stockholm",
+        "London"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:15.483Z"
+    },
+    {
+      "company": "Notion",
+      "ats": "ASHBY",
+      "token": "notion",
+      "industries": [
+        "SaaS",
+        "Productivity"
+      ],
+      "locations": [
+        "San Francisco, California",
+        "New York, New York",
+        "Dublin, Ireland",
+        "Tokyo, Japan",
+        "Paris, France",
+        "London, United Kingdom"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:01.592Z"
+    },
+    {
+      "company": "OpenAI",
+      "ats": "ASHBY",
+      "token": "openai",
+      "industries": [
+        "AI"
+      ],
+      "locations": [
+        "San Francisco",
+        "New York City",
+        "Seattle",
+        "US - Remote",
+        "London, UK",
+        "Singapore"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:03:59.199Z"
+    },
+    {
+      "company": "Perplexity",
+      "ats": "ASHBY",
+      "token": "perplexity",
+      "industries": [
+        "AI",
+        "Search",
+        "Consumer"
+      ],
+      "locations": [
+        "San Francisco",
+        "New York City",
+        "London",
+        "Belgrade",
+        "Palo Alto",
+        "Berlin"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:07.355Z"
+    },
+    {
+      "company": "PostHog",
+      "ats": "ASHBY",
+      "token": "posthog",
+      "industries": [
+        "Developer tools",
+        "Data & analytics",
+        "SaaS"
+      ],
+      "locations": [
+        "Remote",
+        "Remote (US)",
+        "Remote (EMEA)",
+        "Hybrid (UK)",
+        "San Francisco, CA"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:13.190Z"
+    },
+    {
+      "company": "Ramp",
+      "ats": "ASHBY",
+      "token": "ramp",
+      "industries": [
+        "Fintech",
+        "SaaS"
+      ],
+      "locations": [
+        "New York, NY (HQ)",
+        "San Francisco, CA",
+        "Remote (US)",
+        "Miami, FL",
+        "Remote (Canada)",
+        "Toronto, ON"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:00.409Z"
+    },
+    {
+      "company": "Replit",
+      "ats": "ASHBY",
+      "token": "replit",
+      "industries": [
+        "Developer tools",
+        "AI",
+        "Education"
+      ],
+      "locations": [
+        "Foster City, CA",
+        "NYC (SoHo)",
+        "Salt Lake City, UT",
+        "Remote - United Kingdom",
+        "London Office",
+        "Remote - Singapore"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:14.341Z"
+    },
+    {
+      "company": "Sierra",
+      "ats": "ASHBY",
+      "token": "sierra",
+      "industries": [
+        "AI",
+        "Customer support",
+        "Enterprise software"
+      ],
+      "locations": [
+        "San Francisco, CA",
+        "New York, NY",
+        "Atlanta, GA",
+        "London",
+        "US - Remote",
+        "Toronto"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:22.571Z"
+    },
+    {
+      "company": "Supabase",
+      "ats": "ASHBY",
+      "token": "supabase",
+      "industries": [
+        "Developer tools",
+        "Databases",
+        "Cloud infrastructure"
+      ],
+      "locations": [
+        "Remote, Global",
+        "Remote, AMER",
+        "Remote, APAC",
+        "Remote, EMEA",
+        "Remote, San Francisco, CA",
+        "Remote, Bay Area, CA"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:03.889Z"
+    },
+    {
+      "company": "Vanta",
+      "ats": "ASHBY",
+      "token": "vanta",
+      "industries": [
+        "Security",
+        "Compliance",
+        "SaaS"
+      ],
+      "locations": [
+        "Remote U.S.",
+        "London, UK",
+        "Dublin, Ireland",
+        "Remote - Canada",
+        "San Francisco, CA",
+        "Tokyo, Japan"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:10.919Z"
+    },
+    {
+      "company": "Zapier",
+      "ats": "ASHBY",
+      "token": "zapier",
+      "industries": [
+        "SaaS",
+        "Automation",
+        "Productivity"
+      ],
+      "locations": [
+        "NAMER",
+        "EMEA",
+        "APAC",
+        "HQ",
+        "India",
+        "European Union"
+      ],
+      "remote": true,
+      "verifiedAt": "2026-11-04T03:04:05.034Z"
+    }
+  ]
+}

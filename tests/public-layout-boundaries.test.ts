@@ -7,12 +7,16 @@ const repositoryRoot = process.cwd();
 
 const productPagePaths = [
   "applications/[id]/page.tsx",
+  "applications/[id]/sent/[eventId]/page.tsx",
   "applications/page.tsx",
   "application-runs/[id]/browser/page.tsx",
   "dashboard/page.tsx",
+  "insights/page.tsx",
   "interviews/[id]/page.tsx",
   "interviews/library/page.tsx",
+  "interviews/mock/[sessionId]/page.tsx",
   "interviews/page.tsx",
+  "jobs/[id]/apply/page.tsx",
   "jobs/[id]/page.tsx",
   "jobs/page.tsx",
   "jobs/review/page.tsx",
@@ -47,7 +51,9 @@ const apiRoutePaths = [
   "app/api/application-runs/[id]/resolve-review/route.ts",
   "app/api/application-runs/[id]/route.ts",
   "app/api/application-runs/route.ts",
+  "app/api/applications/[id]/effort/route.ts",
   "app/api/applications/[id]/route.ts",
+  "app/api/applications/export/route.ts",
   "app/api/applications/route.ts",
   "app/api/auth/[...nextauth]/route.ts",
   "app/api/browser-capture/answers/route.ts",
@@ -58,6 +64,7 @@ const apiRoutePaths = [
   "app/api/cron/job-discovery/route.ts",
   "app/api/documents/export/route.ts",
   "app/api/email/draft-reply/route.ts",
+  "app/api/generated-documents/[id]/review/route.ts",
   "app/api/generated-documents/[id]/route.ts",
   "app/api/gmail/callback/route.ts",
   "app/api/gmail/connect/route.ts",
@@ -75,13 +82,20 @@ const apiRoutePaths = [
   "app/api/interviews/[id]/audio/route.ts",
   "app/api/interviews/[id]/audio/upload/route.ts",
   "app/api/interviews/[id]/feedback/route.ts",
+  "app/api/interviews/[id]/prep/route.ts",
   "app/api/interviews/[id]/route.ts",
+  "app/api/interviews/mock-sessions/[sessionId]/answers/route.ts",
+  "app/api/interviews/mock-sessions/[sessionId]/route.ts",
+  "app/api/interviews/mock-sessions/[sessionId]/star-story/route.ts",
+  "app/api/interviews/mock-sessions/route.ts",
   "app/api/interviews/route.ts",
   "app/api/job-sources/[id]/route.ts",
   "app/api/job-sources/[id]/sync/route.ts",
   "app/api/job-sources/[id]/test/route.ts",
+  "app/api/job-sources/follow/route.ts",
   "app/api/job-sources/route.ts",
   "app/api/jobs/[id]/cover-letter/route.ts",
+  "app/api/jobs/[id]/evidence-snapshots/route.ts",
   "app/api/jobs/[id]/match/route.ts",
   "app/api/jobs/[id]/status/route.ts",
   "app/api/jobs/[id]/tailored-resume/route.ts",
@@ -89,6 +103,7 @@ const apiRoutePaths = [
   "app/api/jobs/import/route.ts",
   "app/api/jobs/sync/route.ts",
   "app/api/profile/route.ts",
+  "app/api/resume-versions/[id]/review/route.ts",
   "app/api/resume-versions/[id]/route.ts",
   "app/api/resumes/master/route.ts",
   "app/api/resumes/parse/route.ts",
@@ -171,7 +186,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 66);
+  assert.equal(actualRoutes.length, 77);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });

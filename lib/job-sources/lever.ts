@@ -1,5 +1,13 @@
+import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
+import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { detectTechStack, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
+import {
+  detectTechStack,
+  htmlListItems,
+  htmlToText,
+  splitRequirementText,
+  workStyleLabel
+} from "@/lib/job-sources/utils";
 
 type LeverJob = {
   id: string;
@@ -8,32 +16,34 @@ type LeverJob = {
   applyUrl?: string;
   descriptionPlain?: string;
   description?: string;
+  lists?: Array<{ text?: string; content?: string }>;
   categories?: {
     team?: string;
     location?: string;
     commitment?: string;
   };
+  workplaceType?: string;
+  salaryRange?: { min?: number; max?: number; currency?: string; interval?: string };
   createdAt?: number;
 };
+
+function yearlyUsdSalary(range: LeverJob["salaryRange"]) {
+  if (!range || range.currency !== "USD" || range.interval !== "per-year-salary") {
+    return {};
+  }
+
+  return {
+    salaryMin: typeof range.min === "number" ? Math.round(range.min) : undefined,
+    salaryMax: typeof range.max === "number" ? Math.round(range.max) : undefined
+  };
+}
 
 export class LeverProvider implements JobSourceProvider {
   sourceType = "LEVER" as const;
 
+  // Public Postings API: GET api.lever.co/v0/postings/{site}?mode=json (api.eu.lever.co for EU sites).
   async searchJobs(criteria: JobSearchCriteria) {
-    const company = criteria.company ?? criteria.boardToken;
-    if (!company) {
-      throw new Error("Lever sync requires a company slug.");
-    }
-
-    const response = await fetch(`https://api.lever.co/v0/postings/${company}?mode=json`, {
-      next: { revalidate: 900 }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Lever returned ${response.status}.`);
-    }
-
-    const jobs = (await response.json()) as LeverJob[];
+    const jobs = await fetchBoardListing(boardReferenceFromCriteria("LEVER", criteria));
     return jobs.slice(0, criteria.limit ?? 50) as RawJob[];
   }
 
@@ -48,13 +58,18 @@ export class LeverProvider implements JobSourceProvider {
 
   normalizeJob(rawJob: RawJob): NormalizedJob {
     const job = rawJob as LeverJob & { sourceUrl?: string; html?: string };
-    const description = job.descriptionPlain ?? htmlToText(job.description ?? job.html ?? "");
+    const opening = job.descriptionPlain?.trim() || htmlToText(job.description ?? job.html ?? "");
+    const lists = (job.lists ?? []).map((list) =>
+      [list.text?.trim(), ...htmlListItems(list.content ?? "")].filter(Boolean).join("\n")
+    );
+    const description = [opening, ...lists].filter(Boolean).join("\n");
 
     return {
       title: job.text,
       company: "",
       location: job.categories?.location,
-      remoteStatus: job.categories?.commitment,
+      remoteStatus: workStyleLabel(job.workplaceType) ?? workStyleFromLocation(job.categories?.location),
+      ...yearlyUsdSalary(job.salaryRange),
       datePosted: job.createdAt ? new Date(job.createdAt) : undefined,
       sourceUrl: job.hostedUrl ?? job.sourceUrl ?? "",
       applyUrl: job.applyUrl ?? job.hostedUrl ?? job.sourceUrl,
@@ -63,6 +78,7 @@ export class LeverProvider implements JobSourceProvider {
       preferredQualifications: [],
       benefits: [],
       detectedTechStack: detectTechStack(description),
+      seniorityLevel: job.categories?.commitment,
       sourceType: "LEVER"
     };
   }

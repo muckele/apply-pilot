@@ -14,7 +14,7 @@ Apply Pilot is a private, AI-assisted job discovery and controlled application w
 - Manual job import with deduplication
 - Automated job discovery from compliant APIs, licensed aggregators, ATS feeds, RSS feeds, and permitted company career pages
 - Greenhouse, Lever, Ashby, Remotive, Adzuna, TheirStack, SerpApi Google Jobs, USAJOBS, RSS, Workable, and generic company-careers provider layer
-- AI job matching, resume tailoring, cover letter drafting, email reply drafting, interview prep, and interview feedback prompt contracts
+- Gemini resume parsing, job matching, resume tailoring, cover-letter drafting, interview prep (brief, likely questions, STAR stories from master-resume facts), post-interview feedback and thank-you drafts, email reply drafts, and application planning, all through one hard monthly budget ledger
 - Dashboard, jobs, job detail, applications, resumes, profile settings, integrations, interviews, and tasks pages
 - Configurable job-source settings page with source CRUD, test, manual sync, sync status, and sync errors
 - Gmail OAuth connect/search/disconnect route scaffolding using readonly access
@@ -49,20 +49,28 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `.env`, then create and seed the database:
+Fill in `.env`, then create and seed a disposable local database. The guarded migrate and seed scripts run only against the localhost database `apply_pilot_local_dev`, and they read their target from shell variables rather than `.env` (see the local-only section of `.env.example`):
 
 ```bash
+export APPLY_PILOT_LOCAL_DESTRUCTIVE=1
+export LOCAL_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/apply_pilot_local_dev?schema=public"
+export LOCAL_DIRECT_URL="$LOCAL_DATABASE_URL"
 npm run prisma:generate
 npm run prisma:migrate
 npm run prisma:seed
 npm run dev
 ```
 
+The seed and the local demo fallback use a fictional "Sample User" persona with invented employers.
+
 Open `http://localhost:3000/dashboard`.
 
 ## Environment Variables
 
+`.env.example` lists every variable the code reads, each with a one-line comment and a `[required]`, `[required in production]`, `[optional]` or `[local only]` label. `.env.production.example` is the production equivalent. `tests/env-example-coverage.test.ts` fails when code reads a variable that the examples do not document, and when either file holds something that looks like a real value. Platform variables such as `NODE_ENV` and `VERCEL_*` are not listed.
+
 - `DATABASE_URL`: PostgreSQL connection string.
+- `DIRECT_URL`: direct (non-pooled) connection string Prisma uses for migrations.
 - `AUTH_SECRET`: random secret for Auth.js and local OAuth state signing.
 - `AUTH_URL`: canonical Auth.js app URL.
 - `NEXTAUTH_URL`: local or deployed app URL.
@@ -71,11 +79,11 @@ Open `http://localhost:3000/dashboard`.
 - `AUTH_ALLOW_PUBLIC_SIGNUPS`: set `true` only if you intentionally want public Google signups.
 - `GMAIL_REDIRECT_URI`: usually `http://localhost:3000/api/gmail/callback`.
 - `GMAIL_SCOPES`: defaults to `https://www.googleapis.com/auth/gmail.readonly`.
-- `OPENAI_API_KEY`: optional OpenAI API key. When omitted, supported workflows use deterministic local fallback output.
-- `OPENAI_MODEL`: default model for structured JSON generations.
-- `OPENAI_ALLOWED_MODELS`: comma-separated server allowlist for user-selectable model overrides.
-- `OPENAI_MOCK_MODE`: set `true` for local deterministic fallback outputs.
-- `OPENAI_INPUT_COST_PER_1M_USD`, `OPENAI_OUTPUT_COST_PER_1M_USD`, and `OPENAI_CACHED_INPUT_COST_PER_1M_USD`: optional current pricing used to estimate spend and enforce per-user monthly budgets.
+- `AI_ENABLED`, `AI_PROVIDER`, and `AI_MOCK_MODE`: explicit paid-AI runtime gate, provider selection, and test/local mock gate. Use `true`, `gemini` (or leave `AI_PROVIDER` unset), and `false` respectively for live Gemini flows. Gemini is the only AI provider; any other `AI_PROVIDER` value turns every AI feature off.
+- `GEMINI_API_KEY`: Gemini API key for every AI feature. Without it, AI features show an explicit "AI unavailable" state and never fall back to another provider or to template output.
+- `GEMINI_FAST_MODEL`, `GEMINI_QUALITY_MODEL`, and `AI_ALLOWED_MODELS`: optional resume-parse model choices and the user-selectable override allowlist; each model must be in the compiled Gemini price registry.
+- `AI_HARD_CAP_CENTS`, `AI_AUTOMATION_CAP_CENTS`, `AI_MAX_REQUEST_COST_CENTS`, and `AI_CONFIRMATION_THRESHOLD_CENTS`: optional values that can lower, never raise, the compiled $5.00 monthly hard cap, $1.50 automation allowance, $0.15 per-request maximum, and $0.05 confirmation threshold.
+- `OPENAI_*`, `MOONSHOT_API_KEY`, `KIMI_*`, and `AI_PROVIDER_OVERRIDES` are retired; no feature reads them.
 - `TOKEN_ENCRYPTION_KEY`: base64 encoded 32-byte key for Gmail tokens.
 - `USAJOBS_API_KEY`: optional USAJOBS API key for federal job discovery.
 - `USAJOBS_USER_AGENT`: required USAJOBS API user-agent, usually your registered email.
@@ -87,6 +95,7 @@ Open `http://localhost:3000/dashboard`.
 - `SERPAPI_API_KEY`: optional SerpApi key for Google Jobs API discovery.
 - `SERPAPI_MAX_QUERIES_PER_RUN`: caps paid SerpApi searches per discovery run, default `3`.
 - `JOB_SOURCE_MAX_POSTED_AGE_DAYS`: pre-import freshness window for dated postings, default `30`.
+- `JOB_SOURCE_REMOTIVE_ENABLED` / `JOB_SOURCE_ADZUNA_ENABLED`: compliance gates for Remotive and Adzuna discovery, default `false`. See MVP Bible §6 before turning either on.
 - `CRON_SECRET`: bearer token required by the scheduled job-discovery route.
 - `CRON_MAX_SOURCES_PER_RUN`: caps scheduled source syncs per cron invocation, default `10`.
 - `CRON_MIN_SOURCE_INTERVAL_MINUTES`: skips sources synced more recently than this window, default `360`.
@@ -99,7 +108,9 @@ Open `http://localhost:3000/dashboard`.
 - `MAX_DIRECT_AUDIO_UPLOAD_MB`: maximum direct private Blob audio upload size; defaults to `25` MB.
 - `APP_VERSION`: optional deployment version/commit label shown in health output.
 - `LOG_LEVEL`: structured logging threshold: `debug`, `info`, `warn`, or `error`.
-- `ALLOW_DEMO_USER`: allows local API routes to use `demo-user` without a session. Ignored in production.
+- `ALLOW_DEMO_USER`: allows local API routes to act as the fictional `demo-user` ("Sample User") without a session. Ignored in production.
+- `DEFAULT_DEMO_USER_ID`: user id for the demo fallback and the local seed, default `demo-user`.
+- Local-only tooling (`APPLY_PILOT_LOCAL_DESTRUCTIVE`, `LOCAL_DATABASE_URL`, `LOCAL_DIRECT_URL`, `TEST_DATABASE_URL`, `COMMIT5_POSTGRES_TEST`, and the `APPLY_PILOT_SYNTHETIC_*_PREVIEW` flags) is documented, commented out, in `.env.example`. Export these per command and never set them in production.
 
 ## Private Multi-User Mode
 
@@ -128,15 +139,9 @@ DATABASE_URL="postgresql://USER:PASSWORD@HOST.neon.tech/DB?sslmode=require"
 DIRECT_URL="postgresql://USER:PASSWORD@DIRECT_HOST.neon.tech/DB?sslmode=require"
 ```
 
-After saving `.env`, run:
+Never run the seed, tests, or `npm run prisma:migrate` against Neon or any other remote database; the guarded scripts refuse non-localhost targets. Remote schema changes use forward-only `prisma migrate deploy` only after explicit owner authorization and endpoint verification (see `AGENTS.md`).
 
-```bash
-npm run prisma:generate
-npm run prisma:migrate
-npm run prisma:seed
-```
-
-Then restart the dev server:
+After saving `.env`, run `npm run prisma:generate`, then restart the dev server:
 
 ```bash
 npm run dev -- -H 127.0.0.1 -p 3000
@@ -144,20 +149,19 @@ npm run dev -- -H 127.0.0.1 -p 3000
 
 If Neon gives you both pooled and direct connection strings, use the pooled string for `DATABASE_URL` and the direct/non-pooled string for `DIRECT_URL`. Prisma uses `DIRECT_URL` for migrations and `DATABASE_URL` for normal app runtime.
 
-## OpenAI Setup
+## AI Provider Setup
 
-The app uses structured JSON prompts in `/prompts`:
+The active paid structured-output flows use these prompts in `/prompts`:
 
 - `jobMatchPrompt`
 - `resumeTailorPrompt`
 - `coverLetterPrompt`
-- `emailReplyPrompt`
-- `interviewPrepPrompt`
-- `interviewFeedbackPrompt`
 
-Set `OPENAI_API_KEY` and `OPENAI_MOCK_MODE=false` to call the API. Without a key, the MVP remains usable with deterministic local fallback output in both development and production; it does not make billable OpenAI requests.
+`applicationPlanPrompt` is the Gemini application-planning contract. Interview prep, interview feedback, and email reply prompts live with their features in `lib/ai/interview-prep.ts`, `lib/ai/interview-feedback.ts`, and `lib/ai/email-reply.ts`, and share one source-of-truth contract: the user's own records are the only applicant facts, and job posts, emails, and transcripts are untrusted data.
 
-AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and an estimated cost when pricing variables are configured, including failed responses that report token usage. Users can choose a server-allowlisted model override, cap AI analyses per discovery sync, disable discovery-time AI, and set a monthly budget at `/settings/ai`. The budget blocks later calls after tracked usage reaches the limit, so configure cost estimates conservatively for the most expensive allowed model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
+Set `GEMINI_API_KEY`, `AI_ENABLED=true`, and `AI_MOCK_MODE=false` for resume parsing, JOB_MATCH, tailored résumé, and cover-letter calls. JOB_MATCH is pinned to Gemini 3.8 Flash with MEDIUM thinking; tailored résumé and cover-letter calls are pinned to Gemini 3.8 Flash with LOW thinking and do not automatically fall back to another provider or model. Interview prep, interview feedback, email reply drafts, and application plans also run on Gemini 3.8 Flash with LOW thinking, with strict JSON schemas and server-side grounding: STAR stories cite master-resume facts, and numbers those facts do not contain become `[add a number here]` gaps. Without Gemini, AI features report "AI unavailable"; only application planning keeps its deterministic, evidence-only local plan, labeled as local.
+
+AI calls use schema-validated structured outputs and record prompt version, token usage, cached input tokens, and available cost metadata, including failed responses that report usage. Every AI call reserves against one hard monthly budget ledger and uses the compiled, expiring model-price registry (Gemini 3.8 Flash has Google's dated prices registered, $0.75/$3.75 per million input/output tokens through 2026-12-31 and $1.50/$7.50 from 2027-01-01, through 2027-04-01; `/settings/ai` and `/api/health/readiness` show the expiry). Users can cap discovery-time AI and set a monthly budget, up to the hard cap, at `/settings/ai`. Model overrides apply only to resume parsing; every other feature is pinned to its reviewed Gemini model. Put stable instructions before changing payload data in prompts to improve provider-side prompt-cache reuse.
 
 ## Google Sign-In Setup
 
@@ -222,7 +226,23 @@ Implemented:
 
 Go to `/settings/job-sources` to add, edit, enable/disable, test, manually sync, and monitor configured sources. URL-based RSS and company-careers sources require the explicit "reviewed as permitted or API-approved" checkbox before test, manual sync, or scheduled sync. Go to `/jobs` and run **Automated discovery** to search enabled providers, deduplicate postings, and save them to PostgreSQL. Discovery applies deterministic filters before import, ranks the remaining candidates, and sends only the highest-ranked capped set to AI when discovery-time AI is enabled.
 
-Remotive works without credentials. Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY`. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. SerpApi requires `SERPAPI_API_KEY` and may consume paid search credits; `SERPAPI_MAX_QUERIES_PER_RUN` caps how many SerpApi searches one discovery run can use. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
+### Company boards (Greenhouse, Lever, Ashby)
+
+The employer's own public ATS board is the primary job source: it is free, fresh, and carries the real apply URL.
+
+- **Follow a company.** On `/settings/job-sources`, paste any Greenhouse (`boards.greenhouse.io`, `job-boards.greenhouse.io`), Lever (`jobs.lever.co`, `jobs.eu.lever.co`) or Ashby (`jobs.ashbyhq.com`) job or board link. `lib/job-sources/board-url.ts` resolves it to the board token without fetching the link, and `POST /api/job-sources/follow` creates (or re-enables) a job source for the signed-in user. Disable a followed board to stop checking it; a disabled board is also excluded from the directory.
+- **Seed directory.** `data/job-board-directory.json` is a reviewed list of public boards tagged by industry, location and remote availability. Each entry was verified with one read-only GET to its board API; it is never scraped or extended automatically. Discovery checks directory boards whose tags match the user's industries, locations and remote preference (every board when the user has none of these). Postings from directory boards are attributed to a managed "Apply Pilot board directory" source per ATS.
+- **Per-run cap and rotation.** Each run checks followed boards first, then directory boards, up to `JOB_DISCOVERY_MAX_BOARDS_PER_RUN` (default `40`, max `100`). Remaining directory boards rotate into later runs on a daily window. Board fetches run four at a time and each board is fetched once per run.
+- **Freshness and dedupe.** Unchanged postings are not rewritten (a fingerprint of the stored fields is compared). Duplicates are dropped across sources by normalized apply URL, then by normalized company, title and location; boards run before aggregators so the employer's posting wins. Active postings that disappear from their board are marked `EXPIRED`; applied, archived and other statuses are never changed.
+- Board discovery keeps the existing deterministic relevance prefilter and the AI-scoring cap. Boards the user follows skip the target-search keyword filter (every relevant role at a company you follow is shown); location, remote-only and the relevance prefilter still apply. Directory boards keep the keyword filter. Location matching uses each user's own preferred and home locations (a city match, then the same US state); no locale is built in.
+
+### Compliance-gated and paid sources
+
+- `JOB_SOURCE_REMOTIVE_ENABLED`: Remotive is **off unless set to `true`**. Its API terms prohibit showing its jobs to collect sign-ups; enable only after a compliance review or private agreement.
+- `JOB_SOURCE_ADZUNA_ENABLED`: Adzuna is **off unless set to `true`**, even with `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` configured. Adzuna requires a commercial licence after its trial for revenue-generating products.
+- `JOB_DISCOVERY_MAX_BOARDS_PER_RUN`: boards checked per discovery run or per user in the cron, default `40`.
+
+The gates apply to automated discovery, manual source sync and test, and the cron. TheirStack requires `THEIRSTACK_API_KEY` and may consume paid credits. SerpApi requires `SERPAPI_API_KEY` and may consume paid search credits; `SERPAPI_MAX_QUERIES_PER_RUN` caps how many SerpApi searches one discovery run can use. USAJOBS requires `USAJOBS_API_KEY` and `USAJOBS_USER_AGENT`. Workable requires an approved API token.
 
 For scheduled discovery, configure the host to call:
 
@@ -231,7 +251,7 @@ GET /api/cron/job-discovery
 Authorization: Bearer your-CRON_SECRET
 ```
 
-The cron route syncs only enabled job sources, skips recently synced sources, caps sources per run, blocks overlapping source syncs, and never submits applications.
+The cron route first runs preference discovery over company boards (followed and matching directory boards) for each approved user with saved discovery preferences, up to 25 users per run, least recently run first. One listing cache serves the whole invocation, so each board is fetched at most once however many users match it. It never calls the query aggregators. The route declares `maxDuration = 300` (fits Vercel Pro) and stops scheduling new users, boards and sources once 80% of that (240 s) has elapsed; deferred work is listed in the response's `timeBudget` and leads the next run. AI scoring follows each user's saved "score imported jobs" choice and the same cap. It then syncs other enabled job sources, skips recently synced sources (including boards just checked), skips compliance-gated sources, caps sources per run, blocks overlapping source syncs, and never submits applications.
 The included Vercel schedule runs once daily at 14:00 UTC; the route still enforces the configured per-source interval and provider caps.
 
 The generic provider rejects prohibited job-board hosts, blocks local/private/internal URLs, checks DNS resolution to reduce SSRF risk, limits fetch size/time, follows only validated redirects, and checks `robots.txt` before fetching. The app does not directly scrape LinkedIn, Indeed, ZipRecruiter, CareerBuilder, Glassdoor, or similar restricted job boards. Those sources require approved APIs, licensed aggregator APIs, partner feeds, exports, or user-reviewed manual import.

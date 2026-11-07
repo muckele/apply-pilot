@@ -7,10 +7,12 @@ import { aiInvocationFromRequest } from "@/lib/ai/http";
 import {
   parseResumeTextWithMeta,
   decodeStoredParsedResume,
+  resumeParseRequestHash,
   RESUME_PARSE_PROMPT_VERSION
 } from "@/lib/ai/resume";
 import { PublicApiError } from "@/lib/api-errors";
 import { extractResumeDocxText } from "@/lib/resume-docx-text";
+import { normalizePdfResumeText, renderPdfPageText } from "@/lib/resumes/pdf-text";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { deletePrivateFile, savePrivateFile } from "@/lib/storage/private-files";
 import { apiErrorResponse, requireUserId } from "@/lib/user-context";
@@ -29,7 +31,8 @@ async function findResumeParseReplay(
   rawText: string,
   isMaster: boolean,
   requireRequestedState = true,
-  allowContentFallback = true
+  allowContentFallback = true,
+  currentRequestHash: string | null = null
 ) {
   let analysis = await client.aIAnalysis.findFirst({
     where: {
@@ -62,6 +65,17 @@ async function findResumeParseReplay(
       },
       orderBy: { createdAt: "desc" }
     });
+    // Replay by content only when the stored parse answered the exact provider
+    // request this text produces today. A changed resume reader (different source
+    // catalog) must parse afresh instead of decoding an answer to another request.
+    if (
+      analysis?.input &&
+      typeof analysis.input === "object" &&
+      !Array.isArray(analysis.input) &&
+      (analysis.input as Record<string, unknown>).providerRequestHash !== currentRequestHash
+    ) {
+      analysis = null;
+    }
   }
   if (!analysis || !analysis.input || typeof analysis.input !== "object" || Array.isArray(analysis.input)) {
     return null;
@@ -99,8 +113,8 @@ async function extractTextFromFile(file: File) {
 
   if (file.type === "application/pdf" || lowerName.endsWith(".pdf")) {
     const pdfParse = (await import("pdf-parse")).default;
-    const parsed = await pdfParse(buffer);
-    return { text: parsed.text, buffer };
+    const parsed = await pdfParse(buffer, { pagerender: renderPdfPageText });
+    return { text: normalizePdfResumeText(parsed.text), buffer };
   }
 
   if (
@@ -180,8 +194,14 @@ export async function POST(request: NextRequest) {
       rawText,
       sourceDescriptor
     });
+    let currentRequestHash: string | null = null;
+    try {
+      currentRequestHash = resumeParseRequestHash(rawText);
+    } catch {
+      // Unparseable source: no content replay; the parse below reports the error.
+    }
     const existing = await findResumeParseReplay(
-      prisma, userId, submissionId, submissionHash, rawText, isMaster
+      prisma, userId, submissionId, submissionHash, rawText, isMaster, true, true, currentRequestHash
     );
     if (existing) return NextResponse.json(existing);
 
@@ -191,7 +211,7 @@ export async function POST(request: NextRequest) {
     try {
       const result = await prisma.$transaction(async (tx) => {
         const raced = await findResumeParseReplay(
-          tx, userId, submissionId, submissionHash, rawText, isMaster
+          tx, userId, submissionId, submissionHash, rawText, isMaster, true, true, currentRequestHash
         );
         if (raced) return raced;
         if (fileBuffer && originalName) {

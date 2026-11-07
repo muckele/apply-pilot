@@ -1,0 +1,110 @@
+[
+  {
+    "id": "e8a190f0-7a89-4c11-a6a0-452ff6234749",
+    "text": "Administrative Business Partner, Floater",
+    "createdAt": 1791307664932,
+    "categories": {
+      "commitment": "Full-time",
+      "department": "Executive Office",
+      "location": "Foster City, CA",
+      "team": "Executive Office",
+      "allLocations": [
+        "Foster City, CA"
+      ]
+    },
+    "country": "US",
+    "workplaceType": "hybrid",
+    "description": "",
+    "descriptionPlain": "",
+    "lists": [
+      {
+        "text": "Responsibilities ",
+        "content": "<li>Scheduling team and cross-functional meetings</li><li>Assisting with team off-sites and events</li><li>Helping with new hire onboarding</li>"
+      },
+      {
+        "text": "Qualifications ",
+        "content": "<li>4+ years of executive assistant experience</li><li>Strong organizational skills and appreciation for the challenges of supporting a growing team of diverse personalities and programs</li><li>Excellent written and verbal communication skills</li>"
+      }
+    ],
+    "additional": "<div>Please note, this role does require an onsite presence in our Foster City, CA office between 3-5 days per week.</div>",
+    "additionalPlain": "Please note, this role does require an onsite presence in our Foster City, CA office between 3-5 days per week.",
+    "hostedUrl": "https://jobs.lever.co/zoox/e8a190f0-7a89-4c11-a6a0-452ff6234749",
+    "applyUrl": "https://jobs.lever.co/zoox/e8a190f0-7a89-4c11-a6a0-452ff6234749/apply",
+    "salaryRange": {
+      "min": 123000,
+      "max": 168000,
+      "currency": "USD",
+      "interval": "per-year-salary"
+    }
+  },
+  {
+    "id": "8befaec7-bb9f-4cf3-a48c-46b5e3886bf3",
+    "text": "Administrative Business Partner, Product",
+    "createdAt": 1792604051949,
+    "categories": {
+      "commitment": "Full-time",
+      "department": "Product, Features & Homologation",
+      "location": "Foster City, CA",
+      "team": "Product and Experience",
+      "allLocations": [
+        "Foster City, CA"
+      ]
+    },
+    "country": "US",
+    "workplaceType": "hybrid",
+    "description": "<p>Zoox is looking to hire an Administrative Business Partner to support our Product, Features, and Homologation department. This role will support the Senior Director of Product, Features, and Homologation and the Director of Product and provide administrative support for team. You will report to the Senior Director. In this position, you will work closely with other Executive Assistants and Administrative Business Partners across all the departments at Zoox.</p><p>This role will require strong calendaring and prioritization skills, uncompromising attention to detail, the ability to meet tight deadlines, excellent organizational skills, and the ability to juggle multiple critical requests simultaneously. A high level of integrity and discretion in handling confidential information, and professionalism in dealing with senior leaders within the company are also critical aspects of this role. Most importantly, you must have a genuine passion for the Zoox mission.</p>",
+    "descriptionPlain": "Zoox is looking to hire an Administrative Business Partner to support our Product, Features, and Homologation department. This role will support the Senior Director of Product, Features, and Homologation and the Director of Product and provide administrative support for team. You will report to the Senior Director. In this position, you will work closely with other Executive Assistants and Administrative Business Partners across all the departments at Zoox. This role will require strong calendaring and prioritization skills, uncompromising attention to detail, the ability to meet tight deadlines, excellent organizational skills, and the ability to juggle multiple critical requests simultaneously. A high level of integrity and discretion in handling confidential information, and professionalism in dealing with senior leaders within the company are also critical aspects of this role. Most importantly, you must have a genuine passion for the Zoox mission.",
+    "lists": [
+      {
+        "text": "In this role, you will...",
+        "content": "<li>Manage extensive calendar arrangements on a day-to-day basis including scheduling team meetings, cross-functional meetings, interviews, and navigating last-minute schedule changes</li><li>Lead the preparation, agenda, note-taking and follow-ups for select team meetings and quarterly operations reviews.</li><li>Plan and execute team off-sites and events varying in size and complexity for org-wide and individual team offsite</li>"
+      },
+      {
+        "text": "Qualifications ",
+        "content": "<li>4+ years of either administrative or executive assistant experience</li><li>Strong organizational skills and appreciation for the challenges of supporting a growing team of diverse personalities and programs</li><li>Excellent written and verbal communication skills</li>"
+      }
+    ],
+    "additional": "<div>Please note, this role does require an onsite presence in our Foster City, CA office between 3-5 days per week.</div>",
+    "additionalPlain": "Please note, this role does require an onsite presence in our Foster City, CA office between 3-5 days per week.",
+    "hostedUrl": "https://jobs.lever.co/zoox/8befaec7-bb9f-4cf3-a48c-46b5e3886bf3",
+    "applyUrl": "https://jobs.lever.co/zoox/8befaec7-bb9f-4cf3-a48c-46b5e3886bf3/apply",
+    "salaryRange": {
+      "min": 123000,
+      "max": 168000,
+      "currency": "USD",
+      "interval": "per-year-salary"
+    }
+  },
+  {
+    "id": "5e03b357-0cc1-4194-9488-14f85044f4f9",
+    "text": "Contract  Student Worker - Data Analyst (Part-time)",
+    "createdAt": 1784582903436,
+    "categories": {
+      "commitment": "Contract",
+      "department": "Zoox Internships",
+      "location": "Foster City, CA",
+      "team": "Software",
+      "allLocations": [
+        "Foster City, CA"
+      ]
+    },
+    "country": "US",
+    "workplaceType": "onsite",
+    "description": "<p>About Zoox</p><p>Zoox is an autonomous ridehailing company building the world's first purpose-built robotaxi — fully electric, bidirectional, with no steering wheel or driver's seat. Backed by Amazon and founded to make transportation safer, cleaner, and more accessible, Zoox designs its vehicles entirely around the rider. We're currently operating in Las Vegas and San Francisco, with Austin and Miami on the horizon, and testing underway across seven U.S. markets.</p><p>About Our Part-Time Student Worker Program</p>",
+    "descriptionPlain": "About Zoox Zoox is an autonomous ridehailing company building the world's first purpose-built robotaxi — fully electric, bidirectional, with no steering wheel or driver's seat. Backed by Amazon and founded to make transportation safer, cleaner, and more accessible, Zoox designs its vehicles entirely around the rider. We're currently operating in Las Vegas and San Francisco, with Austin and Miami on the horizon, and testing underway across seven U.S. markets. About Our Part-Time Student Worker Program",
+    "lists": [
+      {
+        "text": "Responsibilities",
+        "content": "<li>Write Databricks notebooks to mine scenarios, create datasets, and build dashboards</li><li>Conduct exposure analysis to identity performance issues and data gaps by analyzing large-scale vehicle logs and simulation data</li><li>Write data analytic reports</li>"
+      },
+      {
+        "text": "Required Qualifications",
+        "content": "<li>Strong proficiency in SQL, PySpark, Python in production environments with standard repo practices</li><li>Experience working with time-series or sensor data</li><li>Familiarity with robotics or AV data is a plus</li>"
+      }
+    ],
+    "additional": "<div>We want to be transparent: this is not an internship. The Part-Time Student Worker Program is designed to complement your academic experience by providing meaningful, ongoing work alongside your ...</div>",
+    "additionalPlain": "We want to be transparent: this is not an internship. The Part-Time Student Worker Program is designed to complement your academic experience by providing meaningful, ongoing work alongside your ...",
+    "hostedUrl": "https://jobs.lever.co/zoox/5e03b357-0cc1-4194-9488-14f85044f4f9",
+    "applyUrl": "https://jobs.lever.co/zoox/5e03b357-0cc1-4194-9488-14f85044f4f9/apply"
+  }
+]

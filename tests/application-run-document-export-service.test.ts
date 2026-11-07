@@ -237,6 +237,7 @@ class FakeDocumentExportDatabase {
       prismaClient: this.client as unknown as NonNullable<
         ApplicationRunDocumentExportServiceDependencies["prismaClient"]
       >,
+      assertCurrentApplicationRunEvidenceInTransaction: async () => "LEGACY_UNVERSIONED",
       loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async () => {
         assert.equal(this.inTransaction, true);
         if (this.verifiedFailure) throw this.verifiedFailure;

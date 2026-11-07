@@ -10,7 +10,9 @@ export type AiFeature =
   | "EMAIL_REPLY"
   | "INTERVIEW_PREP"
   | "INTERVIEW_FEEDBACK"
-  | "APPLICATION_PLAN";
+  | "APPLICATION_PLAN"
+  | "MOCK_INTERVIEW_QUESTIONS"
+  | "MOCK_INTERVIEW_FEEDBACK";
 
 export type AiModelTier = "fast" | "quality";
 
@@ -22,21 +24,35 @@ export type AiFeaturePolicy = {
 
 export const AI_FEATURE_POLICIES: Record<AiFeature, AiFeaturePolicy> = {
   // Gemini receives additional total-output headroom because its LOW thinking
-  // tokens share this ceiling with visible JSON. OpenAI has no thinking share.
+  // tokens share this ceiling with visible JSON.
   RESUME_PARSE: { maxOutputTokens: 24_000, maxInputTokens: 12_000, modelTier: "fast" },
   JOB_PARSE: { maxOutputTokens: 2_500, maxInputTokens: 21_000, modelTier: "fast" },
   // The output ceiling includes visible response and Gemini thinking tokens.
   JOB_MATCH: { maxOutputTokens: 8_192, maxInputTokens: 56_000, modelTier: "fast" },
   EMAIL_CLASSIFICATION: { maxOutputTokens: 800, maxInputTokens: 11_000, modelTier: "fast" },
-  RESUME_TAILOR: { maxOutputTokens: 6_000, maxInputTokens: 56_000, modelTier: "quality" },
-  COVER_LETTER: { maxOutputTokens: 1_500, maxInputTokens: 56_000, modelTier: "quality" },
+  // Application documents (owner-approved 2026-11-05). Live test: a real master résumé against
+  // one job sent 18,676 input tokens; Gemini's answer hit the old cap at 5,985 of 6,000 output
+  // tokens (the cap also holds LOW thinking tokens) and a 12,000 cap completed at 6,035. Worst case
+  // per request on gemini-3.8-flash ($0.75 / M input, $3.75 / M output including thinking):
+  // résumé 36,000 in + 12,000 out = $0.072; cover letter 36,000 in + 6,000 out = $0.0495. Both
+  // stay under the ten-cent per-request ceiling. Do not raise these limits without re-pricing.
+  RESUME_TAILOR: { maxOutputTokens: 12_000, maxInputTokens: 36_000, modelTier: "quality" },
+  COVER_LETTER: { maxOutputTokens: 6_000, maxInputTokens: 36_000, modelTier: "quality" },
   EMAIL_REPLY: { maxOutputTokens: 1_000, maxInputTokens: 32_000, modelTier: "fast" },
   INTERVIEW_PREP: { maxOutputTokens: 4_000, maxInputTokens: 56_000, modelTier: "quality" },
   INTERVIEW_FEEDBACK: { maxOutputTokens: 5_000, maxInputTokens: 42_000, modelTier: "quality" },
-  // Advisory application planning only. Bounded so the worst-case Kimi K3 request
-  // (12,000 uncached input + 4,000 output = $0.096) stays under the compiled
-  // ten-cent per-request ceiling. Do not raise these limits without re-pricing.
-  APPLICATION_PLAN: { maxOutputTokens: 4_000, maxInputTokens: 12_000, modelTier: "quality" }
+  // Advisory application planning only. The worst-case Gemini 3.8 Flash request
+  // (12,000 uncached input + 4,000 output = $0.024, $0.048 from 2027-01-01) stays well
+  // under the compiled fifteen-cent per-request ceiling. Do not raise these limits without re-pricing.
+  APPLICATION_PLAN: { maxOutputTokens: 4_000, maxInputTokens: 12_000, modelTier: "quality" },
+  // Text mock interviews (WP1.8). Payloads are bounded in lib/ai/mock-interview.ts; a
+  // payload over the bytes-as-tokens bound is admitted only by an exact countTokens
+  // check against maxInputTokens. Worst case per request on Gemini 3.8 Flash:
+  // questions 40,000 in + 4,000 out = $0.045 ($0.090 from 2027-01-01); one answer's
+  // feedback 44,000 in + 4,000 out = $0.048 ($0.096). Both stay under the fifteen-cent
+  // per-request ceiling.
+  MOCK_INTERVIEW_QUESTIONS: { maxOutputTokens: 4_000, maxInputTokens: 40_000, modelTier: "quality" },
+  MOCK_INTERVIEW_FEEDBACK: { maxOutputTokens: 4_000, maxInputTokens: 44_000, modelTier: "quality" }
 };
 
 const FIELD_LIMITS = {

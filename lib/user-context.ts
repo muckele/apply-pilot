@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { ZodError, type ZodIssue } from "zod";
 
 import { PublicApiError } from "@/lib/api-errors";
 import { auth } from "@/lib/auth";
@@ -32,6 +33,8 @@ export async function requireUserId() {
     return session.user.id;
   }
 
+  // Local demos only: isDemoUserFallbackEnabled() is always false in production.
+  // The persona is fictional sample data and must never describe a real person.
   if (isDemoUserFallbackEnabled()) {
     const demoUserId = process.env.DEFAULT_DEMO_USER_ID ?? "demo-user";
 
@@ -40,35 +43,22 @@ export async function requireUserId() {
       update: {},
       create: {
         id: demoUserId,
-        name: "Mathew Uckele",
-        email: "mathew@example.com",
+        name: "Sample User",
+        email: "sample@example.com",
         profile: {
           create: {
             careerGoals:
-              "Find high-fit customer-facing technical roles that combine software, SaaS operations, implementation, and sales engineering.",
+              "Fictional sample persona for local demos: find customer-facing technical roles that combine software skills with implementation and customer onboarding.",
             preferredRoles: [
-              "Sales Engineer",
               "Solutions Engineer",
-              "Technical Account Manager",
-              "Customer Success Engineer",
               "Implementation Specialist",
-              "Full-Stack Developer",
-              "Junior Software Engineer",
-              "Operations / SaaS operations"
+              "Customer Success Engineer",
+              "Junior Software Engineer"
             ],
-            preferredLocations: ["Los Angeles, CA", "Fontana, CA", "Remote", "Hybrid"],
-            industriesOfInterest: ["SaaS", "Health tech", "Developer tools", "Operations"],
+            preferredLocations: ["Remote", "Hybrid", "Anytown, USA"],
+            industriesOfInterest: ["SaaS", "Developer tools"],
             dealBreakers: ["Commission-only roles", "Unclear role expectations"],
-            skillsToEmphasize: [
-              "JavaScript",
-              "React",
-              "Node.js",
-              "Python",
-              "SQL",
-              "REST APIs",
-              "Customer discovery",
-              "Operations leadership"
-            ],
+            skillsToEmphasize: ["JavaScript", "React", "Node.js", "SQL", "REST APIs", "Customer onboarding"],
             skillsNotToExaggerate: ["Enterprise-scale production ownership", "Deep DevOps ownership"]
           }
         }
@@ -81,6 +71,32 @@ export async function requireUserId() {
   throw new UnauthorizedError();
 }
 
+// "preferredRoles", 0 → "Preferred roles #1"
+function validationFieldLabel(path: ZodIssue["path"]) {
+  const label = path
+    .map((part) => typeof part === "number"
+      ? `#${part + 1}`
+      : part.replace(/([a-z0-9])([A-Z])/gu, "$1 $2").toLowerCase())
+    .join(" ");
+  return label ? label[0]!.toUpperCase() + label.slice(1) : "This request";
+}
+
+// A field-level validation message people can act on. It names only the field
+// and the rule, never the submitted value.
+function describeValidationError(error: ZodError) {
+  const issue = error.issues[0];
+  if (!issue) return "Check the submitted fields and try again.";
+  const label = validationFieldLabel(issue.path);
+  if (issue.code === "too_big" && issue.type === "string") return `${label} must be ${issue.maximum} characters or fewer.`;
+  if (issue.code === "too_big" && issue.type === "array") return `${label} can have at most ${issue.maximum} entries.`;
+  if (issue.code === "too_small" && issue.type === "string") {
+    return Number(issue.minimum) <= 1 ? `${label} is required.` : `${label} must be at least ${issue.minimum} characters.`;
+  }
+  return `${label}: ${issue.message.replace(/\.$/u, "")}.`;
+}
+
+const LOGGED_CLIENT_ERROR_DETAILS = ["code", "fieldPath", "failureClass", "relationReason", "rewordingFailure"] as const;
+
 export function apiErrorResponse(error: unknown) {
   if (error instanceof UnauthorizedError) {
     logger.warn("api.unauthorized", {
@@ -91,15 +107,32 @@ export function apiErrorResponse(error: unknown) {
   }
 
   if (error instanceof PublicApiError) {
+    // The same enum-like details the response carries, so a failed (possibly paid) request can be
+    // diagnosed from the log. Only these keys and only short string values: never submitted or
+    // generated text.
+    const loggedDetails = Object.fromEntries(LOGGED_CLIENT_ERROR_DETAILS.flatMap((key) => {
+      const value = error.details?.[key];
+      return typeof value === "string" && value.length <= 120 ? [[key, value]] : [];
+    }));
     logger.warn("api.client_error", {
       status: error.status,
       error: {
         name: error.name,
-        message: error.message
+        message: error.message,
+        ...loggedDetails
       }
     });
 
     return NextResponse.json({ error: error.message, ...error.details }, { status: error.status });
+  }
+
+  if (error instanceof ZodError) {
+    logger.warn("api.handled_error", {
+      status: 422,
+      error: { name: error.name, message: error.message }
+    });
+
+    return NextResponse.json({ error: describeValidationError(error) }, { status: 422 });
   }
 
   if (error instanceof Error) {
@@ -111,11 +144,15 @@ export function apiErrorResponse(error: unknown) {
         : "The request could not be completed."
       : error.message;
 
+    // Validation errors may say which output field failed; log that, never its content.
+    const detail = error as Error & { validationCode?: unknown; fieldPath?: unknown };
     logger.warn("api.handled_error", {
       status,
       error: {
         name: error.name,
-        message: error.message
+        message: error.message,
+        ...(typeof detail.validationCode === "string" ? { validationCode: detail.validationCode } : {}),
+        ...(typeof detail.fieldPath === "string" ? { fieldPath: detail.fieldPath } : {})
       }
     });
 

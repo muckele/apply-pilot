@@ -484,6 +484,30 @@ test("content replay remains durable beyond the former fifteen-minute window", a
   assert.equal(state.transactions, 1);
 });
 
+test("content replay is skipped when the resume reader would now send a different request", async (t) => {
+  const state = setup(t);
+  const first = await invoke({
+    submissionId: SUBMISSION_ID_1,
+    title: "Jordan Master Resume",
+    pastedText: resumeText,
+    isMaster: true
+  });
+  assert.equal(first.status, 200);
+  // The earlier parse was made from a different source catalog (an older reader).
+  (state.analyses[0]!.input as Record<string, unknown>).providerRequestHash = "0".repeat(64);
+
+  const reparsed = await invoke({
+    submissionId: SUBMISSION_ID_2,
+    title: "Jordan Master Resume",
+    pastedText: resumeText,
+    isMaster: true
+  });
+
+  assert.equal(reparsed.status, 200, await reparsed.clone().text());
+  assert.equal((await reparsed.json()).replayed, false);
+  assert.equal(state.analyses.length, 2);
+});
+
 test("a lost commit acknowledgement is recovered as a committed replay, not a false no-change error", async (t) => {
   const state = setup(t, parsedOutput, true, { throwAfterCommitOnce: true });
   const response = await invoke({ title: "Jordan Master Resume", pastedText: resumeText, isMaster: true });

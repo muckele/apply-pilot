@@ -210,8 +210,12 @@ function buildWhyMatched(job: ReviewableJob) {
 function buildWhyReviewNeeded(job: ReviewableJob, flags: string[]) {
   const reasons = [
     ...flags,
-    job.missingKeywords.length ? `Missing keywords: ${job.missingKeywords.slice(0, 8).join(", ")}` : null,
-    job.concerns.length ? `Concerns: ${job.concerns.slice(0, 3).join("; ")}` : null
+    job.missingKeywords.length
+      ? `Exact terms not found in submitted resume: ${job.missingKeywords.slice(0, 8).join(", ")}`
+      : null,
+    job.concerns.length
+      ? `Requirements not evidenced in submitted resume: ${job.concerns.slice(0, 3).join("; ")}`
+      : null
   ].filter(Boolean);
 
   return reasons.length ? (reasons as string[]) : ["No major review flags. Confirm the posting and apply manually."];

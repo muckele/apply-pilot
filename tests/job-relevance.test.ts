@@ -96,18 +96,16 @@ test("healthcare stakeholder text does not hard-exclude implementation roles", (
   assert.notEqual(result.decision, "skip");
 });
 
-test("healthcare practitioner titles are still hard-excluded", () => {
-  const result = scoreJobRelevance({
-    job: job({
-      title: "Registered Nurse",
-      description: "Provide patient care and coordinate clinical workflows."
-    }),
-    profile: null,
-    query: "Nurse"
+test("healthcare practitioner titles are still hard-excluded unless the user's own roles name them", () => {
+  const nurseJob = job({
+    title: "Registered Nurse",
+    description: "Provide patient care and coordinate clinical workflows."
   });
+  const result = scoreJobRelevance({ job: nurseJob, profile: null, query: "Implementation Specialist" });
 
   assert.equal(result.hardExcluded, true);
   assert.equal(result.decision, "skip");
+  assert.equal(scoreJobRelevance({ job: nurseJob, profile: null, query: "Registered Nurse" }).hardExcluded, false);
 });
 
 test("pre-import filtering rejects stale postings before they hit the CRM", () => {

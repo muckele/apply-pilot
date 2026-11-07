@@ -206,9 +206,47 @@ test("saved master detail renders structured sections, safe text, and responsive
   assert.match(text, /Source text saved · 2 lines/);
   assert.equal(document.querySelector("script"), null);
   assert.equal(document.querySelector("input, textarea, select, button, form"), null);
-  assert.match(html, /md:grid-cols-2/);
-  assert.match(html, /xl:grid-cols-3/);
   assert.match(html, /break-words/);
+});
+
+test("saved master detail reads as one resume: jobs in a single column, reference sections beside it", () => {
+  const html = renderToStaticMarkup(createElement(MasterResumeDetail, { resume: savedMaster() }));
+  const document = new JSDOM(html).window.document;
+  const main = document.querySelector("[data-resume-column='main']");
+  const side = document.querySelector("[data-resume-column='side']");
+  assert.ok(main && side, "main and side columns render");
+  const headings = (root: Element) => [...root.querySelectorAll("h2")].map((node) => node.textContent?.trim());
+
+  // Reading order on a phone: summary, jobs, projects, then the reference sections.
+  assert.deepEqual(headings(main!), ["Master resume profile", "Work history", "Projects"]);
+  assert.deepEqual(headings(side!), ["Skills", "Education", "Certifications", "Achievements"]);
+  // One job per row, never a multi-column card grid.
+  const jobs = document.querySelectorAll("[data-work-history] > li");
+  assert.equal(jobs.length, 1);
+  assert.doesNotMatch(html, /md:grid-cols-2|xl:grid-cols-3/);
+  // Two columns only on wide screens; one column below that.
+  assert.match(side!.parentElement!.className, /(?:^| )xl:grid-cols-\[/);
+  assert.doesNotMatch(side!.parentElement!.className, /(?:^| )(?:sm|md|lg):grid-cols-/);
+});
+
+test("saved list entries show one bullet even when the source text kept its own marker", () => {
+  const resume = {
+    ...savedMaster(),
+    achievements: ["•Top five of 400+ advisors.", "▪ Built a practice from zero.", "- Cut costs 10%.", "1. Led the launch.", "-5% churn after the change."]
+  };
+  const html = renderToStaticMarkup(createElement(MasterResumeDetail, { resume }));
+  const document = new JSDOM(html).window.document;
+  const panel = [...document.querySelectorAll("aside h2")]
+    .find((heading) => heading.textContent === "Achievements")!
+    .closest("aside > *")!;
+  const achievements = [...panel.querySelectorAll("li")].map((node) => node.textContent);
+  assert.deepEqual(achievements, [
+    "Top five of 400+ advisors.",
+    "Built a practice from zero.",
+    "Cut costs 10%.",
+    "Led the launch.",
+    "-5% churn after the change."
+  ]);
 });
 
 test("saved master detail handles absent and legacy stored fields without inventing values", () => {
@@ -248,6 +286,9 @@ test("the Resumes page uses the shared owner-scoped read service and read-only d
 
   assert.match(page, /getMasterResumeDetail/);
   assert.match(page, /MasterResumeDetail/);
+  // Once a master exists the upload form folds away above it; with none it starts open.
+  assert.match(page, /<details[^>]*open=\{!masterResume\}/);
+  assert.doesNotMatch(page, /xl:grid-cols-\[420px/);
   assert.doesNotMatch(page, /prisma\.resume\.findFirst/);
   assert.doesNotMatch(route, /checkRateLimit|export\s+(?:async\s+)?function/);
   assert.deepEqual([...route.matchAll(/^export\s+(?:const|function|async function)\s+(\w+)/gmu)].map((match) => match[1]), ["GET"]);

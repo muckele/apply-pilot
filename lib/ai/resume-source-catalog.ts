@@ -1,20 +1,18 @@
 import { PublicApiError } from "@/lib/api-errors";
+import {
+  resumeSectionHeadings,
+  resumeSourceSectionForHeading,
+  type ResumeSourceSectionName,
+  type ResumeTypedSectionName
+} from "@/lib/ai/resume-section-headings";
 
-export type ResumeSourceSectionName =
-  | "contactInfo"
-  | "summary"
-  | "skills"
-  | "workHistory"
-  | "projects"
-  | "education"
-  | "certifications"
-  | "achievements"
-  | "additional";
-
-export type ResumeTypedSectionName = Exclude<
-  ResumeSourceSectionName,
-  "contactInfo" | "additional"
->;
+export {
+  resumeSectionForHeading,
+  resumeSectionHeadings,
+  resumeSourceSectionForHeading,
+  type ResumeSourceSectionName,
+  type ResumeTypedSectionName
+} from "@/lib/ai/resume-section-headings";
 
 export type ResumeSourceCatalogLine = {
   id: string;
@@ -62,36 +60,8 @@ export type ResumeProviderSourceInput = {
   }>;
 };
 
-export const resumeSectionHeadings: Record<ResumeTypedSectionName, RegExp> = {
-  summary: /^(?:(?:PROFESSIONAL\s+|CAREER\s+)?(?:SUMMARY|PROFILE)|OBJECTIVE|ABOUT\s+ME)$/i,
-  skills: /^(?:(?:(?:TECHNICAL|KEY|CORE)\s+)?SKILLS(?:\s+(?:AND|&)\s+TOOLS)?|CORE\s+COMPETENCIES)$/i,
-  workHistory: /^(?:WORK|PROFESSIONAL|EMPLOYMENT|CAREER)?\s*(?:EXPERIENCE|HISTORY)$/i,
-  projects: /^(?:(?:SELECTED(?:\s+TECHNICAL)?|PROFESSIONAL)\s+)?PROJECTS?$/i,
-  education: /^(?:EDUCATION|ACADEMIC\s+(?:BACKGROUND|HISTORY))$/i,
-  certifications: /^(?:CERTIFICATIONS?|LICENSES?|CERTIFICATIONS?\s+(?:AND|&)\s+LICENSES?)$/i,
-  achievements: /^(?:ACHIEVEMENTS?|ACCOMPLISHMENTS?|AWARDS?|HONORS?)$/i
-};
-
-const otherSectionHeading = /^(?:CONTACT|LANGUAGES?|INTERESTS?|VOLUNTEER(?:ING|\s+EXPERIENCE)?|COMMUNITY\s+(?:INVOLVEMENT|SERVICE)|LEADERSHIP|PROFESSIONAL\s+(?:DEVELOPMENT|AFFILIATIONS?|MEMBERSHIPS?)|TRAINING|COURSES?|COURSEWORK|ACTIVITIES|PUBLICATIONS?|PATENTS?|PRESENTATIONS?|CONFERENCES?|REFERENCES?|ADDITIONAL\s+(?:EXPERIENCE|INFORMATION)|OTHER)$/i;
-
 export function normalizeResumeLineEndings(value: string) {
   return value.replace(/\r\n?/g, "\n");
-}
-
-export function resumeSectionForHeading(line: string): ResumeTypedSectionName | null {
-  const heading = line.trim().replace(/:$/, "");
-  for (const [section, pattern] of Object.entries(resumeSectionHeadings)) {
-    if (pattern.test(heading)) return section as ResumeTypedSectionName;
-  }
-  return null;
-}
-
-export function resumeSourceSectionForHeading(line: string): ResumeSourceSectionName | null {
-  const recognized = resumeSectionForHeading(line);
-  if (recognized) return recognized;
-  const heading = line.trim().replace(/:$/, "");
-  if (/^CONTACT$/i.test(heading)) return "contactInfo";
-  return otherSectionHeading.test(heading) ? "additional" : null;
 }
 
 export function hasResumeSectionHeading(source: string, section: ResumeTypedSectionName) {
@@ -179,10 +149,10 @@ export function isStandaloneResumeLocation(line: string) {
     resumeEnglishRegionNames.has(normalized);
 }
 
-function looksLikeCompactHeader(line: string) {
+function looksLikeCompactHeader(line: string, dateLinePattern = structuralDateLinePattern) {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length > 140 || listEntryPattern.test(trimmed)) return false;
-  if (structuralMetadataPattern.test(trimmed) || structuralDateLinePattern.test(trimmed)) return false;
+  if (structuralMetadataPattern.test(trimmed) || dateLinePattern.test(trimmed)) return false;
   if (/[,;:]\s+[a-z]/u.test(trimmed)) return false;
   const words = trimmed
     .replace(/[|,:.!?()&/+\-]/gu, " ")
@@ -195,6 +165,53 @@ function looksLikeCompactHeader(line: string) {
     /^[A-Z0-9][\p{L}\p{N}'’.-]*$/u.test(word) ||
     (index > 0 && /^[A-Z]{2,}$/u.test(word))
   );
+}
+
+const headerMonthPattern = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\.?";
+const headerYearPattern = "(?:19|20)\\d{2}";
+const trailingDateRangePattern = new RegExp(
+  `^(.+?)\\s*(?:${headerMonthPattern}\\s+)?${headerYearPattern}\\s*[–—-]\\s*` +
+    `(?:(?:${headerMonthPattern}\\s+)?${headerYearPattern}|present|current|now)$`,
+  "iu"
+);
+
+// Whole-word date terms, so "Representative" or "Knowledge" are not read as dates.
+const wholeWordDateLinePattern = /^(?:(?:issued|expires?|expiration|completed|graduated|expected|anticipated)[:\s]+)?[^|\n]*\b(?:(?:19|20)\d{2}|present|current|ongoing|now)\b[^|\n]*$/i;
+
+function looksLikeCompactHeaderIgnoringAsides(line: string) {
+  return looksLikeCompactHeader(line.replace(/\s*\([^()]*\)\s*/gu, " ").trim(), wholeWordDateLinePattern);
+}
+
+// "Acme & Co   Jan 2024 – Present": an organization header with its date range on the
+// same line (right-aligned dates in the original document).
+function isOrganizationDateHeader(line: string) {
+  if (line.includes("|")) return false; // pipe headers keep their own rule
+  const prefix = trailingDateRangePattern.exec(line.trim())?.[1];
+  return Boolean(prefix) && looksLikeCompactHeaderIgnoringAsides(prefix!);
+}
+
+function startsWithBullet(line: string) {
+  return listEntryPattern.test(line) || /^[•▪◦]/u.test(line);
+}
+
+// An undated project: a short name line directly followed by a bullet, after the
+// previous project's last sentence ended. Name lines may carry a status note
+// ("Atlas Pilot   MVP complete"), so they are not held to the compact-header shape.
+function isUndatedProjectNameAt(
+  lines: ResumeSourceCatalogLine[],
+  start: number,
+  first: string,
+  second: string
+) {
+  const previousIndex = start > 0 ? previousNonemptyIndex(lines, start - 1, 0) : null;
+  const previous = previousIndex === null ? "" : lines[previousIndex]!.sourceText.trim();
+  return /^[\p{Lu}\p{N}]/u.test(first) &&
+    first.length <= 60 &&
+    first.split(/\s+/u).length <= 8 &&
+    !/[.!?:;,]$/u.test(first) &&
+    !startsWithBullet(first) &&
+    startsWithBullet(second) &&
+    (!previous || isCompleteNarrative(previous));
 }
 
 function isCompleteNarrative(line: string) {
@@ -232,6 +249,16 @@ function isRecordStartAt(
   catalogVersion: ResumeSourceCatalogVersion
 ) {
   const first = lines[start]?.sourceText.trim() ?? "";
+  // V9 only: V8 boundaries stay frozen so stored V8 projections decode unchanged.
+  if (catalogVersion === "9" && section === "workHistory" && isOrganizationDateHeader(first)) {
+    const [second = "", third = ""] = lines
+      .slice(start + 1, end + 1)
+      .map((line) => line.sourceText.trim())
+      .filter(Boolean);
+    return looksLikeCompactHeaderIgnoringAsides(second) &&
+      !isStandaloneResumeLocation(second) &&
+      (!third || startsWithBullet(third) || isCompleteNarrative(third) || /^location\s*:/iu.test(third));
+  }
   if (
     !first ||
     listEntryPattern.test(first) ||
@@ -263,6 +290,7 @@ function isRecordStartAt(
       structuralDateLinePattern.test(fourth);
   }
   if (section === "projects") {
+    if (catalogVersion === "9" && isUndatedProjectNameAt(lines, start, first, second)) return true;
     return looksLikeCompactHeader(first) && (
       structuralDateLinePattern.test(second) ||
       /^(?:technologies?(?: used)?|tools|methods|platforms?)\s*:/i.test(second)

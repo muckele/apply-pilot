@@ -1,13 +1,11 @@
 import { createHmac } from "node:crypto";
 
-import OpenAI from "openai";
 import { z } from "zod";
 
 import { resumeParsePromptV7, resumeParsePromptV8, resumeParsePromptV9 } from "@/prompts/resumeParsePrompt";
 import { resumeTailorPrompt } from "@/prompts/resumeTailorPrompt";
 import {
   generateJson,
-  getOpenAIClient,
   LocalAiUnavailableError,
   type AiInvocationOptions
 } from "@/lib/ai/client";
@@ -54,7 +52,29 @@ import {
   assembleParsedResumeV9FromRecords
 } from "@/lib/ai/resume-source-records";
 import { PublicApiError } from "@/lib/api-errors";
+import { APPLICATION_DOCUMENT_PROMPT_VERSION } from "@/lib/ai/application-document-version";
+import { applicationDocumentPriorityOpportunities } from "@/lib/ai/application-document-priorities";
+import {
+  NO_APPLICATION_DOCUMENT_FACT_ID,
+  assembleTailoredResumeProviderOutput,
+  buildApplicationDocumentFactCatalog,
+  type TailoredResumeProviderOutput
+} from "@/lib/ai/application-document-facts";
 import { prisma } from "@/lib/prisma";
+import {
+  buildApplicationDocumentSystemPrompt,
+  type ApplicationDocumentClaimEvidence,
+  type ApplicationDocumentPayload
+} from "@/lib/ai/application-document-claims";
+import { finalizeTailoredResume } from "@/lib/ai/application-document-quality";
+import {
+  tailoredResumeLeftOut,
+  tailoredResumeProtectedFactIds,
+  tailoredResumeRestorations,
+  tailoredResumeReversions,
+  type TailoredResumeItem,
+  type TailoredResumeReversion
+} from "@/lib/ai/tailored-resume-keep-rule";
 
 export type { ResumeSourceSectionName } from "@/lib/ai/resume-source-catalog";
 
@@ -65,7 +85,6 @@ export const RESUME_PARSE_PROMPT_VERSION = "11";
 export const RESUME_PARSE_CACHE_VERSION = "12";
 export const RESUME_PARSE_GEMINI_WIRE_SCHEMA_VERSION = "6";
 export const RESUME_PARSE_PLANNED_JSON_TOKENS = 16_000;
-const OPENAI_RESUME_PARSE_OUTPUT_TOKENS = 16_000;
 const RESUME_PARSE_JSON_BYTES_PER_TOKEN = 2;
 export const RESUME_PARSE_PLANNED_JSON_BYTES =
   RESUME_PARSE_PLANNED_JSON_TOKENS * RESUME_PARSE_JSON_BYTES_PER_TOKEN;
@@ -279,12 +298,10 @@ export type TailoredResumeOutput = {
   rolesOrProjectsToEmphasize: string[];
   unsupportedKeywords: string[];
   formattingWarnings: string[];
-  atsCompatibilityScore: number;
-  jobFitScore: number;
   resumeText: string;
+  claimEvidence: ApplicationDocumentClaimEvidence[];
 };
 
-const scoreSchema = z.coerce.number().min(0).max(100).transform((value) => Math.round(value));
 function hasWellFormedUtf16(value: string) {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
@@ -1208,6 +1225,8 @@ export function buildResumeParseProviderV9JsonSchema(
   const schema = structuredClone(RESUME_PARSE_PROVIDER_V9_JSON_SCHEMA) as {
     properties: Record<string, {
       items?: { properties?: { recordId?: Record<string, unknown> } };
+      minItems?: number;
+      maxItems?: number;
     }>;
   };
   for (const section of [
@@ -1225,6 +1244,10 @@ export function buildResumeParseProviderV9JsonSchema(
       type: "string",
       enum: recordIds.length > 0 ? recordIds : [`no-${section}-records`]
     };
+    // One typed projection per server-owned record: the provider cannot merge or
+    // drop a record. The Gemini wire schema omits maxItems but keeps minItems.
+    schema.properties[section]!.minItems = recordIds.length;
+    schema.properties[section]!.maxItems = recordIds.length;
   }
   return schema as Record<string, unknown>;
 }
@@ -1241,7 +1264,7 @@ function omitMaxItemsFromJsonSchema(value: unknown): unknown {
 
 // Gemini can reject this otherwise-valid, deeply nested schema when all nested
 // array maxima are present. Keep the complete canonical contract above for local
-// validation, admission estimates, OpenAI, and every consumer. Only the Gemini
+// validation, admission estimates, and every consumer. Only the Gemini
 // wire representation omits maxItems; minItems and all structural constraints stay.
 export const RESUME_PARSE_GEMINI_RESPONSE_JSON_SCHEMA =
   omitMaxItemsFromJsonSchema(RESUME_PARSE_RESPONSE_JSON_SCHEMA) as Record<string, unknown>;
@@ -1282,7 +1305,7 @@ export function buildResumeParseGeminiProviderV9JsonSchema(
   ) as Record<string, unknown>;
 }
 
-const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
+export const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknown> = z.object({
   professionalSummary: z.string(),
   skillsSection: z.array(z.string()),
   bulletRewrites: z.array(
@@ -1295,10 +1318,112 @@ const tailoredResumeSchema: z.ZodType<TailoredResumeOutput, z.ZodTypeDef, unknow
   rolesOrProjectsToEmphasize: z.array(z.string()),
   unsupportedKeywords: z.array(z.string()),
   formattingWarnings: z.array(z.string()),
-  atsCompatibilityScore: scoreSchema,
-  jobFitScore: scoreSchema,
+  resumeText: z.string(),
+  claimEvidence: z.array(z.object({
+    claim: z.string().min(1),
+    citations: z.array(z.object({
+      ref: z.string().min(1),
+      excerpt: z.string().min(1)
+    }).strict()).min(1)
+  }).strict())
+}).strict();
+
+const tailoredResumeStringArray = { type: "array", items: { type: "string" } } as const;
+const providerFactSelectionSchema = z.object({
+  text: z.string(),
+  factId: z.string().min(1)
+}).strict();
+
+export const tailoredResumeProviderSchema: z.ZodType<
+  TailoredResumeProviderOutput,
+  z.ZodTypeDef,
+  unknown
+> = z.object({
+  professionalSummary: z.string(),
+  professionalSummaryFactId: z.string().min(1),
+  skillsSection: z.array(providerFactSelectionSchema),
+  bulletRewrites: z.array(z.object({
+    factId: z.string().min(1),
+    rewrite: z.string(),
+    reason: z.string()
+  }).strict()),
+  rolesOrProjectsToEmphasize: z.array(providerFactSelectionSchema),
+  // Each résumé line cites every fact it uses; the legacy single factId form is still accepted.
+  resumeTextClaims: z.array(z.union([
+    z.object({ claim: z.string().min(1), factIds: z.array(z.string().min(1)).min(1) }).strict(),
+    z.object({ claim: z.string().min(1), factId: z.string().min(1) }).strict()
+  ])),
+  unsupportedKeywords: z.array(z.string()),
+  formattingWarnings: z.array(z.string()),
   resumeText: z.string()
-});
+}).strict();
+
+export function buildTailoredResumeSystemPrompt(payload: ApplicationDocumentPayload) {
+  const priorities = applicationDocumentPriorityOpportunities(payload).map(({ ref, leadingFactIds }) => ({ ref, leadingFactIds }));
+  const protectedFactIds = tailoredResumeProtectedFactIds(payload);
+  return buildApplicationDocumentSystemPrompt(`${resumeTailorPrompt.trim()}\n\nConditional within-record priority opportunities: ${JSON.stringify(priorities)}\nProtected factIds (never trim): ${JSON.stringify(protectedFactIds)}`, payload);
+}
+
+export function buildTailoredResumeGeminiJsonSchema(payload: ApplicationDocumentPayload) {
+  const factIds = buildApplicationDocumentFactCatalog(payload).map((fact) => fact.factId);
+  const selectableFactIds = factIds.length ? factIds : [NO_APPLICATION_DOCUMENT_FACT_ID];
+  const factId = { type: "string", enum: selectableFactIds };
+  const selectedText = {
+    type: "object",
+    additionalProperties: false,
+    properties: { text: { type: "string" }, factId },
+    required: ["text", "factId"]
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      professionalSummary: { type: "string" },
+      professionalSummaryFactId: {
+        type: "string",
+        enum: [...new Set([...selectableFactIds, NO_APPLICATION_DOCUMENT_FACT_ID])]
+      },
+      skillsSection: { type: "array", items: selectedText },
+      bulletRewrites: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            factId,
+            rewrite: { type: "string" },
+            reason: { type: "string" }
+          },
+          required: ["factId", "rewrite", "reason"]
+        }
+      },
+      rolesOrProjectsToEmphasize: { type: "array", items: selectedText },
+      resumeTextClaims: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: { claim: { type: "string" }, factIds: { type: "array", items: factId, minItems: 1 } },
+          required: ["claim", "factIds"]
+        }
+      },
+      unsupportedKeywords: tailoredResumeStringArray,
+      formattingWarnings: tailoredResumeStringArray,
+      resumeText: { type: "string" }
+    },
+    required: [
+      "professionalSummary",
+      "professionalSummaryFactId",
+      "skillsSection",
+      "bulletRewrites",
+      "rolesOrProjectsToEmphasize",
+      "resumeTextClaims",
+      "unsupportedKeywords",
+      "formattingWarnings",
+      "resumeText"
+    ]
+  };
+}
 
 function assertSourceSupported(source: string, value: string | null, path: string) {
   if (value === null || value === "") return;
@@ -1660,9 +1785,15 @@ function isUnambiguousStandaloneWorkLocation(value: string) {
   return isStandaloneResumeLocation(value);
 }
 
-function assertWorkLocationSemantics(item: ResumeWorkHistoryItem) {
+function assertWorkLocationSemantics(item: ResumeWorkHistoryItem, serverCatalogAuthority: boolean) {
   if (!item.location) return;
   const locationIndex = item.sourceText.indexOf(item.location);
+  // With server catalog authority the record boundaries are already fixed, so a
+  // location anywhere in the record's header lines (before its first bullet) cannot
+  // conceal a merged record, e.g. "Beta Labs (Remote/Hybrid, New York) Feb 2020 – …".
+  if (serverCatalogAuthority && locationIndex >= 0 && locationIndex < firstFactIndex(item.sourceText, item.bullets)) {
+    return;
+  }
   const coreEnd = Math.max(
     item.sourceText.indexOf(item.company) + item.company.length,
     item.sourceText.indexOf(item.title) + item.title.length
@@ -2279,9 +2410,8 @@ export function estimateResumeParseMaximumProviderOutputBytes(
 }
 
 function resumeParseOutputTokenLimit(provider: AiProviderName) {
-  return provider === "gemini"
-    ? AI_FEATURE_POLICIES.RESUME_PARSE.maxOutputTokens
-    : OPENAI_RESUME_PARSE_OUTPUT_TOKENS;
+  void provider;
+  return AI_FEATURE_POLICIES.RESUME_PARSE.maxOutputTokens;
 }
 
 function assertResumeParseOutputCapacity(
@@ -2379,6 +2509,15 @@ export function prepareResumeParseV8Request(
     geminiResponseSchema,
     policy
   };
+}
+
+/** The provider request hash (and response-cache key) a V9 parse of this text uses. */
+export function resumeParseRequestHash(text: string) {
+  return hashAiInput(
+    "resumeParsePrompt",
+    RESUME_PARSE_CACHE_VERSION,
+    buildResumeProviderSourceInputV9(normalizeResumeLineEndings(text))
+  );
 }
 
 export function prepareResumeParseV9Request(
@@ -3085,7 +3224,7 @@ export function validateParsedResumeOutput(
     assertResumeDate(item.startDate, "workHistory", "workHistory date or location", `workHistory[${index}].startDate`);
     assertResumeDate(item.endDate, "workHistory", "workHistory date or location", `workHistory[${index}].endDate`);
     assertWorkHeaderSemantics(item, `workHistory[${index}]`);
-    assertWorkLocationSemantics(item);
+    assertWorkLocationSemantics(item, serverCatalogAuthority);
     if (!serverCatalogAuthority) assertUnambiguousNarrativeEntries(
       item.bullets,
       "workHistory",
@@ -3867,79 +4006,6 @@ class ResumeProviderError extends Error {
   }
 }
 
-async function callOpenAiResumeProvider(input: {
-  model: string;
-  payload: ReturnType<typeof buildResumeProviderSourceInput>;
-  responseJsonSchema: Record<string, unknown>;
-  maxOutputTokens: number;
-  systemPrompt: string;
-  schemaName: string;
-}) {
-  const client = getOpenAIClient();
-  if (!client) throw new LocalAiUnavailableError();
-  let response;
-  try {
-    response = await client.chat.completions.create({
-      model: input.model,
-      temperature: 0,
-      max_tokens: input.maxOutputTokens,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: input.schemaName,
-          strict: true,
-          schema: input.responseJsonSchema
-        }
-      },
-      messages: [
-        { role: "system", content: input.systemPrompt },
-        { role: "user", content: JSON.stringify(input.payload) }
-      ]
-    });
-  } catch (error) {
-    if (
-      error instanceof OpenAI.APIError &&
-      typeof error.status === "number" &&
-      error.status >= 400 &&
-      error.status < 500
-    ) {
-      throw new ResumeProviderError("OpenAI rejected resume parsing before completion.", {
-        billingDisposition: "not_charged"
-      });
-    }
-    throw new ResumeProviderError("OpenAI resume parsing outcome is uncertain.", {});
-  }
-  const usage = response.usage;
-  if (!usage) {
-    throw new ResumeProviderError("OpenAI returned no usage metadata.", {});
-  }
-  const providerUsage: ProviderUsage = {
-    inputTokens: usage.prompt_tokens,
-    outputTokens: usage.completion_tokens,
-    cachedInputTokens: usage.prompt_tokens_details?.cached_tokens ?? 0
-  };
-  const choice = response.choices[0];
-  if (choice?.finish_reason !== "stop") {
-    throw new ResumeProviderError(
-      `OpenAI did not complete the structured response (finish reason: ${String(choice?.finish_reason ?? "missing")}).`,
-      { usage: providerUsage }
-    );
-  }
-  const content = choice.message.content;
-  if (!content) {
-    throw new ResumeProviderError("OpenAI returned an empty structured response.", {
-      usage: providerUsage
-    });
-  }
-  try {
-    return { value: JSON.parse(content) as unknown, usage: providerUsage };
-  } catch {
-    throw new ResumeProviderError("OpenAI returned invalid structured JSON.", {
-      usage: providerUsage
-    });
-  }
-}
-
 function providerUsageFromError(error: unknown) {
   if (error instanceof GeminiProviderError || error instanceof ResumeProviderError) return error.usage;
   return null;
@@ -4015,7 +4081,6 @@ export async function parseResumeTextWithMeta(
     normalizedText,
     outputTokenLimit,
     payload,
-    providerResponseSchema,
     geminiResponseSchema,
     policy
   } = prepareResumeParseV9Request(text, provider);
@@ -4125,26 +4190,15 @@ export async function parseResumeTextWithMeta(
   let reconciled = false;
   try {
     requestDispatched = true;
-    const response = provider === "gemini"
-      ? await callGeminiJsonProvider({
-          apiKey: process.env.GEMINI_API_KEY!.trim(),
-          model,
-          systemPrompt: resumeParsePromptV9,
-          payload,
-          responseJsonSchema: geminiResponseSchema,
-          maxOutputTokens: outputTokenLimit,
-          thinkingLevel: "LOW"
-        })
-      : provider === "openai"
-        ? await callOpenAiResumeProvider({
-            model,
-            payload,
-            responseJsonSchema: providerResponseSchema,
-            maxOutputTokens: outputTokenLimit,
-            systemPrompt: resumeParsePromptV9,
-            schemaName: "resume_parse_v9"
-          })
-        : (() => { throw new PublicApiError(`Unsupported resume parsing provider: ${provider}.`, 503); })();
+    const response = await callGeminiJsonProvider({
+      apiKey: process.env.GEMINI_API_KEY!.trim(),
+      model,
+      systemPrompt: resumeParsePromptV9,
+      payload,
+      responseJsonSchema: geminiResponseSchema,
+      maxOutputTokens: outputTokenLimit,
+      thinkingLevel: "LOW"
+    });
     usage = response.usage;
     actualCostMicros = estimateAiCostMicros({
       model,
@@ -4229,17 +4283,45 @@ export async function parseResumeText(text: string, userId?: string, options: Ai
   return (await parseResumeTextWithMeta(text, userId, options)).data;
 }
 
-export async function tailorResume(payload: unknown, _fallbackText: string, userId?: string) {
+export async function tailorResume(
+  payload: unknown,
+  _fallbackText: string,
+  userId: string,
+  options: AiInvocationOptions = {}
+) {
+  const applicationPayload = payload as ApplicationDocumentPayload;
   const generated = await generateJson<TailoredResumeOutput>({
     promptName: "resumeTailorPrompt",
-    systemPrompt: resumeTailorPrompt,
+    systemPrompt: buildTailoredResumeSystemPrompt(applicationPayload),
     payload,
     schema: tailoredResumeSchema,
-    context: userId ? { userId, feature: "RESUME_TAILOR", promptVersion: "2" } : undefined
+    providerSchema: tailoredResumeProviderSchema,
+    decodeProvider: (value) => assembleTailoredResumeProviderOutput(
+      applicationPayload,
+      value as TailoredResumeProviderOutput
+    ),
+    responseJsonSchema: buildTailoredResumeGeminiJsonSchema(applicationPayload),
+    // No anonymous path: a missing budget owner fails closed in the guarded engine.
+    context: {
+      userId,
+      feature: "RESUME_TAILOR",
+      promptVersion: APPLICATION_DOCUMENT_PROMPT_VERSION,
+      ...options
+    },
+    // Lines whose wording fails the truth check revert to source wording; then the truth checks,
+    // the keep rule (restoring omitted required/protected/below-floor items verbatim) and the
+    // truth checks again run on the completed résumé before caching or persistence.
+    validate: (value) => finalizeTailoredResume(applicationPayload, value)
   });
+  const leftOut: TailoredResumeItem[] = tailoredResumeLeftOut(applicationPayload, generated.data);
+  const restored: TailoredResumeItem[] = [...tailoredResumeRestorations(generated.data)];
+  const reverted: TailoredResumeReversion[] = [...tailoredResumeReversions(generated.data)];
 
   return {
     ...generated.data,
+    leftOut,
+    restored,
+    reverted,
     model: generated.meta.model,
     promptVersion: generated.meta.promptVersion,
     inputHash: generated.meta.requestHash,

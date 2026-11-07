@@ -1,12 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, Loader2, Save } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+import { DocumentReviewPanel, documentReviewStatus } from "@/components/document-review-panel";
+import { PdfFontChoice, ActualPdfPreview } from "@/components/pdf-export-options";
+import { defaultPdfFont, type PdfFont } from "@/lib/documents/pdf-font";
+import { FormattedDocumentPreview } from "@/components/formatted-document-preview";
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import type { DocumentReviewView } from "@/lib/documents/document-review";
 import {
-  paginateResumeText,
   type ResumeFontFamily,
   type ResumeFormat,
   type ResumePageSize,
@@ -19,6 +23,9 @@ type ResumeVersionEditorProps = {
     title: string;
     fullText: string;
     jobLabel: string | null;
+    // Export readiness (D031): exactly generated from current evidence, or reviewed edits/legacy.
+    evidenceCurrent?: boolean;
+    review?: DocumentReviewView;
   };
 };
 
@@ -42,15 +49,21 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
     fontSize: version.fontSize,
     lineSpacing: version.lineSpacing
   });
-  const [busy, setBusy] = useState<"save" | ExportFormat | null>(null);
+  const [pdfFont, setPdfFont] = useState<PdfFont>(defaultPdfFont);
+  const [busy, setBusy] = useState<"save" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const pages = useMemo(() => paginateResumeText(fullText, format), [format, fullText]);
 
+  const textSaved = fullText === version.fullText;
+  const reviewStatus = version.review
+    ? documentReviewStatus(version.review.state)
+    : version.evidenceCurrent === false ? "Regenerate this document from current reviewed evidence before exporting." : null;
+  const dirty = title !== version.title || fullText !== version.fullText || Object.entries(format).some(([key,value]) => value !== version[key as keyof ResumeFormat]);
   function updateFormat<Key extends keyof ResumeFormat>(key: Key, value: ResumeFormat[Key]) {
     setFormat((current) => ({ ...current, [key]: value }));
   }
 
   async function save() {
+    if (!dirty || busy !== null) return;
     setBusy("save");
     setMessage(null);
     const response = await fetch(`/api/resume-versions/${version.id}`, {
@@ -66,43 +79,14 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
       return;
     }
 
-    setMessage("Resume version saved.");
+    const saved = (await response.json().catch(() => null)) as { review?: { pendingFlagCount?: number } | null } | null;
+    const pending = saved?.review?.pendingFlagCount ?? 0;
+    setMessage(pending
+      ? `Resume version saved. Your edits are marked; confirm ${pending === 1 ? "the flagged detail" : `${pending} flagged details`} before export.`
+      : "Resume version saved.");
     router.refresh();
   }
 
-  async function exportDocument(exportFormat: ExportFormat) {
-    setBusy(exportFormat);
-    setMessage(null);
-    const response = await fetch("/api/documents/export", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ resumeVersionId: version.id, format: exportFormat })
-    });
-
-    if (!response.ok) {
-      const json = (await response.json().catch(() => null)) as { error?: string } | null;
-      setMessage(json?.error ?? "Export failed.");
-      setBusy(null);
-      return;
-    }
-
-    const blob = await response.blob();
-    const disposition = response.headers.get("content-disposition");
-    const filename = disposition?.match(/filename="([^"]+)"/)?.[1] ?? `${title}.${exportFormat}`;
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    setBusy(null);
-  }
-
-  const paperWidth = format.pageSize === "A4" ? "min(100%, 49.6rem)" : "min(100%, 51rem)";
-  const paperAspect = format.pageSize === "A4" ? "210 / 297" : "8.5 / 11";
-  const previewFont = fontLabels[format.fontFamily];
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(520px,1.1fr)]">
@@ -118,7 +102,7 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
           Version title
           <input
             value={title}
-            onChange={(event) => setTitle(event.target.value)}
+            onChange={(event) => { setTitle(event.target.value); }}
             className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2"
           />
         </label>
@@ -148,8 +132,9 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
             </select>
           </label>
           <label className="text-sm font-medium text-slate-700">
-            Font
+            DOCX font
             <select
+              aria-label="DOCX font"
               value={format.fontFamily}
               onChange={(event) => updateFormat("fontFamily", event.target.value as ResumeFontFamily)}
               className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2"
@@ -204,81 +189,62 @@ export function ResumeVersionEditor({ version }: ResumeVersionEditorProps) {
         <label className="block text-sm font-medium text-slate-700">
           Resume text
           <textarea
+            aria-label="Resume text"
             value={fullText}
-            onChange={(event) => setFullText(event.target.value)}
+            onChange={(event) => { setFullText(event.target.value); }}
             rows={28}
             className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-3 font-mono text-sm leading-6 text-slate-700"
           />
         </label>
 
+        <PdfFontChoice value={pdfFont} disabled={busy === "save"} onChange={font => { setPdfFont(font); setMessage(null); }} />
+        <p className="text-sm text-slate-500">PDF font applies to this review only. DOCX retains its selected font. Preview actual PDF before downloading; PDF and DOCX can have different line breaks.</p>
+        {reviewStatus ? <p role="status">{reviewStatus}</p> : null}
+        {dirty ? <p role="status">Unsaved changes — save before exporting or previewing the actual PDF. Saved text edits are marked as yours, and changed facts are flagged for your confirmation.</p> : null}
+        {version.review && textSaved ? <DocumentReviewPanel kind="resume" documentId={version.id} review={version.review} disabled={busy !== null} /> : null}
         <div className="flex flex-wrap gap-2">
-          <PrimaryButton type="button" onClick={save} disabled={busy !== null}>
+          <PrimaryButton type="button" onClick={save} disabled={busy !== null || !dirty}>
             {busy === "save" ? <Loader2 className="mr-2 animate-spin" size={16} /> : <Save className="mr-2" size={16} />}
             Save version
           </PrimaryButton>
-          {(["docx", "pdf"] as const).map((exportFormat) => (
-            <SecondaryButton key={exportFormat} type="button" onClick={() => exportDocument(exportFormat)} disabled={busy !== null}>
-              {busy === exportFormat ? <Loader2 className="mr-2 animate-spin" size={16} /> : <Download className="mr-2" size={16} />}
-              {exportFormat.toUpperCase()}
-            </SecondaryButton>
-          ))}
+
         </div>
       </section>
 
-      <section className="min-w-0 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-950">Live preview</h2>
-            <p className="text-sm text-slate-500">Estimated {pages.length} {pages.length === 1 ? "page" : "pages"}</p>
-          </div>
-          {pages.length > 2 ? (
-            <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900">Review length</span>
-          ) : null}
-        </div>
-        <div className="space-y-5 overflow-x-auto rounded-lg bg-slate-200 p-3 sm:p-5">
-          {pages.map((lines, pageIndex) => (
-              <article
-                key={pageIndex}
-                className="mx-auto overflow-hidden bg-white shadow-sm"
-                style={{
-                  width: paperWidth,
-                  aspectRatio: paperAspect,
-                  padding: format.template === "COMPACT" ? "5.8%" : "7.2%",
-                  fontFamily: previewFont,
-                  fontSize: `${format.fontSize * (4 / 3)}px`,
-                  lineHeight: format.lineSpacing / 100
-                }}
-              >
-                <div className="h-full overflow-hidden text-slate-800">
-                  {lines.map((line, lineIndex) => {
-                    const trimmed = line.trim();
-                    const heading = /^(SUMMARY|PROFILE|SKILLS|EXPERIENCE|WORK EXPERIENCE|PROJECTS|EDUCATION|CERTIFICATIONS|TECHNICAL SKILLS):?$/i.test(trimmed);
-                    const bullet = /^\u2022\s+/.test(line);
-                    return (
-                      <div
-                        key={`${pageIndex}-${lineIndex}`}
-                        className={
-                          heading
-                            ? format.template === "MODERN"
-                              ? "mb-1 mt-3 border-l-4 py-0.5 pl-2 font-bold uppercase"
-                              : "mb-1 mt-3 border-b pb-1 font-bold uppercase"
-                            : bullet
-                              ? "ml-4 list-item pl-1"
-                              : trimmed
-                                ? "min-h-[1em]"
-                                : "h-[0.65em]"
-                        }
-                        style={heading ? { color: format.accentColor, borderColor: format.accentColor } : undefined}
-                      >
-                        {bullet ? line.replace(/^\u2022\s+/, "") : line || " "}
-                      </div>
-                    );
-                  })}
-                </div>
-              </article>
-          ))}
-        </div>
-      </section>
+      <div className="min-w-0"><FormattedDocumentPreview text={fullText} title="DOCX layout guide" format={format} headingLevel={2} lineOrigins={textSaved ? version.review?.segments : undefined} /><EditorDocumentExports key={JSON.stringify([version,title,fullText,format,pdfFont,busy])} id={version.id} title={title} pdfFont={pdfFont} eligible={!dirty && busy === null && version.evidenceCurrent !== false} /></div>
     </div>
   );
+}
+
+// A new saved identity or draft gets a fresh export controller; owner drafts stay above this boundary.
+function EditorDocumentExports({ id, title, pdfFont, eligible }: { id: string; title: string; pdfFont: PdfFont; eligible: boolean }) {
+  const [busy,setBusy] = useState<"preview" | ExportFormat | null>(null);
+  const [message,setMessage] = useState<string | null>(null), [pdfUrl,setPdfUrl] = useState<string | null>(null);
+  const alive=useRef(true), url=useRef<string | null>(null), abort=useRef<AbortController | null>(null);
+  useEffect(()=>{
+    alive.current=true;
+    const life=alive,request=abort,objectUrl=url;
+    return ()=>{life.current=false;request.current?.abort();if(objectUrl.current)URL.revokeObjectURL(objectUrl.current);};
+  },[]);
+  async function exportDocument(exportFormat: ExportFormat, preview=false) {
+    if(!eligible||busy!==null||abort.current)return;
+    const controller=new AbortController();abort.current=controller;setBusy(preview?"preview":exportFormat);setMessage(null);
+    try {
+      const response=await fetch("/api/documents/export",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({resumeVersionId:id,format:exportFormat,...(exportFormat==="pdf"?{pdfFont}:{})}),signal:controller.signal});
+      if(!response.ok){const json=await response.json().catch(()=>null);throw new Error(json?.error??"Export failed.");}
+      const blob=await response.blob();if(!alive.current||controller.signal.aborted)return;
+      const objectUrl=URL.createObjectURL(blob);
+      if(preview){if(url.current)URL.revokeObjectURL(url.current);url.current=objectUrl;setPdfUrl(objectUrl);}
+      else {const link=document.createElement("a");link.href=objectUrl;link.download=response.headers.get("content-disposition")?.match(/filename="([^"]+)"/)?.[1]??`${title}.${exportFormat}`;link.click();URL.revokeObjectURL(objectUrl);}
+    }catch(error){if(alive.current&&!controller.signal.aborted)setMessage(error instanceof Error?error.message:"Export unavailable.");}
+    finally{if(alive.current){setBusy(null);abort.current=null;}}
+  }
+  return <div>
+    {message?<p role="status">{message}</p>:null}
+    <div className="application-background-actions">
+      <SecondaryButton type="button" onClick={()=>exportDocument("pdf",true)} disabled={!eligible||busy!==null}>Preview actual PDF</SecondaryButton>
+      {(["docx","pdf"] as const).map(format=><SecondaryButton key={format} type="button" onClick={()=>exportDocument(format)} disabled={!eligible||busy!==null}><Download className="mr-2" size={16}/>{format.toUpperCase()}</SecondaryButton>)}
+    </div>
+    {pdfUrl?<ActualPdfPreview url={pdfUrl} font={pdfFont}/>:null}
+  </div>;
 }

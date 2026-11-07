@@ -245,6 +245,20 @@ test("review queue keeps unscored jobs in needs review", () => {
   assert.ok(result.flags.includes("Needs fit score"));
 });
 
+test("review queue describes model gaps as resume-evidence signals, not confirmed lacks", () => {
+  const job = reviewJob({
+    missingKeywords: ["Kubernetes"],
+    concerns: ["Production Kubernetes experience"]
+  });
+  const result = mapJobForReviewQueue(job, [job]);
+
+  assert.ok(result.whyReviewNeeded.includes("Exact terms not found in submitted resume: Kubernetes"));
+  assert.ok(result.whyReviewNeeded.includes(
+    "Requirements not evidenced in submitted resume: Production Kubernetes experience"
+  ));
+  assert.doesNotMatch(result.whyReviewNeeded.join(" "), /Missing keywords|Concerns:/u);
+});
+
 test("review queue treats zero fit scores as scored weak matches", () => {
   const job = reviewJob({
     overallFitScore: 0,

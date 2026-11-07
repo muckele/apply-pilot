@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -93,6 +94,7 @@ test("v3 fit presentation labels confidence as uncalibrated and explains unknown
     },
     {
       contractVersion: "3",
+      promptVersion: "3.4",
       compensationAssessment: { score: null, reason: "missing_applicant_salary_target" },
       confidenceAssessment: {
         score: 79,
@@ -120,9 +122,59 @@ test("v3 fit presentation labels confidence as uncalibrated and explains unknown
   assert.equal(presentation.factualMatches[0].claim, "TypeScript evidence matches the requirement.");
   assert.equal(presentation.requirementGaps[0].requirement, "Kubernetes");
   assert.equal(presentation.isLegacyAnalysis, false);
+  assert.equal(presentation.isCurrentAnalysis, true);
 });
 
-test("legacy fit presentation stays readable without inventing evidence links or confidence basis", async () => {
+test("no current analysis does not present denormalized legacy scores or gaps as current", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation({
+    overallFitScore: 91,
+    compensationScore: 88,
+    confidenceScore: 90,
+    keyMatchReason: "Stale match reason",
+    concerns: ["Stale requirement gap"],
+    suggestedResumeAngle: null,
+    suggestedCoverLetterAngle: null
+  }, null);
+
+  assert.equal(presentation.hasFitAnalysis, false);
+  assert.equal(presentation.fitScore, null);
+  assert.equal(presentation.confidence, null);
+  assert.equal(presentation.compensation.score, null);
+  assert.deepEqual(presentation.factualMatches, []);
+  assert.deepEqual(presentation.requirementGaps, []);
+  assert.equal(presentation.isCurrentAnalysis, false);
+});
+
+test("a stale prompt analysis cannot leak denormalized document advice", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation({
+    overallFitScore: 91,
+    compensationScore: 88,
+    confidenceScore: 90,
+    keyMatchReason: "Stale match reason",
+    concerns: ["Stale requirement gap"],
+    suggestedResumeAngle: "STALE PRIVATE RESUME ANGLE",
+    suggestedCoverLetterAngle: "STALE PRIVATE COVER ANGLE"
+  }, {
+    contractVersion: "3",
+    promptVersion: "3.2"
+  });
+
+  assert.equal(presentation.fitScore, null);
+  assert.equal(presentation.hasFitAnalysis, false);
+  assert.match(presentation.suggestedResumeAngle, /actual experience/i);
+  assert.match(presentation.suggestedCoverLetterAngle, /verified experience/i);
+  assert.doesNotMatch(JSON.stringify(presentation), /STALE PRIVATE/);
+});
+
+test("client-used fit presentation depends only on the lightweight version module", () => {
+  const source = readFileSync("lib/jobs/fit-presentation.ts", "utf8");
+  assert.match(source, /@\/lib\/ai\/job-match-version/);
+  assert.doesNotMatch(source, /@\/lib\/ai\/job-match["']/);
+});
+
+test("legacy analysis is isolated instead of presenting stale denormalized fields", async () => {
   const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
   const presentation = getJobMatchAnalysisPresentation(
     {
@@ -137,14 +189,14 @@ test("legacy fit presentation stays readable without inventing evidence links or
     { overallFitScore: 0, confidenceScore: 0 }
   );
 
-  assert.equal(presentation.fitScore, 0);
-  assert.equal(presentation.compensation.score, 0);
+  assert.equal(presentation.fitScore, null);
+  assert.equal(presentation.compensation.score, null);
   assert.match(presentation.compensation.explanation, /legacy analysis/i);
-  assert.equal(presentation.confidence?.score, 0);
-  assert.equal(presentation.confidence?.label, "Uncalibrated model self-assessment");
-  assert.match(presentation.confidence?.basis ?? "", /legacy analysis did not record/i);
-  assert.deepEqual(presentation.factualMatches, [{ claim: "Legacy recorded reason", applicantEvidence: [], jobEvidence: [] }]);
-  assert.deepEqual(presentation.requirementGaps, [{ requirement: "Legacy recorded concern", jobRequirement: null }]);
+  assert.equal(presentation.confidence, null);
+  assert.deepEqual(presentation.factualMatches, []);
+  assert.deepEqual(presentation.requirementGaps, []);
+  assert.match(presentation.suggestedResumeAngle, /actual experience/i);
+  assert.match(presentation.suggestedCoverLetterAngle, /verified experience/i);
   assert.equal(presentation.isLegacyAnalysis, true);
 });
 
@@ -178,7 +230,7 @@ test("apply packet renders unknown resume metrics without fake percentages and k
       },
       resumeVersions: [{
         id: "resume-1", title: "Resume", atsCompatibility: resumeScore,
-        jobFitScore: resumeScore, createdAt: "2026-09-22T00:00:00.000Z"
+        jobFitScore: resumeScore, evidenceCurrent: true, createdAt: "2026-09-22T00:00:00.000Z"
       }],
       coverLetters: [], application: null
     }));
@@ -195,4 +247,85 @@ test("apply packet renders unknown resume metrics without fake percentages and k
   assert.match(zero, /0% fit/);
   assert.match(zero, /0% ATS/);
   assert.doesNotMatch(zero, /ATS unscored|Fit unscored/);
+});
+
+const TENURE_REQUIREMENT = "Demonstrated 5+ years of hands-on experience in a customer-facing technical role such as Solutions Engineer or similar.";
+const TENURE_SUMMARY = "Your résumé shows about 4 months in a customer-facing technical role; this job asks for 5+ years.";
+
+function tenureAnalysis(tenure: unknown) {
+  return {
+    contractVersion: "3",
+    promptVersion: "3.4",
+    requirementGaps: [
+      {
+        requirement: "Kubernetes",
+        jobRequirement: { ref: "job.preferredQualifications[0]", excerpt: "Kubernetes" },
+        missingKeywords: ["Kubernetes"]
+      },
+      {
+        requirement: TENURE_REQUIREMENT,
+        jobRequirement: { ref: "job.requirements[0]", excerpt: TENURE_REQUIREMENT },
+        missingKeywords: [],
+        tenure
+      }
+    ]
+  };
+}
+
+const presentedJob = {
+  overallFitScore: 38,
+  compensationScore: null,
+  confidenceScore: 55,
+  keyMatchReason: null,
+  concerns: [],
+  suggestedResumeAngle: null,
+  suggestedCoverLetterAngle: null
+};
+
+test("a tenure gap presents its summary and the work-history roles it counted", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const presentation = getJobMatchAnalysisPresentation(presentedJob, tenureAnalysis({
+    method: "work_history_titles_and_dates",
+    summary: TENURE_SUMMARY,
+    countedRoles: [{
+      ref: "resume.workHistory[0]",
+      excerpt: "Technical Consultant",
+      title: "Technical Consultant",
+      company: "Northwind Studio",
+      startDate: "Jul 2026",
+      endDate: "Present"
+    }]
+  }));
+
+  assert.equal(presentation.requirementGaps[0].tenure, null);
+  assert.deepEqual(presentation.requirementGaps[1].tenure, {
+    summary: TENURE_SUMMARY,
+    countedRoles: [{ title: "Technical Consultant", company: "Northwind Studio", dates: "Jul 2026 – Present" }]
+  });
+});
+
+test("a malformed stored tenure finding is not presented", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  for (const tenure of [null, "text", { summary: 4 }, { summary: "  " }]) {
+    const presentation = getJobMatchAnalysisPresentation(presentedJob, tenureAnalysis(tenure));
+    assert.equal(presentation.requirementGaps[1].tenure, null, JSON.stringify(tenure));
+  }
+});
+
+test("the requirement gap list shows the tenure sentence and the counted roles", async () => {
+  const { getJobMatchAnalysisPresentation } = await import("@/lib/jobs/fit-presentation");
+  const { RequirementGapList } = await import("@/components/requirement-gap-list");
+  const presentation = getJobMatchAnalysisPresentation(presentedJob, tenureAnalysis({
+    summary: TENURE_SUMMARY,
+    countedRoles: [{ title: "Technical Consultant", company: "Northwind Studio", startDate: "Jul 2026", endDate: "Present" }]
+  }));
+  const html = renderToStaticMarkup(React.createElement(RequirementGapList, { gaps: presentation.requirementGaps }));
+
+  assert.match(html, /Requirements not evidenced in the submitted resume/);
+  assert.match(html, /Not evidenced is not proof that the applicant lacks the capability/);
+  assert.ok(html.includes(TENURE_REQUIREMENT));
+  assert.ok(html.includes("Your résumé shows about 4 months in a customer-facing technical role; this job asks for 5+ years."));
+  assert.match(html, /Counted from work-history titles and dates: Technical Consultant, Northwind Studio \(Jul 2026 – Present\)/);
+  assert.match(html, /\(job\.requirements\[0\]\)/);
+  assert.equal(renderToStaticMarkup(React.createElement(RequirementGapList, { gaps: [] })), "");
 });

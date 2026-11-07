@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import OpenAI from "openai";
 
 import {
   estimateResumeParseMaximumOutputBytes,
@@ -16,7 +15,6 @@ import {
   validateParsedResumeOutput,
   type ParsedResume
 } from "@/lib/ai/resume";
-import { getOpenAIClient } from "@/lib/ai/client";
 import { PublicApiError } from "@/lib/api-errors";
 import { prisma } from "@/lib/prisma";
 import { resumeParsePromptV9 } from "@/prompts/resumeParsePrompt";
@@ -1720,76 +1718,16 @@ test("an abandoned reserved request becomes uncertain before transport and remai
   assert.equal(ledger.reconciliations[0]?.status, "UNCERTAIN");
 });
 
-test("OpenAI configuration retains the same confirmation, validation, and reservation contract", async (t) => {
+test("a retired OpenAI provider selection fails closed before any transport, reservation, or cache read", async (t) => {
   environment(t);
   process.env.AI_PROVIDER = "openai";
   process.env.OPENAI_API_KEY = "synthetic-never-log";
-  process.env.OPENAI_MODEL = "gpt-4o-mini";
-  delete process.env.GEMINI_API_KEY;
   const ledger = installLedger(t);
-  const client = getOpenAIClient();
-  assert.ok(client);
-  let openAiRequest: {
-    max_tokens?: number;
-    response_format?: {
-      json_schema?: {
-        schema?: {
-          properties?: {
-            workHistory?: {
-              items?: { properties?: { recordId?: { enum?: string[] } } };
-            };
-          };
-        };
-      };
-    };
-  } | undefined;
-  stub(t, client.chat.completions, "create", async (request: unknown) => {
-    openAiRequest = request as { max_tokens?: number };
-    return {
-      choices: [{
-        finish_reason: "stop",
-        message: { content: JSON.stringify(providerV9FromCanonical(resumeText, currentParsedOutput())) }
-      }],
-      usage: {
-        prompt_tokens: 160,
-        completion_tokens: 80,
-        prompt_tokens_details: { cached_tokens: 0 }
-      }
-    };
+  let providerCalls = 0;
+  stub(t, globalThis, "fetch", async () => {
+    providerCalls += 1;
+    throw new Error("must not call");
   });
-  stub(t, globalThis, "fetch", async () => { throw new Error("Gemini transport must not be used"); });
-
-  const result = await parseResumeTextWithMeta(resumeText, "user-1", {
-    highCostConfirmed: true,
-    dataSharingConfirmed: true
-  });
-
-  assert.equal(result.meta.provider, "openai");
-  assert.equal(result.meta.model, "gpt-4o-mini");
-  assert.equal(openAiRequest?.max_tokens, 16_000);
-  assert.deepEqual(
-    openAiRequest?.response_format?.json_schema?.schema?.properties?.workHistory
-      ?.items?.properties?.recordId?.enum,
-    ["section-3-record-1"]
-  );
-  assert.equal(ledger.reservations[0]?.provider, "openai");
-  assert.equal(ledger.reservations[0]?.maximumCostMicros, 11_400);
-  assert.equal(ledger.reconciliations[0]?.status, "SUCCEEDED");
-});
-
-test("OpenAI must report a complete stop before structured output can be accepted", async (t) => {
-  environment(t);
-  process.env.AI_PROVIDER = "openai";
-  process.env.OPENAI_API_KEY = "synthetic-never-log";
-  process.env.OPENAI_MODEL = "gpt-4o-mini";
-  delete process.env.GEMINI_API_KEY;
-  const ledger = installLedger(t);
-  const client = getOpenAIClient();
-  assert.ok(client);
-  stub(t, client.chat.completions, "create", async () => ({
-    choices: [{ finish_reason: "length", message: { content: JSON.stringify(currentParsedOutput()) } }],
-    usage: { prompt_tokens: 160, completion_tokens: 80, prompt_tokens_details: { cached_tokens: 0 } }
-  }));
 
   await assert.rejects(
     parseResumeTextWithMeta(resumeText, "user-1", {
@@ -1797,43 +1735,8 @@ test("OpenAI must report a complete stop before structured output can be accepte
       dataSharingConfirmed: true
     }),
     (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "RESUME_PARSE_PROVIDER_INVALID" &&
-      error.details.provider === "openai" &&
-      error.details.billingStatus === "known" &&
-      typeof error.details.actualCostMicros === "number"
+      error.status === 503 && error.details?.code === "AI_PROVIDER_UNSUPPORTED"
   );
-  assert.equal(ledger.reconciliations[0]?.status, "FAILED");
-  assert.equal(ledger.cacheWrites.length, 0);
-});
-
-test("a definite OpenAI client rejection is recorded as not charged and remains retryable", async (t) => {
-  environment(t);
-  process.env.AI_PROVIDER = "openai";
-  process.env.OPENAI_API_KEY = "synthetic-never-log";
-  process.env.OPENAI_MODEL = "gpt-4o-mini";
-  delete process.env.GEMINI_API_KEY;
-  const ledger = installLedger(t);
-  const client = getOpenAIClient();
-  assert.ok(client);
-  const rejection = Object.assign(Object.create(OpenAI.BadRequestError.prototype), {
-    name: "BadRequestError",
-    message: "synthetic invalid request",
-    status: 400
-  });
-  stub(t, client.chat.completions, "create", async () => { throw rejection; });
-
-  await assert.rejects(
-    parseResumeTextWithMeta(resumeText, "user-1", {
-      highCostConfirmed: true,
-      dataSharingConfirmed: true
-    }),
-    (error: unknown) => error instanceof PublicApiError &&
-      error.details?.code === "RESUME_PARSE_PROVIDER_REJECTED" &&
-      error.details.retryable === true &&
-      error.details.provider === "openai" &&
-      error.details.billingStatus === "not_charged" &&
-      error.details.actualCostMicros === 0
-  );
-  assert.equal(ledger.reconciliations[0]?.status, "FAILED");
-  assert.equal(ledger.reconciliations[0]?.actualCostMicros, 0);
+  assert.equal(providerCalls, 0);
+  assert.equal(ledger.reservations.length, 0);
 });

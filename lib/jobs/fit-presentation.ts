@@ -1,3 +1,5 @@
+import { JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
+
 export function validFitScore(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100
     ? value
@@ -43,9 +45,14 @@ type FactualMatchPresentation = {
   applicantEvidence: EvidenceCitation[];
   jobEvidence: EvidenceCitation[];
 };
-type RequirementGapPresentation = {
+export type TenureGapPresentation = {
+  summary: string;
+  countedRoles: Array<{ title: string; company: string | null; dates: string }>;
+};
+export type RequirementGapPresentation = {
   requirement: string;
   jobRequirement: EvidenceCitation | null;
+  tenure: TenureGapPresentation | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -75,15 +82,41 @@ function readV3FactualMatches(output: Record<string, unknown>): FactualMatchPres
   });
 }
 
+function optionalText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function readTenure(value: unknown): TenureGapPresentation | null {
+  if (!isRecord(value)) return null;
+  const summary = optionalText(value.summary);
+  if (!summary) return null;
+  const countedRoles = Array.isArray(value.countedRoles)
+    ? value.countedRoles.flatMap((role) => {
+        const title = isRecord(role) ? optionalText(role.title) : null;
+        if (!isRecord(role) || !title) return [];
+        return [{
+          title,
+          company: optionalText(role.company),
+          dates: [optionalText(role.startDate), optionalText(role.endDate)].filter(Boolean).join(" – ")
+        }];
+      })
+    : [];
+  return { summary, countedRoles };
+}
+
 function readV3RequirementGaps(output: Record<string, unknown>): RequirementGapPresentation[] {
   if (!Array.isArray(output.requirementGaps)) return [];
   return output.requirementGaps.flatMap((value) => {
     if (!isRecord(value) || typeof value.requirement !== "string") return [];
-    return [{ requirement: value.requirement, jobRequirement: readCitation(value.jobRequirement) }];
+    return [{
+      requirement: value.requirement,
+      jobRequirement: readCitation(value.jobRequirement),
+      tenure: readTenure(value.tenure)
+    }];
   });
 }
 
-function compensationExplanation(reason: unknown) {
+export function compensationExplanation(reason: unknown) {
   switch (reason) {
     case "missing_applicant_salary_target":
       return "Unknown because the applicant salary target is missing.";
@@ -101,43 +134,48 @@ function compensationExplanation(reason: unknown) {
 }
 
 export function getJobMatchAnalysisPresentation(job: AnalysisJob, analysisOutput: unknown) {
-  const base = getJobFitPresentation(job);
   const output = isRecord(analysisOutput) ? analysisOutput : null;
   const isV3 = output?.contractVersion === "3";
-  const confidenceAssessment = isV3 && isRecord(output.confidenceAssessment)
+  const isCurrentAnalysis = isV3 && output.promptVersion === JOB_MATCH_PROMPT_VERSION;
+  const base = getJobFitPresentation(isCurrentAnalysis ? job : {
+    ...job,
+    overallFitScore: null,
+    suggestedResumeAngle: null,
+    suggestedCoverLetterAngle: null
+  });
+  const confidenceAssessment = isCurrentAnalysis && isRecord(output.confidenceAssessment)
     ? output.confidenceAssessment
     : null;
-  const compensation = isV3 && isRecord(output.compensationAssessment)
+  const compensation = isCurrentAnalysis && isRecord(output.compensationAssessment)
     ? output.compensationAssessment
     : null;
   const v3ConfidenceScore = validFitScore(confidenceAssessment?.score);
-  const legacyConfidenceScore = validFitScore(job.confidenceScore);
-  const compensationScore = validFitScore(isV3 ? compensation?.score : job.compensationScore);
-  const legacyReason = job.keyMatchReason?.trim();
+  const compensationScore = validFitScore(isCurrentAnalysis ? compensation?.score : null);
 
   return {
     ...base,
+    fitScore: isCurrentAnalysis ? base.fitScore : null,
+    hasFitAnalysis: isCurrentAnalysis && base.hasFitAnalysis,
     compensation: {
       score: compensationScore,
-      explanation: compensationExplanation(isV3 ? compensation?.reason : undefined)
+      explanation: compensationExplanation(isCurrentAnalysis ? compensation?.reason : undefined)
     },
-    confidence: (isV3 ? v3ConfidenceScore : legacyConfidenceScore) === null
+    confidence: v3ConfidenceScore === null
       ? null
       : {
-          score: (isV3 ? v3ConfidenceScore : legacyConfidenceScore) as number,
+          score: v3ConfidenceScore,
           label: "Uncalibrated model self-assessment" as const,
-          basis: isV3 && typeof confidenceAssessment?.basis === "string" && confidenceAssessment.basis.trim()
+          basis: isCurrentAnalysis && typeof confidenceAssessment?.basis === "string" && confidenceAssessment.basis.trim()
             ? confidenceAssessment.basis
             : "Legacy analysis did not record a confidence basis."
         },
-    factualMatches: isV3
+    factualMatches: isCurrentAnalysis
       ? readV3FactualMatches(output)
-      : legacyReason
-        ? [{ claim: legacyReason, applicantEvidence: [], jobEvidence: [] }]
-        : [],
-    requirementGaps: isV3
+      : [],
+    requirementGaps: isCurrentAnalysis
       ? readV3RequirementGaps(output)
-      : job.concerns.map((requirement) => ({ requirement, jobRequirement: null })),
-    isLegacyAnalysis: !isV3
+      : [],
+    isCurrentAnalysis,
+    isLegacyAnalysis: !isCurrentAnalysis
   };
 }

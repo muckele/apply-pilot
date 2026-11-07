@@ -96,7 +96,8 @@ export async function runJobSourceSync({
     const aiSettings = await getOrCreateAiSettings(userId);
     const scoring = await scoreTopImportedJobs({
       userId,
-      jobs: result.imported,
+      // Unchanged postings are not rewritten but keep their place in the capped scoring step.
+      jobs: [...result.imported, ...result.unchanged],
       profile: syncProfile,
       limit: aiSettings.maxAnalysesPerSync,
       enabled: aiSettings.aiDiscoveryEnabled && !scoringStopReason,

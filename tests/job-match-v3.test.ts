@@ -5,11 +5,14 @@ import {
   buildJobMatchResponseJsonSchema,
   buildJobMatchSystemPrompt,
   JOB_MATCH_PROMPT_VERSION,
+  JobMatchOutputValidationError,
   jobMatchModelOutputSchema,
   normalizeJobMatchOutput,
+  validateAndNormalizeJobMatchOutput,
   type MatchInput,
   type JobMatchModelOutput
 } from "@/lib/ai/job-match";
+import { reviewedEvidenceFromSnapshot } from "@/lib/jobs/evidence-snapshot-contracts";
 import { buildJobMatchPostingUpdate } from "@/lib/jobs/job-match-projection";
 
 type ResponseSchemaView = {
@@ -103,8 +106,8 @@ function cloneOutput() {
   return structuredClone(baseModelOutput);
 }
 
-test("JOB_MATCH uses prompt/cache revision 3.1 for the corrected v3 result contract", () => {
-  assert.equal(JOB_MATCH_PROMPT_VERSION, "3.1");
+test("JOB_MATCH uses prompt/cache revision 3.4 for durable reviewed evidence", () => {
+  assert.equal(JOB_MATCH_PROMPT_VERSION, "3.4");
 });
 
 test("compensation keeps null distinct from a genuine numeric zero", () => {
@@ -220,6 +223,32 @@ test("skills marked not to exaggerate cannot support a positive factual match", 
   assert.throws(() => normalizeJobMatchOutput(baseInput, negativeControl), /unknown applicant evidence reference/i);
 });
 
+test("profile preferences cannot support a positive qualification match", () => {
+  for (const [ref, excerpt] of [
+    ["profile.careerGoals", "Build reliable services"],
+    ["profile.preferredRoles[0]", "Platform Engineer"],
+    ["profile.preferredLocations[0]", "Remote"],
+    ["profile.remotePreference", "Remote"],
+    ["profile.salaryTargetMin", "125000"],
+    ["profile.skillsToEmphasize[0]", "TypeScript"]
+  ]) {
+    const input = structuredClone(baseInput);
+    input.job.requirements = [excerpt];
+    const preferenceMatch = cloneOutput();
+    preferenceMatch.factualMatches = [{
+      applicantEvidence: [{ ref, excerpt }],
+      jobEvidence: [{ ref: "job.requirements[0]", excerpt }],
+      supportedKeywords: [excerpt]
+    }];
+    preferenceMatch.requirementGaps = [];
+    assert.throws(
+      () => normalizeJobMatchOutput(input, preferenceMatch),
+      /unknown applicant evidence reference/i,
+      ref
+    );
+  }
+});
+
 test("unsupported evidence excerpts and keywords are rejected locally", () => {
   const unsupportedExcerpt = cloneOutput();
   unsupportedExcerpt.factualMatches[0].applicantEvidence[0].excerpt = "Rust";
@@ -232,6 +261,90 @@ test("unsupported evidence excerpts and keywords are rejected locally", () => {
   const partialKeyword = cloneOutput();
   partialKeyword.factualMatches[0].supportedKeywords = ["Script"];
   assert.throws(() => normalizeJobMatchOutput(baseInput, partialKeyword), /unsupported matched keyword/i);
+});
+
+test("positive matches cannot strip same-line or cross-line negation from submitted or reviewed evidence", () => {
+  for (const [ref, fact, configure] of [
+    ["resume.rawText", "No Kubernetes experience", (input: MatchInput) => {
+      input.resume!.rawText = "No Kubernetes experience";
+    }],
+    ["resume.rawText", "No experience with:\nKubernetes", (input: MatchInput) => {
+      input.resume!.rawText = "No experience with:\nKubernetes";
+    }],
+    ["reviewedEvidence.facts[0]", "No Kubernetes experience", (input: MatchInput) => {
+      input.reviewedEvidence = {
+        schema: "apply-pilot/job-match-reviewed-evidence/v1",
+        snapshotId: "snapshot-1",
+        snapshotHash: "a".repeat(64),
+        facts: [{
+          gapId: "gap:0",
+          fact: "No Kubernetes experience",
+          provenance: "SUBMITTED_RESUME",
+          sourceRef: "resume.rawText"
+        }],
+        unresolvedGapIds: []
+      };
+    }],
+    ["reviewedEvidence.facts[0]", "No experience with:\nKubernetes", (input: MatchInput) => {
+      input.reviewedEvidence = {
+        schema: "apply-pilot/job-match-reviewed-evidence/v1",
+        snapshotId: "snapshot-1",
+        snapshotHash: "a".repeat(64),
+        facts: [{
+          gapId: "gap:0",
+          fact: "No experience with:\nKubernetes",
+          provenance: "SUBMITTED_RESUME",
+          sourceRef: "resume.rawText"
+        }],
+        unresolvedGapIds: []
+      };
+    }],
+    ["resume.rawText", "0 years experience with:\nKubernetes", (input: MatchInput) => {
+      input.resume!.rawText = "0 years experience with:\nKubernetes";
+    }],
+    ["reviewedEvidence.facts[0]", "0 years experience with:\nKubernetes", (input: MatchInput) => {
+      input.reviewedEvidence = reviewedEvidenceFromSnapshot({
+        id: "snapshot-1",
+        snapshotHash: "a".repeat(64),
+        reviewPayload: {
+          schema: "apply-pilot/evidence-snapshot-payload/v1",
+          decisions: [{
+            gapId: "gap:0",
+            status: "RESOLVED",
+            fact: "0 years experience with:\nKubernetes",
+            provenance: {
+              kind: "EXISTING_SOURCE",
+              sourceFactId: "fact:resume.rawText",
+              sourceRef: "resume.rawText",
+              sourceExcerpt: "0 years experience with:\nKubernetes"
+            },
+            reuseScope: "JOB_ONLY",
+            masterProfileOptIn: false
+          }]
+        }
+      });
+    }]
+  ] as ReadonlyArray<readonly [string, string, (input: MatchInput) => void]>) {
+    const input = structuredClone(baseInput);
+    configure(input);
+    input.job.requirements = ["Kubernetes experience"];
+    const output = cloneOutput();
+    output.factualMatches = [{
+      applicantEvidence: [{
+        ref,
+        excerpt: ref.startsWith("reviewedEvidence") ? fact : "Kubernetes"
+      }],
+      jobEvidence: [{ ref: "job.requirements[0]", excerpt: "Kubernetes experience" }],
+      supportedKeywords: ["Kubernetes"]
+    }];
+    output.requirementGaps = [];
+
+    assert.throws(
+      () => validateAndNormalizeJobMatchOutput(input, output),
+      (error: unknown) => error instanceof JobMatchOutputValidationError &&
+        error.validationCode === "APPLICANT_EVIDENCE_NEGATION_REVERSAL"
+    );
+  }
 });
 
 test("free-text factual claims are rejected instead of projecting unsupported assertions", () => {
@@ -281,6 +394,144 @@ test("a gap cannot label a keyword missing when submitted applicant evidence con
   assert.throws(() => normalizeJobMatchOutput(baseInput, falseGap), /present in submitted applicant evidence/i);
 });
 
+test("illustrative examples cannot by themselves prove a broader requirement is not evidenced", () => {
+  for (const requirement of [
+    "Ability to learn technical concepts, such as software, networking, databases, etc.",
+    "Experience with modern languages, including JavaScript, Python, and Go.",
+    "Experience with modern languages, e.g., JavaScript, Python, and Go.",
+    "Experience with modern languages, for example, JavaScript, Python, and Go.",
+    "Experience with modern languages: JavaScript, Python, Go, etc."
+  ]) {
+    const input = structuredClone(baseInput);
+    input.job.requirements = [requirement];
+    input.resume!.summary = "Learns technical concepts and builds software and database systems.";
+    input.resume!.rawText = "Built JavaScript services and learns modern languages quickly.";
+    const output = cloneOutput();
+    output.factualMatches = [];
+    const illustrativeKeyword = requirement.includes("networking") ? "networking" : "Python";
+    output.requirementGaps = [{
+      requirement,
+      jobRequirement: { ref: "job.requirements[0]", excerpt: requirement },
+      missingKeywords: [illustrativeKeyword]
+    }];
+
+    assert.throws(
+      () => validateAndNormalizeJobMatchOutput(input, output),
+      (error: unknown) => {
+        assert.ok(error instanceof JobMatchOutputValidationError);
+        assert.equal(error.validationStage, "semantic");
+        assert.equal(error.validationCode, "GAP_KEYWORD_ILLUSTRATIVE_ONLY");
+        assert.equal(error.fieldPath, "requirementGaps[0].missingKeywords[0]");
+        assert.doesNotMatch(error.message, new RegExp(illustrativeKeyword, "iu"));
+        return true;
+      }
+    );
+  }
+});
+
+test("an explicit required term outside an illustrative clause remains eligible as gap evidence", () => {
+  const input = structuredClone(baseInput);
+  input.job.requirements = [
+    "Networking experience is required; familiarity with tools such as software, databases, and routers is useful."
+  ];
+  input.resume!.rawText = "Built TypeScript services.";
+  const output = cloneOutput();
+  output.factualMatches = [];
+  output.requirementGaps = [{
+    requirement: input.job.requirements[0]!,
+    jobRequirement: { ref: "job.requirements[0]", excerpt: input.job.requirements[0]! },
+    missingKeywords: ["Networking"]
+  }];
+
+  assert.doesNotThrow(() => validateAndNormalizeJobMatchOutput(input, output));
+});
+
+test("a term used both as an explicit requirement and as an example is not illustrative-only", () => {
+  const input = structuredClone(baseInput);
+  input.job.requirements = [
+    "Python experience is required; modern languages such as Python, Go, and Rust are relevant."
+  ];
+  const output = cloneOutput();
+  output.factualMatches = [];
+  output.requirementGaps = [{
+    requirement: input.job.requirements[0]!,
+    jobRequirement: { ref: "job.requirements[0]", excerpt: input.job.requirements[0]! },
+    missingKeywords: ["Python"]
+  }];
+
+  assert.doesNotThrow(() => validateAndNormalizeJobMatchOutput(input, output));
+});
+
+test("semantic failures expose only stable codes and structural paths", () => {
+  const privateKeyword = "PRIVATE-KUBERNETES-TERM";
+  const input = structuredClone(baseInput);
+  input.resume!.rawText = `Built systems with ${privateKeyword}.`;
+  input.job.requirements = [privateKeyword];
+  const output = cloneOutput();
+  output.factualMatches = [];
+  output.requirementGaps = [{
+    requirement: privateKeyword,
+    jobRequirement: { ref: "job.requirements[0]", excerpt: privateKeyword },
+    missingKeywords: [privateKeyword]
+  }];
+
+  assert.throws(
+    () => validateAndNormalizeJobMatchOutput(input, output),
+    (error: unknown) => {
+      assert.ok(error instanceof JobMatchOutputValidationError);
+      assert.equal(error.validationCode, "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE");
+      assert.equal(error.fieldPath, "requirementGaps[0].missingKeywords[0]");
+      assert.doesNotMatch(JSON.stringify(error), /PRIVATE-KUBERNETES-TERM/u);
+      return true;
+    }
+  );
+});
+
+test("reviewed job-only facts are citable with explicit provenance and cannot also be reported missing", () => {
+  const input = structuredClone(baseInput);
+  input.reviewedEvidence = {
+    schema: "apply-pilot/job-match-reviewed-evidence/v1",
+    snapshotId: "snapshot-1",
+    snapshotHash: "a".repeat(64),
+    facts: [{
+      gapId: "gap:0",
+      fact: "Completed 480 hours of business administration training.",
+      provenance: "OWNER_ATTESTED",
+      sourceRef: null
+    }],
+    unresolvedGapIds: []
+  };
+  input.job.requirements = ["Business administration training"];
+  const output = cloneOutput();
+  output.factualMatches = [{
+    applicantEvidence: [{
+      ref: "reviewedEvidence.facts[0]",
+      excerpt: "Completed 480 hours of business administration training."
+    }],
+    jobEvidence: [{ ref: "job.requirements[0]", excerpt: "Business administration training" }],
+    supportedKeywords: ["business administration"]
+  }];
+  output.requirementGaps = [];
+
+  const normalized = validateAndNormalizeJobMatchOutput(input, output).normalized;
+  assert.equal(normalized.factualMatches[0]?.applicantEvidence[0]?.provenance, "OWNER_ATTESTED");
+  assert.ok(responseSchemaView(input).properties.factualMatches.items.properties.applicantEvidence.items.properties.ref.enum
+    .includes("reviewedEvidence.facts[0]"));
+
+  const contradictory = structuredClone(output);
+  contradictory.factualMatches = [];
+  contradictory.requirementGaps = [{
+    requirement: "Business administration training",
+    jobRequirement: { ref: "job.requirements[0]", excerpt: "Business administration training" },
+    missingKeywords: ["business administration"]
+  }];
+  assert.throws(
+    () => validateAndNormalizeJobMatchOutput(input, contradictory),
+    (error: unknown) => error instanceof JobMatchOutputValidationError &&
+      error.validationCode === "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE"
+  );
+});
+
 test("the provider schema enumerates only submitted evidence refs at work-history item granularity", () => {
   const input = structuredClone(baseInput);
   input.resume!.workHistory = [
@@ -322,6 +573,9 @@ test("the input-specific prompt publishes exact refs and forbids work-history ch
   assert.match(prompt, /resume\.workHistory\[0\]/);
   assert.match(prompt, /Never append child paths/);
   assert.match(prompt, /Search every submitted applicant evidence field .*before returning a missing keyword/);
+  assert.match(prompt, /not evidence that the applicant lacks the capability/i);
+  assert.match(prompt, /such as.*including.*for example.*e\.g\./i);
+  assert.match(prompt, /exact-term absence is necessary but not sufficient/i);
   assert.doesNotMatch(prompt, /resume\.workHistory\[0\]\.bullets\[0\]/);
 });
 
@@ -360,7 +614,7 @@ test("blank scalar, indexed, and gap fields are never offered as evidence refs",
   assert.ok(!applicantRefs.includes("resume.skills[0]"));
   assert.ok(applicantRefs.includes("resume.skills[1]"));
   assert.ok(applicantRefs.includes("resume.workHistory[0]"));
-  assert.ok(applicantRefs.includes("profile.salaryTargetMin"));
+  assert.ok(!applicantRefs.includes("profile.salaryTargetMin"));
   assert.ok(!jobRefs.includes("job.requirements[0]"));
   assert.ok(jobRefs.includes("job.requirements[1]"));
   assert.ok(jobRefs.includes("job.salaryMin"));
@@ -396,7 +650,7 @@ test("work-history evidence accepts one submitted item but rejects invented chil
   assert.throws(() => normalizeJobMatchOutput(input, childPath), /unknown applicant evidence reference/i);
 });
 
-test("missing-keyword validation searches positive profile evidence and requires a keyword", () => {
+test("missing-keyword validation ignores profile preferences and requires a keyword", () => {
   const input = structuredClone(baseInput);
   input.profile!.preferredRoles = ["Software Engineering"];
   input.job.requirements = ["TypeScript", "Software Engineering"];
@@ -407,7 +661,7 @@ test("missing-keyword validation searches positive profile evidence and requires
     missingKeywords: ["Software Engineering"]
   };
 
-  assert.throws(() => normalizeJobMatchOutput(input, falseGap), /present in submitted applicant evidence/i);
+  assert.doesNotThrow(() => normalizeJobMatchOutput(input, falseGap));
 
   const noKeyword = cloneOutput();
   noKeyword.requirementGaps[0].missingKeywords = [];

@@ -5,7 +5,7 @@ import { NextRequest } from "next/server";
 
 import {
   createApplicationRunDocumentExportRouteHandlers
-} from "@/app/api/application-runs/[id]/answers/[answerId]/document-export/route";
+} from "@/lib/application-runs/http/document-export";
 import { PublicApiError } from "@/lib/api-errors";
 import { UnauthorizedError } from "@/lib/user-context";
 

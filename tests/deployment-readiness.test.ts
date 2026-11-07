@@ -82,48 +82,57 @@ test("production readiness reports the provider configuration matrix without cla
       aiProviderStatus: "configured_unverified"
     },
     {
-      name: "enabled configured OpenAI",
+      name: "unset provider defaults to Gemini",
+      overrides: {
+        AI_ENABLED: "true", AI_PROVIDER: undefined, AI_MOCK_MODE: "false",
+        GEMINI_API_KEY: "synthetic-gemini-secret"
+      },
+      aiMode: "gemini",
+      aiProviderStatus: "configured_unverified"
+    },
+    {
+      name: "retired OpenAI provider selection",
       overrides: {
         AI_ENABLED: "true", AI_PROVIDER: "openai", AI_MOCK_MODE: "false",
         OPENAI_MOCK_MODE: "false", OPENAI_API_KEY: "synthetic-openai-secret"
       },
-      aiMode: "openai",
-      aiProviderStatus: "configured_unverified"
+      aiMode: "heuristic-local",
+      aiProviderStatus: "invalid_configuration"
     },
     {
-      name: "legacy OpenAI remains configured when the guarded provider gate is disabled",
+      name: "retired Kimi provider selection",
+      overrides: {
+        AI_ENABLED: "true", AI_PROVIDER: "kimi", AI_MOCK_MODE: "false",
+        MOONSHOT_API_KEY: "synthetic-kimi-secret"
+      },
+      aiMode: "heuristic-local",
+      aiProviderStatus: "invalid_configuration"
+    },
+    {
+      name: "an OpenAI key cannot make AI available when Gemini is disabled",
       overrides: {
         AI_ENABLED: "false", AI_PROVIDER: "gemini", AI_MOCK_MODE: "false",
         OPENAI_MOCK_MODE: "false", OPENAI_API_KEY: "synthetic-openai-secret"
       },
-      aiMode: "openai",
-      aiProviderStatus: "configured_unverified"
+      aiMode: "heuristic-local",
+      aiProviderStatus: "disabled"
     },
     {
-      name: "configured Gemini and legacy OpenAI are both visible",
+      name: "an OpenAI key does not change configured Gemini",
       overrides: {
         AI_ENABLED: "true", AI_PROVIDER: "gemini", AI_MOCK_MODE: "false",
         GEMINI_API_KEY: "synthetic-gemini-secret",
         OPENAI_MOCK_MODE: "false", OPENAI_API_KEY: "synthetic-openai-secret"
       },
-      aiMode: "mixed",
+      aiMode: "gemini",
       aiProviderStatus: "configured_unverified"
     },
     {
-      name: "global provider mock does not hide independently active legacy OpenAI",
+      name: "global mock mode disables AI even with stored keys",
       overrides: {
         AI_ENABLED: "true", AI_PROVIDER: "gemini", AI_MOCK_MODE: "true",
         GEMINI_API_KEY: "synthetic-gemini-secret",
         OPENAI_MOCK_MODE: "false", OPENAI_API_KEY: "synthetic-openai-secret"
-      },
-      aiMode: "openai",
-      aiProviderStatus: "configured_unverified"
-    },
-    {
-      name: "OpenAI-specific mock mode",
-      overrides: {
-        AI_ENABLED: "true", AI_PROVIDER: "openai", AI_MOCK_MODE: "false",
-        OPENAI_MOCK_MODE: "true", OPENAI_API_KEY: "synthetic-openai-secret"
       },
       aiMode: "heuristic-local",
       aiProviderStatus: "disabled"
@@ -147,6 +156,31 @@ test("production readiness reports the provider configuration matrix without cla
     assert.equal(result.aiProviderStatus, entry.aiProviderStatus, entry.name);
     assert.equal(result.issues.includes("invalid_ai_provider"), invalid, entry.name);
   }
+});
+
+test("readiness reports registered AI pricing expiry without extending it", () => {
+  const current = checkDeploymentReadiness(productionEnv(), productionOrigin, new Date("2026-10-15T00:00:00.000Z"));
+  const flash = current.aiPricing.find((entry) => entry.model === "gemini-3.8-flash");
+  assert.deepEqual(flash, {
+    model: "gemini-3.8-flash",
+    validUntil: "2027-04-01T00:00:00.000Z",
+    status: "current",
+    daysRemaining: 168
+  });
+  assert.deepEqual(current.warnings, []);
+  assert.equal(current.ready, true);
+
+  const soon = checkDeploymentReadiness(productionEnv(), productionOrigin, new Date("2027-02-01T00:00:00.000Z"));
+  assert.deepEqual(soon.warnings, ["ai_pricing_expires_soon:gemini-3.8-flash:2027-04-01T00:00:00.000Z"]);
+  assert.equal(soon.ready, true, "an approaching expiry is a warning, not an outage");
+
+  const expired = checkDeploymentReadiness(productionEnv({
+    AI_PROVIDER_OVERRIDES: "APPLICATION_PLAN:kimi"
+  }), productionOrigin, new Date("2027-04-02T00:00:00.000Z"));
+  assert.deepEqual(expired.warnings, [
+    "ai_pricing_expired:gemini-3.8-flash:2027-04-01T00:00:00.000Z",
+    "ai_provider_overrides_retired"
+  ]);
 });
 
 test("readiness configuration inspection performs no provider probe and exposes no credential", (t) => {

@@ -360,6 +360,14 @@ test("fill FINALIZE and RECOVER_EXPIRED requests form one strict closed action c
     assert.equal(schema.safeParse(stopped).success, true, errorCode);
   }
 
+  const evidenceStale = {
+    ...completed,
+    outcome: "STOPPED_EARLY",
+    errorCode: "FILL_STALE",
+    steps: [{ stepKey: FILL_STEP_KEY, result: "NOT_ATTEMPTED", errorCode: null }]
+  } as const;
+  assert.deepEqual(schema.parse(evidenceStale), evidenceStale);
+
   const recovery = {
     action: "RECOVER_EXPIRED",
     fillAttemptId: FILL_ATTEMPT_ID,

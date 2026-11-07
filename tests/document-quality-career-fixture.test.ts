@@ -1,0 +1,33 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { realisticDocumentQualityPayload } from "@/evaluation/document-quality-career-fixture";
+import { syntheticTailoredResumeOutput, syntheticCoverLetterOutput } from "@/evaluation/correction-flow-provider-stub";
+import { assembleTailoredResumeProviderOutput, assembleCoverLetterProviderOutput } from "@/lib/ai/application-document-facts";
+import { validateTailoredResumeClaims, validateCoverLetterClaims } from "@/lib/ai/application-document-claims";
+import { validateTailoredResumeQuality, validateCoverLetterQuality } from "@/lib/ai/application-document-quality";
+import { buildCanonicalApplicationDocumentLayoutV2 } from "@/lib/documents/application-document-layout-v2";
+
+test("the realistic three-job source retains every role, project, skill and education fact legibly", () => {
+  const payload = realisticDocumentQualityPayload();
+  assert.equal((payload.resume!.workHistory as unknown[]).length, 3);
+  const resume = assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput(payload));
+  validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, resume));
+  const layout = buildCanonicalApplicationDocumentLayoutV2({ artifactType:"RESUME", content:resume.resumeText });
+  assert.ok(layout.pages.length >= 2 && layout.pages.length <= 3);
+  const comparable = (value:string) => value.replaceAll("•", "").replace(/\s+/gu, " ").trim();
+  assert.equal(comparable(layout.pages.flatMap(page=>page.blocks).map(block=>block.text).join(" ")), comparable(resume.resumeText));
+  assert.ok(layout.pages.flatMap(page=>page.blocks).every(block=>block.fontSize>=9));
+  const letter = assembleCoverLetterProviderOutput(payload, syntheticCoverLetterOutput(payload));
+  validateCoverLetterQuality(payload, validateCoverLetterClaims(payload, letter));
+  assert.match(letter.coverLetter,/Northwind Service Cloud/u);
+  assert.match(letter.coverLetter,/twelve years/u);
+  assert.doesNotMatch(letter.coverLetter,/Your posting highlights|The role calls for/u);
+  const paragraphs = letter.coverLetter.split("\n\n");
+  const governance = paragraphs.find(paragraph => paragraph.includes("I built weekly operational governance"));
+  const coaching = paragraphs.find(paragraph => paragraph.includes("I directed service delivery"));
+  assert.match(governance ?? "", /capacity dashboard/u);
+  assert.match(coaching ?? "", /mentored six service coordinators/u);
+  assert.doesNotMatch(coaching ?? "", /capacity dashboard|Quenby/u);
+  assert.match(governance ?? "", /Quenby/u);
+  assert.equal(buildCanonicalApplicationDocumentLayoutV2({artifactType:"COVER_LETTER",content:letter.coverLetter}).pages.length,1);
+});

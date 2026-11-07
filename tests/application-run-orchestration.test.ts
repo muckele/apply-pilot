@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 
 import type { ApplicationAutomationPolicy, PrismaClient } from "@prisma/client";
@@ -7,6 +8,8 @@ import { PublicApiError } from "@/lib/api-errors";
 import type { ApplicationPlanInput } from "@/lib/ai/application-plan";
 import { createApplicationRunOrchestrator } from "@/lib/application-runs/orchestration";
 import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
+import { buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
+import { editedConfirmed, editedUnconfirmed, legacyConfirmed } from "@/tests/fixtures/apply-kit-documents";
 
 const USER_ID = "user-1";
 const RUN_ID = "clz8w7m9a0002qwer1234tyui";
@@ -21,6 +24,7 @@ type FakeResumeVersion = {
   id: string;
   userId: string;
   jobPostingId: string | null;
+  evidenceSnapshotId: string | null;
   summary: string | null;
   skills: string[];
   fullText: string;
@@ -40,6 +44,7 @@ type FakeCoverLetterVersion = {
   id: string;
   userId: string;
   jobPostingId: string | null;
+  evidenceSnapshotId: string | null;
   type: string;
   content: string;
 };
@@ -64,7 +69,19 @@ function basePolicy(overrides: Partial<FakePolicy> = {}): FakePolicy {
 }
 
 function baseRun() {
-  return {
+  const masterResume = {
+    id: "resume-master-1",
+    updatedAt: NOW,
+    rawText: "Lossless assigned resume source fallback",
+    summary: "Master summary that must not replace the assigned version summary",
+    skills: ["TypeScript", "SQL"],
+    achievements: ["Reduced onboarding time by 20%"],
+    workHistory: [{ title: "Solutions Engineer", company: "Acme", highlights: ["Built APIs"] }],
+    projects: [{ name: "Apply Pilot", technologies: ["TypeScript"] }],
+    education: [{ degree: "BS", field: "Computer Science" }],
+    certifications: [{ name: "AWS" }]
+  };
+  const run = {
     id: RUN_ID,
     userId: USER_ID,
     applicationId: APPLICATION_ID,
@@ -114,19 +131,13 @@ function baseRun() {
         id: RESUME_ID,
         userId: USER_ID,
         jobPostingId: JOB_ID as string | null,
+        evidenceSnapshotId: "snapshot-current" as string | null,
         summary: "Customer-facing engineer",
         skills: ["TypeScript", "SQL"],
         fullText: "Authoritative assigned resume contents",
         resume: {
           userId: USER_ID,
-          rawText: "Lossless assigned resume source fallback",
-          summary: "Master summary that must not replace the assigned version summary",
-          skills: ["TypeScript", "SQL"],
-          achievements: ["Reduced onboarding time by 20%"],
-          workHistory: [{ title: "Solutions Engineer", company: "Acme", highlights: ["Built APIs"] }],
-          projects: [{ name: "Apply Pilot", technologies: ["TypeScript"] }],
-          education: [{ degree: "BS", field: "Computer Science" }],
-          certifications: [{ name: "AWS" }]
+          ...masterResume
         }
       } as FakeResumeVersion | null,
       coverLetterVersion: null as FakeCoverLetterVersion | null
@@ -145,7 +156,17 @@ function baseRun() {
       preferredQualifications: ["Customer discovery"],
       detectedTechStack: ["TypeScript", "PostgreSQL"],
       overallFitScore: 92 as number | null,
-      confidenceScore: 91 as number | null
+      confidenceScore: 91 as number | null,
+      currentEvidenceSnapshotId: "snapshot-current" as string | null,
+      evidenceSnapshotGeneration: 1,
+      currentEvidenceSnapshot: {
+        id: "snapshot-current",
+        resumeId: masterResume.id,
+        sourceResumeUpdatedAt: masterResume.updatedAt,
+        snapshotHash: "a".repeat(64),
+        reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v1", decisions: [] }
+      },
+      aiAnalyses: [] as Array<{ id: string; inputHash: string; evidenceSnapshotId: string | null }>
     },
     user: {
       profile: {
@@ -154,11 +175,32 @@ function baseRun() {
         preferredLocations: ["Los Angeles, CA"],
         remotePreference: "FLEXIBLE",
         salaryTargetMin: 120000,
+        salaryTargetMax: null,
         skillsToEmphasize: ["TypeScript"],
         skillsNotToExaggerate: ["Kubernetes"]
-      }
+      },
+      resumes: [masterResume]
     }
   };
+  const currentInput = buildCurrentJobMatchInput({
+    job: run.jobPosting,
+    resume: run.user.resumes[0],
+    profile: run.user.profile,
+    evidenceSnapshotGeneration: 1,
+    reviewedEvidence: {
+      schema: "apply-pilot/job-match-reviewed-evidence/v1",
+      snapshotId: "snapshot-current",
+      snapshotHash: "a".repeat(64),
+      facts: [],
+      unresolvedGapIds: []
+    }
+  });
+  run.jobPosting.aiAnalyses = [{
+    id: "current-match-1",
+    inputHash: currentJobMatchInputHash(currentInput),
+    evidenceSnapshotId: "snapshot-current"
+  }];
+  return run;
 }
 
 // This fake proves application-level ordering, fences, and rollback behavior. It does
@@ -272,6 +314,13 @@ function createFake(overrides: {
             operations.push(`${label}:lock-policy`);
             assert.match(sql, /FOR UPDATE/);
             return working.policy ? [{ id: working.policy.id }] : [];
+          }
+          if (sql.includes('FROM "JobPosting"')) {
+            operations.push(`${label}:lock-job`);
+            assert.match(sql, /"id" = .* AND "userId" = .* FOR UPDATE/);
+            return working.run.jobPostingId === values[0] && working.run.userId === values[1]
+              ? [{ id: working.run.jobPostingId }]
+              : [];
           }
           if (sql.includes('FROM "ApplicationRun"')) {
             operations.push(`${label}:lock-run`);
@@ -538,6 +587,11 @@ test("deterministic TX1 capability, host, score, and explicit-document gates blo
       expectedCode: "RUN_PREPARATION_BLOCKED"
     },
     {
+      name: "no current prompt-version match analysis",
+      mutate: (fake) => { fake.state.run.jobPosting.aiAnalyses = []; },
+      expectedCode: "RUN_PREPARATION_BLOCKED"
+    },
+    {
       name: "confidence below threshold",
       mutate: (fake) => { fake.state.run.jobPosting.confidenceScore = 84; },
       expectedCode: "RUN_PREPARATION_BLOCKED"
@@ -563,6 +617,16 @@ test("deterministic TX1 capability, host, score, and explicit-document gates blo
     {
       name: "wrong-posting resume",
       mutate: (fake) => { if (fake.state.run.application.resumeVersion) fake.state.run.application.resumeVersion.jobPostingId = "other"; },
+      expectedCode: "RUN_PREPARATION_BLOCKED"
+    },
+    {
+      name: "resume generated from older reviewed evidence",
+      mutate: (fake) => {
+        fake.state.run.jobPosting.currentEvidenceSnapshotId = "snapshot-current";
+        if (fake.state.run.application.resumeVersion) {
+          fake.state.run.application.resumeVersion.evidenceSnapshotId = "snapshot-old";
+        }
+      },
       expectedCode: "RUN_PREPARATION_BLOCKED"
     },
     {
@@ -647,6 +711,7 @@ test("optional cover-letter absence is allowed and assigned valid cover letters 
     id: COVER_ID,
     userId: USER_ID,
     jobPostingId: JOB_ID,
+    evidenceSnapshotId: "snapshot-current",
     type: "COVER_LETTER",
     content: "Explicitly assigned cover letter"
   } as never;
@@ -900,11 +965,6 @@ test("TX2 does not rerun non-kill-switch gates and retains original TX1 policy p
   const fake = createFake();
   const originalMinimum = fake.state.policy?.minimumFitScore;
   const prepare = orchestrator(fake, async () => {
-    fake.state.run.jobPosting.overallFitScore = 0;
-    fake.state.run.jobPosting.confidenceScore = 0;
-    fake.state.run.application.resumeVersionId = null;
-    fake.state.run.application.resumeVersion = null;
-    fake.state.run.applyHost = "www.linkedin.com";
     if (fake.state.policy) {
       fake.state.policy.minimumFitScore = 100;
       fake.state.policy.minimumConfidenceScore = 100;
@@ -920,6 +980,25 @@ test("TX2 does not rerun non-kill-switch gates and retains original TX1 policy p
   assert.equal((fake.state.run.policySnapshot as Record<string, unknown>).minimumFitScore, originalMinimum);
   assert.equal(fake.state.run.fitScoreSnapshot, 92);
   assert.equal(fake.state.run.resumeVersionId, RESUME_ID);
+});
+
+test("TX2 rejects changed evidence bindings, document selections, and current match provenance", async () => {
+  for (const mutate of [
+    (fake: ReturnType<typeof createFake>) => { fake.state.run.jobPosting.currentEvidenceSnapshotId = "snapshot-new"; },
+    (fake: ReturnType<typeof createFake>) => { fake.state.run.application.resumeVersionId = null; },
+    (fake: ReturnType<typeof createFake>) => { fake.state.run.jobPosting.aiAnalyses = []; }
+  ]) {
+    const fake = createFake();
+    const prepare = orchestrator(fake, async () => {
+      mutate(fake);
+      return cleanPlan();
+    });
+    await assert.rejects(
+      prepare({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+      expectPublicError("RUN_PREPARATION_STALE")
+    );
+    assert.equal(fake.state.run.state, "PREPARING");
+  }
 });
 
 test("provider and planner failures are safely classified, fenced, and never persist partial output", async (t) => {
@@ -1145,4 +1224,141 @@ test("ownership and target relation failures remain non-enumerating after policy
       assert.ok(fake.operations.indexOf("tx1:lock-policy") < fake.operations.indexOf("tx1:lock-run"));
     });
   }
+});
+
+// D031: assisted Fill accepts tailored documents that PR #41 considers edited-and-confirmed or
+// legacy-confirmed, exactly as export and the APPLIED transition do. Unconfirmed edits stay refused.
+const ASSIGNED_RESUME_TEXT = "Authoritative assigned resume contents";
+const EDITED_RESUME_TEXT = `${ASSIGNED_RESUME_TEXT}\nGrew revenue 12% at Acme.`;
+const ASSIGNED_COVER_TEXT = "Dear Example Co team,\nI build reliable customer systems.";
+const EDITED_COVER_TEXT = `${ASSIGNED_COVER_TEXT}\nI managed 9 analysts at Acme.`;
+
+function assignEditedResume(fake: ReturnType<typeof createFake>, confirmed: boolean) {
+  const original = { evidenceSnapshotId: "snapshot-current", content: ASSIGNED_RESUME_TEXT, metadata: null };
+  const edited = confirmed
+    ? editedConfirmed("RESUME", original, EDITED_RESUME_TEXT)
+    : editedUnconfirmed("RESUME", original, EDITED_RESUME_TEXT);
+  Object.assign(fake.state.run.application.resumeVersion!, {
+    fullText: edited.content,
+    evidenceSnapshotId: edited.evidenceSnapshotId,
+    metadata: edited.metadata
+  });
+}
+
+function assignCoverLetter(
+  fake: ReturnType<typeof createFake>,
+  artifact: { evidenceSnapshotId: string | null; content: string; metadata: unknown }
+) {
+  if (fake.state.policy) fake.state.policy.coverLetterRequired = true;
+  fake.state.run.application.coverLetterVersionId = COVER_ID;
+  fake.state.run.application.coverLetterVersion = {
+    id: COVER_ID,
+    userId: USER_ID,
+    jobPostingId: JOB_ID,
+    type: "COVER_LETTER",
+    ...artifact
+  } as never;
+}
+
+function expectBlocked(reason: string) {
+  return (error: unknown) => error instanceof PublicApiError &&
+    error.details?.code === "RUN_PREPARATION_BLOCKED" && error.details?.reason === reason;
+}
+
+test("D031: an edited-and-confirmed résumé is selectable for preparation and is hashed exactly", async () => {
+  const fake = createFake();
+  assignEditedResume(fake, true);
+  let plannerCalls = 0;
+  const result = await orchestrator(fake, async () => {
+    plannerCalls += 1;
+    return cleanPlan();
+  })({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false });
+  assert.equal(result.state, "READY");
+  assert.equal(plannerCalls, 1);
+  assert.equal(fake.state.run.resumeVersionId, RESUME_ID);
+  assert.equal(fake.state.run.resumeContentHash, createHash("sha256").update(EDITED_RESUME_TEXT).digest("hex"));
+});
+
+test("D031: an edited résumé with an unconfirmed factual edit is still refused", async () => {
+  const fake = createFake();
+  assignEditedResume(fake, false);
+  let plannerCalls = 0;
+  await assert.rejects(
+    orchestrator(fake, async () => {
+      plannerCalls += 1;
+      return cleanPlan();
+    })({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectBlocked("resume_required")
+  );
+  assert.equal(plannerCalls, 0);
+  assert.equal(fake.state.run.state, "BLOCKED");
+  assert.equal(fake.state.run.blockingReason, "resume_required");
+});
+
+test("D031: a legacy-confirmed cover letter satisfies a required cover letter; unconfirmed ones do not", async (t) => {
+  await t.test("legacy confirmed", async () => {
+    const fake = createFake();
+    assignCoverLetter(fake, legacyConfirmed(ASSIGNED_COVER_TEXT));
+    const result = await orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false });
+    assert.equal(result.state, "READY");
+    assert.equal(fake.state.run.coverLetterVersionId, COVER_ID);
+    assert.equal(fake.state.run.coverLetterContentHash, createHash("sha256").update(ASSIGNED_COVER_TEXT).digest("hex"));
+  });
+  await t.test("edited and unconfirmed", async () => {
+    const fake = createFake();
+    assignCoverLetter(fake, editedUnconfirmed(
+      "COVER_LETTER",
+      { evidenceSnapshotId: "snapshot-current", content: ASSIGNED_COVER_TEXT, metadata: null },
+      EDITED_COVER_TEXT
+    ));
+    await assert.rejects(
+      orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+      expectBlocked("cover_letter_required")
+    );
+    assert.equal(fake.state.run.blockingReason, "cover_letter_required");
+  });
+  await t.test("legacy without the owner's confirmation", async () => {
+    const fake = createFake();
+    assignCoverLetter(fake, { evidenceSnapshotId: null, content: ASSIGNED_COVER_TEXT, metadata: null });
+    await assert.rejects(
+      orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+      expectBlocked("cover_letter_required")
+    );
+  });
+});
+
+test("D031: an edited document whose cited evidence is no longer current is refused", async () => {
+  const fake = createFake();
+  const edited = editedConfirmed(
+    "RESUME",
+    { evidenceSnapshotId: "snapshot-old", content: ASSIGNED_RESUME_TEXT, metadata: null },
+    EDITED_RESUME_TEXT
+  );
+  Object.assign(fake.state.run.application.resumeVersion!, { fullText: edited.content, evidenceSnapshotId: null, metadata: edited.metadata });
+  await assert.rejects(
+    orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectBlocked("resume_required")
+  );
+});
+
+test("D031: TX2 rejects an edited résumé whose review stopped covering it during planning", async () => {
+  const fake = createFake();
+  assignEditedResume(fake, true);
+  const unconfirmed = editedUnconfirmed(
+    "RESUME",
+    { evidenceSnapshotId: "snapshot-current", content: ASSIGNED_RESUME_TEXT, metadata: null },
+    EDITED_RESUME_TEXT
+  );
+  const prepare = orchestrator(fake, async () => {
+    // Same bytes, but the stored review no longer holds the owner's confirmations.
+    fake.mutate((state) => {
+      Object.assign(state.run.application.resumeVersion!, { metadata: unconfirmed.metadata });
+    });
+    return cleanPlan();
+  });
+  await assert.rejects(
+    prepare({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectPublicError("RUN_PREPARATION_STALE")
+  );
+  assert.equal(fake.state.run.state, "PREPARING");
 });

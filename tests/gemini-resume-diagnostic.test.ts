@@ -118,7 +118,7 @@ test("builds only the approved pinned full-synthetic Gemini request", async () =
 });
 
 test("fails closed if registered pricing would exceed the approved maximum", () => {
-  const pricing = MODEL_PRICING_REGISTRY["gemini-3.5-flash-lite"];
+  const [pricing] = MODEL_PRICING_REGISTRY["gemini-3.5-flash-lite"].prices;
   const priorOutputPrice = pricing.outputUsdPerMillion;
   pricing.outputUsdPerMillion = 2.5001;
   try {

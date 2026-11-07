@@ -473,6 +473,7 @@ function serviceFor(state: FakeState, overrides: Record<string, unknown> = {}) {
     attemptIdGenerator: () => ATTEMPT_ID,
     assertTransition: () => undefined,
     loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async () => state.verified,
+    assertCurrentApplicationRunEvidenceInTransaction: async () => "LEGACY_UNVERSIONED",
     ...overrides
   });
 }
@@ -744,6 +745,25 @@ test("acquisition policy and host gates fail closed without packet verification 
 });
 
 test("verifier/current-review failures translate to the closed Fill taxonomy without writes", async () => {
+  {
+    const state = createFakeState();
+    let verifierCalls = 0;
+    await assert.rejects(
+      serviceFor(state, {
+        assertCurrentApplicationRunEvidenceInTransaction: async () => {
+          throw new PublicApiError("raw evidence detail", 409, { code: "RUN_DOCUMENT_EVIDENCE_STALE" });
+        },
+        loadVerifiedCurrentAnswerPacketForLockedRunInTransaction: async () => {
+          verifierCalls += 1;
+          return state.verified;
+        }
+      }).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
+      (error) => assertFillError(error, "FILL_STALE")
+    );
+    assert.equal(verifierCalls, 0);
+    assert.equal(state.writes.length, 0);
+  }
+
   for (const scenario of [
     { label: "stale verifier", error: new PublicApiError("raw stale", 409, { code: "RUN_INSPECTION_STALE" }), code: "FILL_STALE" },
     { label: "target-stale verifier", error: new PublicApiError("raw target", 409, { code: "RUN_TARGET_STALE" }), code: "FILL_STALE" },
@@ -827,10 +847,17 @@ test("central transition authority is mandatory before DB time or mutation", asy
 
 test("a consumed attempt is a permanent fence and cannot replay proposal material", async () => {
   const state = createFakeState({ run: createRun({ state: "FILLING", fillAttemptId: ATTEMPT_ID, fillLeaseExpiresAt: DB_NOW }) });
+  let evidenceChecks = 0;
   await assert.rejects(
-    serviceFor(state).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
+    serviceFor(state, {
+      assertCurrentApplicationRunEvidenceInTransaction: async () => {
+        evidenceChecks += 1;
+        throw new PublicApiError("stale evidence", 409, { code: "RUN_DOCUMENT_EVIDENCE_STALE" });
+      }
+    }).acquireFillAttempt({ userId: USER_ID, runId: RUN_ID, expectedStateVersion: 7 }),
     (error) => assertFillError(error, "FILL_ALREADY_IN_PROGRESS")
   );
+  assert.equal(evidenceChecks, 0, "stale evidence must not bypass the permanent consumed-attempt fence");
   assert.equal(state.writes.length, 0);
   assert.equal(state.operations.includes("clock"), false);
 });
@@ -926,6 +953,27 @@ test("GET computes exact live/expired Fill permission without mutation", async (
     assert.equal(result.fieldOperationAllowed, allowed);
     assert.equal(state.writes.length, 0);
   }
+});
+
+test("GET closes live field permission when reviewed evidence becomes stale", async () => {
+  const state = createFakeState({
+    run: createRun({
+      state: "FILLING",
+      fillAttemptId: ATTEMPT_ID,
+      fillLeaseExpiresAt: new Date(DB_NOW.getTime() + 60_000)
+    })
+  });
+  const result = await serviceFor(state, {
+    assertCurrentApplicationRunEvidenceInTransaction: async () => {
+      throw new PublicApiError("private stale detail", 409, { code: "RUN_DOCUMENT_EVIDENCE_STALE" });
+    }
+  }).getFillAttemptStatus({ userId: USER_ID, runId: RUN_ID });
+
+  assert.equal(result.fillAttemptId, ATTEMPT_ID);
+  assert.equal(result.leaseLive, true);
+  assert.equal(result.fieldOperationAllowed, false);
+  assert.equal(result.errorCode, "FILL_STALE");
+  assert.equal(state.writes.length, 0);
 });
 
 test("GET fieldOperationAllowed requires every global, policy, host, state, attempt, and live-lease gate", async () => {
@@ -1201,6 +1249,27 @@ test("FINALIZE STOPPED_EARLY preserves the pre-field pattern without inventing a
   assert.deepEqual(state.terminalSteps.map((step) => step.status), ["SKIPPED", "SKIPPED", "SKIPPED"]);
 });
 
+test("FINALIZE accepts evidence-stale only as a safe prefix followed by an untouched tail", async () => {
+  const steps = [
+    createAttemptStep(FIELD_KEY, 0),
+    createAttemptStep(SECOND_FIELD_KEY, 1),
+    createAttemptStep(THIRD_FIELD_KEY, 2)
+  ];
+  const state = createFakeState({ run: createFillingRun(), terminalSteps: steps });
+  const result = await serviceFor(state).finalizeFillAttempt(completedFinalizationInput([
+    { stepKey: steps[0].stepKey, result: "FILLED", errorCode: null },
+    { stepKey: steps[1].stepKey, result: "NOT_ATTEMPTED", errorCode: null },
+    { stepKey: steps[2].stepKey, result: "NOT_ATTEMPTED", errorCode: null }
+  ], { outcome: "STOPPED_EARLY", errorCode: "FILL_STALE" }));
+
+  assert.equal(result.outcome, "STOPPED_EARLY");
+  assert.equal(result.errorCode, "FILL_STALE");
+  assert.equal(state.run.fillAttemptId, ATTEMPT_ID);
+  assert.deepEqual(result.steps.map((step: { result: string }) => step.result), [
+    "FILLED", "NOT_ATTEMPTED", "NOT_ATTEMPTED"
+  ]);
+});
+
 test("FINALIZE STOPPED_EARLY accepts exactly one matching in-field failure followed by an untouched tail", async () => {
   const steps = [
     createAttemptStep(FIELD_KEY, 0, { startedAt: new Date(DB_NOW.getTime() - 100) }),
@@ -1249,7 +1318,7 @@ for (const scenario of [
 test("FINALIZE rejects forbidden or mismatched stopped errors without mutation", async () => {
   const step = createAttemptStep(FIELD_KEY, 0);
   for (const errorCode of [
-    "FILL_REVIEW_REQUIRED", "FILL_ALREADY_IN_PROGRESS", "FILL_NO_ELIGIBLE_FIELDS", "FILL_STALE"
+    "FILL_REVIEW_REQUIRED", "FILL_ALREADY_IN_PROGRESS", "FILL_NO_ELIGIBLE_FIELDS"
   ]) {
     const state = createFakeState({ run: createFillingRun(), terminalSteps: [{ ...step }] });
     await assert.rejects(

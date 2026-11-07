@@ -1,0 +1,79 @@
+{
+  "jobs": [
+    {
+      "id": 8159652,
+      "title": "Account Executive",
+      "updated_at": "2026-11-03T16:28:21-05:00",
+      "first_published": "2026-09-01T09:20:17-04:00",
+      "location": {
+        "name": "Remote - US: Select locations"
+      },
+      "absolute_url": "https://jobs.dropbox.com/listing/8159652?gh_jid=8159652",
+      "company_name": "Dropbox",
+      "language": "en",
+      "content": "&lt;h2&gt;Role Description&lt;/h2&gt;&lt;p&gt;As an Account Executive on the Growth team, you will help Dropbox expand how we bring our Product Suite and emerging AI products to new customers.&lt;/p&gt;&lt;p&gt;In this role, you’ll focus on identifying, engaging, and developing opportunities with net new customers. You’ll work with prospects to understand their needs, learn which use cases resonate, and help create successful outcomes. You’ll be expected to execute consistently, manage your pipeline effectively, and contribute feedback that helps improve our sales motion, messaging, and approach over time.&lt;/p&gt;&lt;p&gt;This is an opportunity to build strong sales experience across a growing portfolio of products while contributing to Dropbox’s next phase of growth.&lt;/p&gt;&lt;h2&gt;Responsibilities&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Own the full sales cycle from pipeline generation through close and renewal within your territory&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "name": "Direct Sales - AMER (Sub Team)"
+        }
+      ],
+      "offices": [
+        {
+          "name": "Canada"
+        },
+        {
+          "name": "US"
+        }
+      ]
+    },
+    {
+      "id": 7172701,
+      "title": "Backend Product Software Engineer",
+      "updated_at": "2026-11-03T16:28:21-05:00",
+      "first_published": "2026-10-29T08:40:17-04:00",
+      "location": {
+        "name": "Remote - Mexico"
+      },
+      "absolute_url": "https://jobs.dropbox.com/listing/7172701?gh_jid=7172701",
+      "company_name": "Dropbox",
+      "language": "en",
+      "content": "&lt;h2&gt;Role Description&lt;/h2&gt;&lt;p&gt;As a Product Engineer at Dropbox, you will play a pivotal role in shaping the future of collaboration and file sharing. Your responsibilities will revolve around developing and enhancing our suite of Dropbox Products to deliver exceptional user experiences. You will work closely with cross-functional teams, turning innovative ideas into robust, scalable, and user-friendly features.&lt;/p&gt;&lt;p&gt;This year, Dropbox is on a mission to expedite the creation and implementation of AI-enable products by providing a comprehensive AI technology stack that facilitates speedy prototyping and reliable deployment of AI-driven functionalities.&lt;/p&gt;&lt;p&gt;Our Engineering Career Framework is viewable by anyone outside the company and describes what’s expected for our engineers at each of our career levels. Check out our blog post on this topic and more here.&lt;/p&gt;&lt;h2&gt;Responsibilities&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Independently identify and deliver software solutions through a set of milestones spanning a specific product focus or a multi-component system&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "name": "EPD"
+        }
+      ],
+      "offices": [
+        {
+          "name": "Mexico"
+        }
+      ]
+    },
+    {
+      "id": 7752226,
+      "title": "Backend Product Software Engineer",
+      "updated_at": "2026-11-03T16:28:21-05:00",
+      "first_published": "2026-10-30T07:05:41-04:00",
+      "location": {
+        "name": "Remote - Mexico"
+      },
+      "absolute_url": "https://jobs.dropbox.com/listing/7752226?gh_jid=7752226",
+      "company_name": "Dropbox",
+      "language": "en",
+      "content": "&lt;h2&gt;Role Description&lt;/h2&gt;&lt;p&gt;As a Product Engineer at Dropbox, you will play a pivotal role in shaping the future of collaboration and file sharing. Your responsibilities will revolve around developing and enhancing our suite of Dropbox Products to deliver exceptional user experiences. You will work closely with cross-functional teams, turning innovative ideas into robust, scalable, and user-friendly features.&lt;/p&gt;&lt;p&gt;This year, Dropbox is on a mission to expedite the creation and implementation of AI-enabled products by providing a comprehensive technology stack that facilitates rapid prototyping and reliable deployment of AI-augmented functionality.&lt;/p&gt;&lt;p&gt;Our Engineering Career Framework is viewable by anyone outside the company and describes what’s expected for our engineers at each of our career levels. Check out our blog post on this topic and more here.&lt;/p&gt;&lt;h2&gt;Responsibilities&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;Designing and building scalable software to reach millions of daily users.&lt;/li&gt;&lt;/ul&gt;",
+      "departments": [
+        {
+          "name": "EPD"
+        }
+      ],
+      "offices": [
+        {
+          "name": "Mexico"
+        }
+      ]
+    }
+  ],
+  "meta": {
+    "total": 3
+  }
+}
