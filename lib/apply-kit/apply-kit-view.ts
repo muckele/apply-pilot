@@ -1,6 +1,7 @@
 import type { ApplicationStatus, PostingStatus, PrismaClient } from "@prisma/client";
 
 import { buildApplyKitAnswers, type ApplyKitAnswers } from "@/lib/apply-kit/answers";
+import { parseApplyLink } from "@/lib/apply-kit/apply-link";
 import {
   SENT_DOCUMENTS_METADATA_KEY,
   SENT_DOCUMENTS_SCHEMA,
@@ -9,6 +10,8 @@ import {
   shortContentHash,
   type SentDocument
 } from "@/lib/apply-kit/sent-documents";
+import type { ApplyReturnState } from "@/lib/applications/apply-return";
+import { loadApplyReturnState } from "@/lib/applications/apply-return-service";
 import { formatApplicationStatus } from "@/lib/applications/pipeline";
 import {
   buildDocumentReviewView,
@@ -25,9 +28,11 @@ import {
 // owned by someone else is "not found". The result is serializable and contains no sensitive
 // Answer Vault values (see lib/apply-kit/answers.ts).
 
+export { parseApplyLink };
+
 export type ApplyKitDb = Pick<
   PrismaClient,
-  "jobPosting" | "resume" | "resumeVersion" | "generatedDocument" | "application" | "applicationAnswer"
+  "jobPosting" | "resume" | "resumeVersion" | "generatedDocument" | "application" | "applicationAnswer" | "applicationEvent"
 >;
 
 export type ApplyKitDocumentStatus =
@@ -74,6 +79,8 @@ export type ApplyKitView = {
   generation: { available: boolean; reason: string | null; hasMasterResume: boolean };
   answers: ApplyKitAnswers;
   sent: { eventId: string; recordedAt: string; href: string; resume: SentSummary | null; coverLetter: SentSummary | null } | null;
+  // "Did you apply?": an opened employer application with no answer yet, or a "Not applying" answer to undo.
+  applyReturn: ApplyReturnState;
 };
 
 const STATUS_COPY: Record<DocumentReadinessState, { status: ApplyKitDocumentStatus; label: string; detail: string }> = {
@@ -118,21 +125,6 @@ const STATUS_COPY: Record<DocumentReadinessState, { status: ApplyKitDocumentStat
     detail: "This document is not linked to this job."
   }
 };
-
-// Only plain http(s) links without embedded credentials are offered, and the hostname is shown so
-// the user knows where they are going before they leave Apply Pilot.
-export function parseApplyLink(applyUrl: string | null | undefined, sourceUrl: string | null | undefined) {
-  const candidate = applyUrl?.trim() || sourceUrl?.trim() || "";
-  if (!candidate) return null;
-  let url: URL;
-  try {
-    url = new URL(candidate);
-  } catch {
-    return null;
-  }
-  if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password || !url.hostname) return null;
-  return { href: url.toString(), hostname: url.hostname, secure: url.protocol === "https:" };
-}
 
 function postingNotice(status: PostingStatus): ApplyKitView["job"]["notice"] {
   if (status === "EXPIRED") {
@@ -259,6 +251,7 @@ export async function loadApplyKitView(db: ApplyKitDb, input: {
   const ownedApplication = application && application.userId === userId ? application : null;
 
   const sentEvent = ownedApplication ? latestSentDocumentsEvent(ownedApplication.events) : null;
+  const applyReturn = await loadApplyReturnState(db, { userId, application: ownedApplication });
   const summarize = (document: SentDocument | null): SentSummary | null => document
     ? { versionNumber: document.versionNumber, title: document.title, readinessState: document.readinessState, shortHash: shortContentHash(document.contentHash) }
     : null;
@@ -305,6 +298,7 @@ export async function loadApplyKitView(db: ApplyKitDb, input: {
           resume: summarize(sentEvent.snapshot.resume),
           coverLetter: summarize(sentEvent.snapshot.coverLetter)
         }
-      : null
+      : null,
+    applyReturn
   };
 }

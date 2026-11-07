@@ -4,11 +4,13 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import Link from "next/link";
 import { ArrowRight, FileText, Wand2 } from "lucide-react";
 
+import { JobApplyReturnPrompt } from "@/components/job-workspace/job-apply-return-prompt";
 import { JobDetailTabs } from "@/components/job-workspace/job-detail-tabs";
 import { JobHeader } from "@/components/job-workspace/job-header";
 import { MatchCard } from "@/components/job-workspace/match-card";
 import { SaveJobButton } from "@/components/job-workspace/save-job-button";
 import { TailorFlow, documentsCreatedKey, tailorReviewIdentity, type TailorFlowMessage, type TailorFlowProps } from "@/components/job-workspace/tailor-flow";
+import type { ApplyReturnState } from "@/lib/applications/apply-return";
 import type { ChecklistView, EstimateView, JobDetailView, JobTab, SalaryTargetView } from "@/lib/jobs/job-view-types";
 import {
   JobDocumentWorkspace,
@@ -25,6 +27,8 @@ export type JobWorkspaceProps = {
   tailor: Omit<TailorFlowProps, "jobId" | "hasDocuments" | "hasCurrentResume" | "onPendingFactChanges">;
   documents: { resumeVersions: JobResumeVersionOption[]; coverLetters: JobCoverLetterOption[] };
   application: { id: string; statusLabel: string } | null;
+  // "Did you apply?": an opened employer application with no answer yet, or a "Not applying" to undo.
+  applyReturn: ApplyReturnState;
   masterResumeText: string;
   notes: ReactNode;
 };
@@ -51,6 +55,7 @@ export function JobWorkspace({
   tailor,
   documents,
   application,
+  applyReturn,
   masterResumeText,
   notes
 }: JobWorkspaceProps) {
@@ -96,6 +101,8 @@ export function JobWorkspace({
           <ThemePreferenceControl />
         </details>
       </div>
+
+      <JobApplyReturnPrompt jobId={job.id} company={job.company} pending={applyReturn.pending} declined={applyReturn.declined} />
 
       <div className="job-layout">
         <aside className="job-rail" aria-label="Apply and match">

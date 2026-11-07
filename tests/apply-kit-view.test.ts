@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import {
+  APPLY_RETURN_METADATA_KEY,
+  buildApplicationOpenedRecord,
+  buildNotApplyingRecord
+} from "@/lib/applications/apply-return";
 import { loadApplyKitView, parseApplyLink } from "@/lib/apply-kit/apply-kit-view";
 import { loadSentDocumentsView, type SentDocumentsDb } from "@/lib/apply-kit/sent-documents-view";
 import { SENT_DOCUMENTS_METADATA_KEY, buildSentDocumentsSnapshot } from "@/lib/apply-kit/sent-documents";
@@ -29,6 +34,84 @@ test("another user's job is not found and every query is scoped to the signed-in
   for (const leaked of ["OTHER USER PRIVATE", "OTHER-PRIVATE", "resume-foreign", "cover-foreign"]) {
     assert.equal(serialized.includes(leaked), false, leaked);
   }
+});
+
+function openedEvent(id: string, iso: string, userId = OWNER, applicationId = "application-1") {
+  return {
+    id,
+    userId,
+    applicationId,
+    type: "NOTE_ADDED",
+    occurredAt: new Date(iso),
+    metadata: { [APPLY_RETURN_METADATA_KEY]: buildApplicationOpenedRecord({ openedAt: new Date(iso), applyHost: "jobs.example.test" }) }
+  };
+}
+
+function savedApplication(status: string) {
+  return { id: "application-1", userId: OWNER, jobPostingId: JOB, status, dateApplied: null, resumeVersionId: null, coverLetterVersionId: null, events: [] };
+}
+
+test("an opened application with no answer carries the pending 'Did you apply?' question", async () => {
+  const data = fixtures();
+  data.application.push(savedApplication("SAVED"));
+  data.applicationEvent.push(
+    openedEvent("event-opened-1", "2026-11-05T09:00:00.000Z"),
+    openedEvent("event-opened-2", "2026-11-06T10:00:00.000Z"),
+    // A crafted row owned by someone else on the owner's application is never read.
+    openedEvent("event-foreign", "2026-11-06T11:00:00.000Z", OTHER)
+  );
+  const { db, calls } = fakeDb(data);
+  const view = (await loadApplyKitView(db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
+  assert.deepEqual(view.applyReturn, {
+    pending: { openedEventId: "event-opened-2", openedAt: "2026-11-06T10:00:00.000Z" },
+    declined: null
+  });
+  for (const call of calls.filter((entry) => entry.model === "applicationEvent")) {
+    assert.equal(call.where.userId, OWNER, "timeline reads are owner-scoped");
+    assert.equal(call.where.applicationId, "application-1");
+  }
+});
+
+test("no question without an opened moment, without an application, or once the application is applied", async () => {
+  const none = await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true });
+  assert.deepEqual(none!.applyReturn, { pending: null, declined: null });
+
+  const unopened = fixtures();
+  unopened.application.push(savedApplication("SAVED"));
+  assert.equal((await loadApplyKitView(fakeDb(unopened).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!.applyReturn.pending, null);
+
+  const applied = fixtures();
+  applied.application.push(savedApplication("APPLIED"));
+  applied.applicationEvent.push(openedEvent("event-opened-1", "2026-11-06T10:00:00.000Z"));
+  assert.equal((await loadApplyKitView(fakeDb(applied).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!.applyReturn.pending, null);
+});
+
+test("a 'Not applying' answer still in effect is shown so it can be undone", async () => {
+  const data = fixtures();
+  data.application.push(savedApplication("ARCHIVED"));
+  data.applicationEvent.push(openedEvent("event-opened-1", "2026-11-06T10:00:00.000Z"), {
+    id: "event-decline",
+    userId: OWNER,
+    applicationId: "application-1",
+    type: "STATUS_CHANGED",
+    occurredAt: new Date("2026-11-06T10:30:00.000Z"),
+    metadata: {
+      [APPLY_RETURN_METADATA_KEY]: buildNotApplyingRecord({
+        answeredAt: new Date("2026-11-06T10:30:00.000Z"),
+        openedEventId: "event-opened-1",
+        previousStatus: "SAVED",
+        previousPostingStatus: "ACTIVE"
+      })
+    }
+  });
+  const view = (await loadApplyKitView(fakeDb(data).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
+  assert.equal(view.applyReturn.pending, null);
+  assert.deepEqual(view.applyReturn.declined, {
+    eventId: "event-decline",
+    answeredAt: "2026-11-06T10:30:00.000Z",
+    previousStatus: "SAVED",
+    previousPostingStatus: "ACTIVE"
+  });
 });
 
 test("documents carry their D031 state, version number, hash, and the ready version is selected", async () => {

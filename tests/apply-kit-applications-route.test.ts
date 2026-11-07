@@ -4,6 +4,12 @@ import { after, test, type TestContext } from "node:test";
 
 import type { NextRequest } from "next/server";
 
+import {
+  APPLY_RETURN_METADATA_KEY,
+  buildApplicationOpenedRecord,
+  resolveApplyReturn,
+  type ApplyReturnEvent
+} from "@/lib/applications/apply-return";
 import { latestSelfReportedEffort, readSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import { SENT_DOCUMENTS_METADATA_KEY, readSentDocumentsSnapshot } from "@/lib/apply-kit/sent-documents";
 import { documentContentHash } from "@/lib/documents/document-review";
@@ -505,4 +511,34 @@ test("minutes need an applied date, whole minutes in range, and the user's own a
       assert.deepEqual([db.store.events.length, db.store.audits.length], [0, 0]);
     });
   }
+});
+
+test("'Yes, I applied' after opening the application goes through this unchanged route and closes the question", async (t) => {
+  const db = await setup(t);
+  // The state "Did you apply?" leaves behind: a Saved application whose timeline holds an opened moment.
+  db.mutate((store) => {
+    store.applications.push({ id: "application-opened", userId: OWNER, jobPostingId: JOB, status: "SAVED", dateApplied: null, resumeVersionId: null, coverLetterVersionId: null });
+    store.events.push({
+      id: "event-opened",
+      userId: OWNER,
+      applicationId: "application-opened",
+      type: "CREATED",
+      title: "Saved when you opened the employer's application",
+      occurredAt: new Date("2026-11-06T10:00:00.000Z"),
+      metadata: { [APPLY_RETURN_METADATA_KEY]: buildApplicationOpenedRecord({ openedAt: new Date("2026-11-06T10:00:00.000Z"), applyHost: "jobs.example.test" }) }
+    });
+  });
+  const events = () => db.store.events as unknown as ApplyReturnEvent[];
+  assert.ok(resolveApplyReturn({ userId: OWNER, status: "SAVED", events: events() }).pending, "the question is open before the answer");
+
+  const response = await post(appliedBody({ effortMinutes: 23 }));
+  assert.equal(response.status, 200, await response.clone().text());
+  const application = db.store.applications[0]!;
+  assert.equal(application.status, "APPLIED");
+  assert.ok(application.dateApplied instanceof Date);
+  const appliedEvent = db.store.events.at(-1)!;
+  assert.equal(appliedEvent.type, "STATUS_CHANGED");
+  assert.ok(readSentDocumentsSnapshot(appliedEvent.metadata), "the exact documents are still frozen");
+  assert.equal(readSelfReportedEffort(appliedEvent.metadata)?.minutes, 23);
+  assert.equal(resolveApplyReturn({ userId: OWNER, status: "APPLIED", events: events() }).pending, null);
 });
