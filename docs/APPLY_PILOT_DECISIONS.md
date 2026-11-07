@@ -113,6 +113,20 @@ Users may edit tailored resumes and cover letters and export them. AI-generated 
 
 Google's Standard price for Gemini 3.8 Flash doubles on 2027-01-01, from $0.75/$3.75/$0.075 to $1.50/$7.50/$0.15 per million input/output/cached tokens. Apply Pilot keeps using Gemini 3.8 Flash, and the compiled price registry records both prices. After the increase takes effect, the owner revisits the model choice, including whether to stay on Gemini or move to another AI platform. This confirms D029 until then. So that every feature still fits at the new price, the compiled per-request maximum rises from 10¢ to 15¢ (the largest worst case, `JOB_MATCH`, is about 14.5¢). The $5 monthly hard cap, $1.50 automation allowance and 5¢ confirmation threshold are unchanged.
 
+### D033 — Cover-letter readability: employer lead lines and tense-safe grammar
+**Status:** owner-approved 2026-11-06 (PR #60).
+
+Cover letters only; the tailored-résumé grammar is unchanged.
+
+1. **Employer lead line.** Each work record publishes one stock line, built only from that record's own fields: "From <start> to <end>, I was <title> at <employer>." for a past role, or "Since <start>, I have been <title> at <employer>." for the current role. A record with no title, employer or start date, or a past role with no end date, gets no line. The line is allowed only as the first sentence of a paragraph whose every evidence sentence cites that record. The finalizer puts it there, and the claim check rejects it anywhere else. Other stock lines stay allowed anywhere.
+2. **Past-tense was/were.** The grammar allows was or were before a passive participle ("I was recognized for …", "I was promoted to …", "<Team> playbooks were adopted by …"). It never allows them before an active résumé verb unless "by" follows, and never allows "I were". The forced "I recognized for …" wording is gone.
+3. **Tense tightened.**
+   - An added am, is or are needs a present-tense source: the summary, a skill, the current role, or a fact that itself says am/is/are. So "I am a <title>" is allowed only for the current role or the summary.
+   - An added I stands only where the verb rule puts it: directly before the fact's own active verb, at the start or after up to three leading framing phrases.
+   - Letters that passed before may now fail. The repair rewrites such a claim from its own cited fact when a wording passes, and otherwise removes and reports it ("truth outranks scores").
+4. **Employer order** stays résumé order (most recent first).
+5. **Prompt version** stays 14.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
