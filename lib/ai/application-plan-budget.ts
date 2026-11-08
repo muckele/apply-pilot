@@ -9,6 +9,7 @@ import {
 } from "@/lib/ai/budget-defaults";
 import { getAiFinancialPolicy } from "@/lib/ai/config";
 import { PublicApiError } from "@/lib/api-errors";
+import { createOrReadExisting, isUniqueConstraintViolation } from "@/lib/create-or-read-existing";
 export { hashAiInput } from "@/lib/ai/input-hash";
 import { prisma } from "@/lib/prisma";
 
@@ -18,17 +19,23 @@ export function monthWindow(now = new Date()) {
   return { start, end };
 }
 
+// A new user's first page load can ask for these settings more than once at the same time; the
+// slower request returns the row the first one created, never overwriting it.
 export async function getOrCreateAiSettings(userId: string) {
-  return prisma.aISettings.upsert({
-    where: { userId },
-    create: {
-      userId,
-      monthlyBudgetCents: DEFAULT_MONTHLY_BUDGET_CENTS,
-      automationBudgetCents: DEFAULT_AUTOMATION_BUDGET_CENTS,
-      maxAnalysesPerSync: DEFAULT_MAX_ANALYSES_PER_SYNC
-    },
-    update: {}
-  });
+  return createOrReadExisting(
+    () =>
+      prisma.aISettings.upsert({
+        where: { userId },
+        create: {
+          userId,
+          monthlyBudgetCents: DEFAULT_MONTHLY_BUDGET_CENTS,
+          automationBudgetCents: DEFAULT_AUTOMATION_BUDGET_CENTS,
+          maxAnalysesPerSync: DEFAULT_MAX_ANALYSES_PER_SYNC
+        },
+        update: {}
+      }),
+    () => prisma.aISettings.findUniqueOrThrow({ where: { userId } })
+  );
 }
 
 function effectiveBudgetMicros(settings: {
@@ -52,17 +59,22 @@ async function ensureMonthlyLedger(userId: string, now = new Date()) {
   const settings = await getOrCreateAiSettings(userId);
   const { start } = monthWindow(now);
   const limits = effectiveBudgetMicros(settings);
-  const ledger = await prisma.aIBudgetLedger.upsert({
-    where: { userId_monthStart: { userId, monthStart: start } },
-    create: {
-      userId,
-      monthStart: start,
-      ...limits,
-      remainingMicros: limits.budgetMicros,
-      automationRemainingMicros: limits.automationBudgetMicros
-    },
-    update: {}
-  });
+  const where = { userId_monthStart: { userId, monthStart: start } };
+  const ledger = await createOrReadExisting(
+    () =>
+      prisma.aIBudgetLedger.upsert({
+        where,
+        create: {
+          userId,
+          monthStart: start,
+          ...limits,
+          remainingMicros: limits.budgetMicros,
+          automationRemainingMicros: limits.automationBudgetMicros
+        },
+        update: {}
+      }),
+    () => prisma.aIBudgetLedger.findUniqueOrThrow({ where })
+  );
 
   return { ledger, settings, limits };
 }
@@ -137,6 +149,10 @@ export type AiBudgetReservationInput = {
   automation: boolean;
 };
 
+// A simultaneous request created this month's ledger first. PostgreSQL has aborted the
+// reservation transaction by then, so the reservation runs again and finds that ledger.
+class LedgerCreatedConcurrently extends Error {}
+
 export async function reserveAiBudget(input: AiBudgetReservationInput) {
   await reconcileStaleAiReservations(input.userId);
   const settings = await getOrCreateAiSettings(input.userId);
@@ -148,19 +164,23 @@ export async function reserveAiBudget(input: AiBudgetReservationInput) {
     )
     .digest("hex");
 
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const ledger = await tx.aIBudgetLedger.upsert({
-        where: { userId_monthStart: { userId: input.userId, monthStart: start } },
-        create: {
-          userId: input.userId,
-          monthStart: start,
-          ...limits,
-          remainingMicros: limits.budgetMicros,
-          automationRemainingMicros: limits.automationBudgetMicros
-        },
-        update: {}
-      });
+  const reserve = () =>
+    prisma.$transaction(async (tx) => {
+      const ledger = await tx.aIBudgetLedger
+        .upsert({
+          where: { userId_monthStart: { userId: input.userId, monthStart: start } },
+          create: {
+            userId: input.userId,
+            monthStart: start,
+            ...limits,
+            remainingMicros: limits.budgetMicros,
+            automationRemainingMicros: limits.automationBudgetMicros
+          },
+          update: {}
+        })
+        .catch((error: unknown) => {
+          throw isUniqueConstraintViolation(error) ? new LedgerCreatedConcurrently() : error;
+        });
 
       await tx.$executeRaw(Prisma.sql`
         UPDATE "AIBudgetLedger"
@@ -214,8 +234,15 @@ export async function reserveAiBudget(input: AiBudgetReservationInput) {
         }
       });
     });
+
+  try {
+    return await reserve().catch((error: unknown) => {
+      if (error instanceof LedgerCreatedConcurrently) return reserve();
+      throw error;
+    });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    // The reservation's dedupe key: the same request is already reserved and running.
+    if (isUniqueConstraintViolation(error)) {
       throw new PublicApiError("An identical AI request is already running. Wait for it to finish and try again.", 409, {
         code: "AI_DUPLICATE_IN_PROGRESS"
       });
