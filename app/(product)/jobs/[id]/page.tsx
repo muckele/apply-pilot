@@ -126,7 +126,7 @@ async function getJobDetail(id: string) {
     latestAnalysis: matchAnalysis,
     currentSnapshotReviewedAnalysisId: job.currentEvidenceSnapshot?.reviewedAnalysisId ?? null
   });
-  const checklist = buildRequirementChecklist(job.requirements, estimate?.analysis.output ?? null);
+  const checklist = buildRequirementChecklist(job.requirements, estimate?.analysis.output ?? null, { description: job.description });
 
   return {
     view: buildJobDetailView(job),

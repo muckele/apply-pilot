@@ -189,7 +189,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
             job={buildJobDetailView(selected.job)}
             estimate={selected.estimate ? buildEstimateView(selected.estimate) : null}
             checklist={(() => {
-              const checklist = buildRequirementChecklist(selected.job.requirements, selected.estimate?.analysis.output ?? null);
+              const checklist = buildRequirementChecklist(selected.job.requirements, selected.estimate?.analysis.output ?? null, { description: selected.job.description });
               return { items: checklist.items, counts: checklist.counts };
             })()}
             salaryTarget={feed.profile ? { min: feed.profile.salaryTargetMin, max: feed.profile.salaryTargetMax } : null}

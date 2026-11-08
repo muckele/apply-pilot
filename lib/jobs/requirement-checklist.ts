@@ -3,7 +3,14 @@
 // when a gap cites it, and "not_assessed" otherwise. "Not shown" is about the résumé text, not
 // proof that the person lacks the skill. A years-of-experience gap also carries the duration and
 // roles Apply Pilot counted from work-history titles and dates (lib/ai/job-match-tenure.ts).
+//
+// A match cites a requirement either by its ref (job.requirements[n]) or by quoting it through
+// job.description or job.detectedTechStack[n]. The JOB_MATCH contract allows any job field as
+// match evidence, and the description holds every requirement bullet verbatim, so a match may
+// quote a requirement there. Such a quote counts only when it can have come from one requirement
+// alone (see locateQuotedRequirement); otherwise the requirement stays "not_assessed".
 
+import { comparableEvidenceText } from "@/lib/ai/evidence-text";
 import { readTenure, type TenureGapPresentation } from "@/lib/jobs/fit-presentation";
 
 export type ChecklistStatus = "shown" | "not_shown" | "not_assessed";
@@ -102,13 +109,52 @@ function finish(source: RequirementChecklist["source"], items: ChecklistItem[]):
   };
 }
 
-export function buildRequirementChecklist(requirements: readonly string[], output: unknown): RequirementChecklist {
+// Job fields whose text can contain a requirement's words. The title, company, location and
+// salary are never requirement text, so a quote from them never marks a requirement.
+const QUOTABLE_JOB_REF = /^job\.(?:description|detectedTechStack\[\d+\])$/u;
+
+function wholeTermCount(text: string, term: string) {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "gu"))].length;
+}
+
+// The requirement a quote came from, or null when that is not certain: the quote must occur as
+// whole words in exactly one requirement, and every occurrence of it in the description must be
+// inside that requirement ("SQL" in both the intro and a bullet could be either). Requirements
+// and description arrive in comparableEvidenceText form, the form the match validator checks
+// quotes in, so retyped dashes, quotes and spacing still compare equal.
+function locateQuotedRequirement(excerpt: string, comparableRequirements: readonly string[], comparableDescription: string) {
+  const quote = comparableEvidenceText(excerpt);
+  if (!quote) return null;
+  const counts = comparableRequirements.map((requirement) => wholeTermCount(requirement, quote));
+  const holders = counts.flatMap((count, index) => count ? [index] : []);
+  if (holders.length !== 1) return null;
+  const index = holders[0]!;
+  return wholeTermCount(comparableDescription, quote) <= counts[index]! ? index : null;
+}
+
+export function buildRequirementChecklist(
+  requirements: readonly string[],
+  output: unknown,
+  // The posting's description. Without it only job.requirements[n] refs link, because a quote
+  // from the description cannot be checked against the rest of the page.
+  posting: { description?: string | null } = {}
+): RequirementChecklist {
   const { matches, gaps } = readOutput(output);
   if (requirements.length) {
+    const comparableRequirements = requirements.map(comparableEvidenceText);
+    const description = typeof posting.description === "string" ? comparableEvidenceText(posting.description) : null;
+    const quotedIndex = new Map<Citation, number | null>();
+    for (const item of matches.flatMap((match) => match.jobEvidence)) {
+      quotedIndex.set(item, description !== null && QUOTABLE_JOB_REF.test(item.ref)
+        ? locateQuotedRequirement(item.excerpt, comparableRequirements, description)
+        : null);
+    }
     return finish("requirements", requirements.map((requirement, index) => {
       const ref = `job.requirements[${index}]`;
       const gapped = gaps.filter((gap) => gap.jobRequirement?.ref === ref);
-      const matched = matches.filter((match) => match.jobEvidence.some((item) => item.ref === ref));
+      const matched = matches.filter((match) => match.jobEvidence.some((item) =>
+        item.ref === ref || quotedIndex.get(item) === index));
       if (gapped.length) {
         const tenure = gapped.find((gap) => gap.tenure)?.tenure ?? null;
         return { requirement, jobRef: ref, status: "not_shown" as const, claim: null, resumeLines: [], tenure };
