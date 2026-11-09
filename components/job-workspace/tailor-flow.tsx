@@ -18,7 +18,7 @@ import {
   type DocumentCreationQuote,
   type DocumentCreationStep
 } from "@/lib/jobs/document-creation-plan";
-import type { EvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
+import type { EvidenceCorrectionReview, EvidenceReviewGap } from "@/lib/jobs/evidence-correction-review";
 import { evidenceSnapshotSaveResponseSchema } from "@/lib/jobs/evidence-snapshot-contracts";
 import {
   EMPTY_GAP_DRAFT,
@@ -69,7 +69,9 @@ export type TailorFlowMessage = { tone: "success" | "error" | "info"; text: stri
 export function tailorReviewIdentity(review: EvidenceCorrectionReview | null, hasValidCurrentSnapshot: boolean) {
   if (!review) return "no-resume";
   return [review.analysisId ?? "unscored", review.resumeUpdatedAt, hasValidCurrentSnapshot ? "saved" : "unsaved",
-    ...review.gaps.map((gap) => gap.id + gap.requirement), ...review.acceptedFacts.map((fact) => fact.factId)].join("|");
+    ...review.gaps.map((gap) => gap.id + gap.requirement),
+    ...review.uncheckedRequirements.map((requirement) => requirement.id + requirement.requirement),
+    ...review.acceptedFacts.map((fact) => fact.factId)].join("|");
 }
 
 type StepState = "pending" | "running" | "done" | "failed";
@@ -148,7 +150,9 @@ export function TailorFlow({
   const lines = useMemo(() => (review ? resumeLines(review) : []), [review]);
   const gapDraft = (id: string) => gapDrafts[id] ?? EMPTY_GAP_DRAFT;
   const lineDraft = (id: string) => lineDrafts[id] ?? EMPTY_SAVED_LINE_DRAFT;
-  const decisionKinds = (review?.gaps ?? []).map((gap) => decisionKind(gapDraft(gap.id)));
+  // Flagged gaps first, then the requirements the score didn't check: all answered in one pass.
+  const questions = review ? [...review.gaps, ...review.uncheckedRequirements] : [];
+  const decisionKinds = questions.map((gap) => decisionKind(gapDraft(gap.id)));
   const acceptedActions = (review?.acceptedFacts ?? []).map((fact) => lineDraft(fact.factId).action);
   const plan = planDocumentCreation({
     hasValidCurrentSnapshot,
@@ -158,7 +162,7 @@ export function TailorFlow({
     acceptedFactActions: acceptedActions
   });
   const pendingFactChanges = decisionKinds.some((kind) => kind !== "UNRESOLVED") || acceptedActions.some((action) => action !== "RETAIN");
-  const draftsComplete = (review?.gaps ?? []).every((gap) => gapDraftComplete(gapDraft(gap.id))) &&
+  const draftsComplete = questions.every((gap) => gapDraftComplete(gapDraft(gap.id))) &&
     (review?.acceptedFacts ?? []).every((fact) => savedLineDraftComplete(lineDraft(fact.factId)));
   const canCreate = Boolean(review) && plan.ok && draftsComplete && generationAvailable && !running;
   const coverOnlyPlan = planCoverLetterOnly({
@@ -267,6 +271,59 @@ export function TailorFlow({
     }
   }
 
+  function question(gap: EvidenceReviewGap) {
+    const draft = gapDraft(gap.id);
+    return (
+      <fieldset key={gap.id} className="job-gap" data-gap={gap.id}>
+        <legend className="job-gap-requirement">{gap.requirement}</legend>
+        {gap.tenureSummary ? <p className="job-hint" data-tenure>{gap.tenureSummary}</p> : null}
+        <div className="job-gap-choices" role="radiogroup" aria-label={`What to do about: ${gap.requirement}`}>
+          {CHOICES.map(([value, label]) => (
+            <label key={value} className="job-choice" data-checked={draft.choice === value}>
+              <input
+                type="radio"
+                name={`gap-${gap.id}`}
+                value={value}
+                checked={draft.choice === value}
+                onChange={() => updateGap(gap.id, { choice: value })}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        {draft.choice === "add" ? (
+          <div className="job-gap-detail">
+            <label className="job-field">
+              Your line for this requirement
+              <textarea
+                rows={2}
+                value={draft.line}
+                placeholder="Say what you did, as it should read on your résumé."
+                onChange={(event) => updateGap(gap.id, { line: event.target.value })}
+              />
+            </label>
+            <label className="job-check">
+              <input type="checkbox" checked={draft.attested} onChange={(event) => updateGap(gap.id, { attested: event.target.checked })} />
+              This is true. I&apos;m adding it myself; it isn&apos;t in my résumé yet.
+            </label>
+          </div>
+        ) : null}
+        {draft.choice === "onResume" ? (
+          <div className="job-gap-detail">
+            <label className="job-field">
+              Choose the résumé line that shows it
+              <select value={draft.resumeLine} onChange={(event) => updateGap(gap.id, { resumeLine: event.target.value })}>
+                <option value="">Choose a line…</option>
+                {lines.map((line) => <option key={line} value={line}>{line}</option>)}
+              </select>
+            </label>
+            <p className="job-hint">Apply Pilot uses the line exactly as written on your résumé.</p>
+          </div>
+        ) : null}
+      </fieldset>
+    );
+  }
+
   const maximum = plan.ok && quote ? documentCreationMaximumMicros(plan.steps, quote) : null;
   const blockedReason = !review
     ? "Add your master résumé first, so Apply Pilot has facts to work from."
@@ -303,65 +360,27 @@ export function TailorFlow({
         </div>
       ) : null}
 
-      {review && review.gaps.length ? (
+      {review && questions.length ? (
         <section aria-labelledby="gaps-heading" className="job-step">
           <h3 id="gaps-heading" className="job-step-title">Anything missing? <span className="job-step-optional">Optional</span></h3>
           <p className="job-step-copy" data-gap-intro>
-            Apply Pilot couldn&apos;t find these listed requirements on your résumé. That doesn&apos;t mean you lack them. It also may not flag every requirement (years of experience, for example), so check the Match tab too. If you have one of these, add a line in your own words, or point to the résumé line that already shows it. Lines you add are used for this job only and never change your master résumé.
+            Answer these once, before Apply Pilot writes anything. If you have one, add a line in your own words, or point to the résumé line that already shows it, and leave the rest on Skip. A requirement the Match tab shows as met can still fall short (years of experience, for example), so check the Match tab too. Lines you add are used for this job only and never change your master résumé.
           </p>
           <fieldset disabled={running} className="job-gap-list">
-            {review.gaps.map((gap) => {
-              const draft = gapDraft(gap.id);
-              return (
-                <fieldset key={gap.id} className="job-gap" data-gap={gap.id}>
-                  <legend className="job-gap-requirement">{gap.requirement}</legend>
-                  {gap.tenureSummary ? <p className="job-hint" data-tenure>{gap.tenureSummary}</p> : null}
-                  <div className="job-gap-choices" role="radiogroup" aria-label={`What to do about: ${gap.requirement}`}>
-                    {CHOICES.map(([value, label]) => (
-                      <label key={value} className="job-choice" data-checked={draft.choice === value}>
-                        <input
-                          type="radio"
-                          name={`gap-${gap.id}`}
-                          value={value}
-                          checked={draft.choice === value}
-                          onChange={() => updateGap(gap.id, { choice: value })}
-                        />
-                        {label}
-                      </label>
-                    ))}
-                  </div>
-                  {draft.choice === "add" ? (
-                    <div className="job-gap-detail">
-                      <label className="job-field">
-                        Your line for this requirement
-                        <textarea
-                          rows={2}
-                          value={draft.line}
-                          placeholder="Say what you did, as it should read on your résumé."
-                          onChange={(event) => updateGap(gap.id, { line: event.target.value })}
-                        />
-                      </label>
-                      <label className="job-check">
-                        <input type="checkbox" checked={draft.attested} onChange={(event) => updateGap(gap.id, { attested: event.target.checked })} />
-                        This is true. I&apos;m adding it myself; it isn&apos;t in my résumé yet.
-                      </label>
-                    </div>
-                  ) : null}
-                  {draft.choice === "onResume" ? (
-                    <div className="job-gap-detail">
-                      <label className="job-field">
-                        Choose the résumé line that shows it
-                        <select value={draft.resumeLine} onChange={(event) => updateGap(gap.id, { resumeLine: event.target.value })}>
-                          <option value="">Choose a line…</option>
-                          {lines.map((line) => <option key={line} value={line}>{line}</option>)}
-                        </select>
-                      </label>
-                      <p className="job-hint">Apply Pilot uses the line exactly as written on your résumé.</p>
-                    </div>
-                  ) : null}
-                </fieldset>
-              );
-            })}
+            {review.gaps.length ? (
+              <div data-gap-group="not-shown">
+                <h4 className="job-gap-group-title">Not found on your résumé</h4>
+                <p className="job-hint">Apply Pilot couldn&apos;t find these listed requirements on your résumé. That doesn&apos;t mean you lack them.</p>
+                {review.gaps.map(question)}
+              </div>
+            ) : null}
+            {review.uncheckedRequirements.length ? (
+              <div data-gap-group="unchecked">
+                <h4 className="job-gap-group-title">Not checked yet</h4>
+                <p className="job-hint">Apply Pilot didn&apos;t compare these with your résumé this time. If you have one that your résumé doesn&apos;t show, add it now so your documents are written once.</p>
+                {review.uncheckedRequirements.map(question)}
+              </div>
+            ) : null}
           </fieldset>
         </section>
       ) : review && reviewable ? (

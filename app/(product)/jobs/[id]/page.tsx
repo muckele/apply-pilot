@@ -191,7 +191,9 @@ async function getJobDetail(id: string) {
           selectedCoverLetterDocumentId: application?.coverLetterVersionId,
           acceptedFacts: context.effectiveEvidenceSnapshotId && job.currentEvidenceSnapshot
             ? acceptedEvidenceFactsFromSnapshot(job.currentEvidenceSnapshot)
-            : []
+            : [],
+          // The same job fields the save rebuilds this review from (lib/jobs/evidence-snapshots.ts).
+          job: { requirements: job.requirements, description: job.description }
         })
       : null
   };

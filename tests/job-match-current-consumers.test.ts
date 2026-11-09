@@ -155,3 +155,11 @@ test("job detail mounts the preview-only evidence correction surface from the cu
   assert.match(source, /buildEvidenceCorrectionReview/);
   assert.match(source, /isMaster: true/);
 });
+
+test("the job page and the evidence save build the review from the same job requirements", () => {
+  // Answers to requirements a score never checked are validated by the save against the list the
+  // page showed, so both must pass the job's requirements and description to the review builder.
+  const jobFields = /job: \{ requirements: job\.requirements, description: job\.description \}/u;
+  assert.match(readFileSync("app/(product)/jobs/[id]/page.tsx", "utf8"), jobFields);
+  assert.match(readFileSync("lib/jobs/evidence-snapshots.ts", "utf8"), jobFields);
+});

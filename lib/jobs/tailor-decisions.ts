@@ -51,20 +51,28 @@ export function buildEvidenceSaveBody(
     throw new Error("Score this job before saving your answers.");
   }
   const source = resumeSourceFact(review);
-  const decisions: EvidenceCorrectionDecision[] = review.gaps.map((gap) => {
-    const draft = gapDrafts[gap.id] ?? EMPTY_GAP_DRAFT;
+  const decide = (id: string, draft: GapDraft): EvidenceCorrectionDecision => {
     if (draft.choice === "add") {
-      return { gapId: gap.id, kind: "OWNER_ATTESTATION", attestedFact: draft.line.trim(), ownerAttested: draft.attested, ...JOB_ONLY };
+      return { gapId: id, kind: "OWNER_ATTESTATION", attestedFact: draft.line.trim(), ownerAttested: draft.attested, ...JOB_ONLY };
     }
     if (draft.choice === "onResume") {
       if (!source) throw new Error("Your résumé text is not available to cite.");
       return {
-        gapId: gap.id, kind: "SOURCE_CORRECTION", sourceFactId: source.id,
+        gapId: id, kind: "SOURCE_CORRECTION", sourceFactId: source.id,
         sourceExcerpt: draft.resumeLine, correctedFact: draft.resumeLine, ...JOB_ONLY
       };
     }
-    return { gapId: gap.id, kind: "UNRESOLVED", ...JOB_ONLY };
-  });
+    return { gapId: id, kind: "UNRESOLVED", ...JOB_ONLY };
+  };
+  // Every gap gets a decision; an unchecked requirement only when it was answered (see
+  // normalizeEvidenceCorrectionDecisions), after the gaps and in listed order.
+  const decisions: EvidenceCorrectionDecision[] = [
+    ...review.gaps.map((gap) => decide(gap.id, gapDrafts[gap.id] ?? EMPTY_GAP_DRAFT)),
+    ...review.uncheckedRequirements.flatMap((requirement) => {
+      const draft = gapDrafts[requirement.id] ?? EMPTY_GAP_DRAFT;
+      return draft.choice === "skip" ? [] : [decide(requirement.id, draft)];
+    })
+  ];
   const acceptedFactActions: AcceptedFactActionInput[] = review.acceptedFacts.map((fact) => {
     const draft = savedLineDrafts[fact.factId] ?? EMPTY_SAVED_LINE_DRAFT;
     if (draft.action === "REPLACE_OWNER_ATTESTATION") {

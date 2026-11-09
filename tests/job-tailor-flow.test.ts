@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
 
-import { TailorFlow, type TailorFlowProps } from "@/components/job-workspace/tailor-flow";
+import { TailorFlow, tailorReviewIdentity, type TailorFlowProps } from "@/components/job-workspace/tailor-flow";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import type { DocumentCreationQuote } from "@/lib/jobs/document-creation-plan";
 import { createDomHarness } from "@/tests/fixtures/dom-harness";
@@ -411,8 +411,9 @@ test("the gap list never claims to be everything the résumé is missing", async
   try {
     await harness.render(React.createElement(TailorFlow, props()));
     const intro = harness.container.querySelector("[data-gap-intro]")?.textContent ?? "";
-    assert.match(intro, /may not flag every requirement/u);
+    assert.match(intro, /can still fall short/u);
     assert.match(intro, /years of experience/u);
+    assert.match(intro, /check the Match tab/u);
   } finally {
     await harness.close();
   }
@@ -448,4 +449,110 @@ test("plain language: no internal jargon, and extracted facts stay behind a disc
   } finally {
     await harness.close();
   }
+});
+
+// The score judged requirements 0 and 5 (both gaps) and matched 2; the others were never checked.
+// Requirement 1 is a heading an older import stored as a requirement.
+const listedRequirements = [
+  "Current Quenby certification",
+  "What You'll Do",
+  "Service operations leadership",
+  "Write clear technical documentation",
+  "Bachelor's degree or equivalent experience",
+  "Working knowledge of SQL"
+];
+
+function reviewWithRequirements() {
+  return buildEvidenceCorrectionReview({
+    jobId: "job-1",
+    resumeId: "resume-1",
+    resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+    resume,
+    analysisId: "analysis-1",
+    analysisInputHash: "a".repeat(64),
+    analysisModel: "gemini-3.8-flash",
+    analysisPromptVersion: "3.4",
+    analysisOutput: {
+      ...analysisOutput,
+      factualMatches: [{
+        claim: "Submitted applicant evidence matches job evidence for operations.",
+        applicantEvidence: [{ ref: "resume.summary", excerpt: "Service operations leader" }],
+        jobEvidence: [{ ref: "job.requirements[2]", excerpt: "Service operations leadership" }]
+      }]
+    },
+    job: { requirements: listedRequirements, description: null }
+  });
+}
+
+test("requirements the score didn't check are listed to answer in the same pass as the gaps", async () => {
+  const harness = createDomHarness({ fetch: apiStub([]) });
+  try {
+    await harness.render(React.createElement(TailorFlow, props({ review: reviewWithRequirements() })));
+    const listed = [...harness.container.querySelectorAll("fieldset[data-gap]")].map((node) => node.querySelector("legend")?.textContent);
+    assert.deepEqual(listed, [
+      "Current Quenby certification",
+      "Working knowledge of SQL",
+      "Write clear technical documentation",
+      "Bachelor's degree or equivalent experience"
+    ]);
+    const unchecked = harness.container.querySelector("[data-gap-group=unchecked]");
+    assert.match(unchecked?.textContent ?? "", /Not checked yet/u);
+    assert.ok(choice(gapFieldset(harness, "Write clear technical documentation"), /^Skip$/u)?.checked);
+    assert.ok(choice(gapFieldset(harness, "Bachelor's degree"), /I have this/u));
+    assert.ok(choice(gapFieldset(harness, "Bachelor's degree"), /already on my résumé/u));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("answering an unchecked requirement saves it after the gap decisions and re-scores once under one confirmation", async () => {
+  const calls: Call[] = [];
+  const prompts: string[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: (message) => { prompts.push(message); return true; } });
+  try {
+    await harness.render(React.createElement(TailorFlow, props({ review: reviewWithRequirements() })));
+    const requirement = gapFieldset(harness, "Bachelor's degree");
+    await harness.click(choice(requirement, /I have this/u));
+    await harness.type(requirement.querySelector("textarea"), "Bachelor of Science in Operations Management, 2014.");
+    const create = harness.button("Create my résumé and cover letter");
+    assert.equal(create.disabled, true, "attestation is required");
+    await harness.check(requirement.querySelector("input[type=checkbox]"));
+    await harness.click(create);
+    await harness.waitForText(/ready to review/u);
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0]!, /update your fit estimate/u);
+    assert.deepEqual(calls.filter((call) => call.confirmed !== null || call.url.endsWith("snapshots")).map((call) => call.url.split("/").at(-1)), [
+      "evidence-snapshots", "match", "tailored-resume", "cover-letter"
+    ]);
+    assert.deepEqual((calls[0]!.body as { decisions: unknown[] }).decisions, [
+      { gapId: "gap:0", kind: "UNRESOLVED", reuseScope: "JOB_ONLY", masterProfileOptIn: false },
+      { gapId: "gap:1", kind: "UNRESOLVED", reuseScope: "JOB_ONLY", masterProfileOptIn: false },
+      {
+        gapId: "requirement:4", kind: "OWNER_ATTESTATION", attestedFact: "Bachelor of Science in Operations Management, 2014.",
+        ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false
+      }
+    ]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("unchecked requirements left on Skip send no decision and add no re-score", async () => {
+  const calls: Call[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: () => true });
+  try {
+    await harness.render(React.createElement(TailorFlow, props({ review: reviewWithRequirements() })));
+    await harness.click(harness.button("Create my résumé and cover letter"));
+    await harness.waitForText(/ready to review/u);
+    assert.deepEqual((calls[0]!.body as { decisions: Array<{ gapId: string }> }).decisions.map((decision) => decision.gapId), ["gap:0", "gap:1"]);
+    assert.equal(calls.some((call) => call.url.endsWith("/match")), false);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a different list of unchecked requirements starts the answers over", () => {
+  const withList = reviewWithRequirements();
+  const withoutList = { ...withList, uncheckedRequirements: [] };
+  assert.notEqual(tailorReviewIdentity(withList, false), tailorReviewIdentity(withoutList, false));
 });
