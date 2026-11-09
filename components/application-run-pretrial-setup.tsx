@@ -72,6 +72,27 @@ function safeSetupHost(run: RunView, policy: PolicyView) {
     !isHostBlocked(run.applyHost, policy);
 }
 
+const ASSISTED_FILL_CONFIRMATION =
+  "Turn on assisted Fill for your whole account? When you click Fill on a browser run, Apply Pilot can fill your approved answers on that employer's page, once. It leaves values already there alone, and you still click Submit yourself.";
+
+// Prepare and pretrial setup are PREPARE_ONLY actions, so turning Fill on too early would
+// hide them. This only prevents that dead end: the server's Fill gates stay the authority.
+function assistedFillBlocker(run: RunView, policy: PolicyView): string | null {
+  if (canStartPreparation(run.state) || run.state === "PREPARING") {
+    return "Prepare this job first. You can turn on assisted Fill once it's prepared.";
+  }
+  if (run.state !== "READY" && run.state !== "REVIEW_REQUIRED") {
+    return "This browser run is past the point where Fill can start.";
+  }
+  if (!policy.enabled || !allowedForRun(run, policy) || !safeSetupHost(run, policy)) {
+    return "This job isn't set up for automation, so assisted Fill can't be turned on from here.";
+  }
+  if (!policy.effectiveEnabled) {
+    return "Automation is unavailable in this environment, so assisted Fill can't be turned on here.";
+  }
+  return null;
+}
+
 export function ApplicationRunPretrialSetup({
   applicationId,
   jobPostingId,
@@ -101,6 +122,10 @@ export function ApplicationRunPretrialSetup({
   const showPrepare = !busy && !uncertain && !costConfirmationStop && eligibleState &&
     inPrepareOnlyMode && policy.enabled && policy.effectiveEnabled && hostAllowed &&
     run.blockingReason !== "ai_cost_confirmation_required";
+  const fillIsOn = policy.mode === "FILL_AND_REVIEW";
+  const turnOnBlocker = assistedFillBlocker(run, policy);
+  // Turning off is the safe direction, so it stays available unless a write is pending.
+  const switchDisabled = busy || (!fillIsOn && (uncertain || turnOnBlocker !== null));
 
   async function readRun(): Promise<RunView | null> {
     try {
@@ -140,7 +165,7 @@ export function ApplicationRunPretrialSetup({
       const latestPolicy = await readPolicy();
       setPolicy(latestPolicy);
       if (latestPolicy.mode !== "PREPARE_ONLY") {
-        setMessage("The current policy is FILL_AND_REVIEW. Review that mode separately before pretrial setup.");
+        setMessage("Assisted Fill is on, so no setup was sent. Turn it off first to set up this job.");
         return;
       }
       if (!safeSetupHost(latestRun, latestPolicy)) {
@@ -181,6 +206,87 @@ export function ApplicationRunPretrialSetup({
       setUncertain(true);
       setMessage("Policy setup could not be confirmed. Refresh the page before another action.");
       router.refresh();
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function writeAssistedFillMode(mode: PolicyView["mode"]) {
+    const state = (value: PolicyView["mode"]) => value === "FILL_AND_REVIEW" ? "on" : "off";
+    const unconfirmed = "Assisted Fill could not be confirmed. Refresh the page before another action.";
+    let updated: PolicyView | null = null;
+    try {
+      const response = await fetch("/api/application-automation-policy", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+        cache: "no-store"
+      });
+      if (response.ok) updated = policySchema.parse(await response.json());
+    } catch {
+      // A lost response never authorizes an automatic replay.
+    }
+    if (updated) {
+      setPolicy(updated);
+      if (updated.mode === mode) {
+        setMessage(`Assisted Fill is ${state(mode)}.`);
+      } else {
+        setUncertain(true);
+        setMessage(unconfirmed);
+      }
+    } else {
+      try {
+        const latest = await readPolicy();
+        setPolicy(latest);
+        setMessage(latest.mode === mode
+          ? `Assisted Fill is ${state(mode)}.`
+          : `The change was not confirmed. Assisted Fill is still ${state(latest.mode)}.`);
+      } catch {
+        setUncertain(true);
+        setMessage(unconfirmed);
+      }
+    }
+    router.refresh();
+  }
+
+  async function turnOnAssistedFill() {
+    if (inFlight.current || uncertain || turnOnBlocker !== null) return;
+    inFlight.current = true;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const latestRun = await readRun();
+      if (!latestRun) return;
+      const latestPolicy = await readPolicy();
+      setPolicy(latestPolicy);
+      if (latestPolicy.mode === "FILL_AND_REVIEW") {
+        setMessage("Assisted Fill is already on. No change was needed.");
+        return;
+      }
+      if (assistedFillBlocker(latestRun, latestPolicy) !== null) {
+        setMessage("This run or its policy has changed, so assisted Fill stays off. No change was sent.");
+        return;
+      }
+      if (!window.confirm(ASSISTED_FILL_CONFIRMATION)) return;
+      await writeAssistedFillMode("FILL_AND_REVIEW");
+    } catch {
+      setUncertain(true);
+      setMessage("Assisted Fill could not be confirmed. Refresh the page before another action.");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+
+  // Deliberately one click with no reads first: stopping Fill must not depend on anything else working.
+  async function turnOffAssistedFill() {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await writeAssistedFillMode("PREPARE_ONLY");
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -244,9 +350,6 @@ export function ApplicationRunPretrialSetup({
       <p>Execution host: <strong>{hostAllowed ? "allowed" : "not allowed"}</strong> under the current policy.</p>
       <p>This MVP uses deterministic local rule-based planning. Preparing does not send planning data to an AI provider.</p>
       <p>Preparation is separate from employer inspection and Fill. Preparing does not open an employer page or grant Fill authority.</p>
-      {policy.mode === "FILL_AND_REVIEW" ? (
-        <p>The current policy is FILL_AND_REVIEW. This pretrial setup does not change that mode; review it separately.</p>
-      ) : null}
       {policy.enabled && !policy.effectiveEnabled ? (
         <p>Automation is unavailable in this environment. Preparation cannot start here.</p>
       ) : null}
@@ -275,6 +378,36 @@ export function ApplicationRunPretrialSetup({
           Prepare with local rules
         </button>
       ) : null}
+      <div className="space-y-2 rounded-lg border border-slate-200 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <p>
+            <span className="font-semibold text-slate-950">Assisted Fill</span>
+            {": "}
+            <strong>{fillIsOn ? "On" : "Off"}</strong>
+          </p>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={fillIsOn}
+            aria-label="Assisted Fill"
+            data-testid="assisted-fill-switch"
+            disabled={switchDisabled}
+            onClick={() => { void (fillIsOn ? turnOffAssistedFill() : turnOnAssistedFill()); }}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:cursor-not-allowed disabled:opacity-50 ${fillIsOn ? "bg-brand-600" : "bg-slate-300"}`}
+          >
+            <span
+              aria-hidden="true"
+              className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${fillIsOn ? "translate-x-[22px]" : "translate-x-0.5"}`}
+            />
+          </button>
+        </div>
+        {fillIsOn ? (
+          <p>This is on for your whole account. When you click Fill on a browser run, Apply Pilot fills your approved answers once and leaves values already there alone. You still click Submit yourself. To set up or prepare another job, turn this off first, then back on.</p>
+        ) : (
+          <p>Apply Pilot won&apos;t fill anything on employer pages while this is off. Turn it on before you click Fill on a browser run.</p>
+        )}
+        {!fillIsOn && turnOnBlocker ? <p data-testid="assisted-fill-blocker">{turnOnBlocker}</p> : null}
+      </div>
       {uncertain && !busy ? (
         <button type="button" data-testid="refresh-run-state" onClick={() => { void refreshRunState(); }}
           className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-800">

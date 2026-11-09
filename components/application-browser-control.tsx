@@ -17,6 +17,7 @@ import {
   isAnswerReviewEligible,
   isAnswerReviewPostconditionCurrent,
   isAnswerReviewMutationEligible,
+  fillRejectionNotice,
   isFillActivationEligible,
   isPersonalSubmissionCompletionEligible,
   isResolveReviewEligible,
@@ -846,15 +847,7 @@ export function ApplicationBrowserControl({
           text: `The bridge reported a bounded ${commandStatus?.outcome ?? "Fill-command"} disposition, but the authenticated durable Fill status is unverified. Review every employer field manually and use Refresh Fill status only for read-only updates.`
         });
       } else if (commandStatus?.outcome === "REJECTED") {
-        setCommandNotice(commandStatus.errorCode === "FILL_NO_ELIGIBLE_FIELDS"
-          ? {
-              tone: "WARNING",
-              text: "No approved automatable fields remained when Fill authority was checked. Complete the employer form manually. Fill was not retried."
-            }
-          : {
-              tone: "WARNING",
-              text: "Fill was not started because current trusted authority rejected the request. Review the current run and complete the employer form manually if needed."
-            });
+        setCommandNotice(fillRejectionNotice(commandStatus.errorCode));
       } else if (commandStatus?.outcome === "RECOVERY_PENDING") {
         setCommandNotice({
           tone: "WARNING",

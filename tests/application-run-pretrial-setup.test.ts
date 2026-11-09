@@ -77,8 +77,10 @@ async function mount(options: {
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
   let confirmations = 0;
-  Object.defineProperty(dom.window, "confirm", { configurable: true, value: () => {
+  const confirmMessages: string[] = [];
+  Object.defineProperty(dom.window, "confirm", { configurable: true, value: (text?: string) => {
     confirmations += 1;
+    confirmMessages.push(String(text));
     return options.confirm ?? true;
   } });
   const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
@@ -104,7 +106,7 @@ async function mount(options: {
       })));
   });
   return {
-    container, fetchCalls,
+    container, fetchCalls, confirmMessages,
     get confirmations() { return confirmations; },
     get refreshes() { return refreshes; },
     async click(id: string) {
@@ -335,5 +337,358 @@ test("AI cost confirmation response stops at durable blocker with no high-cost r
     assert.equal(new Headers(ui.fetchCalls[0].init?.headers).has("x-ai-cost-confirmed"), false);
     assert.match(ui.container.textContent ?? "", /separate AI cost confirmation/);
     assert.equal(ui.container.querySelector("[data-testid='prepare-run']"), null);
+  } finally { await ui.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// Assisted Fill switch (WP1.6). Assertions compare primitives rather than DOM
+// nodes: a failing assert that prints a JSDOM node hangs node:test.
+// ---------------------------------------------------------------------------
+
+const SWITCH = "assisted-fill-switch";
+const POLICY_URL = "/api/application-automation-policy";
+const RUN_URL = `/api/application-runs/${RUN_ID}`;
+const ALL_RUN_STATES = [
+  "DRAFT", "PREPARING", "READY", "FILLING", "REVIEW_REQUIRED",
+  "READY_FOR_USER_SUBMISSION", "COMPLETED_BY_USER", "BLOCKED", "FAILED", "CANCELLED"
+] as const;
+
+type MountedUi = Awaited<ReturnType<typeof mount>>;
+
+function assistedFill(ui: MountedUi) {
+  const control = ui.container.querySelector<HTMLButtonElement>(`button[data-testid='${SWITCH}']`);
+  return {
+    present: control !== null,
+    role: control?.getAttribute("role") ?? null,
+    checked: control?.getAttribute("aria-checked") ?? null,
+    disabled: control?.disabled ?? null
+  };
+}
+
+function shows(ui: MountedUi, testId: string) {
+  return ui.container.querySelector(`[data-testid='${testId}']`) !== null;
+}
+
+function requests(ui: MountedUi) {
+  return ui.fetchCalls.map((call) => `${call.init?.method} ${call.input}`);
+}
+
+function patchBodies(ui: MountedUi) {
+  return ui.fetchCalls
+    .filter((call) => call.init?.method === "PATCH")
+    .map((call) => JSON.parse(String(call.init?.body)) as unknown);
+}
+
+function routes(table: {
+  run?: () => Response;
+  readPolicy?: () => Response;
+  writePolicy?: () => Response | Promise<Response>;
+}): FetchHandler {
+  return async (input, init) => {
+    const url = String(input);
+    if (url === RUN_URL && init?.method === "GET" && table.run) return table.run();
+    if (url === POLICY_URL && init?.method === "GET" && table.readPolicy) return table.readPolicy();
+    if (url === POLICY_URL && init?.method === "PATCH" && table.writePolicy) return table.writePolicy();
+    throw new Error(`Unexpected request: ${init?.method} ${url}`);
+  };
+}
+
+const fillOn = (overrides: Partial<PolicyView> = {}) => policy({ mode: "FILL_AND_REVIEW", ...overrides });
+
+test("assisted Fill starts off as a real switch and sends nothing on render", async () => {
+  const ui = await mount({ initialRun: run({ state: "READY" }) });
+  try {
+    assert.deepEqual(assistedFill(ui), { present: true, role: "switch", checked: "false", disabled: false });
+    assert.equal(ui.container.querySelector(`button[data-testid='${SWITCH}']`)?.getAttribute("aria-label"), "Assisted Fill");
+    assert.deepEqual(ui.fetchCalls, []);
+  } finally { await ui.cleanup(); }
+});
+
+test("turning assisted Fill on from a prepared run rereads, confirms and sends only the mode", async () => {
+  for (const state of ["READY", "REVIEW_REQUIRED"] as const) {
+    const current = run({ state });
+    const ui = await mount({
+      initialRun: current,
+      handler: routes({
+        run: () => json({ run: current }),
+        readPolicy: () => json(policy()),
+        writePolicy: () => json(fillOn())
+      })
+    });
+    try {
+      await ui.click(SWITCH);
+      assert.deepEqual(requests(ui), [`GET ${RUN_URL}`, `GET ${POLICY_URL}`, `PATCH ${POLICY_URL}`], state);
+      assert.deepEqual(patchBodies(ui), [{ mode: "FILL_AND_REVIEW" }], state);
+      assert.equal(ui.confirmations, 1, state);
+      assert.match(ui.confirmMessages[0], /whole account/i, state);
+      assert.match(ui.confirmMessages[0], /you still click Submit/i, state);
+      assert.equal(assistedFill(ui).checked, "true", state);
+      assert.equal(ui.refreshes, 1, state);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("declining the confirmation leaves assisted Fill off with no policy write", async () => {
+  const current = run({ state: "READY" });
+  const ui = await mount({
+    initialRun: current,
+    confirm: false,
+    handler: routes({ run: () => json({ run: current }), readPolicy: () => json(policy()) })
+  });
+  try {
+    await ui.click(SWITCH);
+    assert.equal(ui.confirmations, 1);
+    assert.deepEqual(patchBodies(ui), []);
+    assert.equal(assistedFill(ui).checked, "false");
+  } finally { await ui.cleanup(); }
+});
+
+test("assisted Fill cannot be turned on before the job is prepared, because that would hide Prepare", async () => {
+  for (const state of ["DRAFT", "PREPARING", "BLOCKED", "FAILED"] as const) {
+    const ui = await mount({ initialRun: run({ state }) });
+    try {
+      assert.equal(assistedFill(ui).disabled, true, state);
+      assert.match(ui.container.textContent ?? "", /Prepare this job first/, state);
+      await ui.click(SWITCH);
+      assert.equal(ui.confirmations, 0, state);
+      assert.deepEqual(ui.fetchCalls, [], state);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("assisted Fill cannot be turned on from a run that is past Fill", async () => {
+  for (const state of ["FILLING", "READY_FOR_USER_SUBMISSION", "COMPLETED_BY_USER", "CANCELLED"] as const) {
+    const ui = await mount({ initialRun: run({ state }) });
+    try {
+      assert.equal(assistedFill(ui).disabled, true, state);
+      assert.match(ui.container.textContent ?? "", /past the point where Fill can start/, state);
+      assert.deepEqual(ui.fetchCalls, [], state);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("assisted Fill cannot be turned on without setup, an allowed host or the environment gate", async () => {
+  const cases: Array<{ label: string; initialPolicy: PolicyView; reason: RegExp }> = [
+    { label: "owner policy off", initialPolicy: policy({ enabled: false, effectiveEnabled: false }), reason: /isn't set up/ },
+    { label: "host not allowed", initialPolicy: policy({ allowedHosts: [] }), reason: /isn't set up/ },
+    { label: "host blocked", initialPolicy: policy({ blockedHosts: [HOST] }), reason: /isn't set up/ },
+    { label: "environment gate off", initialPolicy: policy({ effectiveEnabled: false }), reason: /unavailable in this environment/ }
+  ];
+  for (const { label, initialPolicy, reason } of cases) {
+    const ui = await mount({ initialRun: run({ state: "READY" }), initialPolicy });
+    try {
+      assert.equal(assistedFill(ui).disabled, true, label);
+      assert.match(ui.container.textContent ?? "", reason, label);
+      await ui.click(SWITCH);
+      assert.deepEqual(ui.fetchCalls, [], label);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("turning on stops without a confirm or write when the reread shows the run or policy changed", async () => {
+  const cases: Array<{ label: string; latestRun: RunView; latestPolicy: PolicyView; checked: string }> = [
+    { label: "policy disabled", latestRun: run({ state: "READY" }), latestPolicy: policy({ enabled: false, effectiveEnabled: false }), checked: "false" },
+    { label: "host blocked", latestRun: run({ state: "READY" }), latestPolicy: policy({ blockedHosts: [HOST] }), checked: "false" },
+    { label: "environment gate closed", latestRun: run({ state: "READY" }), latestPolicy: policy({ effectiveEnabled: false }), checked: "false" },
+    { label: "run cancelled", latestRun: run({ state: "CANCELLED" }), latestPolicy: policy(), checked: "false" },
+    { label: "already on", latestRun: run({ state: "READY" }), latestPolicy: fillOn(), checked: "true" }
+  ];
+  for (const { label, latestRun, latestPolicy, checked } of cases) {
+    const ui = await mount({
+      initialRun: run({ state: "READY" }),
+      handler: routes({ run: () => json({ run: latestRun }), readPolicy: () => json(latestPolicy) })
+    });
+    try {
+      await ui.click(SWITCH);
+      assert.equal(ui.confirmations, 0, label);
+      assert.deepEqual(patchBodies(ui), [], label);
+      assert.equal(assistedFill(ui).checked, checked, label);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("turning on sends no write when the run or policy cannot be read", async () => {
+  const cases = [
+    { label: "run read failed", table: { run: () => json({ error: "down" }, 503), readPolicy: () => json(policy()) } },
+    { label: "policy read failed", table: { run: () => json({ run: run({ state: "READY" }) }), readPolicy: () => json({ error: "down" }, 503) } }
+  ];
+  for (const { label, table } of cases) {
+    const ui = await mount({ initialRun: run({ state: "READY" }), handler: routes(table) });
+    try {
+      await ui.click(SWITCH);
+      assert.equal(ui.confirmations, 0, label);
+      assert.deepEqual(patchBodies(ui), [], label);
+      assert.equal(assistedFill(ui).checked, "false", label);
+      assert.equal(assistedFill(ui).disabled, true, label);
+      assert.equal(shows(ui, "refresh-run-state"), true, label);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("turning off is one click with no reads first, in every run state and with every gate closed", async () => {
+  const policies = [fillOn(), fillOn({ effectiveEnabled: false }), fillOn({ enabled: false, effectiveEnabled: false }), fillOn({ allowedHosts: [] })];
+  for (const state of ALL_RUN_STATES) {
+    for (const initialPolicy of policies) {
+      const label = `${state} ${JSON.stringify(initialPolicy)}`;
+      const ui = await mount({
+        initialRun: run({ state }),
+        initialPolicy,
+        handler: routes({ writePolicy: () => json({ ...initialPolicy, mode: "PREPARE_ONLY" }) })
+      });
+      try {
+        assert.deepEqual(assistedFill(ui), { present: true, role: "switch", checked: "true", disabled: false }, label);
+        await ui.click(SWITCH);
+        assert.deepEqual(requests(ui), [`PATCH ${POLICY_URL}`], label);
+        assert.deepEqual(patchBodies(ui), [{ mode: "PREPARE_ONLY" }], label);
+        assert.equal(ui.confirmations, 0, label);
+        assert.equal(assistedFill(ui).checked, "false", label);
+      } finally { await ui.cleanup(); }
+    }
+  }
+});
+
+test("while assisted Fill is on, Prepare stays hidden with a way forward; turning off brings it back", async () => {
+  const ui = await mount({
+    initialPolicy: fillOn(),
+    handler: routes({ writePolicy: () => json(policy()) })
+  });
+  try {
+    assert.equal(shows(ui, "prepare-run"), false);
+    assert.equal(shows(ui, "enable-pretrial"), false);
+    assert.match(ui.container.textContent ?? "", /turn this off first/i);
+    await ui.click(SWITCH);
+    assert.equal(shows(ui, "prepare-run"), true);
+    assert.doesNotMatch(ui.container.textContent ?? "", /turn this off first/i);
+  } finally { await ui.cleanup(); }
+});
+
+test("a lost write is never replayed; one policy read reports the real state", async () => {
+  const cases: Array<{ label: string; afterLoss: PolicyView; checked: string; notice: RegExp | null }> = [
+    { label: "the write landed", afterLoss: fillOn(), checked: "true", notice: null },
+    { label: "the write did not land", afterLoss: policy(), checked: "false", notice: /not confirmed/i }
+  ];
+  for (const { label, afterLoss, checked, notice } of cases) {
+    const current = run({ state: "READY" });
+    let policyReads = 0;
+    const ui = await mount({
+      initialRun: current,
+      handler: routes({
+        run: () => json({ run: current }),
+        readPolicy: () => {
+          policyReads += 1;
+          return json(policyReads === 1 ? policy() : afterLoss);
+        },
+        writePolicy: () => { throw new Error("connection dropped"); }
+      })
+    });
+    try {
+      await ui.click(SWITCH);
+      assert.deepEqual(requests(ui), [`GET ${RUN_URL}`, `GET ${POLICY_URL}`, `PATCH ${POLICY_URL}`, `GET ${POLICY_URL}`], label);
+      assert.equal(assistedFill(ui).checked, checked, label);
+      assert.equal(shows(ui, "refresh-run-state"), false, label);
+      if (notice) assert.match(ui.container.textContent ?? "", notice, label);
+    } finally { await ui.cleanup(); }
+  }
+});
+
+test("a refused write reads the policy once and reports it without replaying", async () => {
+  const ui = await mount({
+    initialPolicy: fillOn(),
+    handler: routes({ writePolicy: () => json({ error: "slow down" }, 429), readPolicy: () => json(fillOn()) })
+  });
+  try {
+    await ui.click(SWITCH);
+    assert.deepEqual(requests(ui), [`PATCH ${POLICY_URL}`, `GET ${POLICY_URL}`]);
+    assert.equal(assistedFill(ui).checked, "true");
+    assert.match(ui.container.textContent ?? "", /still on/i);
+  } finally { await ui.cleanup(); }
+});
+
+test("when neither the write nor the reread is confirmed, turning on locks but turning off stays available", async () => {
+  const off = run({ state: "READY" });
+  let reads = 0;
+  const turningOn = await mount({
+    initialRun: off,
+    handler: routes({
+      run: () => json({ run: off }),
+      readPolicy: () => {
+        reads += 1;
+        return reads === 1 ? json(policy()) : json({ error: "down" }, 503);
+      },
+      writePolicy: () => { throw new Error("connection dropped"); }
+    })
+  });
+  try {
+    await turningOn.click(SWITCH);
+    assert.equal(patchBodies(turningOn).length, 1);
+    assert.equal(assistedFill(turningOn).disabled, true);
+    assert.equal(shows(turningOn, "refresh-run-state"), true);
+    assert.match(turningOn.container.textContent ?? "", /could not be confirmed/i);
+  } finally { await turningOn.cleanup(); }
+
+  const turningOff = await mount({
+    initialPolicy: fillOn(),
+    handler: routes({
+      readPolicy: () => json({ error: "down" }, 503),
+      writePolicy: () => { throw new Error("connection dropped"); }
+    })
+  });
+  try {
+    await turningOff.click(SWITCH);
+    assert.equal(patchBodies(turningOff).length, 1);
+    assert.equal(assistedFill(turningOff).disabled, false);
+    assert.equal(shows(turningOff, "refresh-run-state"), true);
+  } finally { await turningOff.cleanup(); }
+});
+
+test("a response that contradicts the request is shown as it is and never as success", async () => {
+  const current = run({ state: "READY" });
+  const ui = await mount({
+    initialRun: current,
+    handler: routes({
+      run: () => json({ run: current }),
+      readPolicy: () => json(policy()),
+      writePolicy: () => json(policy())
+    })
+  });
+  try {
+    await ui.click(SWITCH);
+    assert.equal(assistedFill(ui).checked, "false");
+    assert.equal(shows(ui, "refresh-run-state"), true);
+    assert.match(ui.container.textContent ?? "", /could not be confirmed/i);
+  } finally { await ui.cleanup(); }
+});
+
+test("rapid duplicate switch activation dispatches one write and the switch waits while it is pending", async () => {
+  const pending = deferred<Response>();
+  const ui = await mount({
+    initialPolicy: fillOn(),
+    handler: routes({ writePolicy: () => pending.promise })
+  });
+  try {
+    const control = ui.container.querySelector<HTMLButtonElement>(`button[data-testid='${SWITCH}']`);
+    assert.ok(control);
+    await act(async () => { control.click(); control.click(); });
+    assert.equal(patchBodies(ui).length, 1);
+    assert.equal(assistedFill(ui).disabled, true);
+    await act(async () => { pending.resolve(json(policy())); await pending.promise; });
+    assert.equal(assistedFill(ui).checked, "false");
+  } finally { await ui.cleanup(); }
+});
+
+test("the switch never starts Prepare, opens a browser or calls anything but the policy and run reads", async () => {
+  const current = run({ state: "READY" });
+  const ui = await mount({
+    initialRun: current,
+    handler: routes({
+      run: () => json({ run: current }),
+      readPolicy: () => json(policy()),
+      writePolicy: () => json(fillOn())
+    })
+  });
+  try {
+    await ui.click(SWITCH);
+    assert.equal(ui.fetchCalls.every((call) => call.input === POLICY_URL || call.input === RUN_URL), true);
+    assert.equal(ui.fetchCalls.some((call) => call.init?.method === "POST"), false);
   } finally { await ui.cleanup(); }
 });

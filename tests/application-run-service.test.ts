@@ -1115,6 +1115,27 @@ test("policy audits contain only explicit safe metadata and no token secret or h
   assert.equal(database.audits.at(-1)?.metadata.revokedExecutionTokenCount, 1);
 });
 
+test("the assisted Fill switch's mode-only patches persist, audit the mode and revoke usable tokens both ways", async () => {
+  const database = new FakeApplicationRunDatabase();
+  database.policy = fakePolicy({ enabled: true, allowedHosts: ["jobs.example.com"] });
+  database.tokens.push(fakeToken());
+  const service = serviceFor(database);
+
+  const on = await service.updateAutomationPolicy(USER_ID, { mode: "FILL_AND_REVIEW" });
+  assert.equal(on.mode, "FILL_AND_REVIEW");
+  assert.equal(on.changed, true);
+  assert.equal(on.revokedExecutionTokenCount, 1);
+  assert.equal(database.policy.mode, "FILL_AND_REVIEW");
+  assert.equal(database.policy.enabled, true);
+  assert.deepEqual(database.policy.allowedHosts, ["jobs.example.com"]);
+  assert.deepEqual(database.audits.at(-1)?.metadata.changedFields, ["mode"]);
+
+  const off = await service.updateAutomationPolicy(USER_ID, { mode: "PREPARE_ONLY" });
+  assert.equal(off.mode, "PREPARE_ONLY");
+  assert.equal(database.policy.mode, "PREPARE_ONLY");
+  assert.deepEqual(database.audits.at(-1)?.metadata.changedFields, ["mode"]);
+});
+
 test("DRAFT creation is policy/global-gate independent and does not touch capability fields", async () => {
   for (const policy of [null, fakePolicy({ enabled: false })]) {
     const database = new FakeApplicationRunDatabase();
