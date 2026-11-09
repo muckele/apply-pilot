@@ -37,6 +37,8 @@ The companion accepts no employer URL, authentication token, cookie, answer, doc
 
 Chromium always runs headed in the production companion. If the control route redirects to sign-in, authenticate manually in that headed Apply Pilot window. The page-scoped bridge is installed only after the exact authenticated route `/application-runs/<run-id>/browser` loads for the owned run.
 
+Fill also needs the "Assisted Fill" switch on, on the job's application page. Turn it on after preparing the job. See [Assisted Fill switch](CONTROLLED_APPLICATION_AUTOMATION.md#assisted-fill-switch).
+
 The first MVP supports anonymous employer targets only. Employer login, MFA, SSO, email codes, password entry, account creation, and CAPTCHA handling are unsupported. If the frozen target cannot be reached exactly without employer authentication, the workflow stops safely for manual handling.
 
 ## Controls, inspection, Fill, and safety

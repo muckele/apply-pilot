@@ -1,6 +1,6 @@
 # Apply Pilot — MVP Bible
 
-Version 1.1 | 2026-11-04, America/Los_Angeles | Owner: Mathew
+Version 1.3 | 2026-11-08, America/Los_Angeles | Owner: Mathew
 Baseline: `origin/main` at `d603542` (PR #30, 2026-10-05) plus the open draft stack PR #31–#35 (`origin/codex/job-match-gap-evidence-v33` at `3fa3b93`)
 
 **This is the working source of truth for what the Apply Pilot MVP is, where it stands, and what to build next.** Every agent working on Apply Pilot reads this file first, then `AGENTS.md`. When this file and an older roadmap disagree about *MVP scope or order*, this file wins (see §10, decision D026). It does not override the mandatory database rules in `AGENTS.md`, and it does not erase history: older roadmap, decision, and acceptance documents stay as dated records.
@@ -68,6 +68,8 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 **Update 2026-11-06:** #45 landed the M1 stack on `main` and it is deployed (see "Landed and deployed" below). Several items this table lists as missing now exist on `main`. The table itself has not been re-surveyed.
 
+**Update 2026-11-08:** the P-4 row's "no UI toggle" is addressed by the assisted Fill switch (see "Since the M1 deploy" below), which is not merged yet.
+
 | Pillar | Status on `main` | What is missing for MVP |
 |---|---|---|
 | Auth / onboarding | Google sign-in, production email allowlist, database sessions. **No onboarding flow.** | First-run checklist; email sign-in option for non-Google users before invited beta; guided one-question-per-screen sign-up (G-1) |
@@ -88,6 +90,33 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 **Known defects to fix early:** `npm run ai:evaluate` points at a missing `evaluation/` folder; `.env.example` omits `AI_ENABLED`, `GEMINI_*`, `APPLICATION_AUTOMATION_ENABLED` and the AI caps; the dev demo-user fallback hard-codes the owner's name and profile (`lib/user-context.ts`, `lib/demo-data.ts`); Kimi is configured but has no client on `main`; two inconsistent default budgets (1000 vs 500 cents).
 
 **Repository hygiene:** `/Users/Matt/Projects/apply-pilot` is checked out on the stale `feature/form-inspection-answer-packet` (`2e697b0`, 93 commits behind `main`), with older copies of the roadmap docs uncommitted. All new work branches from `origin/main`. Nineteen old worktrees exist; almost all of their branches are already merged.
+
+### Since the M1 deploy (through 2026-11-08)
+
+Production is `main` at `20ea2af` (`/api/health` version `20ea2af09b36`). The owner asked for each of these merges in chat; the rule that the owner merges by default (D030) is unchanged. None of them changed the database.
+
+- #61: this Bible's v1.2 status update.
+- #62: the "Did you apply?" prompt.
+- #60: cover-letter readability (D033).
+- #63: the requirement checklist links more requirements to the match. A synthetic 24-requirement job went from 2 linked to 13.
+- #64: simultaneous first page loads for a new user no longer collide.
+
+Rollback: Vercel Instant Rollback to `bf4f1ea` (before #63 and #64), `1b7ee10` (before #60) or `6735595` (before all of these).
+
+**Not yet verified on production:** the signed-in "Did you apply?" tab-return flow, a live cover letter under the new rules, #63 on a real job page, and Vercel's error logs.
+
+**WP1.6 assisted Fill switch (draft PR, not merged; no migration and no change to the server's Fill rules).** Fill needs `FILL_AND_REVIEW`, and no screen could set it. The application page's Pretrial setup panel now has an "Assisted Fill" switch, off by default. It applies to the whole account and sends only the mode.
+- It can be turned on only for a job that is already prepared (`READY` or `REVIEW_REQUIRED`), with its host allowed and automation available. Prepare and pretrial setup stay `PREPARE_ONLY` actions, so turning it on earlier would hide them.
+- Turning it off takes one click, in any state.
+- To set up or prepare another job, turn it off first, then back on.
+- Approved answers stay current across a change, because the answer packet's policy hash doesn't include the mode.
+
+WP1.6 is not done until the genuine trials on Greenhouse, Lever and Ashby are recorded. None has been run.
+
+**Before the first Fill trial on production:**
+- `APPLICATION_AUTOMATION_ENABLED` must be exactly `true` in Vercel Production, followed by a redeploy. The env examples default to `false`, and the real value hasn't been checked. While it's off, the panel says automation is unavailable in this environment and the switch stays off.
+- The companion needs `npm run browser:install`, a download the owner hasn't approved yet. Chromium build 1228 was installed when last checked; Playwright 1.62.1 expects 1234.
+- The companion's window starts signed out, and the owner signs in there by hand. Google sign-in in that window hasn't been tried against production.
 
 ### Landed and deployed (2026-11-06)
 
@@ -126,12 +155,9 @@ Rollback: Vercel Instant Rollback to `d603542`. Leave the database as is; the mi
   - signed in as the owner: the job feed, a job page, Résumés and Interviews load with no console errors.
 - **Not yet verified on production:** a full tailor → review → Apply Kit → "I applied" flow. The owner's live tailoring and cover-letter proof on 2026-11-06 ran on a local build of the same code.
 
-**Open after the deploy:**
-- #60: cover-letter readability. Owner decisions were given 2026-11-06 and are being recorded as D033 in that PR.
-- The requirement checklist linked only 2 of one job's 24 requirements to the match.
-- Tailoring stays close to the original wording.
-- Two simultaneous first page loads for a new user can collide.
-- Whether to score jobs automatically, which costs money.
+**Open after the deploy** (2026-11-08: the #60, checklist and first-load items have since landed; see "Since the M1 deploy" above):
+- Tailoring stays close to the original wording. Decide after the owner reads about five tailored résumés.
+- Whether to score jobs automatically, which costs money. It stays manual for now.
 
 **Before the merge (2026-11-04 owner decision):** everything landed through one integration PR, #45. It merged every PR below off `main` in dependency order, one merge commit each, gave migration C a unique timestamp and reconciled the env examples.
 
@@ -373,6 +399,7 @@ Primary: **interviews per applicant-hour.** Supporting: minutes of active effort
 
 ## 12. Change log
 
+- 2026-11-08 — v1.3. Recorded #60–#64 landing with production at `20ea2af`, the assisted Fill switch's status, and what the first Fill trial on production needs.
 - 2026-11-06 — v1.2. Recorded M1 landing and deployment: #45 merged as `6735595` and deployed, migrations A–C applied first, superseded drafts closed. Added what was and wasn't verified on production, and what's still open.
 - 2026-11-04 — v1.1. Added the owner's plan, trial and guided sign-up goals (G-1 to G-5) with acceptance lines, their recommended order, the conflicts they raise (AI apply vs. D027, auto-renewal law, AI cost caps) and the open owner decisions.
 - 2026-11-03 — v1.0. Created from the owner's MVP direction, the Four-Project Master Source (2026-10-27), the September roadmap pack, a code survey of `main` `d603542`, and market and job-data research.

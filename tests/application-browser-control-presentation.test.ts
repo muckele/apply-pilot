@@ -1367,6 +1367,27 @@ test("authoritative status handling rejects wrong-run and malformed values witho
   }
 });
 
+test("a policy-denied Fill points at the assisted Fill switch and says no attempt was used", () => {
+  const { fillRejectionNotice } = applicationBrowserControlPresentation;
+  const denied = fillRejectionNotice("FILL_POLICY_DENIED");
+  assert.equal(denied.tone, "WARNING");
+  assert.match(denied.text, /assisted Fill/);
+  assert.match(denied.text, /no Fill attempt was used/i);
+  assert.match(denied.text, /application page/);
+  assert.match(denied.text, /inspect the form again/i);
+
+  for (const code of ["FILL_REVIEW_REQUIRED", "FILL_ALREADY_IN_PROGRESS", "FILL_STALE"] as const) {
+    const other = fillRejectionNotice(code);
+    assert.equal(other.tone, "WARNING", code);
+    assert.match(other.text, /current trusted authority rejected the request/, code);
+    assert.doesNotMatch(other.text, /assisted Fill|no Fill attempt was used/i, code);
+  }
+
+  const noFields = fillRejectionNotice("FILL_NO_ELIGIBLE_FIELDS");
+  assert.match(noFields.text, /No approved automatable fields/);
+  assert.doesNotMatch(noFields.text, /assisted Fill/);
+});
+
 test("authoritative status accepts only the closed exact fillCommand union", () => {
   const accepted = [
     { outcome: "IN_PROGRESS" },

@@ -10,7 +10,7 @@ The current capability is deliberately narrow:
 
 - `PREPARE_ONLY` is the default `AutomationMode`; `FILL_AND_REVIEW` is an explicit opt-in required for Fill acquisition.
 - `APPLICATION_READ` is the only execution-token scope that can be issued.
-- The per-user policy has an authenticated API at `/api/application-automation-policy`; PR #10 added owner-facing PREPARE_ONLY pretrial setup and an explicit preparation action. It does not silently grant FILL_AND_REVIEW.
+- The per-user policy has an authenticated API at `/api/application-automation-policy`; PR #10 added owner-facing PREPARE_ONLY pretrial setup and an explicit preparation action. It does not silently grant FILL_AND_REVIEW. The separate "Assisted Fill" switch on the application page is the explicit opt-in (see "Assisted Fill switch" below).
 - Preparation produces an evidence-grounded advisory plan and review state.
 - The local browser companion can open a frozen anonymous employer target, inspect its visible form on explicit request, publish or replay the correlated inspection, and support owner-scoped answer review.
 - After review resolves to `READY`, one explicit user click can invoke the guarded Fill path for reviewed `TEXT`, `EMAIL`, `TEL`, `URL`, `TEXTAREA`, and `SELECT_ONE` fields. Occupied writable values are preserved.
@@ -61,6 +61,19 @@ The payload-free command returns the existing bounded outer `B1Status` used by t
 If a dispatched binding result is lost, the page never replays Fill and does not use automatic bridge `GET_STATUS` as its primary recovery. It preserves the last accepted browser status, marks review and Fill presentation unverified, performs one authenticated Fill-status GET plus one paired run/packet refresh, and displays mutation-uncertain guidance. There is no polling loop, background mutation, client timeout, retry button, or React `RECOVER_EXPIRED` surface.
 
 Terminal presentation shows aggregate counts only: filled, preserved existing, runtime manual, failed, and not attempted. It does not render step keys or derive UI identity from step order. Manual-field guidance uses only public question, field type, requiredness, and a closed manual category. After completion, safe stop, recovery uncertainty, rejection, or cancellation, the user reviews every employer field, completes remaining manual work, verifies preserved values, and personally clicks the employer site's Submit button. Apply Pilot never submits the application.
+
+### Assisted Fill switch
+
+The application page's Pretrial setup panel has an owner-facing "Assisted Fill" switch that sets the account's `mode`. It is off (`PREPARE_ONLY`) by default and sends exactly `PATCH /api/application-automation-policy` with `{"mode":"FILL_AND_REVIEW"}` or `{"mode":"PREPARE_ONLY"}`. It adds no server authority: Fill acquisition still checks the global and user gates, mode, host, packet, attempt, lease, generation, target, and writer as described above.
+
+The order for one job is: create the browser run, enable PREPARE_ONLY for the run, prepare it, turn the switch on, open the browser run and start the companion, inspect, review, Fill, then personally submit.
+
+- **Turning on** is offered only for a `READY` or `REVIEW_REQUIRED` run whose policy is enabled and effective, with the run's host allowed and not blocked. It rereads the run and policy, sends nothing if either changed or can't be read, and asks for confirmation.
+- **Turning off** is one click in any state and doesn't read anything first, so stopping Fill doesn't depend on anything else working. An already-acquired orchestration rechecks policy through its guarded pre-field status reads and stops within the existing one-attempt semantics.
+- **Preparing another job** needs the switch off first, because pretrial setup and the Prepare control stay PREPARE_ONLY actions.
+- **Lost or refused writes** are never replayed. The page performs one policy read and shows what it finds; if that also fails, turning on stays locked until the page is refreshed and turning off stays available.
+
+A mode change is a real policy change: it is audited and revokes usable execution credentials. The answer packet's policy hash doesn't include `mode`, so reviewed answers stay current across a change. A Fill clicked while the switch is off is rejected before any attempt is created, and the control page points back to the switch. A fresh inspection is needed before Fill can be activated again.
 
 ### Personal-submission completion
 

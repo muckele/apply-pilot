@@ -21,6 +21,7 @@ import type { ApplicationRunState } from "@prisma/client";
 import type {
   B1Status,
   B1WorkflowState,
+  B3FillCommandRejectionCode,
   B3FillCommandStatus,
   B2InspectionCommandStatus,
   BrowserInspectionRecoverableCode
@@ -601,6 +602,25 @@ export function inspectionPresentation(inspection: B2InspectionCommandStatus): I
 }
 
 export type CommandNotice = Pick<InspectionPresentation, "tone" | "text">;
+
+export function fillRejectionNotice(errorCode: B3FillCommandRejectionCode): CommandNotice {
+  if (errorCode === "FILL_NO_ELIGIBLE_FIELDS") {
+    return {
+      tone: "WARNING",
+      text: "No approved automatable fields remained when Fill authority was checked. Complete the employer form manually. Fill was not retried."
+    };
+  }
+  if (errorCode === "FILL_POLICY_DENIED") {
+    return {
+      tone: "WARNING",
+      text: "Fill was not started and no Fill attempt was used, because your automation settings don't allow it. Check that assisted Fill is on, on this job's application page, then inspect the form again here before using Fill. You can also complete the employer form manually."
+    };
+  }
+  return {
+    tone: "WARNING",
+    text: "Fill was not started because current trusted authority rejected the request. Review the current run and complete the employer form manually if needed."
+  };
+}
 
 export function applyAuthoritativeBrowserStatus(input: {
   value: unknown;
