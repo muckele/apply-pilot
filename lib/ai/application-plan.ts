@@ -598,17 +598,26 @@ export type ApplicationPlanOutput = {
   confidenceScore: number;
 };
 
+// A plan holds at most one evidence entry per requirement the payload can carry.
+const MAX_PLAN_REQUIREMENTS = BOUNDS.requirements + BOUNDS.preferred + BOUNDS.tech;
+const MAX_EVIDENCE_IDS_PER_REQUIREMENT = 8;
+
 export const applicationPlanSchema: z.ZodType<ApplicationPlanOutput, z.ZodTypeDef, unknown> = z.object({
   targetRoleSummary: z.string().max(2_000),
   evidenceMap: z
     .array(
       z.object({
         requirementId: z.string().min(1).max(64),
-        evidenceIds: z.array(z.string().min(1).max(64)).max(8),
+        // Trimmed rather than rejected: the Gemini schema no longer caps this list, and a
+        // longer list would otherwise fail an answer that was already paid for. Every kept
+        // ID is still checked against the catalog by enforceApplicationPlanEvidence.
+        evidenceIds: z
+          .array(z.string().min(1).max(64))
+          .transform((ids) => ids.slice(0, MAX_EVIDENCE_IDS_PER_REQUIREMENT)),
         gap: z.boolean()
       })
     )
-    .max(25),
+    .max(MAX_PLAN_REQUIREMENTS),
   resumeStrategy: z.array(z.string().max(500)).max(10),
   coverLetterAngle: z.string().max(1_000),
   riskFlags: z.array(z.string().max(500)).max(15),
@@ -763,6 +772,12 @@ function heuristicApplicationPlan(payload: ApplicationPlanPayload): ApplicationP
   };
 }
 
+// Gemini rejects response schemas that compile to "too many states" (HTTP 400
+// INVALID_ARGUMENT, nothing billed). Long ID enums nested inside length-limited arrays,
+// plus bounded integers, did exactly that on a real-sized catalog in production. The ID
+// enums stay, because they keep citations on catalog IDs (the tailored-résumé schema
+// uses the same pattern successfully). The evidence-map length limits and the
+// confidence range are enforced locally by applicationPlanSchema instead.
 export function buildApplicationPlanResponseJsonSchema(payload: ApplicationPlanPayload) {
   const requirementIds = payload.job.jobRequirements.map((entry) => entry.id);
   const evidenceIds = payload.evidenceCatalog.map((entry) => entry.id);
@@ -774,7 +789,6 @@ export function buildApplicationPlanResponseJsonSchema(payload: ApplicationPlanP
       targetRoleSummary: { type: "string" },
       evidenceMap: {
         type: "array",
-        maxItems: 25,
         items: {
           type: "object",
           additionalProperties: false,
@@ -782,7 +796,6 @@ export function buildApplicationPlanResponseJsonSchema(payload: ApplicationPlanP
             requirementId: requirementIds.length ? { type: "string", enum: requirementIds } : { type: "string" },
             evidenceIds: {
               type: "array",
-              maxItems: 8,
               items: evidenceIds.length ? { type: "string", enum: evidenceIds } : { type: "string" }
             },
             gap: { type: "boolean" }
@@ -794,7 +807,7 @@ export function buildApplicationPlanResponseJsonSchema(payload: ApplicationPlanP
       coverLetterAngle: { type: "string" },
       riskFlags: stringArray(15),
       recommendedNextActions: stringArray(10),
-      confidenceScore: { type: "integer", minimum: 0, maximum: 100 }
+      confidenceScore: { type: "integer" }
     },
     required: [
       "targetRoleSummary",
