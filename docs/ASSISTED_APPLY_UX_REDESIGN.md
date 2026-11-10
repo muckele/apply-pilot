@@ -1,20 +1,30 @@
 # Assisted Apply: making the journey self-explanatory
 
-Status: **proposal for owner approval.** Docs only; nothing is built yet. 2026-11-10.
-Read with: `docs/APPLY_PILOT_MVP_BIBLE.md` §3 (WP1.6), `docs/APPLICATION_BROWSER_COMPANION.md`, `docs/CONTROLLED_APPLICATION_AUTOMATION.md`.
+Status: **proposal for owner approval.** Docs only; nothing in this document is built yet. 2026-11-10.
+
+Revised the same day to be **profile-first**, following the owner's direction: forms fill from details Apply Pilot already has, and missing ones are flagged. Phase A of that direction (confirmed application details as a Fill source, decision D034) is being built separately and is only referenced here (§6.1).
+
+Read with: `docs/APPLY_PILOT_MVP_BIBLE.md` §3 (WP1.6), `docs/APPLICATION_BROWSER_COMPANION.md`, `docs/CONTROLLED_APPLICATION_AUTOMATION.md`, and D034 in `docs/APPLY_PILOT_DECISIONS.md` (on its own branch until merged).
 
 ## 1. The short version
 
 - **It works.** On 2026-11-10 the owner finished the first real assisted application on a Greenhouse form in production. Apply Pilot read the form, proposed two answers, the owner approved them, one Fill typed them in (the LinkedIn and GitHub fields), and the owner pressed the employer's Submit.
 - **Nobody could do it without help.** The owner needed someone telling them each step. In their words: "If we keep it the way that it is, no one's going to understand what to do."
-- **Why.** The journey is spread over five pages, three browser windows and a terminal command, and no screen says "you are here; do this next". Several things block you silently. Most labels are engineering words.
-- **The proposal.** Use one guide with eight numbered steps, and the same step names everywhere.
+- **And it was slow.** Of 19 fields on the form, Fill could do none until the owner typed the two links into the Answer Vault and unticked "Mask". The owner: "It isn't going to get us clients. It's just gonna be incredibly slow."
+- **Why.** The journey is spread over five pages, three browser windows and a terminal command, and no screen says "you are here; do this next". Several things block you silently. Most labels are engineering words. And Fill ignores details Apply Pilot already has: your résumé's email, phone and links are read when you upload it, but Fill couldn't use them.
+- **The owner's direction: profile-first.** "The process should be completely streamlined." Apply Pilot reads your details from your résumé, you confirm them once, Fill uses them on every form, and anything missing is flagged. It comes in three phases (§6):
+  - **A. Confirmed application details** become a Fill source for contact fields and links. Decided as D034 and being built separately.
+  - **B. Dropdowns and document uploads.** Each needs its own owner decision.
+  - **C. Guided sign-up**, one question per screen (the Bible's G-1, WP2.6). Later.
+- **The guided flow.** Use one guide with eight numbered steps, and the same step names everywhere.
   - In your usual browser, the guide lives on the job's Apply Kit page.
   - In the Apply Pilot browser, the control page shows the same steps.
   - Every screen shows three things: which step you are on, what is happening in plain words, and one button for the next thing.
   - Anything that would block a later step is checked at the start, with the fix next to it.
-- **Safety rules don't move.** There are no new browser commands, the server stays in charge of every permission, Apply Pilot never presses Submit, and Fill still runs once, only after you approve (§7).
-- **Build it in ten small pieces** (§8). The first three are small, and they fix the mistakes that cost the most time: working in the wrong window, the Google sign-in dead end, and losing the companion window. **Nine owner decisions** are listed in §9, each with a recommendation.
+  - You approve all proposed answers on one screen, with one button.
+  - About 24 separate actions today become about 12 (§5.9).
+- **Safety rules don't move.** There are no new browser commands, the server stays in charge of every permission, Apply Pilot never presses Submit, and Fill still runs once, only after you approve (§8).
+- **Build it in small pieces** (§9). The first three are small, and they fix the mistakes that cost the most time: working in the wrong window, the Google sign-in dead end, and losing the companion window. **Twelve owner decisions** are listed in §10, each with a recommendation.
 
 ## 2. What happened in the first trial
 
@@ -25,13 +35,13 @@ Kept anonymous on purpose: the repository is public.
 3. **Companion start.** The companion was started from a terminal.
 4. **Sign-in.** In the companion window the login page offered Google first. The owner clicked it three times, and Google refused each time ("This browser or app may not be secure"). Two sign-in codes were refused before one worked.
 5. **Opening and reading the form.** On the control page the owner worked several times in the look-alike copy of the page in their usual Chrome, which shows "UNKNOWN / UNAVAILABLE". In the right window they opened the form and read it ("Inspect form").
-6. **Answers.** Apply Pilot proposed two answers (LinkedIn and GitHub). The owner approved both, resolved the review, ticked the acknowledgement and pressed **Fill approved fields** once.
-7. **Fill.** Two fields were filled. Everything else was done by hand, including the contact fields, any dropdowns and the file uploads.
+6. **Answers.** The form had 19 fields. At first Apply Pilot could propose none of them: contact fields are manual by policy, and the links weren't in the Answer Vault. The owner typed the LinkedIn and GitHub links into the Vault and unticked "Mask" on them. Once they were saved and unmasked, Apply Pilot proposed those two. The owner approved both, resolved the review, ticked the acknowledgement and pressed **Fill approved fields** once.
+7. **Fill.** Two of the 19 fields were filled. Everything else was done by hand, including the contact fields, any dropdowns and the file uploads.
 8. **Submit.** The owner pressed the employer's Submit and recorded it. The run ended `COMPLETED_BY_USER`.
 
 **This proves** that the guarded path works end to end on a real Greenhouse form: inspection, review, one Fill, a personal submission and the record of it.
 
-**It does not prove** that a new user could do it. It also doesn't prove that Fill saves much time on a standard Greenhouse form: two of many fields were filled (§10).
+**It does not prove** that a new user could do it. It also doesn't prove that Fill saves much time on a standard Greenhouse form: two of 19 fields were filled. Phases A and B (§6) are about that.
 
 ## 3. The journey today, screen by screen
 
@@ -177,9 +187,12 @@ No screen shows this command, the address to use or the run ID. Without outside 
 **What you see:** a form with Category, Application question, Reviewed answer, **Mask this answer by default** and **Available for use**.
 
 **What goes wrong (F6):**
-- **Links live only here.** Fill can only use answers saved here, one saved answer per question. A LinkedIn link on your profile or résumé is never used.
+- **Links live only here.** Fill can only use answers saved here, one saved answer per question. The résumé upload already reads your email, phone, location, LinkedIn and GitHub (stored with the résumé), but Fill never uses them.
+- **Contact fields are never filled.** Name, email and phone are manual by policy, whatever is saved.
 - **"Mask" means "never fill".** Ticking "Mask this answer by default" marks the answer sensitive, and Fill then leaves it out completely, with no message. The label suggests it only hides the answer on screen.
 - **No way to add from review.** When the form asks for something you haven't saved, the review shows a field Apply Pilot "can't answer". There is no way to add the answer there.
+
+Phase A (D034, §6.1) changes the first two points: you confirm your details once, on a screen prefilled from your résumé, and Fill can then use them for contact fields and links.
 
 ### Root causes
 
@@ -190,6 +203,7 @@ No screen shows this command, the address to use or the run ID. Without outside 
 | R3 | Silent gates: rules that block you without saying so where you are | F6, F7, F8, F13 |
 | R4 | Engineering vocabulary on user screens | F5, F7 |
 | R5 | Browser pop-ups and fix links that lead nowhere useful | F8, F9 |
+| R6 | Fill ignores details Apply Pilot already has, so even a smooth journey fills almost nothing | F6, F10 |
 
 ## 4. Design principles
 
@@ -200,7 +214,8 @@ No screen shows this command, the address to use or the run ID. Without outside 
 5. **The right window is obvious, and the wrong window says so.**
 6. **Plain words.** State codes, IDs, versions and hashes stay under "Details" for troubleshooting.
 7. **Ask in the page, not in a pop-up.** Cost and permission questions appear as part of the step.
-8. **The safety rules stay exactly as they are** (§7). The redesign changes how things are shown and in what order, not who is allowed to do what.
+8. **The safety rules stay exactly as they are** (§8). The redesign changes how things are shown and in what order, not who is allowed to do what. Phase A's change to what Fill may use is its own owner decision (D034), and so is each item in Phase B.
+9. **Profile-first.** Fill uses details you've already given Apply Pilot and confirmed once. It never asks you to type the same thing twice, never guesses, and always says what's missing.
 
 ## 5. The guided flow
 
@@ -208,11 +223,11 @@ No screen shows this command, the address to use or the run ID. Without outside 
 
 | # | Step | Where | You do | Apply Pilot does | Done when |
 |---|---|---|---|---|---|
-| 1 | **Check you're ready** | Usual browser (Apply Kit) | Fix anything marked ✗ | Checks your reviewed match, the documents attached, your saved link answers, the Fill switch, the employer site and the daily limit | Every required line is ✓ |
+| 1 | **Check you're ready** | Usual browser (Apply Kit) | Fix anything marked ✗ | Checks your reviewed match, the documents attached, your confirmed application details (Phase A), the Fill switch, the employer site and the daily limit | Every required line is ✓ |
 | 2 | **Prepare** | Usual browser | One click; the cost and the permission to work on this employer's site are shown in the step | Plans the application | Prepared |
 | 3 | **Open the Apply Pilot browser** | Usual browser, then terminal, then the new window | Run the start command; show your sign-in code; type it into the new window | Starts its own browser and signs it in | The Apply Pilot browser says "Connected" |
 | 4 | **Open the employer's form** | Apply Pilot browser | One click: **Open and read the form** | Opens the exact form in the second window and reads its fields | "Read N fields. Apply Pilot can fill M." |
-| 5 | **Check the answers** | Apply Pilot browser | Approve or skip each proposed answer; add a missing saved answer; then **These are right** | Nothing until you approve | Review finished |
+| 5 | **Check the answers** | Apply Pilot browser | Look over every proposed answer on one screen, untick any you don't want filled, then press **Approve these and continue** | Nothing until you approve | Review finished |
 | 6 | **Fill** | Apply Pilot browser | Turn on Fill if it's off; tick "I understand"; press **Fill**, once | Types only the approved answers, once, and leaves anything already typed | Result shown: filled, kept, failed |
 | 7 | **Finish and submit** | Employer window | Unlock the form; complete the rest; upload files; press the employer's Submit yourself | Hands the form over to you and stops | You say you submitted |
 | 8 | **Record it** | Either browser | Confirm you submitted, which documents you sent and roughly how many minutes it took | Marks it Applied with what you sent; offers to turn Fill off | Tracker shows Applied, with the documents |
@@ -224,7 +239,7 @@ Steps 4 to 7 can only happen in the Apply Pilot browser, because that is where t
 Every screen in the journey shows the same card at the top:
 
 - **Step N of 8 · step name**
-- **One sentence on what's happening,** for example "Apply Pilot read 18 fields and can fill 2."
+- **One sentence on what's happening,** for example "Apply Pilot read 19 fields and can fill 6."
 - **One primary button,** or, when the step happens elsewhere, one instruction: "Continue in the Apply Pilot browser window."
 - **One line on what comes next.**
 - **A compact list of all eight steps,** each marked ✓ done, • now, or ○ later.
@@ -263,7 +278,7 @@ Every screen in the journey shows the same card at the top:
 | "Frozen target" | The employer's form (the exact page saved for this job) |
 | "Answer packet" | Proposed answers |
 | "Inspect form" | Read the form |
-| "Resolve review" | These are right |
+| "Approve" each, then "Resolve review" | Approve these and continue (one button, §5.6) |
 | "Proposable" / "Manual only" / "Excluded" / "Unsupported" | Apply Pilot can fill this / You fill this / Apply Pilot never fills this kind of question / Apply Pilot can't fill this kind of field |
 
 ### 5.3 Which window am I in?
@@ -288,15 +303,29 @@ Every screen in the journey shows the same card at the top:
 - **Unchanged:** single use, 5 minutes, bound to one run, stored only as a hash, same-origin only, rate limits, allowlist check, audit. Google's automation check is not bypassed.
 - **Later option (D-D):** approve the Apply Pilot browser from your usual browser instead of typing a code. The window shows a short code, and you press Approve where you're already signed in. It's a new sign-in flow, so it needs its own security review, and it isn't proposed now.
 
-### 5.5 Answers that Fill can use
+### 5.5 Where Fill's answers come from (profile-first)
 
-- **Check early.** Step 1 lists the link answers forms usually ask for (LinkedIn, GitHub, website or portfolio) and start date. Each shows "saved", "not saved" or "saved but marked sensitive, so Fill won't use it", with **Add** or **Edit** next to it. These lines never block Prepare; they just say what Fill will have to work with.
-- **Suggestions from your profile, never automatic.** If your profile or résumé has a link you haven't saved, step 1 offers "Save this LinkedIn link to your answers?". Nothing is saved without your click, and nothing is generated.
-- **Add a missing answer in place.** In step 5, a link or start-date question with no saved answer shows **Add to saved answers**. Saving it offers **Read the form again**, so Apply Pilot proposes it.
-- **Say what "sensitive" means.** "Mask this answer by default" becomes "Sensitive: hide on screen and never fill automatically", with one line of help. The Vault list tags such entries "Won't be filled".
-- **Unchanged:** each non-document answer still comes from exactly one saved answer; sensitive answers stay excluded; sensitive question types (work authorization, sponsorship, salary, demographics, disability, veteran status, criminal history, legal statements) are never proposed.
+Phase A (D034, §6.1) supplies the answers; the guide's job is to make their state visible at the two moments that matter.
 
-### 5.6 The Assisted Fill switch
+- **Your application details, confirmed once.** Phase A adds a "Your application details" screen, prefilled from your parsed résumé and earlier answers. You confirm it once. Fill then uses those details for contact fields (name, email, phone) and links. No Answer Vault step is needed, and nothing missing is guessed.
+- **Step 1 shows their state.**
+  - "Your application details: confirmed", or "not confirmed yet **[Confirm them]**".
+  - Anything missing is flagged by name, for example "We couldn't find your phone number on your résumé **[Add it]**".
+  - These lines never block Prepare. They say what Fill will have to work with.
+- **Step 5 says where each answer comes from:** "From your application details". When a field on the form has nothing confirmed to use, it says "Not in your application details **[Add it]**". After adding it, **Read the form again** proposes it.
+- **Sensitive answers stay yours.** Sensitive question types are never proposed: work authorization, sponsorship, salary, demographics, disability, veteran status, criminal history and legal statements (Bible non-negotiable 3). An Answer Vault entry ticked "Mask this answer by default" is also never filled. Once Phase A has landed, the Vault should say so plainly ("Sensitive: hide on screen and never fill automatically", tagged "Won't be filled"). That change waits for Phase A, which owns the Vault screen right now.
+
+### 5.6 One approval screen
+
+Today you approve each answer separately, then press "Resolve review". With Phase A, a form may have half a dozen proposed answers, so that becomes a chore. Step 5 becomes one screen with one button (W6):
+
+- **Every proposed answer is shown in full,** with the question it answers and where the value comes from. Each one is ticked; untick any you don't want filled.
+- **Notes come before the button.** Anything the review needs you to see first appears just above the button, for example "some job requirements have no evidence on your résumé" or "6 questions are yours to answer".
+- **One button, Approve these N and continue,** sends today's per-answer approvals for the ticked answers and rejections for the unticked ones, then today's review confirmation. There is no new server route and no new permission. The button names the exact number it approves.
+- **If anything changes,** the screen reloads instead of approving: the form was read again, or an answer changed since you looked. The server already refuses approvals for an answer list that is no longer current; the screen then shows the new list.
+- **Owner decision D-H:** one click for all the answers you can see (recommended), or one click per answer as today.
+
+### 5.7 The Assisted Fill switch
 
 - **A permanent home in Settings,** next to Answers. **Turn off** is always available there, with one click, in any state, including after an application is finished. **Turn on** points you to step 6 of an application you've prepared, which is the only place it can be turned on safely.
 - **Inline where it matters.**
@@ -306,7 +335,7 @@ Every screen in the journey shows the same card at the top:
 - **Unchanged:** the same account-wide setting and API; turning off does no reads first; turning on rereads the run and policy; the server still refuses setup while Fill is on.
 - **Decision D-B:** whether finishing or stopping an application should turn Fill off automatically. That would be a small server change, and I recommend it.
 
-### 5.7 Costs and documents
+### 5.8 Costs and documents
 
 - **Ask in the page.** An in-page confirmation replaces the browser pop-ups for AI cost and data, the Prepare permission and turning Fill on. It names the feature, what's sent and the most it can cost, and has **Confirm** and **Cancel**. The server checks and confirmation headers stay the same.
 - **Say which cost is which.** On the job page the two actions are labelled by what they do, in order: "Check your match (up to N¢)" and "Write your résumé and cover letter (up to N¢)".
@@ -317,7 +346,96 @@ Every screen in the journey shows the same card at the top:
   - Older versions sit under "Older versions".
 - **Attach without applying.** **Use this version for this application** attaches a document through the existing application update, without changing the status. Step 1 uses the same button.
 
-## 6. Wireframes
+### 5.9 Fewer actions
+
+These are rough counts of the clicks and typing you do in Apply Pilot for one application. They leave out mistakes, the employer form itself and the Submit.
+
+| | Today (first trial) | Proposed |
+|---|---|---|
+| **Usual browser** | Create browser run; Enable PREPARE_ONLY plus a pop-up; Prepare; Assisted Fill switch plus a pop-up; get a sign-in code (about 7) | Prepare, with the permission tick in the step (2); copy the start command (1); show and copy the sign-in code (1) |
+| **Terminal** | Type the start command from memory or from help (1) | Paste it (1) |
+| **Apply Pilot browser** | Find the code link under Google; type the code; Refresh status; Open frozen target; Inspect form; Refresh review data; Approve each answer; Resolve review; tick; Fill; Finish manually plus confirm; I personally submitted plus confirm (about 16 with two answers) | Enter the code (1); Open and read the form (1); Approve these and continue (1); turn on Fill if it's off, tick and Fill (2–3); Unlock the form (1); Record it (1–2) |
+| **Before the day** | Type each link into the Answer Vault and untick "Mask" | Confirm your application details once, for every future application (Phase A) |
+| **Total** | **about 24, in an order no screen shows** | **about 12, each the one button on screen** |
+
+## 6. Profile-first: Phases A, B and C
+
+The owner's direction on 2026-11-10: "The process should be completely streamlined." Apply Pilot should read the details it needs from the résumé and store them, "so we can fill out these forms efficiently, quickly and seamlessly", and flag what's missing. A good onboarding and fast form filling "go hand in hand". The apply flow comes first: "I think we need to really fix what we were working on prior to this."
+
+### 6.1 Phase A: confirmed application details (in progress, D034)
+
+**Status:** approved by the owner as **D034** ("Fill may use the applicant's own confirmed contact details and links"). It is being built in a separate session on `feature/confirmed-application-details`, together with its decision record and `AGENTS.md` amendment. This document doesn't design it. It only says how the guided flow uses it.
+
+**What it does,** per D034:
+- **One screen, "Your application details",** prefilled from the parsed résumé and earlier answers. The résumé upload already reads name, email, phone, location, LinkedIn and GitHub.
+- **You confirm it once,** and anything missing is flagged.
+- **Confirmed values become a Fill source** for contact fields and links. They are stored as ordinary saved answers, so no database change is needed.
+- **Unconfirmed contact fields stay manual** and are flagged. Nothing is guessed.
+- **Review, one Fill and your own Submit are unchanged.**
+
+**How the guided flow uses it:**
+- Step 1 shows whether your details are confirmed and what's missing.
+- Step 5 shows "From your application details" on each answer, and offers "Add it" when the form asks for something you haven't confirmed (§5.5).
+- Coordination: the guide's pieces (UX-5a, UX-7) read Phase A's results. They don't edit its files: question classification, the answer-packet builder and domain, the Answer Vault component and the new application-details files.
+
+**What Phase A leaves for later:**
+- **Street address.** Résumés usually show only a city and state, and D034 doesn't list an address.
+- **Country and state dropdowns.** Phase B1.
+- **Uploads.** Phase B2.
+
+### 6.2 Phase B: dropdowns and document uploads (two separate owner decisions)
+
+`AGENTS.md` keeps custom widgets and uploads as separate scope. Each item below needs its own owner decision, a safety review, a synthetic test page and then one live trial.
+
+**B1. Greenhouse dropdowns** (country, state or province, and similar; decision D-I)
+- **Today:** Fill writes ordinary single-choice dropdowns only. Greenhouse draws many of its dropdowns as custom widgets (a text box with a pop-up list), so Fill marks them "unsupported" and leaves them to you.
+- **What it would take:** Fill would operate the employer's widget: open it, choose the one option that exactly matches a confirmed detail, then check the choice shown. That means clicking employer controls, which Fill doesn't do today.
+- **Guard rails, if approved:**
+  - Values come only from confirmed details. Phase A would need a confirmed country and state.
+  - Exactly one option must match; otherwise the field stays manual.
+  - Never used for sensitive questions: EEO, sponsorship, work authorization, salary.
+  - Nothing outside that field is touched.
+  - The chosen value is checked and shown in the Fill result.
+  - Still one permanent Fill attempt.
+
+**B2. Approved document uploads** (decision D-J)
+- **Today:** you upload the résumé and cover letter by hand.
+- **What it would be:** Fill puts the exact approved files into the form's file fields: the résumé and cover-letter versions attached to this application, exported as PDF or DOCX.
+- **Guard rails, if approved:**
+  - Only those two files, shown by name and version on the step 5 approval screen. Nothing else from your computer.
+  - One file per field. Fields that take several files stay manual, and so do fields asking for anything else (a transcript, say).
+  - The uploaded versions are recorded automatically as "what I sent". That also fixes F12 for these files.
+  - The step 6 acknowledgement says that an employer page may send an uploaded file as soon as it's attached, before Submit.
+
+**What a standard Greenhouse form looks like after each phase.** Rough field types, not a promise; every claim gets measured in a live trial.
+
+| Field type | Today | After Phase A | After Phase B |
+|---|---|---|---|
+| Name, email, phone | You | Fill, from confirmed details | Fill |
+| LinkedIn, GitHub, website | Fill, only if typed into the Vault and not masked | Fill, from confirmed details | Fill |
+| Country, state (dropdowns) | You | You | Fill, if B1 is approved |
+| Résumé and cover letter upload | You | You | Fill, if B2 is approved |
+| Employer's own questions ("Why us?") | You | You | You. Apply Pilot doesn't write free-text answers on forms. |
+| Work authorization, sponsorship | You | You | You (see D-L) |
+| Demographic and EEO questions | You, always | You, always | You, always |
+
+### 6.3 Phase C: one-question-per-screen sign-up (G-1, WP2.6; later)
+
+**Timing.** The owner pointed to a competitor's sign-up as the model, then said it "isn't for now": the apply flow comes first. The Bible already plans it as G-1 / WP2.6, first in M2 (decision D-K). Sketch only:
+1. **Upload your résumé** (or paste it).
+2. **Confirm the details read from it.** This reuses Phase A's "Your application details" screen, with missing items flagged.
+3. **A few one-tap preference questions** that feed recommendations: roles, locations or remote, salary range (optional), start date.
+4. **Standard answers you choose to save** for applications: work authorization, sponsorship, relocation, notice period. Saved as your own answers, for copying from the Apply Kit.
+5. **Demographic and EEO answers: optional, and only if you choose.** Never inferred, never sent to an AI model, and skipping is as easy as answering.
+
+**Every screen** has Back, Next and Skip (for optional questions) and a progress bar, and you can stop and resume where you left off. The Bible's G-1 acceptance line applies.
+
+**Ground rules for Phase C:**
+- **Only ask what's used.** Questions such as current work status, search approach or how long you've been searching go in only if a feature or a measurement the owner wants uses the answer. Every question costs a new user time.
+- **Honest claims only.** Don't copy a competitor's marketing statistics. Value claims must be ones Apply Pilot can support from its own measurements: minutes per application on Insights, and fields filled per form from trials.
+- **Saved sensitive answers stay manual.** Saving work-authorization or sponsorship answers for copying is fine. Letting Fill type them would change Bible non-negotiable 3 and the "never proposed" rule, so it's a separate decision (D-L), and I recommend not in the MVP.
+
+## 7. Wireframes
 
 Rough layouts only. `<…>` marks a placeholder.
 
@@ -339,8 +457,9 @@ Rough layouts only. `<…>` marks a placeholder.
 │      You'll allow it in step 2.                                          │
 │  ✓ Assisted Fill is off (it must be off while you prepare)               │
 │                                                                          │
-│  Answers forms often ask for (optional):                                 │
-│  ✓ LinkedIn   ✓ GitHub   – Website: not saved [Add]                      │
+│  Your application details (Fill uses these):                             │
+│  ✓ Confirmed: name, email, LinkedIn, GitHub                              │
+│  – We couldn't find your phone number on your résumé       [Add it]      │
 │                                                                          │
 │ Next: Prepare (step 2). It unlocks once everything above is ✓.           │
 ├──────────────────────────────────────────────────────────────────────────┤
@@ -427,28 +546,30 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-**W6. Control page, step 5: Check the answers (Apply Pilot browser)**
+**W6. Control page, step 5: Check the answers, on one screen (Apply Pilot browser)**
+
+Illustrative: which fields become fillable depends on Phase A as built.
 
 ```
 ┌ APPLY PILOT BROWSER ─────────────────────── <Job title> · <Company> ─────┐
 │ STEP 5 OF 8 · Check the answers                                          │
-│ Apply Pilot read 18 fields and can fill 2. You'll do the other 16.       │
+│ Apply Pilot read 19 fields and can fill 6 from your application details. │
+│ You'll do the other 13. Untick anything you don't want filled.           │
 │                                                                          │
-│ ┌ Form asks: "LinkedIn Profile" ──────────────────────────────────────┐  │
-│ │ Apply Pilot will type: <your LinkedIn link>                         │  │
-│ │ From your saved answers.             [ Approve ]  [ Don't fill ]    │  │
-│ └─────────────────────────────────────────────────────────────────────┘  │
-│ ┌ Form asks: "GitHub" ────────────────────────────────── ✓ Approved ──┐  │
-│ └─────────────────────────────────────────────────────────────────────┘  │
-│ ┌ Form asks: "Website" ───────────────────────────────────────────────┐  │
-│ │ No saved answer Fill can use, so you'll fill this one.              │  │
-│ │ [ Add to saved answers ]                                            │  │
-│ └─────────────────────────────────────────────────────────────────────┘  │
+│  Form asks            Apply Pilot will type          From                │
+│  [✓] First Name       <first name>                   your details        │
+│  [✓] Last Name        <last name>                    your details        │
+│  [✓] Email            <email>                        your details        │
+│  [✓] Phone            <phone>                        your details        │
+│  [✓] LinkedIn Profile <your LinkedIn link>           your details        │
+│  [✓] GitHub           <your GitHub link>             your details        │
+│                                                                          │
+│  Not in your application details: "Website"                [Add it]      │
 │                                                                          │
 │ Before you continue:                                                     │
 │  • Some job requirements have no evidence on your résumé.                │
-│  • 16 fields are yours to fill (listed in step 7).                       │
-│                                [ These are right: continue to Fill ]     │
+│  • 13 fields are yours to fill (listed in step 7).                       │
+│                             [ Approve these 6 and continue ]             │
 │ ──────────────────────────────────────────────────────────────────────── │
 │ ✓1 ✓2 ✓3 ✓4  • 5 Check answers  ○ 6 Fill  ○ 7 Finish  ○ 8 Record         │
 │ ▸ Details (for troubleshooting): states, versions, IDs, counts           │
@@ -460,7 +581,7 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 ```
 ┌ APPLY PILOT BROWSER ─────────────────────────────────────────────────────┐
 │ STEP 6 OF 8 · Fill                                                       │
-│ Apply Pilot will type your 2 approved answers into the form, once.       │
+│ Apply Pilot will type your 6 approved answers into the form, once.       │
 │ It won't change anything already typed there. It won't press Submit.     │
 │                                                                          │
 │ Assisted Fill is off for your account.                  [ Turn on Fill ] │
@@ -468,7 +589,7 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 │ [ ] I understand the employer's page may send what's typed to the        │
 │     employer before I press Submit.                                      │
 │                                                                          │
-│                                        [ Fill 2 fields (runs once) ]     │
+│                                        [ Fill 6 fields (runs once) ]     │
 │ Fill can't run while: Assisted Fill is off · the box above is unticked   │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
@@ -478,7 +599,7 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 ```
 ┌ APPLY PILOT BROWSER ─────────────────────────────────────────────────────┐
 │ STEP 7 OF 8 · Finish and submit                                          │
-│ ✓ Filled 2 fields. None failed.                                          │
+│ ✓ Filled 6 fields. None failed.                                          │
 │                                                                          │
 │ a) Unlock the form so you can finish it.          [ Unlock the form ]    │
 │    Apply Pilot stops reading and filling, and the form is yours for up   │
@@ -486,9 +607,10 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 │    submitted: that closes the form.                                      │
 │                                                                          │
 │ b) In the employer's window, fill in what Apply Pilot can't:             │
-│    • First name, Last name, Email, Phone (required)                      │
+│    • Website (not in your application details)                           │
 │    • Résumé and cover letter uploads: use résumé v4 and cover letter v2  │
-│    • 5 dropdowns and 2 yes/no questions                                  │
+│    • Country and state dropdowns, and the employer's own questions       │
+│    • Demographic questions: optional, and always your own answer         │
 │                                                                          │
 │ c) Press the employer's Submit button yourself.                          │
 │                                                                          │
@@ -521,7 +643,7 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 └──────────────────────────────────────────────────┘
 ```
 
-**W11. Answer Vault: what "sensitive" means**
+**W11. Answer Vault: what "sensitive" means (after Phase A lands; Phase A owns this screen now)**
 
 ```
 │ [ ] Sensitive: hide on screen and never fill automatically               │
@@ -531,30 +653,35 @@ When the match is the problem, the line reads, for example: "✗ Your match is 8
 │ LinkedIn · Links · <your link>                         Won't be filled ⓘ │
 ```
 
-## 7. Safety: what does not change
+## 8. Safety: what does not change
 
 | Rule | How the redesign keeps it |
 |---|---|
 | Apply Pilot never presses the employer's Submit | No new browser command. Step 7 tells you to press Submit yourself. The 7 existing payload-free commands stay as they are. |
-| Fill only after your explicit approval | You still approve each answer, confirm "These are right" (today's Resolve review, same acknowledgements), tick the acknowledgement and press Fill. Nothing approves or fills on its own. The one new combined click, "Open and read the form", only opens and reads; it never writes (D-C). |
+| Fill only after your explicit approval | You see every proposed answer in full, with where it came from. Then **Approve these N and continue** approves exactly the ticked answers and rejects the unticked ones (today's per-answer approvals plus today's review confirmation, with the same notes shown first). Then you tick the acknowledgement and press Fill. If anything changed after you looked, the server refuses the approvals and the screen reloads (D-H). Nothing approves or fills on its own. The other combined click, "Open and read the form", only opens and reads; it never writes (D-C). |
 | Fill is one permanent attempt | No retry button and no automatic replay. The button says "runs once". The lost-result handling stays as it is. |
-| Owner-attested facts are never invented | New answers come only from what you type or confirm. Profile-link suggestions need your click and are never AI-generated. Sensitive question types are never proposed. |
+| Owner-attested facts are never invented | Answers come only from details you confirmed (Phase A, D034) or typed yourself. Prefilled values from your résumé are a draft until you confirm them. Missing details are flagged, never guessed or AI-generated. Sensitive question types are never proposed. |
 | The companion keeps its own separate browser profile | The sign-in code path and the separate, non-persistent browser profiles are unchanged. There's no cookie sharing and no reuse of your own Chrome. |
 | Google's automation check isn't bypassed | Google stays refused in the companion; the page steers you to the code. |
 | The server is the authority | Wrong-window detection, step gating and the Now card are presentation only. The server still rechecks run, policy, host, packet, attempt, lease and target on every action. |
 | Nothing is added to the employer's page | The banner and title are on Apply Pilot's own control page only. |
+| New kinds of Fill need their own decision | Phase A is decided (D034). Dropdown widgets (B1), uploads (B2) and Fill using saved work-authorization or sponsorship answers (D-L) each need a separate owner decision and safety review before any build. |
 
-## 8. Build order and acceptance criteria
+## 9. Build order and acceptance criteria
 
-Each piece is one branch and one draft PR. Work follows the Bible's rules: tests first, then `npm test`, `npm run lint`, `npm run typecheck` and `npm run build`, plus `npm run test:browser` where the companion or control page changes. No piece needs a database migration, unless an owner decision in §9 chooses an option that does.
+Each piece is one branch and one draft PR. Work follows the Bible's rules: tests first, then `npm test`, `npm run lint`, `npm run typecheck` and `npm run build`, plus `npm run test:browser` where the companion or control page changes. No piece needs a database migration, unless an owner decision in §10 chooses an option that does.
+
+**Already under way, in a separate session:** Phase A (D034), on `feature/confirmed-application-details`. The pieces below don't edit its files (§6.1).
 
 **Waves (pieces in a wave can run in parallel; their files don't overlap):**
 - **Wave 1:** UX-1, UX-2, UX-3, UX-9.
-- **Wave 2:** UX-4, UX-5a, UX-7.
-- **Wave 3:** UX-5b, UX-5c, UX-6.
+- **Wave 2:** UX-4, UX-5a.
+- **Wave 3:** UX-5b, UX-5c, UX-6, and UX-7 once Phase A has merged.
 - **Wave 4:** UX-8, UX-10.
+- **After their owner decisions:** B1 and B2, each with a synthetic test page and then one live trial.
+- **In M2:** Phase C (WP2.6).
 
-**Minimum before the next real trial (Lever or Ashby):** UX-1 to UX-4. That removes the wrong-window, sign-in and control-page confusion. The next trial then tests the new control page live.
+**Minimum before the next real trial (Lever or Ashby):** Phase A, plus UX-1 to UX-4. Together they make the form fill from confirmed details, and they remove the wrong-window, sign-in and control-page confusion. The next trial then tests both live and counts the fields filled against the first trial's 2 of 19.
 
 ### UX-1. Wrong-window guard, banner and plain words (control page)
 
@@ -610,8 +737,7 @@ Each piece is one branch and one draft PR. Work follows the Bible's rules: tests
 - **Changes:**
   - Re-lay out the control page as steps 4–8 with the Now card (W6–W9).
   - **Open and read the form** sends the existing Open command, then the existing Read command, from one click (D-C).
-  - Answer cards use plain words; the technical facts go under Details.
-  - **These are right** is today's Resolve review, showing the same acknowledgements.
+  - Step 5 becomes one approval screen (§5.6, W6). Every proposed answer shows in plain words with its source, ticked by default. **Approve these N and continue** sends today's approvals and rejections, then today's review confirmation, with the same notes shown first (D-H). The technical facts go under Details.
   - One sentence sums up what Fill can and can't do, and the manual-field list shows before Fill.
   - Reads refresh after each step's action, with no timers. Manual refresh moves under Details.
   - Unlocking (today's handover) becomes step 7a.
@@ -621,6 +747,8 @@ Each piece is one branch and one draft PR. Work follows the Bible's rules: tests
 - **Done when:**
   - [ ] A table-driven test covers each combination of companion, run, answer and Fill state: exactly one primary action shows, and it belongs to the current step.
   - [ ] "Check the answers" comes before Fill on the page, and the "Read-only" label is gone.
+  - [ ] The approve button names how many answers it approves. It sends approvals only for the ticked answers and rejections only for the unticked ones, then the review confirmation, all after one click (tested request by request).
+  - [ ] If the answer list changed after it was shown, nothing more is sent: the screen reloads and asks again.
   - [ ] Every disabled button shows a one-line reason.
   - [ ] Fill still needs approved answers, a finished review, the acknowledgement and one click. Existing Fill-gating tests pass unchanged, and no code path calls Fill without a click.
   - [ ] "Open and read the form" sends nothing until clicked. If opening fails it stops, says why and does not retry.
@@ -638,8 +766,10 @@ UX-5 is split into three PRs.
   - Adds "How do you want to apply?" and the step 1 Ready check (W1) for accounts where automation is available.
   - Each Prepare condition shows as a line with today's value, the value needed and its fix.
   - **Use this version for this application** attaches a document without changing the status.
+  - A non-blocking "Your application details" line shows whether they're confirmed and what's missing. It links to Phase A's screen and reads Phase A's data without editing its files. Until Phase A merges, the line is left out.
 - **Done when:**
   - [ ] Every reason the server can block Prepare (`blockingMessages` keys) has a Ready-check line, with a fix link that lands on a control that can actually fix it. A test enumerates the keys.
+  - [ ] Missing application details are named one by one ("We couldn't find your phone number") and never block Prepare.
   - [ ] Attaching a document leaves the application status and dates unchanged (tested).
   - [ ] Accounts without automation see today's Kit unchanged.
 
@@ -669,7 +799,7 @@ UX-5 is split into three PRs.
 
 - **Fixes:** F7.
 - **Changes:**
-  - Settings gets an Assisted Fill card (§5.6).
+  - Settings gets an Assisted Fill card (§5.7).
   - The guide shows the switch at steps 2, 6 and 8.
   - Same API and rules.
 - **Done when:**
@@ -678,20 +808,20 @@ UX-5 is split into three PRs.
   - [ ] Setup while Fill is on is still refused by the server; the guide explains why and offers the one-click fix.
 - **Size and risk:** small.
 
-### UX-7. Saved answers that Fill can use
+### UX-7. The guide's side of profile-first (after Phase A merges)
 
-- **Fixes:** F6.
-- **Changes:** everything in §5.5 (W11):
-  - relabel "Mask" and tag "Won't be filled";
-  - link and start-date lines in the Ready check;
-  - profile-link suggestions that save only on your click;
-  - **Add to saved answers** in step 5, followed by **Read the form again**.
+- **Fixes:** the rest of F6, once Phase A (D034) supplies the details.
+- **Changes** (§5.5, W11):
+  - In step 5, a field with nothing confirmed shows "Not in your application details **[Add it]**", which opens Phase A's screen. Coming back offers **Read the form again**.
+  - Each proposed answer shows its source ("From your application details").
+  - The Answer Vault's "Mask" box is relabelled "Sensitive: hide on screen and never fill automatically", and such entries are tagged "Won't be filled". Coordinate with Phase A's owner, because Phase A is editing that screen now.
+- **Doesn't change:** anything Phase A decided; the packet rules (one saved answer per question, sensitive answers excluded, sensitive question types never proposed).
 - **Done when:**
-  - [ ] A sensitive or inactive LinkedIn entry produces a visible "won't be filled" note in step 1 and in the Vault list, not silence.
-  - [ ] The inline add creates a saved answer only on click, and the next read of the form proposes it.
-  - [ ] Suggestions never save automatically and never come from AI.
-  - [ ] The packet rules are unchanged: one saved answer per question, sensitive answers excluded, sensitive question types never proposed (existing tests pass).
-- **Size and risk:** medium.
+  - [ ] A field the form asks for that isn't in your confirmed details is named in step 5, never silently skipped.
+  - [ ] Adding a detail and reading the form again proposes it.
+  - [ ] A masked or inactive entry shows "Won't be filled" in the Vault list.
+  - [ ] Existing packet tests pass unchanged.
+- **Size and risk:** small to medium. It starts after Phase A merges, to avoid editing the same files.
 
 ### UX-8. Costs and versions without pop-ups
 
@@ -728,9 +858,33 @@ UX-5 is split into three PRs.
   - [ ] With the recommended option, the protected run-completion transaction is untouched.
 - **Size and risk:** medium.
 
-## 9. Owner decisions needed
+### B1, B2 and C (each only after its owner decision)
 
-Each decision has a recommendation. Nothing here is built until the owner approves this proposal.
+- **B1. Greenhouse dropdowns** (D-I; §6.2).
+  - [ ] A synthetic page with the same kind of widget passes first.
+  - [ ] The chosen option exactly matches a confirmed detail; zero or several matches leave the field manual.
+  - [ ] Sensitive dropdowns are never touched.
+  - [ ] The chosen value is checked after Fill and shown in the result.
+  - [ ] Still one Fill attempt.
+  - [ ] One live trial is recorded.
+- **B2. Approved document uploads** (D-J; §6.2).
+  - [ ] Only the two approved, attached versions can be uploaded, and they are named on the approval screen.
+  - [ ] Fields that take several files, or that ask for anything else, stay manual.
+  - [ ] The uploaded versions are recorded as "what I sent".
+  - [ ] The acknowledgement covers uploads.
+  - [ ] Still one Fill attempt.
+  - [ ] One live trial is recorded.
+- **C. One-question-per-screen sign-up** (D-K; §6.3).
+  - [ ] It meets the Bible's G-1 acceptance line.
+  - [ ] Résumé upload comes first, then confirming its details (reusing Phase A's screen).
+  - [ ] Every sensitive or demographic question is optional, skippable in one tap, never inferred and never sent to an AI model.
+  - [ ] Every other question is used by a named feature or metric.
+
+## 10. Owner decisions needed
+
+Each decision has a recommendation. Nothing in this document is built until the owner approves this proposal.
+
+**Already decided:** **D034** (2026-11-10). Fill may use the applicant's own confirmed contact details and links. That is Phase A, being built separately, and it replaces this document's earlier question about reading profile or résumé links.
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
@@ -740,24 +894,24 @@ Each decision has a recommendation. Nothing here is built until the owner approv
 | D-D | Signing in the Apply Pilot browser | Keep the typed code with the clearer guidance (UX-2, UX-5b) · later: approve the window from your usual browser instead of typing | **Keep the code now.** Revisit approve-instead after the Lever and Ashby trials if typing is still a problem. That needs its own security review. |
 | D-E | Starting the companion | Copy-and-run terminal command for the owner self-beta (UX-5b) · build a one-click launcher now | **Terminal command for now.** A one-click start belongs to the M3 delivery decision (optional extension or hosted workspace, Bible §7), not to this redesign. |
 | D-F | Recording after an assisted application | (1) Let the Kit's "I applied" add documents and minutes to an application a run already marked Applied, with no status change · (2) extend the run-completion transaction to record them | **(1).** It leaves the protected completion transaction alone and reuses the existing "what I sent" record. |
-| D-G | "Sensitive" in the Answer Vault | Relabel only (UX-7) · split "hide on screen" from "never fill" (needs a database change) | **Relabel only.** It's honest about what the box does, with no migration. |
-| D-H | Links on the profile or résumé | Suggest saving them to Answers, one click each (UX-7) · let Fill read them directly | **Suggest, don't read directly.** Every filled value stays something you saved and approved. |
-| D-I | How much Fill covers on Greenhouse | Out of scope here (§10) | **Decide separately.** The guide states the current limits honestly before Fill. |
+| D-G | "Sensitive" in the Answer Vault | Relabel only (UX-7, after Phase A) · split "hide on screen" from "never fill" (needs a database change) | **Relabel only.** It's honest about what the box does, with no migration. |
+| D-H | Approving answers | One screen, with one **Approve these N and continue** click for the ticked answers (§5.6) · one click per answer, as today | **One screen, one click.** You still see every answer and its source first, and it names exactly what it approves. With Phase A there will be several answers per form. |
+| D-I | Phase B1: Greenhouse dropdowns (country, state) | Allow Fill to operate the employer's dropdown widget, from confirmed details only · keep them manual | **Allow, with the §6.2 guard rails,** after a synthetic test page and one live trial. It needs a confirmed country and state, and it's separate scope under `AGENTS.md`. |
+| D-J | Phase B2: approved document uploads | Allow Fill to upload the exact approved résumé and cover letter · keep uploads manual | **Allow, with the §6.2 guard rails.** It also records "what I sent" automatically. It's separate scope under `AGENTS.md`. |
+| D-K | Phase C: when to build the one-question-per-screen sign-up | In M2 as WP2.6, after the apply flow is fixed · pull it forward | **M2, as the Bible plans.** The owner said the apply flow comes first. |
+| D-L | Fill using saved work-authorization or sponsorship answers | Never: save them for copying only · allow it later under its own rules | **Never in the MVP.** Bible non-negotiable 3 keeps these as the user's own answer, and changing that needs an explicit amendment. |
 
-## 10. Out of scope here
+## 11. Out of scope here
 
-- **F10: what Fill can fill.** On a standard Greenhouse form, Fill does little whatever the screens look like:
-  - contact fields (name, email, phone) are manual by policy;
-  - Greenhouse's custom dropdowns aren't supported;
-  - uploads are out of scope.
-
-  Widening any of these is a separate owner scope decision, each item needing its own safety review. Until then the guide sets expectations before Fill, for example "Apply Pilot can fill 2 of 18 fields".
+- **Designing Phase A.** It is decided (D034) and being built separately (§6.1).
+- **F10: what Fill can fill.** It is now covered by Phase A (decided) and Phase B (decisions D-I and D-J). Until those land, the guide sets expectations before Fill, for example "Apply Pilot can fill 2 of 19 fields".
 - **Already in progress elsewhere:** showing every requirement gap before tailoring (draft PR #66), and the proposed fix for tailored résumés putting bullets under the wrong employer.
 - **The hosted workspace** (Bible §7, M3), extensions and auto-submit.
 - **Follow-up spotted while reading:** `docs/CONTROLLED_APPLICATION_AUTOMATION.md` still says application planning is always local and never calls an AI provider. Since #67, Prepare can use Gemini. The doc needs a correction in its own small PR.
 
-## 11. How we'll know it worked
+## 12. How we'll know it worked
 
 - The owner runs the remaining WP1.6 trials (Lever, then Ashby) using only what the screens say, with no outside prompts.
 - In those trials: no Google attempts in the Apply Pilot browser, no work done in the wrong window, and no sign-in code refused because of where or how it was shown (owner's report).
-- Minutes per application, self-reported in step 8, show on the Insights page as today.
+- **Fields filled per form, counted in each trial.** The first trial's baseline is 2 of 19. Phase A should lift it for contact fields and links, and Phase B for dropdowns and uploads. Report the measured number; don't promise one in advance.
+- Minutes per application, self-reported in step 8, show on the Insights page as today. Any claim to users about time saved comes from these numbers, never from competitors' figures.

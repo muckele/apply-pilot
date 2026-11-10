@@ -144,7 +144,7 @@ Then Google refused sign-in in the companion's automated window ("This browser o
 **Third attempt (2026-11-10): the first assisted Fill is done, on Greenhouse.** It ran on production with #67 and #68 deployed.
 - The owner signed the companion in with a sign-in code, opened the employer's form and had Apply Pilot read it.
 - Apply Pilot proposed two answers, and the owner approved both and pressed Fill once.
-- **Two fields were filled:** the LinkedIn and GitHub links. The owner did everything else on the form by hand, pressed the employer's Submit, and recorded the personal submission. The run ended `COMPLETED_BY_USER`.
+- **Two of the form's 19 fields were filled:** the LinkedIn and GitHub links. At first none of the 19 could be filled. The two links were proposed only after the owner typed them into the Answer Vault and unticked "Mask" on them. The owner did everything else on the form by hand, pressed the employer's Submit, and recorded the personal submission. The run ended `COMPLETED_BY_USER`.
 
 This is the Greenhouse part of WP1.6 and Definition of done item 3. It proves the guarded path works end to end on a real form. It doesn't prove that a new user could do it, or that Fill saves much time on a standard Greenhouse form.
 
@@ -166,14 +166,26 @@ This is the Greenhouse part of WP1.6 and Definition of done item 3. It proves th
    - The "Score this job" and "Create new versions" cost lines are easy to mix up.
    - Cost confirmations are browser pop-ups.
    - The Apply Kit lists résumé v1–v4 with little guidance on which to use.
-10. **Fill does little on a standard Greenhouse form** whatever the screens look like. Contact fields are manual by policy, Greenhouse's dropdowns aren't supported, and uploads are out of scope. Widening any of these is a separate owner scope decision.
+10. **Fill does little on a standard Greenhouse form** whatever the screens look like. Contact fields are manual by policy, Greenhouse's dropdowns aren't supported, and uploads are out of scope. Widening any of these is a separate owner scope decision. The owner has since approved contact details and links (D034; below).
 
 The audit behind the redesign found three more:
 - No screen shows the terminal command that starts the companion.
 - Recording the submission from the control page marks the application Applied without the "what I sent" documents or minutes, and the Apply Kit then can't add them.
 - Reloading or closing the control page ends the employer session, which is explained only in small print.
 
-**Next:** `docs/ASSISTED_APPLY_UX_REDESIGN.md` proposes one guided eight-step flow, ten build pieces with acceptance criteria and nine owner decisions. It is a draft for owner approval; nothing is built until the owner approves it. The Lever and Ashby trials are best run after its first four pieces.
+**Owner direction (2026-11-10): profile-first.** "The process should be completely streamlined." Apply Pilot should take the details forms ask for from the résumé, store them, fill forms from them and flag what's missing. Fixing the apply flow comes before a new sign-up. It comes in three phases:
+- **A. Confirmed application details as a Fill source.** The owner approved it as **D034**. It is being built on its own branch, which also records the decision in §10 and in the decision log.
+- **B. Greenhouse dropdowns and approved document uploads.** Each needs its own owner decision.
+- **C. One-question-per-screen sign-up.** This is G-1 / WP2.6, still planned for M2.
+
+**Next:** `docs/ASSISTED_APPLY_UX_REDESIGN.md` covers the rest:
+- the guided eight-step flow, with one approval screen;
+- how it uses Phase A;
+- Phases B and C;
+- build pieces with acceptance criteria;
+- twelve owner decisions.
+
+It is a draft for owner approval, and nothing in it is built until the owner approves it. The Lever and Ashby trials are best run after Phase A and the redesign's first four pieces.
 
 ### Landed and deployed (2026-11-06)
 
@@ -456,7 +468,7 @@ Primary: **interviews per applicant-hour.** Supporting: minutes of active effort
 
 ## 12. Change log
 
-- 2026-11-10 — v1.5. Recorded #67 and #68 merged (production `158dc25`), the first assisted Fill done on Greenhouse (2 fields filled; the owner submitted) and the friction it showed, and the assisted-apply UX redesign proposal waiting for owner approval.
+- 2026-11-10 — v1.5. Recorded #67 and #68 merged (production `158dc25`), the first assisted Fill done on Greenhouse (2 of 19 fields filled; the owner submitted) and the friction it showed, the owner's profile-first direction (Phase A is D034, on its own branch), and the assisted-apply UX redesign proposal waiting for owner approval.
 - 2026-11-09 — v1.4. Recorded #65 merged and deployed (production `4284bf2`), the automation env var and companion browser in place, and the first Fill-trial attempt with the five problems it surfaced, including the Prepare failure this version's PR fixes.
 - 2026-11-08 — v1.3. Recorded #60–#64 landing with production at `20ea2af`, the assisted Fill switch's status, and what the first Fill trial on production needs.
 - 2026-11-06 — v1.2. Recorded M1 landing and deployment: #45 merged as `6735595` and deployed, migrations A–C applied first, superseded drafts closed. Added what was and wasn't verified on production, and what's still open.
