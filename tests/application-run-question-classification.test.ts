@@ -30,7 +30,8 @@ function classify(
 }
 
 test("classifier exports the complete closed V1 value sets and version", () => {
-  assert.equal(CLASSIFIER_VERSION, 1);
+  // Version 2: contact fields are proposable from confirmed applicant details (D034).
+  assert.equal(CLASSIFIER_VERSION, 2);
   assert.deepEqual(APPLICATION_QUESTION_CLASSIFICATIONS, [
     "CONTACT",
     "PROFESSIONAL_LINK",
@@ -424,17 +425,21 @@ test("generic labels may use strong section/help context without crossing text b
 });
 
 test("recognized autocomplete is semantic evidence but cannot override a sensitive question", () => {
-  assert.equal(classify(null, { autocomplete: "email", fieldType: "TEXT" }).semanticFieldKey, "contact.email");
+  assert.equal(classify("Email", { autocomplete: "email", fieldType: "TEXT" }).semanticFieldKey, "contact.email");
+  // D034: contact is fillable, so an unlabeled field cannot borrow fill authority from autocomplete alone.
+  assert.notEqual(classify(null, { autocomplete: "email", fieldType: "TEXT" }).permittedDisposition, "PROPOSABLE");
   assert.equal(
     classify("Citizenship", { autocomplete: "country", fieldType: "SELECT_ONE" }).classification,
     "CITIZENSHIP_IMMIGRATION"
   );
   assert.equal(classify("Confirm email address", { fieldType: "EMAIL" }).semanticFieldKey, "contact.email.confirmation");
-  assert.equal(
+  // Unlabeled: section context without an applicant reference cannot grant fill authority (D034).
+  assert.notEqual(
     classify(null, { sectionHeading: "Confirm email", autocomplete: "email", fieldType: "EMAIL" })
-      .semanticFieldKey,
-    "contact.email.confirmation"
+      .permittedDisposition,
+    "PROPOSABLE"
   );
+
 });
 
 test("prompt-like employer strings remain inert data and fail closed", () => {
@@ -457,7 +462,9 @@ test("source-independent disposition ceilings and reasons cover every classifica
   const expected: Readonly<
     Record<ApplicationQuestionClassification, readonly [ApplicationAnswerDisposition, string | null]>
   > = {
-    CONTACT: ["MANUAL_ONLY", "UNCONFIRMED_APPLICANT_CONTACT"],
+    // D034: proposable from the applicant's own confirmed details; unconfirmed fields are
+    // downgraded to MANUAL_ONLY / UNCONFIRMED_APPLICANT_CONTACT by the packet builder.
+    CONTACT: ["PROPOSABLE", null],
     PROFESSIONAL_LINK: ["PROPOSABLE", null],
     EXPERIENCE: ["MANUAL_ONLY", "V1_MANUAL_POLICY"],
     EDUCATION: ["MANUAL_ONLY", "V1_MANUAL_POLICY"],
@@ -3183,4 +3190,50 @@ test("source-aware matching does not form phrases across source boundaries", () 
     classify("Portfolio", { sectionHeading: "URL", fieldType: "TEXT" }).permittedDisposition,
     "PROPOSABLE"
   );
+});
+
+// --- D034: the applicant's own contact details are proposable ------------------------------
+
+test("the applicant's own contact fields are proposable with their exact semantic key", () => {
+  const cases: ReadonlyArray<readonly [string, Partial<ClassificationInput>, string]> = [
+    ["First Name", {}, "contact.name.given"],
+    ["Last Name", {}, "contact.name.family"],
+    ["Full name", {}, "contact.name.full"],
+    ["Preferred name", {}, "contact.name.preferred"],
+    ["Email", { fieldType: "EMAIL", autocomplete: "email" }, "contact.email"],
+    ["Email address", { fieldType: "EMAIL" }, "contact.email"],
+    ["Confirm email address", { fieldType: "EMAIL" }, "contact.email.confirmation"],
+    ["Phone", { fieldType: "TEL" }, "contact.phone"],
+    ["Phone number", {}, "contact.phone"],
+    ["Email", {}, "contact.email"],
+    ["E-mail", {}, "contact.email"],
+    ["Phone", {}, "contact.phone"],
+    ["Mobile phone", {}, "contact.phone"]
+  ];
+  for (const [question, overrides, semanticFieldKey] of cases) {
+    assert.deepEqual(
+      classify(question, overrides),
+      { classification: "CONTACT", semanticFieldKey, permittedDisposition: "PROPOSABLE", dispositionReason: null },
+      question
+    );
+  }
+});
+
+test("someone else's contact details are never proposable", () => {
+  const cases: ReadonlyArray<readonly [string, Partial<ClassificationInput>]> = [
+    ["Reference email address", { fieldType: "EMAIL" }],
+    ["Referee phone number", { fieldType: "TEL" }],
+    ["Emergency contact phone number", { fieldType: "TEL" }],
+    ["Recruiter email", { fieldType: "EMAIL" }],
+    ["Manager's email address", { fieldType: "EMAIL" }],
+    ["Who referred you? Full name", {}],
+    ["Referrer's full name", {}],
+    ["Supervisor first name", {}],
+    ["Phone number", { sectionHeading: "Professional references" }],
+    ["Email address", { fieldType: "EMAIL", sectionHeading: "Emergency contact" }],
+    ["First name", { sectionHeading: "Reference 1" }]
+  ];
+  for (const [question, overrides] of cases) {
+    assert.notEqual(classify(question, overrides).permittedDisposition, "PROPOSABLE", question);
+  }
 });

@@ -50,7 +50,8 @@ export const APPLICATION_ANSWER_DISPOSITION_REASONS = [
 export type ApplicationAnswerDispositionReason =
   (typeof APPLICATION_ANSWER_DISPOSITION_REASONS)[number];
 
-export const CLASSIFIER_VERSION = 1 as const;
+// 2: CONTACT is proposable from the applicant's own confirmed details (D034).
+export const CLASSIFIER_VERSION = 2 as const;
 
 type ClassifierFieldType =
   | "TEXT"
@@ -100,7 +101,7 @@ const AMBIGUOUS_SEMANTIC_MATCH_KEY = "\0ambiguous";
 const DISPOSITION_BY_CLASSIFICATION: Readonly<
   Record<ApplicationQuestionClassification, ApplicationAnswerDisposition>
 > = {
-  CONTACT: "MANUAL_ONLY",
+  CONTACT: "PROPOSABLE",
   PROFESSIONAL_LINK: "PROPOSABLE",
   EXPERIENCE: "MANUAL_ONLY",
   EDUCATION: "MANUAL_ONLY",
@@ -123,7 +124,7 @@ const DISPOSITION_BY_CLASSIFICATION: Readonly<
 const REASON_BY_CLASSIFICATION: Readonly<
   Record<ApplicationQuestionClassification, ApplicationAnswerDispositionReason | null>
 > = {
-  CONTACT: "UNCONFIRMED_APPLICANT_CONTACT",
+  CONTACT: null,
   PROFESSIONAL_LINK: null,
   EXPERIENCE: "V1_MANUAL_POLICY",
   EDUCATION: "V1_MANUAL_POLICY",
@@ -1320,9 +1321,13 @@ function contactMatch(evidence: Evidence, fieldType: ClassifierFieldType): Seman
     "again"
   ]);
   const semanticFieldKeys: string[] = [];
+  // A bare "Email" or "Phone" label is a direct request for the applicant's own value.
+  const bareLabel = (labels: readonly Tokens[]): boolean =>
+    labels.some((label) => sameTokens(evidence.question, label));
   if (
     evidence.autocomplete === "email" ||
     fieldType === "EMAIL" ||
+    bareLabel([["email"], ["e", "mail"]]) ||
     questionOrGenericContext(evidence, [["email", "address"], ["your", "email"], ["contact", "email"]])
   ) {
     semanticFieldKeys.push(confirmation ? "contact.email.confirmation" : "contact.email");
@@ -1331,6 +1336,7 @@ function contactMatch(evidence: Evidence, fieldType: ClassifierFieldType): Seman
     evidence.autocomplete === "tel" ||
     evidence.autocomplete?.startsWith("tel-") === true ||
     fieldType === "TEL" ||
+    bareLabel([["phone"], ["mobile"], ["telephone"], ["mobile", "phone"], ["cell", "phone"]]) ||
     questionOrGenericContext(evidence, [
       ["cell"],
       ["cell", "no"],
@@ -1886,6 +1892,7 @@ const EXCLUDED_CLASSIFICATIONS = new Set<ApplicationQuestionClassification>([
 ]);
 
 const PROPOSABLE_CLASSIFICATIONS = new Set<ApplicationQuestionClassification>([
+  "CONTACT",
   "PROFESSIONAL_LINK",
   "AVAILABILITY",
   "DOCUMENT"
@@ -2592,6 +2599,27 @@ const DOCUMENT_NON_APPLICANT_OWNERS = [
   "supervisor", "team", "third", "vendor", "worker"
 ] as const;
 
+// D034: contact values are filled from the applicant's own confirmed details, so any sign that
+// the field belongs to someone else (a reference, a referrer, an emergency contact, an
+// employer) or to a non-personal channel (work email) fails closed. Ownership is not parsed
+// here: one such token anywhere in the label, section or help text is enough.
+const CONTACT_NON_APPLICANT_OWNERS = [
+  ...PROFESSIONAL_LINK_NON_APPLICANT_OWNERS,
+  "advisor", "adviser", "beneficiary", "brother", "child", "college", "dependant", "dependent",
+  "doctor", "emergency", "father", "friend", "guardian", "hiring", "husband", "kin", "landlord",
+  "mentor", "mother", "office", "parent", "physician", "professor", "referral", "referred",
+  "referrer", "reference", "relative", "school", "sibling", "sister", "sponsor", "spouse",
+  "teacher", "university", "who", "wife", "witness", "work"
+] as const;
+
+function hasNonApplicantContactRisk(tokens: Tokens): boolean {
+  return (
+    tokens.some((token) => isNonApplicantOwnerToken(token, CONTACT_NON_APPLICANT_OWNERS)) ||
+    containsAnyPhrase(tokens, [["someone", "else"], ["next", "of", "kin"], ["point", "of", "contact"]]) ||
+    hasExplicitOtherApplicantScope(tokens)
+  );
+}
+
 function hasNonApplicantProfessionalLinkRisk(tokens: Tokens): boolean {
   return (
     containsAnyPhrase(tokens, [
@@ -2903,6 +2931,18 @@ function hasProposerConcept(
   tokens: Tokens
 ): boolean {
   switch (classification) {
+    case "CONTACT":
+      return containsAnyToken(tokens, [
+        "cell",
+        "cellphone",
+        "email",
+        "mobile",
+        "name",
+        "phone",
+        "surname",
+        "tel",
+        "telephone"
+      ]);
     case "PROFESSIONAL_LINK":
       return containsAnyToken(tokens, [
         "github",
@@ -3945,6 +3985,8 @@ function hasStandaloneDisqualifyingScope(
     );
   const otherApplicant = hasExplicitOtherApplicantScope(tokens);
   switch (classification) {
+    case "CONTACT":
+      return hasNonApplicantContactRisk(tokens);
     case "PROFESSIONAL_LINK":
       return hasOwner(PROFESSIONAL_LINK_NON_APPLICANT_OWNERS) || otherApplicant;
     case "AVAILABILITY":
@@ -4017,6 +4059,8 @@ function hasTargetedSourceRisk(
     return true;
   }
   switch (classification) {
+    case "CONTACT":
+      return sourceTokens.some(hasNonApplicantContactRisk);
     case "PROFESSIONAL_LINK":
       return (
         hasCrossSourceCodePlatformConflict(semanticSourceTokens) ||

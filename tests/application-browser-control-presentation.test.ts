@@ -4864,3 +4864,13 @@ test("confirmation intent rejects a stale first-step callback and requires a new
     }
   }
 });
+
+test("a contact or link field Fill could not answer points to Your application details", () => {
+  const hint = applicationBrowserControlPresentation.missingDetailHint;
+  assert.equal(hint({ classification: "CONTACT", dispositionReason: "UNCONFIRMED_APPLICANT_CONTACT" })?.href, "/settings/application-details");
+  assert.equal(hint({ classification: "PROFESSIONAL_LINK", dispositionReason: "NO_ELIGIBLE_SOURCE" })?.href, "/settings/application-details");
+  assert.equal(hint({ classification: "CONTACT", dispositionReason: "AMBIGUOUS_SOURCE" })?.href, "/settings/application-details");
+  assert.equal(hint({ classification: "AVAILABILITY", dispositionReason: "NO_ELIGIBLE_SOURCE" }), null);
+  assert.equal(hint({ classification: "CONTACT", dispositionReason: null }), null);
+  assert.equal(hint({ classification: "EXPERIENCE", dispositionReason: "V1_MANUAL_POLICY" }), null);
+});

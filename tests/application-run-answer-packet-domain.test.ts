@@ -1094,9 +1094,9 @@ test("source-resolved dispositions can preserve or downgrade but never escalate 
       dispositionReason: "UNSUPPORTED_CONTROL"
     })
   );
+  // UNCONFIRMED_APPLICANT_CONTACT is a valid proposable downgrade since D034 (tested below).
   for (const dispositionReason of [
     "LEGAL_ATTESTATION",
-    "UNCONFIRMED_APPLICANT_CONTACT",
     "V1_MANUAL_POLICY"
   ] as const) {
     assert.throws(() =>
@@ -1403,4 +1403,30 @@ test("packet summary rejects lifecycle metadata on non-proposable rows and exact
     }).readyForRunResolution,
     false
   );
+});
+
+// D034: contact fields are proposable from the applicant's own confirmed details. With no
+// confirmed value the builder downgrades them to manual with a reason the UI can flag.
+test("an unconfirmed contact field may drop from proposable to manual with its own reason", () => {
+  assert.doesNotThrow(() =>
+    assertApplicationAnswerDispositionWithinPermitted({
+      permittedDisposition: "PROPOSABLE",
+      permittedDispositionReason: null,
+      disposition: "MANUAL_ONLY",
+      dispositionReason: "UNCONFIRMED_APPLICANT_CONTACT"
+    })
+  );
+});
+
+test("confirmed contact details fingerprint as their own vault category", () => {
+  const base = {
+    sourceType: "ANSWER_VAULT",
+    sourceId: "vault_contact",
+    sourceRevision: "2026-11-10T12:00:00.000Z",
+    exactValue: "applicant@example.test"
+  } as const;
+  const contact = computeApplicationAnswerSourceFingerprint({ ...base, sourceCategory: "CONTACT" });
+  const links = computeApplicationAnswerSourceFingerprint({ ...base, sourceCategory: "LINKS" });
+  assert.match(contact.sourceFingerprint, /^[a-f0-9]{64}$/);
+  assert.notEqual(contact.sourceFingerprint, links.sourceFingerprint);
 });

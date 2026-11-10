@@ -127,6 +127,14 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 4. **Employer order** stays résumé order (most recent first).
 5. **Prompt version** stays 14.
 
+### D034 — Fill may use the applicant's own confirmed contact details and links
+**Status:** owner-approved 2026-11-10, after the first real Greenhouse Fill trial filled only 2 of 19 fields ("The process should be completely streamlined … if some of the information is missing, perhaps we can flag it to the user").
+
+1. **Source.** The owner confirms their application details once on a "Your application details" screen: name, preferred name, email, phone, LinkedIn, GitHub and website. The screen is prefilled from the parsed master résumé and from earlier answers. Confirmed values are stored as ordinary, unmasked Answer Vault rows (contact rows in a `CONTACT` category), so no migration is needed.
+2. **Fill authority.** `CONTACT` questions become proposable, like `PROFESSIONAL_LINK`, but only from a confirmed, active, non-sensitive vault row whose question classifies to the same field. A "confirm your email" field uses the confirmed email. A contact field that may belong to someone else (a reference, referrer, emergency contact, manager or recruiter) or to a non-personal channel (work or company email) is never proposable, and neither is an unlabeled field with only an autocomplete hint. This is classifier version 2, so inspections made under version 1 are stale and the form must be inspected again.
+3. **Missing details are flagged, never guessed.** With no confirmed value, a contact field stays manual with reason `UNCONFIRMED_APPLICANT_CONTACT`, and the screen lists what's missing.
+4. **Nothing else changes.** Each proposed answer is still reviewed. Fill is still one permanent attempt that fills only empty fields. The applicant still clicks Submit. Uploads, dropdown widgets, sponsorship and demographic answers still need their own decisions.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
@@ -134,7 +142,7 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 - Exact human navigation handoff and whether/how automation can resume after manual interaction.
 - User-directed hosted file transfer; this is distinct from automatic file upload.
 - User-directed hosted login/passkey/MFA flow or persistent employer identity.
-- Contact-profile values as approved proposal sources; additional writable families.
+- Additional writable families beyond confirmed contact details and links (contact-profile values were decided in D034).
 - Acceptable mobile/accessibility limitations and release support scope.
 - Two-provider narrower beta versus three-provider priority target.
 - Any automated submission, legal-answer automation, or unattended operation.

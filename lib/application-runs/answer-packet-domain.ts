@@ -402,7 +402,7 @@ const applicationAnswerSourceFingerprintInputSchema = z.discriminatedUnion("sour
       sourceType: z.literal("ANSWER_VAULT"),
       sourceId: safeIdentifierSchema,
       sourceRevision: sourceRevisionSchema,
-      sourceCategory: z.enum(["LINKS", "AVAILABILITY"]),
+      sourceCategory: z.enum(["LINKS", "AVAILABILITY", "CONTACT"]),
       exactValue: scalarProposalValueSchema
     })
     .strict(),
@@ -636,7 +636,9 @@ const PROPOSABLE_DOWNGRADE_MANUAL_REASONS = new Set<ApplicationAnswerDisposition
   "NO_ELIGIBLE_SOURCE",
   "INVALID_SOURCE_VALUE",
   "AMBIGUOUS_SOURCE",
-  "NO_SELECTED_DOCUMENT"
+  "NO_SELECTED_DOCUMENT",
+  // A contact field with no confirmed applicant detail (D034).
+  "UNCONFIRMED_APPLICANT_CONTACT"
 ]);
 const INSPECTION_MANUAL_ONLY_REASONS = new Set<ApplicationAnswerDispositionReason>([
   "UNCONFIRMED_APPLICANT_CONTACT",
