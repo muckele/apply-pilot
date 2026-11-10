@@ -55,6 +55,7 @@ async function mount(options: {
   initialPolicy?: ReturnType<typeof policy>;
   handler?: FetchHandler;
   confirm?: boolean;
+  planner?: "gemini" | "local";
 } = {}) {
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {
     url: `https://app.example.com/applications/${APPLICATION_ID}`
@@ -102,7 +103,8 @@ async function mount(options: {
         applicationId: APPLICATION_ID,
         jobPostingId: JOB_ID,
         initialRun: options.initialRun ?? run(),
-        initialPolicy: options.initialPolicy ?? policy()
+        initialPolicy: options.initialPolicy ?? policy(),
+        planner: options.planner ?? "local"
       })));
   });
   return {
@@ -691,4 +693,28 @@ test("the switch never starts Prepare, opens a browser or calls anything but the
     assert.equal(ui.fetchCalls.every((call) => call.input === POLICY_URL || call.input === RUN_URL), true);
     assert.equal(ui.fetchCalls.some((call) => call.init?.method === "POST"), false);
   } finally { await ui.cleanup(); }
+});
+
+test("when Gemini plans the run, Prepare says so instead of claiming local rules", async () => {
+  const ui = await mount({ planner: "gemini" });
+  try {
+    const text = ui.container.textContent ?? "";
+    assert.match(ui.container.querySelector("[data-testid='prepare-run']")?.textContent ?? "", /^Prepare with Gemini$/);
+    assert.match(text, /Google Gemini/);
+    assert.match(text, /AI budget/);
+    assert.doesNotMatch(text, /does not send planning data to an AI provider/);
+    assert.doesNotMatch(text, /local rule-based/);
+  } finally { await ui.cleanup(); }
+});
+
+test("a planner failure is described without naming local rules", async () => {
+  for (const planner of ["gemini", "local"] as const) {
+    const ui = await mount({ planner, initialRun: run({ state: "FAILED", errorCategory: "planner_provider_failure" }) });
+    try {
+      const failure = [...ui.container.querySelectorAll("[role='status']")]
+        .map((element) => element.textContent ?? "")
+        .find((text) => text.startsWith("Preparation failed"));
+      assert.equal(failure, "Preparation failed while building the application plan.");
+    } finally { await ui.cleanup(); }
+  }
 });

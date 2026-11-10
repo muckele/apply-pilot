@@ -5,6 +5,7 @@ import {
   APPLICATION_PLAN_PROMPT_VERSION,
   applicationPlanSchema,
   buildApplicationPlanPayload,
+  buildApplicationPlanResponseJsonSchema,
   enforceApplicationPlanEvidence,
   planApplication,
   type ApplicationPlanInput,
@@ -329,7 +330,8 @@ test("applicationPlanSchema rejects malformed provider-shaped output", () => {
   assert.equal(applicationPlanSchema.safeParse(planOutput({ confidenceScore: 150 })).success, false);
   assert.equal(applicationPlanSchema.safeParse(planOutput({ targetRoleSummary: "x".repeat(2_001) })).success, false);
 
-  const oversizedMap = Array.from({ length: 26 }, (_, i) => ({
+  // One entry per possible requirement (12 + 6 + 12) is the most a valid plan can hold.
+  const oversizedMap = Array.from({ length: 31 }, (_, i) => ({
     requirementId: `req-${i + 1}`,
     evidenceIds: [],
     gap: true
@@ -340,6 +342,58 @@ test("applicationPlanSchema rejects malformed provider-shaped output", () => {
 test("schema coercion rounds confidence scores", () => {
   const parsed = applicationPlanSchema.parse(planOutput({ confidenceScore: 78.6 }));
   assert.equal(parsed.confidenceScore, 79);
+});
+
+test("applicationPlanSchema accepts one evidence entry for every requirement a payload can carry", () => {
+  const requirementIds = buildApplicationPlanPayload(maximalInput()).job.jobRequirements.map((entry) => entry.id);
+  assert.equal(requirementIds.length, 30);
+  const fullMap = requirementIds.map((requirementId) => ({ requirementId, evidenceIds: [], gap: true }));
+  assert.equal(applicationPlanSchema.safeParse(planOutput({ evidenceMap: fullMap })).success, true);
+});
+
+test("extra evidence IDs on one entry are trimmed to 8 instead of failing an answer that was already paid for", () => {
+  const evidenceIds = Array.from({ length: 11 }, (_, i) => `skill-${i + 1}`);
+  const parsed = applicationPlanSchema.parse(planOutput({
+    evidenceMap: [{ requirementId: "req-1", evidenceIds, gap: false }]
+  }));
+  assert.deepEqual(parsed.evidenceMap[0]?.evidenceIds, evidenceIds.slice(0, 8));
+});
+
+// Gemini rejects schemas whose nested array limits and bounded numbers produce "too many
+// states" (HTTP 400 INVALID_ARGUMENT). Production planning failed this way on a real-sized
+// catalog, so limits live in local validation and the Gemini schema keeps only the ID enums.
+test("the Gemini plan schema keeps ID enums but drops nested array limits and number bounds", () => {
+  const payload = buildApplicationPlanPayload(maximalInput());
+  const schema = buildApplicationPlanResponseJsonSchema(payload) as unknown as {
+    properties: Record<string, Record<string, unknown> & { items?: { properties: Record<string, Record<string, unknown>> } }>;
+  };
+  const evidenceMap = schema.properties.evidenceMap;
+  const entry = evidenceMap.items?.properties;
+  assert.ok(entry);
+  const evidenceIds = entry.evidenceIds as { maxItems?: number; items: { enum?: string[] } };
+  const requirementId = entry.requirementId as { enum?: string[] };
+
+  assert.equal("maxItems" in evidenceMap, false);
+  assert.equal("maxItems" in evidenceIds, false);
+  assert.deepEqual(requirementId.enum, payload.job.jobRequirements.map((item) => item.id));
+  assert.deepEqual(evidenceIds.items.enum, payload.evidenceCatalog.map((item) => item.id));
+  assert.equal("minimum" in schema.properties.confidenceScore, false);
+  assert.equal("maximum" in schema.properties.confidenceScore, false);
+});
+
+test("offline planApplication handles a payload with the maximum 30 requirements", async () => {
+  for (const name of trackedEnvironment) delete process.env[name];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new Error("network access is forbidden in tests");
+  }) as typeof fetch;
+  try {
+    const plan = await planApplication(maximalInput());
+    assert.equal(plan.provider, "local");
+    assert.equal(plan.evidenceMap.length, 30);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("unknown requirement IDs are dropped and recorded", () => {

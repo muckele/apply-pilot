@@ -7,6 +7,7 @@ import {
   GeminiProviderError,
   readGeminiUsage
 } from "@/lib/ai/gemini";
+import { logger } from "@/lib/monitoring/logger";
 
 const responseSchema = {
   type: "object",
@@ -388,6 +389,60 @@ test("Gemini HTTP rejection retains only bounded status, code, and request ID di
     assert.equal(error.providerCode, "INVALID_ARGUMENT");
     assert.equal(error.requestId, "request_ABC-123");
     assert.doesNotMatch(error.message, /private resume content|synthetic-secret/);
+    return true;
+  });
+});
+
+test("a schema-complexity rejection is classified for diagnosis without retaining provider text", async (t) => {
+  const warnings: Array<{ message: string; fields: unknown }> = [];
+  t.mock.method(logger, "warn", (message: string, fields?: unknown) => {
+    warnings.push({ message, fields });
+  });
+  const providerText = "The specified schema produces a constraint that has too many states for serving. private resume content";
+  const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+    error: { code: 400, status: "INVALID_ARGUMENT", message: providerText }
+  }), { status: 400 });
+
+  await assert.rejects(callGeminiJsonProvider({
+    apiKey: "synthetic-secret",
+    model: "gemini-3.5-flash-lite",
+    systemPrompt: "test",
+    payload: { resumeText: "synthetic" },
+    responseJsonSchema: responseSchema,
+    maxOutputTokens: 16_000,
+    thinkingLevel: "LOW",
+    fetchImpl
+  }), (error: unknown) => {
+    assert.ok(error instanceof GeminiProviderError);
+    assert.equal(error.providerCode, "INVALID_ARGUMENT");
+    assert.equal(error.providerReason, "SCHEMA_TOO_COMPLEX");
+    assert.doesNotMatch(error.message, /too many states|private resume content/);
+    return true;
+  });
+
+  const rejection = warnings.find((entry) => entry.message === "ai.gemini.request_rejected");
+  assert.ok(rejection);
+  assert.equal((rejection.fields as { providerReason?: unknown }).providerReason, "SCHEMA_TOO_COMPLEX");
+  assert.doesNotMatch(JSON.stringify(rejection.fields), /too many states|private resume content/);
+});
+
+test("a rejection that names no known cause carries no provider reason", async () => {
+  const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+    error: { code: 400, status: "INVALID_ARGUMENT", message: "private resume content" }
+  }), { status: 400 });
+
+  await assert.rejects(callGeminiJsonProvider({
+    apiKey: "synthetic-secret",
+    model: "gemini-3.5-flash-lite",
+    systemPrompt: "test",
+    payload: { resumeText: "synthetic" },
+    responseJsonSchema: responseSchema,
+    maxOutputTokens: 16_000,
+    thinkingLevel: "LOW",
+    fetchImpl
+  }), (error: unknown) => {
+    assert.ok(error instanceof GeminiProviderError);
+    assert.equal(error.providerReason, null);
     return true;
   });
 });

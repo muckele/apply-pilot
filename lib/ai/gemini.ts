@@ -36,6 +36,7 @@ export class GeminiProviderError extends Error {
   billingDisposition: GeminiBillingDisposition;
   httpStatus: number | null;
   providerCode: string | null;
+  providerReason: GeminiRejectionReason | null;
   requestId: string | null;
 
   constructor(message: string, options: {
@@ -44,6 +45,7 @@ export class GeminiProviderError extends Error {
     billingDisposition?: GeminiBillingDisposition;
     httpStatus?: number | null;
     providerCode?: string | null;
+    providerReason?: GeminiRejectionReason | null;
     requestId?: string | null;
   }) {
     super(message);
@@ -53,8 +55,20 @@ export class GeminiProviderError extends Error {
     this.billingDisposition = options.billingDisposition ?? (this.usage ? "known" : "uncertain");
     this.httpStatus = options.httpStatus ?? null;
     this.providerCode = options.providerCode ?? null;
+    this.providerReason = options.providerReason ?? null;
     this.requestId = options.requestId ?? null;
   }
+}
+
+// A fixed vocabulary for why Gemini rejected a request. Provider message text can echo
+// request content, so it is never retained or logged; only these labels are.
+export type GeminiRejectionReason = "SCHEMA_TOO_COMPLEX" | "SCHEMA_REJECTED";
+
+function classifyGeminiRejection(message: unknown): GeminiRejectionReason | null {
+  if (typeof message !== "string") return null;
+  if (/too many states/i.test(message)) return "SCHEMA_TOO_COMPLEX";
+  if (/response_?schema|responseJsonSchema|response_json_schema/i.test(message)) return "SCHEMA_REJECTED";
+  return null;
 }
 
 const documentedGeminiSchemaKeywords = new Set([
@@ -245,6 +259,7 @@ async function readBoundedResponseText(response: Response, maxResponseBytes: num
 async function readGeminiRejectionDiagnostics(response: Response) {
   const requestId = responseRequestId(response);
   let providerCode: string | null = null;
+  let providerReason: GeminiRejectionReason | null = null;
   try {
     const reader = response.body?.getReader();
     let rawBody: string | null = "";
@@ -271,14 +286,15 @@ async function readGeminiRejectionDiagnostics(response: Response) {
       }
     }
     if (rawBody !== null) {
-      const body = JSON.parse(rawBody) as { error?: { status?: unknown; code?: unknown } };
+      const body = JSON.parse(rawBody) as { error?: { status?: unknown; code?: unknown; message?: unknown } };
       providerCode = boundedProviderDiagnostic(body.error?.status) ??
         boundedProviderDiagnostic(body.error?.code);
+      providerReason = classifyGeminiRejection(body.error?.message);
     }
   } catch {
     // Provider response bodies are never retained or surfaced; diagnostics remain optional.
   }
-  return { providerCode, requestId };
+  return { providerCode, providerReason, requestId };
 }
 
 // Exact input-token count from Gemini's countTokens method, which is free and runs no
@@ -357,6 +373,7 @@ export async function callGeminiJsonProvider({
     logger.warn("ai.gemini.request_rejected", {
       httpStatus: response.status,
       providerCode: diagnostics.providerCode,
+      providerReason: diagnostics.providerReason,
       requestId: diagnostics.requestId
     });
     throw new GeminiProviderError(`Gemini request failed with HTTP ${response.status}.`, {

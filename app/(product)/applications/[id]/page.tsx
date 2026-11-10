@@ -6,6 +6,7 @@ import { ApplicationStatusActions } from "@/components/application-status-action
 import { ApplicationRunEntry } from "@/components/application-run-entry";
 import { ApplicationRunPretrialSetup } from "@/components/application-run-pretrial-setup";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
+import { isGeminiConfigured } from "@/lib/ai/config";
 import {
   describeSentDocument,
   latestSentDocumentsEvent,
@@ -199,6 +200,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
                   allowedHosts: automationPolicy.allowedHosts,
                   blockedHosts: automationPolicy.blockedHosts
                 }}
+                planner={isGeminiConfigured() ? "gemini" : "local"}
               />
             </Panel>
           ) : null}
