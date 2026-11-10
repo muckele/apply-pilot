@@ -43,6 +43,7 @@ const apiRoutePaths = [
   "app/api/application-runs/[id]/answers/[answerId]/review/route.ts",
   "app/api/application-runs/[id]/cancel/route.ts",
   "app/api/application-runs/[id]/complete-by-user/route.ts",
+  "app/api/application-runs/[id]/companion-sign-in-code/route.ts",
   "app/api/application-runs/[id]/execution-token/route.ts",
   "app/api/application-runs/[id]/execution-tokens/[tokenId]/route.ts",
   "app/api/application-runs/[id]/fill-attempt/route.ts",
@@ -60,6 +61,7 @@ const apiRoutePaths = [
   "app/api/browser-capture/route.ts",
   "app/api/browser-capture/tokens/[id]/route.ts",
   "app/api/browser-capture/tokens/route.ts",
+  "app/api/companion-sign-in/route.ts",
   "app/api/contacts/route.ts",
   "app/api/cron/job-discovery/route.ts",
   "app/api/documents/export/route.ts",
@@ -187,7 +189,7 @@ test("the complete current-main API inventory remains outside route groups", () 
   const actualRoutes = collectRouteHandlers("app/api").sort();
 
   assert.deepEqual(actualRoutes, [...apiRoutePaths].sort());
-  assert.equal(actualRoutes.length, 78);
+  assert.equal(actualRoutes.length, 80);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(public)/")), false);
   assert.equal(actualRoutes.some((routePath) => routePath.includes("/(product)/")), false);
 });

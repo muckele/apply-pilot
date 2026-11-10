@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const publicPagePaths = new Set(["/", "/login", "/signup"]);
+// The companion sign-in page and its code exchange must work without a session: they are
+// how the companion's automated window, which Google refuses, gets one.
+const publicPagePaths = new Set(["/", "/login", "/signup", "/companion-sign-in"]);
 
 const publicApiPrefixes = [
   "/api/auth",
+  "/api/companion-sign-in",
   "/api/health",
   "/api/gmail/callback",
   "/api/cron/job-discovery"

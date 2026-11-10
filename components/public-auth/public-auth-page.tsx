@@ -10,6 +10,9 @@ type PublicAuthPageProps = {
   authState: "available" | "denied" | "unavailable";
   googleAction?: React.ReactNode;
   deniedAction?: React.ReactNode;
+  // Shown only on the way to a browser run's control page, for the local companion's
+  // automated window where Google sign-in is refused.
+  companionAction?: React.ReactNode;
 };
 
 const copy = {
@@ -43,7 +46,7 @@ function AuthOpportunity() {
   );
 }
 
-export function PublicAuthPage({ mode, authState, googleAction, deniedAction }: PublicAuthPageProps) {
+export function PublicAuthPage({ mode, authState, googleAction, deniedAction, companionAction }: PublicAuthPageProps) {
   const content = copy[mode];
 
   return (
@@ -64,6 +67,7 @@ export function PublicAuthPage({ mode, authState, googleAction, deniedAction }: 
             <h2 id="auth-card-title">{content.cardHeading}</h2>
             <p>{content.cardCopy}</p>
             {authState === "available" ? googleAction : null}
+            {companionAction ?? null}
             {authState === "unavailable" ? (
               <div className="public-auth-unavailable" role="status">
                 <ShieldCheck aria-hidden="true" />

@@ -126,6 +126,17 @@ WP1.6 is not done until the genuine trials on Greenhouse, Lever and Ashby are re
 4. **No screen attaches documents:** no production screen attaches a résumé and cover letter to an application without marking it applied, but Prepare requires both. For this trial they were attached through the existing application PATCH route.
 5. **Manual import requirements:** manual job import without an explicit requirement list turned headings, pay lines and benefits into requirements. Draft #66 addresses this.
 
+**Second attempt (2026-11-10), stopped at companion sign-in.** #67 fixed Prepare: after a re-score, Prepare with Gemini set the run to READY, and the owner turned assisted Fill on. Two more problems surfaced:
+- A nightly Greenhouse job-source sync reclaimed the manually imported job, which made the reviewed score stale until it was re-scored.
+- A re-score was rejected after charge because Gemini quoted only part of a long owner-added line.
+
+Then Google refused sign-in in the companion's automated window ("This browser or app may not be secure"). Google is Apply Pilot's only sign-in, and the companion starts with an empty browser profile, so the companion could not authenticate at all. The fix is a **companion sign-in code**:
+- The owner, signed in in their own browser, gets a one-time code from the application page.
+- The code is single-use, valid for 5 minutes, bound to one browser run, and stored only as a hash in the existing `VerificationToken` table, so no migration is needed.
+- The owner types the code into the companion window, which gets an ordinary Auth.js session and lands on that run's control page.
+- The exchange accepts only same-origin requests, is rate-limited by address and by run, re-checks the email allowlist and is audited.
+- Google's automation check is not bypassed.
+
 ### Landed and deployed (2026-11-06)
 
 **#45 (`integration/mvp-m1`) was merged into `main` by the owner on 2026-11-06 as merge commit `6735595`.** Its tree is identical to release `ef1895a`. Vercel deployed it to production the same day.

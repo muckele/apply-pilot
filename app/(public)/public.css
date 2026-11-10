@@ -684,6 +684,8 @@
 .public-google-mark { width: 27px; height: 27px; }
 .public-auth-alternate { margin-top: 34px; border-bottom: 1px solid var(--public-border); padding-bottom: 36px; color: #c8d0cd; text-align: center; font-size: 15px; }
 .public-auth-alternate a { color: var(--public-mint); }
+.public-auth-companion { margin-top: 18px; text-align: center; font-size: 15px; color: #c8d0cd; }
+.public-auth-companion a { color: var(--public-mint); text-decoration: underline; }
 .public-auth-note { display: grid; grid-template-columns: 42px 1fr; gap: 16px; align-items: start; margin-top: 34px; color: #adb8b3; }
 .public-auth-note svg { width: 42px; height: 42px; border: 1px solid rgba(77, 208, 139, .45); border-radius: 50%; padding: 11px; color: var(--public-mint); }
 .public-auth-note p { margin: 2px 0 0; font-size: 14px; line-height: 1.55; }
