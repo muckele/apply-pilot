@@ -5,6 +5,8 @@ import { ApplicationEffortEditor } from "@/components/application-effort-editor"
 import { ApplicationStatusActions } from "@/components/application-status-actions";
 import { ApplicationRunEntry } from "@/components/application-run-entry";
 import { ApplicationRunPretrialSetup } from "@/components/application-run-pretrial-setup";
+import { CompanionSignInCode } from "@/components/companion-sign-in-code";
+import { isTerminalRunState } from "@/lib/application-runs/state-machine";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
 import { isGeminiConfigured } from "@/lib/ai/config";
 import {
@@ -166,6 +168,11 @@ export default async function ApplicationDetailPage({ params }: Props) {
               applicationId={application.id}
               initialRun={currentRun ? { id: currentRun.id, state: currentRun.state } : null}
             />
+            {currentRun && !isTerminalRunState(currentRun.state) ? (
+              <div className="px-5 pb-5">
+                <CompanionSignInCode key={currentRun.id} runId={currentRun.id} />
+              </div>
+            ) : null}
           </Panel>
 
           {currentRun && automationPolicy ? (
