@@ -1,3 +1,4 @@
+import { SignOutButton } from "@/components/sign-out-button";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 
@@ -34,16 +35,14 @@ export default async function SignupPage() {
       authState={authState}
       googleAction={googleConfigured ? <GoogleSignInButton variant="public" /> : undefined}
       deniedAction={
-        <form
+        <SignOutButton
+          withIcon={false}
+          className="public-button public-button-secondary public-denied-button"
           action={async () => {
             "use server";
             await signOut({ redirectTo: "/signup" });
           }}
-        >
-          <button className="public-button public-button-secondary public-denied-button">
-            Sign out
-          </button>
-        </form>
+        />
       }
     />
   );
