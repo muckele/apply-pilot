@@ -301,7 +301,7 @@ test("lost Prepare response reads durable state without replay; failed reconcili
 
 test("durable blockers and bounded failures are explained without arbitrary error text", async () => {
   const reasons = [
-    "automation_disabled", "host_blocked", "fit_below_threshold",
+    "automation_disabled", "automation_disabled_during_preparation", "host_blocked", "fit_below_threshold",
     "match_confidence_below_threshold", "resume_required", "cover_letter_required",
     "daily_application_cap_reached", "ai_budget_exceeded", "ai_request_cost_limit",
     "ai_cost_confirmation_required", "ai_duplicate_in_progress"

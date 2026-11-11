@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { z } from "zod";
 
+import { PREPARE_BLOCKER_COPY } from "@/lib/application-runs/blocker-copy";
 import {
   canonicalizePolicyHostEntry,
   isHostAllowedForExecution,
@@ -36,20 +37,9 @@ const policySchema = z.object({
 export type RunView = z.infer<typeof runSchema>;
 export type PolicyView = z.infer<typeof policySchema>;
 
-const blockingMessages: Record<string, string> = {
-  automation_disabled: "Application automation is disabled by the current policy.",
-  automation_disabled_during_preparation: "Application automation was disabled during preparation.",
-  host_blocked: "The run's target host is blocked by the current policy.",
-  fit_below_threshold: "The job's current fit score does not meet the existing policy threshold.",
-  match_confidence_below_threshold: "The job's current match confidence does not meet the existing policy threshold.",
-  resume_required: "An eligible tailored resume must be explicitly assigned to this application in the job packet.",
-  cover_letter_required: "An eligible cover letter must be explicitly assigned to this application in the job packet.",
-  daily_application_cap_reached: "The daily preparation cap has been reached.",
-  ai_budget_exceeded: "The existing AI budget does not permit preparation.",
-  ai_request_cost_limit: "This planner request exceeds the existing per-request cost limit.",
-  ai_cost_confirmation_required: "Preparation requires a separate AI cost confirmation. No additional planner request was sent.",
-  ai_duplicate_in_progress: "Another planner request is in progress. Review the run state before deciding whether to retry."
-};
+const blockingMessages: Record<string, string> = Object.fromEntries(
+  Object.entries(PREPARE_BLOCKER_COPY).map(([reason, copy]) => [reason, copy.text])
+);
 
 const failureMessages: Record<string, string> = {
   planner_input_invalid: "Preparation failed because the bounded planner input was invalid.",
