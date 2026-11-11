@@ -1,22 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { ArrowRight, FileText, Wand2 } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { JobApplyReturnPrompt } from "@/components/job-workspace/job-apply-return-prompt";
 import { JobDetailTabs } from "@/components/job-workspace/job-detail-tabs";
 import { JobHeader } from "@/components/job-workspace/job-header";
 import { MatchCard } from "@/components/job-workspace/match-card";
 import { SaveJobButton } from "@/components/job-workspace/save-job-button";
-import { TailorFlow, documentsCreatedKey, tailorReviewIdentity, type TailorFlowMessage, type TailorFlowProps } from "@/components/job-workspace/tailor-flow";
+import type { ApplyProgress } from "@/lib/apply-page/apply-progress";
 import type { ApplyReturnState } from "@/lib/applications/apply-return";
 import type { ChecklistView, EstimateView, JobDetailView, JobTab, SalaryTargetView } from "@/lib/jobs/job-view-types";
-import {
-  JobDocumentWorkspace,
-  type JobCoverLetterOption,
-  type JobResumeVersionOption
-} from "@/components/job-document-workspace";
 import { ThemePreferenceControl } from "@/components/theme-preference-control";
 
 export type JobWorkspaceProps = {
@@ -24,8 +19,7 @@ export type JobWorkspaceProps = {
   estimate: EstimateView | null;
   checklist: ChecklistView;
   salaryTarget: SalaryTargetView;
-  tailor: Omit<TailorFlowProps, "jobId" | "hasDocuments" | "hasCurrentResume" | "onPendingFactChanges">;
-  documents: { resumeVersions: JobResumeVersionOption[]; coverLetters: JobCoverLetterOption[] };
+  progress: ApplyProgress;
   application: { id: string; statusLabel: string } | null;
   // "Did you apply?": an opened employer application with no answer yet, or a "Not applying" to undo.
   applyReturn: ApplyReturnState;
@@ -45,52 +39,25 @@ export function MasterResumeText({ text }: { text: string }) {
   );
 }
 
-const STEPS = ["Check your fit", "Fill gaps (optional)", "Create documents", "Review and apply"] as const;
-
 export function JobWorkspace({
   job,
   estimate,
   checklist,
   salaryTarget,
-  tailor,
-  documents,
+  progress,
   application,
   applyReturn,
   masterResumeText,
   notes
 }: JobWorkspaceProps) {
   const [tab, setTab] = useState<JobTab>("overview");
-  const [pendingFactChanges, setPendingFactChanges] = useState(false);
-  const [tailorMessage, setTailorMessage] = useState<TailorFlowMessage | null>(null);
   const tabsRef = useRef<HTMLDivElement>(null);
-  const hasDocuments = documents.resumeVersions.length > 0 || documents.coverLetters.length > 0;
-  // A tailored résumé ready for export against the current evidence lets the cover letter be made alone.
-  const hasCurrentResume = documents.resumeVersions.some((version) => version.evidenceCurrent);
-  const applyKitHref = `/jobs/${job.id}/apply`;
-  const scored = Boolean(estimate) || tailor.hasValidCurrentSnapshot;
-  const currentStep = hasDocuments ? 3 : scored ? 1 : 0;
-
-  useEffect(() => {
-    if (!hasDocuments) return;
-    let created: string | null = null;
-    try {
-      created = window.sessionStorage.getItem(documentsCreatedKey(job.id));
-      window.sessionStorage.removeItem(documentsCreatedKey(job.id));
-    } catch {}
-    // One-time handoff from TailorFlow: bring the new documents into view after the refresh.
-    if (created) requestAnimationFrame(() => document.getElementById("documents")?.scrollIntoView({ block: "start", behavior: "smooth" }));
-  }, [hasDocuments, job.id]);
+  const applyHref = `/jobs/${job.id}/apply`;
 
   const seeBreakdown = useCallback(() => {
     setTab("match");
     requestAnimationFrame(() => tabsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" }));
   }, []);
-
-  function goTo(id: string) {
-    const target = document.getElementById(id);
-    target?.scrollIntoView({ block: "start", behavior: "smooth" });
-    target?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
-  }
 
   return (
     <div className="product-page product-page-themed job-workspace" data-job-workspace>
@@ -107,8 +74,8 @@ export function JobWorkspace({
       <div className="job-layout">
         <aside className="job-rail" aria-label="Apply and match">
           <div className="job-card job-rail-actions">
-            <Link href={applyKitHref} className="job-button job-button-primary">
-              Go to Apply Kit <ArrowRight size={16} aria-hidden="true" />
+            <Link href={applyHref} className="job-button job-button-primary">
+              {progress.current === 1 ? "Apply →" : `Continue: step ${progress.current}`} <ArrowRight size={16} aria-hidden="true" />
             </Link>
             {application ? (
               <Link href="/applications" className="job-button">In your tracker: {application.statusLabel}</Link>
@@ -116,68 +83,13 @@ export function JobWorkspace({
               <SaveJobButton jobId={job.id} />
             )}
           </div>
-          <div className="job-card job-tailor-prompt">
-            {hasDocuments ? (
-              <>
-                <p className="job-card-title"><FileText size={16} aria-hidden="true" /> Your tailored documents are ready</p>
-                <p className="job-card-copy">Review and edit them, then take them to the Apply Kit.</p>
-                <button type="button" className="job-button" onClick={() => goTo("documents")}>Review documents</button>
-              </>
-            ) : (
-              <>
-                <p className="job-card-title"><Wand2 size={16} aria-hidden="true" /> Tailor your résumé first</p>
-                <p className="job-card-copy">See what this job asks for, line by line, then get a résumé and cover letter written for it.</p>
-                <button type="button" className="job-button" onClick={() => goTo("tailor")}>Start tailoring</button>
-              </>
-            )}
-          </div>
-          <MatchCard jobId={job.id} estimate={estimate} checklist={checklist} onSeeBreakdown={estimate ? seeBreakdown : undefined} />
+          <MatchCard jobId={job.id} estimate={estimate} checklist={checklist} onSeeBreakdown={estimate ? seeBreakdown : undefined} showScoreButton={false} />
         </aside>
 
         <div className="job-main">
           <div ref={tabsRef} className="job-anchor">
             <JobDetailTabs job={job} estimate={estimate} checklist={checklist} salaryTarget={salaryTarget} tab={tab} onTabChange={setTab} />
           </div>
-
-          <section id="tailor" className="job-card job-section" aria-labelledby="tailor-heading">
-            <h2 id="tailor-heading" tabIndex={-1} className="job-section-title">Tailor your application</h2>
-            <ol className="job-steps" aria-label="Steps">
-              {STEPS.map((label, index) => (
-                <li key={label} data-state={index < currentStep ? "done" : index === currentStep ? "current" : "todo"} aria-current={index === currentStep ? "step" : undefined}>
-                  <span className="job-step-number">{index + 1}</span>{label}
-                </li>
-              ))}
-            </ol>
-            <TailorFlow
-              key={tailorReviewIdentity(tailor.review, tailor.hasValidCurrentSnapshot)}
-              jobId={job.id}
-              hasDocuments={hasDocuments}
-              hasCurrentResume={hasCurrentResume}
-              onPendingFactChanges={setPendingFactChanges}
-              message={tailorMessage}
-              onMessage={setTailorMessage}
-              {...tailor}
-            />
-          </section>
-
-          {hasDocuments ? (
-            <section id="documents" className="job-card job-section" aria-labelledby="documents-heading">
-              <h2 id="documents-heading" tabIndex={-1} className="job-section-title">Review and edit</h2>
-              <p className="job-card-copy">Read each document, edit anything you like, and download it. Your own edits are marked as yours; changed facts are flagged for you to confirm before export.</p>
-              {pendingFactChanges ? (
-                <p role="status" className="job-message job-message-info">You&apos;ve changed lines above that these documents don&apos;t include yet. Create new versions to use them; export waits until then.</p>
-              ) : null}
-              <div className="application-review-workspace job-documents">
-                <JobDocumentWorkspace resumeVersions={documents.resumeVersions} coverLetters={documents.coverLetters} evidenceInvalidated={pendingFactChanges} />
-              </div>
-              <div className="job-next">
-                <p className="job-card-copy">When they look right, the Apply Kit has your files, your saved answers and the employer&apos;s form. You submit the application yourself.</p>
-                <Link href={applyKitHref} className="job-button job-button-primary">
-                  Go to Apply Kit <ArrowRight size={16} aria-hidden="true" />
-                </Link>
-              </div>
-            </section>
-          ) : null}
 
           <details className="job-card job-disclosure">
             <summary>Your master résumé</summary>

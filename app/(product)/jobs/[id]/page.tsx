@@ -2,8 +2,7 @@ import { notFound } from "next/navigation";
 
 import { JobContactNotesForm } from "@/components/job-contact-notes-form";
 import { JobWorkspace } from "@/components/job-workspace/job-workspace";
-import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availability";
-import { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
+import { loadApplyProgress } from "@/lib/apply-page/load-apply-progress";
 import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
 
@@ -13,7 +12,8 @@ type Props = {
 
 export default async function JobDetailPage({ params }: Props) {
   const { id } = await params;
-  const data = await loadJobDetail(await requirePageUserId(), id);
+  const userId = await requirePageUserId();
+  const data = await loadJobDetail(userId, id);
 
   if (!data) {
     notFound();
@@ -25,14 +25,7 @@ export default async function JobDetailPage({ params }: Props) {
       estimate={data.estimate}
       checklist={data.checklist}
       salaryTarget={data.salaryTarget}
-      tailor={{
-        review: data.evidenceReview,
-        hasValidCurrentSnapshot: data.hasValidCurrentSnapshot,
-        readOnlyGaps: data.readOnlyGaps,
-        quote: buildDocumentCreationQuote(),
-        generationAvailable: isDocumentGenerationAvailable()
-      }}
-      documents={{ resumeVersions: data.resumeVersions, coverLetters: data.coverLetters }}
+      progress={await loadApplyProgress(userId, data)}
       application={data.application}
       applyReturn={data.applyReturn}
       masterResumeText={data.sourceText}
