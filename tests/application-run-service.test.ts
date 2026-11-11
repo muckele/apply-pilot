@@ -1491,7 +1491,9 @@ test("cancellation accepts every state already authorized by the state machine a
     assert.deepEqual(stored.firstPreparingAt, firstPreparingAt, state);
     assert.deepEqual(stored.policySnapshot, { provenance: "preserve" }, state);
     assert.deepEqual(stored.applicationPlanSnapshot, { evidence: "preserve" }, state);
-    assert.equal(database.operations.some((operation) => operation.startsWith("policy.")), false, state);
+    // With no policy row, Fill is already off: the policy is read, never locked or written.
+    assert.equal(database.operations.some((operation) => ["policy.lock", "policy.update", "policy.create"].includes(operation)), false, state);
+    assert.equal(database.policy, null, state);
   }
 });
 
@@ -1634,7 +1636,9 @@ test("personal completion atomically records both allowed Human-Submit paths wit
     assert.equal(database.operations.includes("token.updateMany"), false);
     assert.equal(database.operations.includes("answer.updateMany"), false);
     assert.equal(database.operations.includes("packet.updateMany"), false);
-    assert.equal(database.operations.some((operation) => operation.startsWith("policy.")), false);
+    // With no policy row, Fill is already off: the policy is read, never locked or written.
+    assert.equal(database.operations.some((operation) => ["policy.lock", "policy.update", "policy.create"].includes(operation)), false);
+    assert.equal(database.policy, null);
     assert.ok(database.operations.indexOf("run.lock") < database.operations.indexOf("application.lock"));
     assert.ok(database.operations.indexOf("application.lock") < database.operations.indexOf("database.now"));
     assert.ok(database.operations.indexOf("run.updateMany") < database.operations.indexOf("application.updateMany"));
@@ -1755,6 +1759,144 @@ test("personal completion rolls back every lifecycle write when a fenced update 
     assert.equal(database.audits.length, 0, failure);
     assert.equal(database.events.length, 0, failure);
     assert.equal(database.operations.at(-1), "transaction.rollback", failure);
+  }
+});
+
+// D035 D-B: a finished or cancelled application turns Assisted Fill off, in the same transaction.
+
+function fillOnPolicy(): FakePolicy {
+  return fakePolicy({
+    enabled: true,
+    mode: "FILL_AND_REVIEW",
+    allowedHosts: ["jobs.example.com"],
+    blockedHosts: ["blocked.example.com"],
+    minimumFitScore: 90
+  });
+}
+
+function autoOffAudits(database: FakeApplicationRunDatabase) {
+  return database.audits.filter((audit) => audit.action === "automation-policy.auto-off");
+}
+
+// Everything but the mode is left as it was.
+function assertOnlyModeTurnedOff(database: FakeApplicationRunDatabase, label: string) {
+  const before = fillOnPolicy();
+  assert.ok(database.policy, label);
+  assert.equal(database.policy.mode, "PREPARE_ONLY", label);
+  for (const key of APPLICATION_AUTOMATION_POLICY_VALUE_KEYS.filter((field) => field !== "mode")) {
+    assert.deepEqual(database.policy[key], before[key], `${label}: ${key}`);
+  }
+}
+
+test("completing a run turns Fill off and audits it", async () => {
+  for (const state of ["READY", "READY_FOR_USER_SUBMISSION"] as const) {
+    const database = new FakeApplicationRunDatabase();
+    database.policy = fillOnPolicy();
+    database.runs.push(fakeRun({
+      state,
+      stateVersion: 11,
+      fillAttemptId: state === "READY" ? null : "550e8400-e29b-41d4-a716-446655440000"
+    }));
+
+    const result = await completeRunByUser(database, {
+      userId: USER_ID,
+      runId: RUN_ID,
+      attestation: PERSONAL_SUBMISSION_ATTESTATION
+    });
+
+    assert.equal(result.state, "COMPLETED_BY_USER", state);
+    assertOnlyModeTurnedOff(database, state);
+    assert.deepEqual(autoOffAudits(database), [{
+      userId: USER_ID,
+      action: "automation-policy.auto-off",
+      resource: "ApplicationAutomationPolicy",
+      resourceId: "policy-1",
+      metadata: { runId: RUN_ID, reason: "run_completed" }
+    }], state);
+    assert.equal(database.audits.filter((audit) => audit.action === "application-run.complete-by-user").length, 1, state);
+    // One transaction; the policy row is locked before the run (policy → run, as Fill and
+    // token issuance lock them), and changed only after the run's own transition.
+    assert.equal(database.operations.filter((operation) => operation === "transaction.begin").length, 1, state);
+    assert.equal(database.operations.at(-1), "transaction.commit", state);
+    assert.ok(database.operations.indexOf("policy.lock") < database.operations.indexOf("run.lock"), state);
+    assert.ok(database.operations.indexOf("run.updateMany") < database.operations.indexOf("policy.update"), state);
+    assert.equal(database.operations.filter((operation) => operation === "policy.update").length, 1, state);
+    assert.equal(database.operations.includes("token.updateMany"), false, state);
+  }
+});
+
+test("cancelling a run turns Fill off", async () => {
+  for (const state of ["READY", "REVIEW_REQUIRED", "FILLING", "READY_FOR_USER_SUBMISSION"] as const) {
+    const database = new FakeApplicationRunDatabase();
+    database.policy = fillOnPolicy();
+    database.runs.push(fakeRun({
+      state,
+      stateVersion: 4,
+      fillAttemptId: state === "FILLING" || state === "READY_FOR_USER_SUBMISSION"
+        ? "550e8400-e29b-41d4-a716-446655440000"
+        : null,
+      fillLeaseExpiresAt: state === "FILLING" ? new Date(NOW.getTime() + 60_000) : null
+    }));
+
+    const result = await serviceFor(database).cancelApplicationRun({ userId: USER_ID, runId: RUN_ID });
+
+    assert.equal(result.run.state, "CANCELLED", state);
+    assertOnlyModeTurnedOff(database, state);
+    assert.deepEqual(autoOffAudits(database), [{
+      userId: USER_ID,
+      action: "automation-policy.auto-off",
+      resource: "ApplicationAutomationPolicy",
+      resourceId: "policy-1",
+      metadata: { runId: RUN_ID, reason: "run_cancelled" }
+    }], state);
+    assert.equal(database.audits.filter((audit) => audit.action === "application-run.cancel").length, 1, state);
+    assert.equal(database.operations.filter((operation) => operation === "transaction.begin").length, 1, state);
+    assert.ok(database.operations.indexOf("policy.lock") < database.operations.indexOf("run.lock"), state);
+    assert.ok(database.operations.indexOf("run.updateMany") < database.operations.indexOf("policy.update"), state);
+  }
+});
+
+test("Fill stays on when the run's completion or cancellation rolls back", async () => {
+  for (const operation of ["complete", "cancel"] as const) {
+    const database = new FakeApplicationRunDatabase();
+    database.policy = fillOnPolicy();
+    database.runs.push(fakeRun({ state: "READY", stateVersion: 6 }));
+    database.failEvent = true;
+
+    await assert.rejects(
+      operation === "complete"
+        ? completeRunByUser(database, { userId: USER_ID, runId: RUN_ID, attestation: PERSONAL_SUBMISSION_ATTESTATION })
+        : serviceFor(database).cancelApplicationRun({ userId: USER_ID, runId: RUN_ID }),
+      /simulated/
+    );
+    assert.equal(database.policy?.mode, "FILL_AND_REVIEW", operation);
+    assert.equal(database.runs[0].state, "READY", operation);
+    assert.deepEqual(database.audits, [], operation);
+  }
+});
+
+test("an already-off policy is left alone, with no audit", async () => {
+  for (const policy of [null, fakePolicy({ enabled: true, mode: "PREPARE_ONLY" })]) {
+    for (const operation of ["complete", "cancel"] as const) {
+      const label = `${policy === null ? "no policy" : "PREPARE_ONLY"}: ${operation}`;
+      const database = new FakeApplicationRunDatabase();
+      database.policy = policy === null ? null : structuredClone(policy);
+      database.runs.push(fakeRun({ state: "READY", stateVersion: 2 }));
+
+      if (operation === "complete") {
+        await completeRunByUser(database, { userId: USER_ID, runId: RUN_ID, attestation: PERSONAL_SUBMISSION_ATTESTATION });
+      } else {
+        await serviceFor(database).cancelApplicationRun({ userId: USER_ID, runId: RUN_ID });
+      }
+
+      assert.deepEqual(database.policy, policy, label);
+      assert.deepEqual(autoOffAudits(database), [], label);
+      assert.equal(database.operations.includes("policy.update"), false, label);
+      assert.equal(database.operations.includes("policy.create"), false, label);
+      // Fill off: the run keeps its usual locks, with no policy lock ahead of it.
+      assert.equal(database.operations.includes("policy.lock"), false, label);
+      assert.equal(database.operations.at(-1), "transaction.commit", label);
+    }
   }
 });
 

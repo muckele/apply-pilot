@@ -1317,7 +1317,7 @@ test("material-reinspection-first moves READY to REVIEW_REQUIRED and rejects que
   });
 });
 
-test("cancellation-first clears READY authority and makes queued Fill start stale", {
+test("cancellation-first clears READY authority and turns Fill off, so the queued Fill start is denied", {
   timeout: TEST_TIMEOUT_MS
 }, async () => {
   await runScenario("commit6-cancel-first-start", async (scenario) => {
@@ -1351,8 +1351,16 @@ test("cancellation-first clears READY authority and makes queued Fill start stal
     const [cancelSettled, startSettled] = await settlePair(cancellation, start, "cancellation before Fill acquisition");
     const cancelled = fulfilled(cancelSettled, scenario.actorA, "cancellation first");
     assert.equal(cancelled.run.state, "CANCELLED");
-    assertPublicError(rejected(startSettled, scenario.actorB, "queued stale Fill start"), 409, "FILL_STALE");
+    // D035 D-B: the cancellation turned Fill off in its own transaction, and the queued start
+    // reads the policy (under its lock) before the run.
+    assertPublicError(rejected(startSettled, scenario.actorB, "queued denied Fill start"), 403, "FILL_POLICY_DENIED");
     cancelPause.hooks.assertExpectedHooksReached();
+    const persistedPolicy = await scenario.observer.client.applicationAutomationPolicy.findUniqueOrThrow({
+      where: { userId: fixture.userId }
+    });
+    assert.equal(persistedPolicy.mode, "PREPARE_ONLY");
+    assert.equal(persistedPolicy.enabled, true);
+    assert.equal(await actionCount(scenario, fixture, "automation-policy.auto-off"), 1);
 
     const run = await scenario.observer.client.applicationRun.findUniqueOrThrow({ where: { id: fixture.runId } });
     assert.equal(run.state, "CANCELLED");
@@ -2275,12 +2283,19 @@ test("personal completion excludes a queued production Fill acquisition", {
       "personal completion before Fill acquisition"
     );
     const completed = fulfilled(completionSettled, scenario.actorA, "completion before Fill");
+    // D035 D-B: the completion turned Fill off in its own transaction, and the queued acquisition
+    // reads the policy (under its lock) before the run.
     assertPublicError(
       rejected(acquisitionSettled, scenario.actorB, "queued Fill after completion"),
-      409,
-      "FILL_STALE"
+      403,
+      "FILL_POLICY_DENIED"
     );
     completionPause.hooks.assertExpectedHooksReached();
+    const persistedPolicy = await scenario.observer.client.applicationAutomationPolicy.findUniqueOrThrow({
+      where: { userId: fixture.userId }
+    });
+    assert.equal(persistedPolicy.mode, "PREPARE_ONLY");
+    assert.equal(await actionCount(scenario, fixture, "automation-policy.auto-off"), 1);
 
     const run = await scenario.observer.client.applicationRun.findUniqueOrThrow({
       where: { id: fixture.runId }

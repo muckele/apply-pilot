@@ -16,9 +16,16 @@ import {
   StepSection,
   stepSummary,
   StoppedCard,
+  type FillSwitchView,
   type MoreAction
 } from "@/components/application-browser-steps";
 import { SecondaryButton } from "@/components/ui";
+import {
+  readAssistedFillMode,
+  RunRequestError,
+  turnOnAssistedFill,
+  type AssistedFillMode
+} from "@/lib/application-runs/client-run";
 import {
   applyAuthoritativeBrowserStatus,
   apparentAutomatableFieldCount,
@@ -150,6 +157,17 @@ const initialPersonalSubmissionCompletion: PersonalSubmissionCompletion = {
   phase: "idle",
   notice: null
 };
+
+// The Fill switch at step 8 (D035 D-B): the account's mode as last read, the open question and the
+// turn-on request.
+type FillSwitchState = {
+  mode: AssistedFillMode | null;
+  asking: boolean;
+  pending: boolean;
+  notice: CommandNotice | null;
+};
+
+const initialFillSwitch: FillSwitchState = { mode: null, asking: false, pending: false, notice: null };
 
 function sameReviewRunAuthority(
   left: ReviewRunAuthority,
@@ -318,6 +336,7 @@ export function ApplicationBrowserControl({
     useState<PersonalSubmissionCompletion>(initialPersonalSubmissionCompletion);
   const [lastAcceptedInspection, setLastAcceptedInspectionState] = useState<B2InspectionCommandStatus | null>(null);
   const [formInvalidatedSinceVerifiedSuccess, setFormInvalidatedSinceVerifiedSuccess] = useState(false);
+  const [fillSwitch, setFillSwitch] = useState<FillSwitchState>(initialFillSwitch);
 
   const statusRef = useRef(status);
   const reviewLoadRef = useRef(reviewLoad);
@@ -339,6 +358,8 @@ export function ApplicationBrowserControl({
   const lastAutoRefreshAttemptKeyRef = useRef<string | null>(null);
   const componentGenerationRef = useRef(0);
   const activeComponentGenerationRef = useRef<number | null>(null);
+  const fillModeRequestSequenceRef = useRef(0);
+  const fillSwitchPendingRef = useRef(false);
 
   const updateReviewLoad = useCallback((update: (current: ReviewLoad) => ReviewLoad) => {
     const next = update(reviewLoadRef.current);
@@ -364,6 +385,75 @@ export function ApplicationBrowserControl({
     fillStatusLoadRef.current = next;
     setFillStatusLoad(next);
   }, []);
+
+  // The account's Assisted Fill mode (GET /api/application-automation-policy, read-only). Read when
+  // step 8 becomes current and after the switch is used; never on a timer. A failed read leaves the
+  // mode unknown, which hides the switch rather than guessing.
+  const readFillMode = useCallback(async (
+    expectedGeneration = activeComponentGenerationRef.current
+  ): Promise<AssistedFillMode | null> => {
+    if (expectedGeneration === null || activeComponentGenerationRef.current !== expectedGeneration) return null;
+    const requestId = fillModeRequestSequenceRef.current + 1;
+    fillModeRequestSequenceRef.current = requestId;
+    let mode: AssistedFillMode | null;
+    try {
+      mode = await readAssistedFillMode();
+    } catch {
+      mode = null;
+    }
+    if (
+      activeComponentGenerationRef.current !== expectedGeneration ||
+      fillModeRequestSequenceRef.current !== requestId
+    ) return null;
+    // An open question only makes sense while Fill is off.
+    setFillSwitch((current) => ({ ...current, mode, asking: mode === "PREPARE_ONLY" && current.asking }));
+    return mode;
+  }, []);
+
+  // "Turn on Fill for this form" opens one in-page question and sends nothing. Cancel closes it,
+  // still sending nothing. Only its confirm sends PATCH { mode: "FILL_AND_REVIEW" }, once; a lost
+  // response is never replayed. The mode shown afterwards comes from a fresh read, and a refusal
+  // shows the server's own message.
+  const askToTurnOnFill = useCallback(() => {
+    if (fillSwitchPendingRef.current) return;
+    setFillSwitch((current) => ({ ...current, asking: true, notice: null }));
+  }, []);
+
+  const cancelTurnOnFill = useCallback(() => {
+    if (fillSwitchPendingRef.current) return;
+    setFillSwitch((current) => ({ ...current, asking: false }));
+  }, []);
+
+  const turnOnFillForThisForm = useCallback(async () => {
+    const generation = activeComponentGenerationRef.current;
+    if (generation === null || fillSwitchPendingRef.current) return;
+    fillSwitchPendingRef.current = true;
+    setFillSwitch((current) => ({ ...current, asking: false, pending: true, notice: null }));
+    let notice: CommandNotice | null = null;
+    try {
+      let confirmed = false;
+      let refusal: string | null = null;
+      try {
+        await turnOnAssistedFill();
+        confirmed = true;
+      } catch (error) {
+        if (error instanceof RunRequestError && error.kind === "refused") refusal = error.message;
+      }
+      const mode = await readFillMode(generation);
+      if (refusal !== null) {
+        notice = { tone: "ERROR", text: refusal };
+      } else if (mode === "FILL_AND_REVIEW" || (mode === null && confirmed)) {
+        notice = { tone: "SUCCESS", text: "Fill is on. Press Fill when you're ready." };
+      } else {
+        notice = { tone: "WARNING", text: "Apply Pilot couldn't confirm that Fill is on. Try again, or check Assisted Fill in Settings." };
+      }
+    } finally {
+      fillSwitchPendingRef.current = false;
+      if (activeComponentGenerationRef.current === generation) {
+        setFillSwitch((current) => ({ ...current, pending: false, notice }));
+      }
+    }
+  }, [readFillMode]);
 
   useEffect(() => {
     if (status.state !== "HUMAN_ONLY") return;
@@ -954,6 +1044,8 @@ export function ApplicationBrowserControl({
         });
       } else if (commandStatus?.outcome === "REJECTED") {
         setCommandNotice(fillRejectionNotice(commandStatus.errorCode));
+        // Fill may be off: read the mode again so step 8 can offer to turn it on.
+        if (commandStatus.errorCode === "FILL_POLICY_DENIED") void readFillMode(expectedGeneration);
       } else if (commandStatus?.outcome === "RECOVERY_PENDING") {
         setCommandNotice({
           tone: "WARNING",
@@ -988,6 +1080,7 @@ export function ApplicationBrowserControl({
     invalidateFillStatusAuthority,
     invalidateReviewAuthority,
     lastAcceptedInspection,
+    readFillMode,
     setControlConnection,
     updateReviewLoad
   ]);
@@ -1834,6 +1927,12 @@ export function ApplicationBrowserControl({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [warnBeforeLeaving]);
 
+  // Step 8 needs to know whether Fill is on; read it each time step 8 becomes the Now card.
+  const fillStepIsNow = view.current === 8;
+  useEffect(() => {
+    if (fillStepIsNow) void readFillMode();
+  }, [fillStepIsNow, readFillMode]);
+
   const recordPhase = personalSubmissionCompletion.phase;
   const recordEntryIsPrimary = view.primary?.action === "RECORD";
   const recordEntryAvailable = !personalSubmissionRecorded &&
@@ -1949,6 +2048,16 @@ export function ApplicationBrowserControl({
   ];
 
   const ambiguousQuestionCount = reviewLoad.packet?.summary.ambiguousQuestionCount ?? 0;
+  const fillSwitchView: FillSwitchView = {
+    mode: fillSwitch.mode,
+    asking: fillSwitch.asking,
+    pending: fillSwitch.pending,
+    disabled: fillUiLocked,
+    notice: fillSwitch.notice,
+    onAsk: askToTurnOnFill,
+    onConfirm: () => void turnOnFillForThisForm(),
+    onCancel: cancelTurnOnFill
+  };
 
   return (
     <div className="space-y-5 p-5">
@@ -2019,6 +2128,7 @@ export function ApplicationBrowserControl({
               ambiguousQuestionCount={ambiguousQuestionCount}
               packetAvailable={reviewLoad.packet !== null}
             />}
+            fillSwitch={fillSwitchView}
           />
         </StepSection>
 

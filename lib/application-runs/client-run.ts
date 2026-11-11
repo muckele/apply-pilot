@@ -187,6 +187,61 @@ export function runSnapshotFromBody(body: unknown, runId: string): RunSnapshot {
   return { id: run.id, state: run.state, blockingReason: run.blockingReason ?? null, errorCategory: run.errorCategory ?? null };
 }
 
+export type AssistedFillMode = "PREPARE_ONLY" | "FILL_AND_REVIEW";
+
+const policyModeSchema = z.object({ mode: z.enum(["PREPARE_ONLY", "FILL_AND_REVIEW"]) });
+
+// The server's own words for a refusal (`{ error }`), when it sent short, plain ones.
+async function refusalMessage(response: Response): Promise<{ message: string | null; code: string | null }> {
+  const body: unknown = await response.json().catch(() => null);
+  if (!body || typeof body !== "object") return { message: null, code: null };
+  const record = body as Record<string, unknown>;
+  const message = typeof record.error === "string" && record.error.trim() && record.error.length <= 300
+    ? record.error.trim()
+    : null;
+  return { message, code: typeof record.code === "string" ? record.code : null };
+}
+
+/** Read the account's Assisted Fill mode (GET, read-only). Throws when it can't be confirmed. */
+export async function readAssistedFillMode(fetchImpl: typeof fetch = fetch): Promise<AssistedFillMode> {
+  let response: Response;
+  try {
+    response = await fetchImpl(POLICY_URL, { method: "GET", cache: "no-store" });
+  } catch {
+    throw new RunRequestError("uncertain", "The policy response was lost.");
+  }
+  if (!response.ok) throw new RunRequestError("refused", "The policy could not be read.", await errorCode(response));
+  const parsed = policyModeSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success) throw new RunRequestError("uncertain", "The policy response was not understood.");
+  return parsed.data.mode;
+}
+
+/**
+ * Turn Assisted Fill on (FILL_AND_REVIEW). Callers ask the user first. A refusal carries the
+ * server's message; a lost or unexpected response is "uncertain", and is never replayed.
+ */
+export async function turnOnAssistedFill(fetchImpl: typeof fetch = fetch): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetchImpl(POLICY_URL, {
+      method: "PATCH",
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ mode: "FILL_AND_REVIEW" }),
+      cache: "no-store"
+    });
+  } catch {
+    throw new RunRequestError("uncertain", "The policy response was lost.");
+  }
+  if (!response.ok) {
+    const refusal = await refusalMessage(response);
+    throw new RunRequestError("refused", refusal.message ?? "Assisted Fill was not turned on.", refusal.code);
+  }
+  const parsed = policyModeSchema.safeParse(await response.json().catch(() => null));
+  if (!parsed.success || parsed.data.mode !== "FILL_AND_REVIEW") {
+    throw new RunRequestError("uncertain", "The policy response did not confirm Assisted Fill is on.");
+  }
+}
+
 /** Turn Assisted Fill off (PREPARE_ONLY). The safe direction: no question, no reads first. */
 export async function turnOffAssistedFill(fetchImpl: typeof fetch = fetch): Promise<void> {
   let response: Response;

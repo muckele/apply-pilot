@@ -613,7 +613,7 @@ export function fillRejectionNotice(errorCode: B3FillCommandRejectionCode): Comm
   if (errorCode === "FILL_POLICY_DENIED") {
     return {
       tone: "WARNING",
-      text: "Fill was not started and no Fill attempt was used, because your automation settings don't allow it. Check that assisted Fill is on, on this job's application page, then inspect the form again here before using Fill. You can also complete the employer form manually."
+      text: "Fill was not started and no Fill attempt was used, because your automation settings don't allow it. If Assisted Fill is off, use Turn on Fill for this form in step 8, then read the form again (under More) before using Fill. You can also complete the employer form manually."
     };
   }
   return {

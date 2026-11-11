@@ -1439,14 +1439,14 @@ test("authoritative status handling rejects wrong-run and malformed values witho
   }
 });
 
-test("a policy-denied Fill points at the assisted Fill switch and says no attempt was used", () => {
+test("a policy-denied Fill points at the Fill switch in step 8 and says no attempt was used", () => {
   const { fillRejectionNotice } = applicationBrowserControlPresentation;
   const denied = fillRejectionNotice("FILL_POLICY_DENIED");
   assert.equal(denied.tone, "WARNING");
-  assert.match(denied.text, /assisted Fill/);
+  assert.match(denied.text, /Assisted Fill/);
   assert.match(denied.text, /no Fill attempt was used/i);
-  assert.match(denied.text, /application page/);
-  assert.match(denied.text, /inspect the form again/i);
+  assert.match(denied.text, /Turn on Fill for this form in step 8/);
+  assert.match(denied.text, /read the form again/i);
 
   for (const code of ["FILL_REVIEW_REQUIRED", "FILL_ALREADY_IN_PROGRESS", "FILL_STALE"] as const) {
     const other = fillRejectionNotice(code);
@@ -4404,6 +4404,10 @@ test("human-submit repair keeps terminal completion dominant over a review refre
     if (url.endsWith("/answer-packet")) {
       packetReads += 1;
       return packetReads === 1 ? packetResponse(packet) : stalePacket.promise;
+    }
+    // Step 8's read of the Assisted Fill mode (Task 14) is not a run read.
+    if (url === "/api/application-automation-policy") {
+      return new Response(JSON.stringify({ mode: "FILL_AND_REVIEW" }), { status: 200 });
     }
     runReads += 1;
     return runResponse(ready);
