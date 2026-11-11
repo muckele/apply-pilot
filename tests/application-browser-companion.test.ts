@@ -293,3 +293,189 @@ test("companion cleanup attempts every stage and retains the first failure", asy
   if (runResult.status === "rejected") assert.equal(runResult.reason, firstError);
   assert.deepEqual(calls, ["controller-close", "target-close", "runtime-close"]);
 });
+
+const START_LINE = "Starting the Apply Pilot browser. Look for a new window titled \"Apply Pilot browser\" " +
+  "(in the Dock it shows as \"Google Chrome for Testing\"). " +
+  "If you can't see it, check behind other windows or on your other desktops.\n";
+const SIGN_IN_LINE = "Sign in the Apply Pilot browser with the one-time code from this job's application page " +
+  "in your usual browser. Google sign-in doesn't work in that window.\n";
+const READY_LINE = `The Apply Pilot browser is connected (run ${RUN_ID}). Continue in that window.\n`;
+const SIGN_IN_URL = `${APP_ORIGIN}/login?next=%2Fapplication-runs%2F${RUN_ID}%2Fbrowser`;
+
+async function settle(predicate: () => boolean): Promise<void> {
+  for (let tick = 0; tick < 100 && !predicate(); tick += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+function controlWindowHarness(input: { signedIn: boolean; bringToFront?: () => unknown }) {
+  const events: string[] = [];
+  const output: string[] = [];
+  const mainFrame = {};
+  let currentUrl = input.signedIn ? CONTROL_URL : SIGN_IN_URL;
+  let onFrameNavigated: ((frame: unknown) => void) | undefined;
+  let execute: ((command: { type: string }, assertActive: () => void) => Promise<Record<string, unknown>>) | undefined;
+  const controlPage = {
+    url: () => currentUrl,
+    mainFrame: () => mainFrame,
+    on(event: string, listener: (frame: unknown) => void) {
+      if (event === "framenavigated") onFrameNavigated = listener;
+    },
+    async goto() {
+      events.push("goto");
+      return null;
+    },
+    bringToFront() {
+      events.push("bring-to-front");
+      return input.bringToFront ? input.bringToFront() : Promise.resolve();
+    }
+  };
+  const dependencies = {
+    async launchRuntime() {
+      events.push("launch");
+      return {
+        context: { request: {} },
+        employerContext: {},
+        controlPage,
+        async close() { events.push("runtime-close"); }
+      };
+    },
+    createClient: () => ({
+      async getApplicationRun() {
+        return { id: RUN_ID, state: "READY", stateVersion: 1, applyHost: "jobs.example.test", applyUrlSnapshot: TARGET_URL };
+      },
+      async getAutomationPolicy() { throw new Error("unexpected policy read"); },
+      async getCurrentAnswerPacket() { throw new Error("unexpected packet read"); },
+      async publishFormInspection() { throw new Error("unexpected publication"); }
+    }),
+    createTargetController: () => ({
+      async open() { throw new Error("unexpected target open"); },
+      formInspectionTarget: () => null,
+      async close() { events.push("target-close"); }
+    }),
+    createFormInspectionController() { throw new Error("unexpected controller creation"); },
+    async installBridge(bridge: Record<string, unknown>) {
+      events.push("bridge-installed");
+      execute = bridge.execute as typeof execute;
+    },
+    writeOutput(message: string) {
+      events.push("output");
+      output.push(message);
+    }
+  };
+  return {
+    events,
+    output,
+    dependencies,
+    bringToFrontCalls: () => events.filter((event) => event === "bring-to-front").length,
+    execute(command: { type: string }) {
+      if (!execute) throw new Error("bridge not installed");
+      return execute(command, () => undefined);
+    },
+    completeSignIn() {
+      currentUrl = CONTROL_URL;
+      onFrameNavigated?.(mainFrame);
+    }
+  };
+}
+
+test("companion brings the control window forward after the first control load and again once the bridge installs", async () => {
+  const harness = controlWindowHarness({ signedIn: true });
+  const running = runApplicationBrowserCompanion(
+    ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
+    harness.dependencies as never
+  );
+
+  await settle(() => harness.bringToFrontCalls() === 2);
+  const firstForward = harness.events.indexOf("bring-to-front");
+  const secondForward = harness.events.lastIndexOf("bring-to-front");
+  assert.equal(harness.bringToFrontCalls(), 2);
+  assert.equal(harness.events.indexOf("goto") < firstForward, true);
+  assert.equal(firstForward < harness.events.indexOf("bridge-installed"), true);
+  assert.equal(harness.events.indexOf("bridge-installed") < secondForward, true);
+
+  await harness.execute({ type: "CLOSE_WORKFLOW" });
+  await running;
+  assert.equal(harness.bringToFrontCalls(), 2);
+});
+
+test("companion brings the control window forward again only after manual sign-in installs the bridge", async () => {
+  const harness = controlWindowHarness({ signedIn: false });
+  const running = runApplicationBrowserCompanion(
+    ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
+    harness.dependencies as never
+  );
+
+  await settle(() => harness.output.length === 2);
+  assert.equal(harness.bringToFrontCalls(), 1);
+  assert.equal(harness.events.includes("bridge-installed"), false);
+
+  harness.completeSignIn();
+  await settle(() => harness.bringToFrontCalls() === 2 && harness.output.length === 3);
+  assert.equal(harness.bringToFrontCalls(), 2);
+  assert.equal(
+    harness.events.indexOf("bridge-installed") < harness.events.lastIndexOf("bring-to-front"),
+    true
+  );
+
+  await harness.execute({ type: "CLOSE_WORKFLOW" });
+  await running;
+});
+
+for (const [label, bringToFront] of [
+  ["throws", () => { throw new Error("window activation unavailable"); }],
+  ["rejects", () => Promise.reject(new Error("window activation unavailable"))],
+  ["never settles", () => new Promise<never>(() => undefined)]
+] as const) {
+  test(`companion workflow is unchanged when bringing the window forward ${label}`, async () => {
+    const harness = controlWindowHarness({ signedIn: false, bringToFront });
+    const running = runApplicationBrowserCompanion(
+      ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
+      harness.dependencies as never
+    );
+
+    await settle(() => harness.output.length === 2);
+    assert.deepEqual(harness.output, [START_LINE, SIGN_IN_LINE]);
+    harness.completeSignIn();
+    await settle(() => harness.output.length === 3);
+    assert.deepEqual(harness.output, [START_LINE, SIGN_IN_LINE, READY_LINE]);
+    assert.equal(harness.bringToFrontCalls(), 2);
+
+    const status = await harness.execute({ type: "GET_STATUS" });
+    assert.equal(status.state, "CONTROL_READY");
+    await harness.execute({ type: "CLOSE_WORKFLOW" });
+    await running;
+    assert.deepEqual(harness.events.slice(-2), ["target-close", "runtime-close"]);
+  });
+}
+
+test("companion prints plain next steps: start, sign-in when needed, then connected", async () => {
+  const signedOut = controlWindowHarness({ signedIn: false });
+  const signedOutRun = runApplicationBrowserCompanion(
+    ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
+    signedOut.dependencies as never
+  );
+  await settle(() => signedOut.output.length === 2);
+  assert.deepEqual(signedOut.output, [START_LINE, SIGN_IN_LINE]);
+  assert.equal(signedOut.events.indexOf("output") < signedOut.events.indexOf("launch"), true);
+  signedOut.completeSignIn();
+  await settle(() => signedOut.output.length === 3);
+  assert.deepEqual(signedOut.output, [START_LINE, SIGN_IN_LINE, READY_LINE]);
+  await signedOut.execute({ type: "CLOSE_WORKFLOW" });
+  await signedOutRun;
+
+  const signedIn = controlWindowHarness({ signedIn: true });
+  const signedInRun = runApplicationBrowserCompanion(
+    ["--app-origin", APP_ORIGIN, "--run-id", RUN_ID],
+    signedIn.dependencies as never
+  );
+  await settle(() => signedIn.output.length === 2);
+  assert.deepEqual(signedIn.output, [START_LINE, READY_LINE]);
+  await signedIn.execute({ type: "CLOSE_WORKFLOW" });
+  await signedInRun;
+
+  for (const line of [...signedOut.output, ...signedIn.output]) {
+    assert.equal(line.includes(APP_ORIGIN), false);
+    assert.equal(/cookie|token|password|secret/i.test(line), false);
+  }
+});

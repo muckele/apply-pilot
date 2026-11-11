@@ -69,6 +69,33 @@ function startupErrorCode(error: unknown): string {
     : "COMPANION_START_FAILED";
 }
 
+// Plain next steps for the person at the terminal. They never include the
+// origin, cookies, codes or any other secret; the run ID is the user's own.
+const START_MESSAGE =
+  "Starting the Apply Pilot browser. Look for a new window titled \"Apply Pilot browser\" " +
+  "(in the Dock it shows as \"Google Chrome for Testing\"). " +
+  "If you can't see it, check behind other windows or on your other desktops.\n";
+const SIGN_IN_MESSAGE =
+  "Sign in the Apply Pilot browser with the one-time code from this job's application page " +
+  "in your usual browser. Google sign-in doesn't work in that window.\n";
+function connectedMessage(runId: string): string {
+  return `The Apply Pilot browser is connected (run ${runId}). Continue in that window.\n`;
+}
+
+/**
+ * Best-effort: asks Chromium to raise the Apply Pilot control window so the
+ * user can find it. This is presentation only. It is never awaited and every
+ * failure is ignored, so it cannot delay, stop or change the workflow. It acts
+ * on the control page only, never on the employer page.
+ */
+function bringControlWindowForward(controlPage: Pick<Page, "bringToFront">): void {
+  try {
+    void Promise.resolve(controlPage.bringToFront()).catch(() => undefined);
+  } catch {
+    // Window activation is optional; the terminal says where to look.
+  }
+}
+
 const OWNED_CLEANUP_DEADLINE_MS = 10_000;
 
 function boundedOwnedCleanup(cleanup: () => Promise<void>): Promise<void> {
@@ -88,6 +115,7 @@ export async function runApplicationBrowserCompanion(
   dependencies: CompanionDependencies = productionDependencies
 ): Promise<void> {
   const identity = parseCompanionArguments(args);
+  dependencies.writeOutput(START_MESSAGE);
   const runtime = await dependencies.launchRuntime();
   const controlContext = runtime.context as BrowserContext;
   const employerContext = runtime.employerContext as BrowserContext;
@@ -226,7 +254,8 @@ export async function runApplicationBrowserCompanion(
           });
           bridgeInstalled = true;
           coordinator.markControlReady();
-          dependencies.writeOutput(`Apply Pilot browser control ready for run ${identity.immutableRunId}.\n`);
+          bringControlWindowForward(controlPage);
+          dependencies.writeOutput(connectedMessage(identity.immutableRunId));
         } catch (error) {
           const code = startupErrorCode(error);
           if (code === "APPLY_PILOT_AUTH_REQUIRED") {
@@ -248,10 +277,11 @@ export async function runApplicationBrowserCompanion(
       void installWhenTrusted().catch(() => undefined);
     });
     await controlPage.goto(trustedUrl, { waitUntil: "domcontentloaded" });
+    bringControlWindowForward(controlPage);
     await installWhenTrusted();
     if (!bridgeInstalled) {
       coordinator.markApplyPilotAuthRequired();
-      dependencies.writeOutput("Authenticate in the headed Apply Pilot window to continue.\n");
+      dependencies.writeOutput(SIGN_IN_MESSAGE);
     }
 
     interrupt = () => {

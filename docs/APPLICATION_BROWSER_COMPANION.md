@@ -35,7 +35,11 @@ npm run application-browser -- \
 
 The companion accepts no employer URL, authentication token, cookie, answer, document content, or selector. Non-loopback Apply Pilot origins must use HTTPS. Loopback HTTP is supported deliberately for local development and tests.
 
-Chromium always runs headed in the production companion. If the control route redirects to sign-in, authenticate manually in that headed Apply Pilot window. The page-scoped bridge is installed only after the exact authenticated route `/application-runs/<run-id>/browser` loads for the owned run.
+Chromium always runs headed in the production companion. The terminal prints plain next steps: what the new window looks like (in the Dock it shows as "Google Chrome for Testing"), how to sign it in, and when it is connected. It never prints cookies, codes or other secrets.
+
+The companion asks Chromium to bring the control window to the front after the control page first loads and again once the bridge is installed. This is best-effort: macOS may still leave the window on another desktop or behind other windows, and a failure never delays or changes the workflow. It acts only on the Apply Pilot control window. It doesn't move or resize windows, and it does nothing to the employer page.
+
+If the control route redirects to sign-in, sign in that headed Apply Pilot window with the one-time code from the job's application page in your usual browser. Google sign-in doesn't work in that window. The page-scoped bridge is installed only after the exact authenticated route `/application-runs/<run-id>/browser` loads for the owned run.
 
 Fill also needs the "Assisted Fill" switch on, on the job's application page. Turn it on after preparing the job. See [Assisted Fill switch](CONTROLLED_APPLICATION_AUTOMATION.md#assisted-fill-switch).
 
