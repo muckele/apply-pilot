@@ -257,14 +257,15 @@ class FakeAnswerPacketDatabase {
         }
         if (sql.includes("clock_timestamp")) return [{ now: new Date(NOW) }] as T;
         if (sql.includes('FROM "ApplicationAnswer"')) {
-          const [userId, includeLinks, includeAvailability] = values;
+          const [userId, includeLinks, includeAvailability, includeContact] = values;
           return state.vault
             .filter((answer) =>
               answer.userId === userId &&
               answer.isActive === true &&
               answer.sensitive === false &&
               ((includeLinks === true && answer.category === "LINKS") ||
-                (includeAvailability === true && answer.category === "AVAILABILITY"))
+                (includeAvailability === true && answer.category === "AVAILABILITY") ||
+                (includeContact === true && answer.category === "CONTACT"))
             )
             .sort((left, right) => left.id.localeCompare(right.id))
             .slice(0, 257) as T;
@@ -881,7 +882,8 @@ test("owner-safe choice projection preserves the pinned packet hash and exact re
     inspectionReport: choiceInspection
   }));
 
-  assert.equal(first.packetHash, "d8a1d062351b90aa54b25990481f5e1c4801ce487ca9eae12dba4ab0f8dff4c2");
+  // Pinned for classifier v2 (D034); the v1 pin was d8a1d062…, the only input change is the version.
+  assert.equal(first.packetHash, "39c13d144b0d51d7c50654ec586ea72701493a6ca6ce1aff543997370dd591ff");
   assert.deepEqual(first.packet.answers[0].choices, [
     {
       key: "a9c9e34d4cb7ae5e7596dd4f6f096bd7f0ca2f8bec27df13977ef599a51badc7",
@@ -1344,7 +1346,7 @@ test("source resolution is classification-bounded and returns deterministic zero
   const vaultQueryValues = ignored.queryValues.find((_, index) =>
     ignored.queryLog[index].includes('FROM "ApplicationAnswer"')
   );
-  assert.deepEqual(vaultQueryValues, [USER_ID, true, false]);
+  assert.deepEqual(vaultQueryValues, [USER_ID, true, false, false]);
 
   const incompatible = new FakeAnswerPacketDatabase();
   incompatible.state.vault[0].answer = "x".repeat(2_049);
@@ -1499,4 +1501,85 @@ test("same-form document rebinding creates packet N+1 only and locks sources in 
     "ResumeVersion",
     "GeneratedDocument"
   ]);
+});
+
+
+// --- D034: the applicant's own confirmed contact details ---------------------------------
+
+function contactRow(id: string, question: string, answer: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    userId: USER_ID,
+    category: "CONTACT",
+    question,
+    answer,
+    sensitive: false,
+    isActive: true,
+    updatedAt: new Date("2026-11-10T10:00:00.000Z"),
+    ...overrides
+  };
+}
+
+function contactReport() {
+  return report([
+    field({ question: "First Name", fieldType: "TEXT", autocomplete: null }),
+    field({ question: "Email", fieldType: "EMAIL", autocomplete: "email" }),
+    field({ question: "Phone", fieldType: "TEL", autocomplete: null })
+  ]);
+}
+
+function answerFor(database: FakeAnswerPacketDatabase, normalizedQuestion: string) {
+  const answer = database.state.packetAnswers.find((row) => row.normalizedQuestion === normalizedQuestion);
+  assert.ok(answer, `no packet answer for ${normalizedQuestion}`);
+  return answer;
+}
+
+test("confirmed contact details are proposed for matching fields, and unconfirmed ones stay manual and say why", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  database.state.vault.push(
+    contactRow("vault-contact-given", "First name", "Alex"),
+    contactRow("vault-contact-email", "Email address", "alex@example.test")
+  );
+
+  await service(database).publishFormInspectionAndAnswerPacket(publicationInput({ inspectionReport: contactReport() }));
+
+  const first = answerFor(database, "first name");
+  assert.equal(first.disposition, "PROPOSABLE");
+  assert.deepEqual(first.proposal, { kind: "SCALAR", value: "Alex" });
+  const email = answerFor(database, "email");
+  assert.equal(email.disposition, "PROPOSABLE");
+  assert.deepEqual(email.proposal, { kind: "SCALAR", value: "alex@example.test" });
+  const phone = answerFor(database, "phone");
+  assert.equal(phone.disposition, "MANUAL_ONLY");
+  assert.equal(phone.dispositionReason, "UNCONFIRMED_APPLICANT_CONTACT");
+  assert.equal(phone.proposal, null);
+});
+
+test("masked or inactive contact entries are never used", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  database.state.vault.push(
+    contactRow("vault-contact-given", "First name", "Alex", { sensitive: true }),
+    contactRow("vault-contact-email", "Email address", "alex@example.test", { isActive: false })
+  );
+
+  await service(database).publishFormInspectionAndAnswerPacket(publicationInput({ inspectionReport: contactReport() }));
+
+  for (const question of ["first name", "email", "phone"]) {
+    const answer = answerFor(database, question);
+    assert.equal(answer.disposition, "MANUAL_ONLY");
+    assert.equal(answer.dispositionReason, "UNCONFIRMED_APPLICANT_CONTACT");
+  }
+});
+
+test("a confirm-your-email field reuses the confirmed email", async () => {
+  const database = new FakeAnswerPacketDatabase();
+  database.state.vault.push(contactRow("vault-contact-email", "Email address", "alex@example.test"));
+
+  await service(database).publishFormInspectionAndAnswerPacket(publicationInput({
+    inspectionReport: report([field({ question: "Confirm email address", fieldType: "EMAIL", autocomplete: null })])
+  }));
+
+  const confirmation = answerFor(database, "confirm email address");
+  assert.equal(confirmation.disposition, "PROPOSABLE");
+  assert.deepEqual(confirmation.proposal, { kind: "SCALAR", value: "alex@example.test" });
 });

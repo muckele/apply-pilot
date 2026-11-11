@@ -1066,6 +1066,21 @@ export function dispositionMessage(disposition: ApplicationAnswerDisposition): s
   return DISPOSITION_MESSAGES[disposition];
 }
 
+const DETAIL_SOURCE_REASONS = new Set(["UNCONFIRMED_APPLICANT_CONTACT", "NO_ELIGIBLE_SOURCE", "AMBIGUOUS_SOURCE", "INVALID_SOURCE_VALUE"]);
+
+// D034: a contact or link field Fill could not answer from confirmed details says where to add them.
+export function missingDetailHint(answer: {
+  classification: string;
+  dispositionReason: string | null;
+}): { text: string; href: string } | null {
+  if (answer.classification !== "CONTACT" && answer.classification !== "PROFESSIONAL_LINK") return null;
+  if (!answer.dispositionReason || !DETAIL_SOURCE_REASONS.has(answer.dispositionReason)) return null;
+  return {
+    text: "Add or fix this in Your application details so Fill can use it next time.",
+    href: "/settings/application-details"
+  };
+}
+
 export function readinessMessage(ready: boolean): string {
   return ready
     ? "Packet review requirements are satisfied for Apply Pilot's internal run-review workflow."

@@ -14,6 +14,7 @@ import {
   derivePacketFreshness,
   deriveManualFieldPresentations,
   dispositionMessage,
+  missingDetailHint,
   isAnswerReviewEligible,
   isAnswerReviewPostconditionCurrent,
   isAnswerReviewMutationEligible,
@@ -1742,6 +1743,11 @@ export function ApplicationBrowserControl({
                 </dl>
                 <p className="mt-3 text-sm text-slate-700">{dispositionMessage(answer.disposition)}</p>
                 {answer.dispositionReason ? <p className="mt-2 text-sm text-slate-700">Disposition reason: <span className="font-mono text-xs">{answer.dispositionReason}</span></p> : null}
+                {(() => {
+                  const hint = missingDetailHint(answer);
+                  // A new tab: this control tab must stay on the run for the companion bridge.
+                  return hint ? <p className="mt-2 text-sm text-slate-700">{hint.text} <a href={hint.href} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-700 underline">Open Your application details</a></p> : null;
+                })()}
                 {answer.choices.length > 0 ? <div className="mt-4"><h4 className="text-xs font-semibold uppercase text-slate-500">Public choices</h4><ul className="mt-2 space-y-1 text-sm text-slate-700">{answer.choices.map((choice, index) => <li key={`${choice.key}:${index}`}>{choice.label}{choice.disabled ? " — Disabled option" : ""}</li>)}</ul></div> : null}
                 {proposal ? <div className="mt-4 rounded-lg bg-slate-50 p-3"><h4 className="text-sm font-medium text-slate-900">{proposal.label}</h4><ul className="mt-2 space-y-1 text-sm text-slate-800">{proposal.values.map((value, index) => <li key={`${value.text}:${index}`} className="break-words">{value.text}{value.annotation ? ` — ${value.annotation}` : ""}</li>)}</ul></div> : null}
                 {isAnswerReviewEligible(answer) ? <div className="mt-4 flex gap-2">

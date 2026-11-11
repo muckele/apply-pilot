@@ -81,6 +81,17 @@ function proposableTextReport(): ApplicationFormInspectionReport {
   });
 }
 
+// The applicant's own name is fillable since D034, so a manual-only fixture uses a relocation question.
+function manualOnlyTextReport(): ApplicationFormInspectionReport {
+  const value = report("Are you willing to relocate?");
+  return applicationFormInspectionReportSchema.parse({
+    ...value,
+    forms: [{ ...value.forms[0], sections: [{ ...value.forms[0].sections[0], fields: [{
+      ...value.forms[0].sections[0].fields[0], helpText: null, autocomplete: null
+    }] }] }]
+  });
+}
+
 function selectReport(): ApplicationFormInspectionReport {
   const value = proposableTextReport();
   return applicationFormInspectionReportSchema.parse({
@@ -432,7 +443,7 @@ test("stable protected inspection accepts only a fresh CURRENT candidate and exp
 
 test("acquired Fill authority rejects an otherwise writable manual-only field", async () => {
   const fake = new FakeProtectedTarget();
-  const inspectionReport = report();
+  const inspectionReport = manualOnlyTextReport();
   fake.enqueueExtraction(controlledExtraction(inspectionReport).value);
   const controller = createController(fake);
   const generation = await controller.inspect();
