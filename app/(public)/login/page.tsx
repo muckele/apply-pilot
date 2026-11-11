@@ -6,14 +6,21 @@ import { GoogleSignInButton } from "@/components/google-sign-in-button";
 import { PublicAuthPage } from "@/components/public-auth/public-auth-page";
 import { auth, signOut } from "@/lib/auth";
 import { isEmailAllowedForAuth } from "@/lib/auth-access";
-import { companionCallbackForLogin } from "@/lib/companion-sign-in";
+import { companionCallbackForLogin, loginPageTitle } from "@/lib/companion-sign-in";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Sign in — Apply Pilot",
-  description: "Continue your job search with Apply Pilot using your Google account."
-};
+export async function generateMetadata({
+  searchParams
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}): Promise<Metadata> {
+  const params = await searchParams;
+  return {
+    title: loginPageTitle(params.callbackUrl),
+    description: "Continue your job search with Apply Pilot using your Google account."
+  };
+}
 
 export default async function LoginPage({
   searchParams

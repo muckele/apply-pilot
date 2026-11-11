@@ -76,6 +76,12 @@ export function companionCallbackForLogin(callbackUrl: unknown): string | null {
   return runIdFromCompanionCallback(callbackUrl) ? (callbackUrl as string) : null;
 }
 
+// The Apply Pilot browser's terminal line tells the owner to look for a window titled
+// "Apply Pilot browser"; its sign-in page carries that name too.
+export function loginPageTitle(callbackUrl: unknown): string {
+  return companionCallbackForLogin(callbackUrl) ? "Apply Pilot browser — Sign in" : "Sign in — Apply Pilot";
+}
+
 // The former code-only page now sends people to the login page, which leads with the code.
 export function companionLoginPath(callbackUrl: unknown): string {
   const callback = companionCallbackForLogin(callbackUrl);

@@ -10,6 +10,7 @@ import {
   exchangeCompanionSignInCode,
   generateCompanionSignInCode,
   issueCompanionSignInCode,
+  loginPageTitle,
   normalizeCompanionSignInCode,
   runIdFromCompanionCallback,
   sessionCookieName,
@@ -330,4 +331,12 @@ test("the companion sign-in page and exchange are public; issuing a code still n
   assert.equal(open("/companion-sign-in").headers.get("x-middleware-next"), "1");
   assert.equal(open("/api/companion-sign-in").headers.get("x-middleware-next"), "1");
   assert.equal(open(`/api/application-runs/${RUN}/companion-sign-in-code`).status, 401);
+});
+
+test("the login page on the way to a control page is titled like the Apply Pilot browser", () => {
+  const control = "/application-runs/cm12345678901234567890123/browser";
+  assert.equal(loginPageTitle(control), "Apply Pilot browser — Sign in");
+  assert.equal(loginPageTitle(undefined), "Sign in — Apply Pilot");
+  assert.equal(loginPageTitle("/dashboard"), "Sign in — Apply Pilot");
+  assert.equal(loginPageTitle([control]), "Sign in — Apply Pilot");
 });
