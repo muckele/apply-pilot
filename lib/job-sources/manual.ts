@@ -1,5 +1,6 @@
 import type { JobSourceProvider, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { detectTechStack, splitRequirementText } from "@/lib/job-sources/utils";
+import { extractRequirementLines } from "@/lib/job-sources/requirement-lines";
+import { detectTechStack } from "@/lib/job-sources/utils";
 
 export class ManualJobImportProvider implements JobSourceProvider {
   sourceType = "MANUAL" as const;
@@ -32,7 +33,7 @@ export class ManualJobImportProvider implements JobSourceProvider {
       description,
       requirements: Array.isArray(rawJob.requirements)
         ? rawJob.requirements.map(String)
-        : splitRequirementText(description),
+        : extractRequirementLines(description),
       preferredQualifications: Array.isArray(rawJob.preferredQualifications)
         ? rawJob.preferredQualifications.map(String)
         : [],
