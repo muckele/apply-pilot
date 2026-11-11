@@ -7,6 +7,8 @@ import { ApplyKit } from "@/components/apply-kit/apply-kit";
 import { JobDocumentWorkspace } from "@/components/job-document-workspace";
 import { MatchCard } from "@/components/job-workspace/match-card";
 import { TailorFlow, documentsCreatedKey, tailorReviewIdentity, type TailorFlowMessage } from "@/components/job-workspace/tailor-flow";
+import { ScoreJobButton } from "@/components/job-workspace/score-job-button";
+import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { NowCard } from "@/components/apply-page/now-card";
 import type { ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import type { ApplyProgress } from "@/lib/apply-page/apply-progress";
@@ -33,6 +35,7 @@ export function matchResultLine(fit: number, confidence: number | null): string 
 
 export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = false }: ApplyPageProps) {
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
+  const scoreConfirm = useInPageConfirm();
   const [tailorMessage, setTailorMessage] = useState<TailorFlowMessage | null>(null);
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
   const hasCurrentResume = detail.resumeVersions.some((version) => version.evidenceCurrent);
@@ -55,7 +58,22 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
       <NowCard progress={progress} />
 
       <section id="step-1" className="job-section" aria-label="Your match">
-        <MatchCard jobId={jobId} estimate={detail.estimate} checklist={detail.checklist} />
+        <MatchCard
+          jobId={jobId}
+          estimate={detail.estimate}
+          checklist={detail.checklist}
+          scoreButton={
+            <>
+              <ScoreJobButton
+                jobId={jobId}
+                label="Check my match"
+                confirm={scoreConfirm.confirmFn}
+                maximumMicros={tailorServer.quote?.jobMatchMicros}
+              />
+              {scoreConfirm.dialog}
+            </>
+          }
+        />
         {result ? <p className="job-card-copy" data-match-result>{result}</p> : null}
       </section>
 

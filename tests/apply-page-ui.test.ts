@@ -93,7 +93,7 @@ test("apply page shows Step 1 of 10 · Your match for an unscored job", async ()
     assert.equal(states[1], "later");
     const step1 = harness.container.querySelector("#step-1")!;
     assert.match(step1.textContent ?? "", /Not scored yet/u);
-    assert.ok([...step1.querySelectorAll("button")].some((button) => button.textContent?.includes("Score this job")), "Scoring happens at step 1");
+    assert.ok([...step1.querySelectorAll("button")].some((button) => button.textContent?.includes("Check my match")), "Scoring happens at step 1");
     assert.equal(step1.querySelector("[data-match-result]"), null);
     for (const id of ["#step-2", "#step-3", "#step-4"]) assert.ok(harness.container.querySelector(id), id);
   });
@@ -199,4 +199,38 @@ test("#step-3 exists even before any document does, so the Apply Kit's fix link 
     assert.equal(harness.container.querySelector("#step-3") !== null, true);
     assert.equal(harness.container.querySelector("#apply-documents") === null, true);
   });
+});
+
+function costResponse() {
+  return new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 72_720 }), { status: 428 });
+}
+
+test("step 1 asks in the page, not with window.confirm", async () => {
+  const requests: RequestInit[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (!String(input).endsWith("/match")) return new Response("{}");
+    requests.push(init ?? {});
+    return new Headers(init?.headers).get("x-ai-cost-confirmed") === "true" ? new Response("{}", { status: 200 }) : costResponse();
+  }) as typeof fetch;
+  let windowConfirms = 0;
+  const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { windowConfirms += 1; return true; } });
+  await harness.render(React.createElement(ApplyPage, await pageProps({ progress: deriveApplyProgress({ ...PROGRESS_INPUT, hasCurrentMatch: false }), detail: { estimate: null } })));
+  try {
+    await harness.click(harness.button(/Check my match · about 8¢/));
+    await harness.waitForText(/could cost up to/);
+    assert.equal(requests.length, 1);
+    assert.equal(harness.container.querySelectorAll('[role="group"]').length >= 1, true);
+    await harness.click(harness.button("Cancel"));
+    assert.equal(requests.length, 1);
+    await harness.click(harness.button(/Check my match/));
+    await harness.waitForText(/could cost up to/);
+    assert.equal(requests.length, 2);
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/Scored/);
+    assert.equal(requests.length, 3);
+    assert.equal(new Headers(requests[2].headers).get("x-ai-cost-confirmed"), "true");
+    assert.equal(windowConfirms, 0);
+  } finally {
+    await harness.close();
+  }
 });

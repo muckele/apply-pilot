@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
-import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 
 function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
   const methods = owner as Record<string, unknown>;
@@ -135,4 +135,49 @@ test("an unrelated 428 response remains readable by its caller", async (t) => {
     error: "Different precondition",
     code: "OTHER_PRECONDITION"
   });
+});
+
+function costResponse() {
+  return new Response(JSON.stringify({
+    error: "Confirm this AI request's maximum cost before continuing.",
+    code: "AI_COST_CONFIRMATION_REQUIRED",
+    maximumCostMicros: 72_720
+  }), { status: 428, headers: { "content-type": "application/json" } });
+}
+
+test("an async confirm that resolves false sends exactly one request", async () => {
+  let requests = 0;
+  const fetchImpl = async () => { requests += 1; return costResponse(); };
+  await assert.rejects(
+    fetchWithAiCostConfirmation("/api/jobs/job-1/match", { method: "POST" }, { fetchImpl, confirm: async () => false }),
+    /canceled/
+  );
+  assert.equal(requests, 1);
+});
+
+test("an async confirm that resolves true resends with the cost confirmation header", async () => {
+  const requests: RequestInit[] = [];
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(init ?? {});
+    return requests.length === 1 ? costResponse() : new Response("{}", { status: 200 });
+  };
+  const messages: string[] = [];
+  const response = await fetchWithAiCostConfirmation("/api/jobs/job-1/match", { method: "POST" }, {
+    fetchImpl,
+    confirm: async (message) => { messages.push(message); return true; }
+  });
+  assert.equal(response.status, 200);
+  assert.equal(requests.length, 2);
+  assert.equal(new Headers(requests[1].headers).get("x-ai-cost-confirmed"), "true");
+  assert.match(messages[0], /could cost up to \$0\.07272/);
+});
+
+test("fetchWithApprovedAiCost awaits an async confirm", async () => {
+  let requests = 0;
+  const fetchImpl = async () => { requests += 1; return costResponse(); };
+  await assert.rejects(
+    fetchWithApprovedAiCost("/api/x", { method: "POST" }, 1_000, { fetchImpl, confirm: async () => false }),
+    /canceled/
+  );
+  assert.equal(requests, 1);
 });
