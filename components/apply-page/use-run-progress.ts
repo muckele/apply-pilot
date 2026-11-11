@@ -30,7 +30,7 @@ export function useRunProgress(runId: string | null, initial: RunProgress): RunP
         if (!active || ticket !== latest || typeof state !== "string") return;
         setStored((previous) => ({
           runId,
-          run: { state, companionState: previous.runId === runId ? (previous.run?.companionState ?? null) : (initial?.companionState ?? null) }
+          run: { state, companionState: previous.runId === runId ? (previous.run?.companionState ?? null) : null }
         }));
       } catch {
         // Keep the last known value.
