@@ -48,15 +48,17 @@ Owner direction: "It shouldn't be this difficult … we need to keep this very s
    - Turning it on shows, in the page, what's sent (your résumé summary and each job's listing, to Google Gemini), the daily job limit and the monthly limit.
    - That one confirmation replaces cost questions for this feature, so background grading never asks per job.
 2. **Limits.**
-   - The daily job limit reuses `maxAnalysesPerSync` (default 5, at most 25). It's renamed "jobs per day" in the screen.
-   - The monthly limit is the existing background-AI allowance, `automationBudgetCents` (default $1.50), inside the $5 hard cap.
+   - The daily job limit reuses `maxAnalysesPerSync` (default 5, at most 25), renamed "Jobs graded per day" in the screen.
+   - Today that setting applies per sync, and there's no per-day counter. So the daily limit counts the `JOB_GRADE` analyses created since UTC midnight. A manual sync and the daily cron together never grade more than the limit.
+   - The monthly limit is the existing background-AI allowance, `automationBudgetCents` (default $1.50), inside the $5 hard cap. It's shown read-only, because it isn't editable today.
    - When either limit is reached, grading stops until the next day or month, and the setting says so.
+   - Grading follows `aiDiscoveryEnabled` only. The discovery panel's separate "Run AI fit scoring on the first matches" box (`scoreImported`) is removed from the screen; the stored field is left alone.
 3. **Which jobs.**
    - New or changed jobs that pass your saved preferences (location, remote, roles), newest first.
    - A job you import by hand is graded right away, if grading is on.
    - This replaces today's discovery scoring, which runs the full, costlier JOB_MATCH during a sync when `aiDiscoveryEnabled` is on.
 4. **The request.**
-   - A new AI feature, `JOB_GRADE`, on the "fast" model tier (today `gemini-3.5-flash-lite`).
+   - A new AI feature, `JOB_GRADE`, on the "fast" model tier (today `gemini-3.5-flash-lite`). The model is passed explicitly, because the shared guarded AI path defaults to Flash.
    - Up to 10 jobs per request, with your résumé summary sent once per request.
    - **Input:** a compact summary of the parsed master résumé (titles and dates, skills, certifications, top achievements), and for each job its title, location, requirements and preferred qualifications.
    - **Output per job:** a score from 0 to 100, one short reason, up to three strengths and up to three gaps.
@@ -70,10 +72,10 @@ Owner direction: "It shouldn't be this difficult … we need to keep this very s
    - This needs one additive change: a new value in the `AIAnalysisType` enum. That's the only database change in this design (§5).
    - When the résumé or the job changes, the letter shows "from an older résumé" until it's re-graded within the limits.
 8. **Cost.** About 0.1¢ per job on Flash-Lite. If Flash-Lite proves too weak, Flash costs about 0.35¢ per job at the January 2027 price.
-9. **Calibration before release.**
-   - Grade the owner's already-scored jobs locally and compare the letters with their detailed-match scores.
-   - Adjust the prompt until A and B agree in most cases.
-   - That data stays on the machine and isn't committed.
+9. **Calibration after deploy.**
+   - The owner's scored jobs live in production, so calibration happens in the app rather than on a local copy.
+   - Once grading is on, compare the quick letters with the detailed letters on jobs that have both. That comparison is shared in chat only, as job titles and letters, and isn't committed.
+   - If most A and B letters don't agree, adjust the prompt as version 2. Bumping the version makes earlier grades stale.
    - The prompt carries `JOB_GRADE_PROMPT_VERSION = 1`, shown under "Details".
 
 **The grade and the detailed match.** The quick grade is for choosing jobs. The detailed match (the existing JOB_MATCH, with evidence) is what Prepare checks. It runs when you start applying, and its letter replaces the quick one on that job. "Assisted Fill needs an A on the detailed match" is today's 85 rule in letters. Prepare's confidence check of 85 or more also stays.
@@ -174,8 +176,8 @@ Each item is its own PR. Each runs `npm test`, lint, typecheck and `npm run test
 | B1 | Apply page shell: the shared ten-step dictionary, the Now card on the Apply page, the job page's Apply button, the existing tailoring moved over unchanged, and the control page renumbered | Yes |
 | B2 | Step 2, Your experience: one list, browser drafts, inline checks, the 200-character limit, one tick, Update my score. Takes #66's server changes | Yes |
 | B3 | Step 3, documents: the in-page cost confirmation component (replacing `window.confirm` on this page), auto-attach, version labels | Yes |
-| B4 | Step 4, Prepare: ready list, Allow and prepare, the Fill switch at steps 4 and 8, automatic Fill-off on finish | Yes |
-| B5 | Progress for steps 5–10 and the application-page summary card | No |
+| B4 | Step 4, Prepare: ready list, Allow and prepare, the Fill switch at steps 4 and 8, automatic Fill-off on finish. Also step 5's start command and sign-in code on the Apply page, so the trial path stays on one page | Yes |
+| B5 | Progress for steps 6–10 and the application-page summary card | No |
 | A1 | Job grades: the `JOB_GRADE` feature and its checks, the enum migration, grading in sync and import within the limits, the opt-in screen, letters with sort and detail on the jobs page and review queue, and calibration | No (independent files, can run alongside B; its migration needs the owner's authorization) |
 
 B1–B4 change `app/(product)/jobs/[id]/*` and `components/apply-kit/*` in sequence, so only one writer works there at a time. A1 touches the AI feature files, the discovery and sync code, Settings ▸ AI and the feed components, so it can be built in parallel. The only shared piece is the letter mapping (`lib/jobs/grade.ts`), which A1 creates and B1 reads; B1 adds it if it lands first.
