@@ -321,7 +321,40 @@ function reviewButton(container: HTMLElement, action: "Approve" | "Reject", ques
 }
 
 function resolveReviewButton(container: HTMLElement): HTMLButtonElement {
-  return buttonNamed(container, "Resolve review");
+  return buttonNamed(container, "These are right: continue");
+}
+
+// UX-4a: "Fill approved fields" is now "Fill N fields (runs once)" ("Filling…" while pending).
+const FILL_BUTTON_LABEL = /^(Fill \d+ fields? \(runs once\)|Filling…)$/;
+
+function fillButton(container: HTMLElement): HTMLButtonElement {
+  const button = [...container.querySelectorAll("button")].find(
+    (candidate) => FILL_BUTTON_LABEL.test(candidate.textContent?.trim() ?? "")
+  );
+  assert.ok(button, "Expected the Fill button.");
+  return button;
+}
+
+async function clickFill(control: MountedControl): Promise<void> {
+  await act(async () => {
+    fillButton(control.container).click();
+  });
+  await flushComponentWork();
+}
+
+// UX-4a: "Inspect form" is "Read the form" (step 4) or, once the form was read, "Read the form
+// again" under More. Both send the same INSPECT_FORM.
+function readFormButton(container: HTMLElement): HTMLButtonElement {
+  const button = optionalButtonNamed(container, "Read the form") ?? optionalButtonNamed(container, "Read the form again");
+  assert.ok(button, "Expected Read the form or Read the form again.");
+  return button;
+}
+
+async function clickReadForm(control: MountedControl): Promise<void> {
+  await act(async () => {
+    readFormButton(control.container).click();
+  });
+  await flushComponentWork();
 }
 
 type ReviewLoadRefProbe = {
@@ -1822,7 +1855,7 @@ test("mounted control harness renders the real component and completes its initi
   const control = await mountControl();
   t.after(() => control.cleanup());
 
-  assert.match(control.container.textContent ?? "", /Current answer packet/);
+  assert.match(control.container.textContent ?? "", /Step 5 of 8 · Check the answers/);
   assert.match(control.container.textContent ?? "", /No current answer packet has been published yet/);
   assert.equal(control.fetchCalls.length, 3);
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === fillAttemptPath()).length, 1);
@@ -1920,20 +1953,20 @@ test("matching browser status cannot make a retained packet-read error current",
   control.setBinding(async () => successfulStatus);
 
   await clickButton(control, "Refresh status");
-  assert.match(control.container.textContent ?? "", /Current packet —/);
+  assert.match(control.container.textContent ?? "", /These answers match the form Apply Pilot just read/);
 
   control.setFetchHandler(async () => new Response("{}", { status: 503 }));
   await clickButton(control, "Refresh review data");
   let text = control.container.textContent ?? "";
   assert.match(text, /temporarily unavailable/i);
-  assert.match(text, /Unverified packet —/);
+  assert.match(text, /These answers haven't been matched to a reading of the form/);
   assert.match(text, /Portfolio URL/);
 
   await clickButton(control, "Refresh status");
   text = control.container.textContent ?? "";
   assert.match(text, /temporarily unavailable/i);
-  assert.match(text, /Unverified packet —/);
-  assert.doesNotMatch(text, /Current packet —/);
+  assert.match(text, /These answers haven't been matched to a reading of the form/);
+  assert.doesNotMatch(text, /These answers match the form Apply Pilot just read/);
 });
 
 test("Task 2 mounted failed inspection publication fences an older manual authority read without phantom loading", async (t) => {
@@ -1969,9 +2002,9 @@ test("Task 2 mounted failed inspection publication fences an older manual author
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
   assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
 
-  await clickButton(control, "Inspect form");
+  await clickReadForm(control);
   assert.match(control.container.textContent ?? "", /Portfolio URL/);
-  assert.match(control.container.textContent ?? "", /Unverified packet —/);
+  assert.match(control.container.textContent ?? "", /These answers haven't been matched to a reading of the form/);
   assert.match(control.container.textContent ?? "", /displayed packet is unverified until browser status is recovered/i);
   assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
   assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
@@ -2032,7 +2065,7 @@ test("Task 2 mounted matching browser status cannot re-trust inspection-invalida
   await clickButton(control, "Refresh status");
   assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false);
 
-  await clickButton(control, "Inspect form");
+  await clickReadForm(control);
   assert.match(control.container.textContent ?? "", /Portfolio URL/);
   assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
   await clickReviewButton(control, "Approve", "Portfolio URL");
@@ -2158,7 +2191,7 @@ test("successful INSPECT_FORM settlement after unmount is inert", async (t) => {
   });
 
   await clickButton(control, "Refresh status");
-  await clickButton(control, "Inspect form");
+  await clickReadForm(control);
   const fetchCountBeforeUnmount = control.fetchCalls.length;
   await control.unmount();
 
@@ -2192,7 +2225,7 @@ test("rejected INSPECT_FORM settlement after unmount starts no recovery", async 
   });
 
   await clickButton(control, "Refresh status");
-  await clickButton(control, "Inspect form");
+  await clickReadForm(control);
   const fetchCountBeforeUnmount = control.fetchCalls.length;
   await control.unmount();
 
@@ -2221,7 +2254,7 @@ test("recovery status settlement after unmount is inert", async (t) => {
   });
 
   await clickButton(control, "Refresh status");
-  await clickButton(control, "Inspect form");
+  await clickReadForm(control);
   inspection.reject(new Error("private command rejection"));
   await flushComponentWork();
   assert.deepEqual(calls, ["GET_STATUS", "INSPECT_FORM", "GET_STATUS"]);
@@ -2532,7 +2565,7 @@ test("Task 2 mounted superseded mutation refresh publishes no stale success and 
       });
   await startReviewButton(control, "Approve", "Portfolio URL");
   await clickButton(control, "Refresh status");
-  await clickButton(control, "Inspect form");
+  await clickReadForm(control);
   oldRun.resolve(runResponse());
   oldPacket.resolve(packetResponse(validPacket()));
   await flushComponentWork();
@@ -2933,7 +2966,7 @@ test("Task 3 mounted resolve reason presentation preserves server order and exac
 
   const empty = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse(validRunAuthority({ reviewReasons: [] })));
   try {
-    assert.match(empty.container.textContent ?? "", /No local rule-based planning review reasons require acknowledgment\./);
+    assert.match(empty.container.textContent ?? "", /Nothing else needs your attention before you continue\./);
   } finally {
     await empty.cleanup();
   }
@@ -2951,12 +2984,12 @@ test("Task 3 mounted resolve posts only exact current run and packet authority a
   t.after(() => control.cleanup());
 
   await clickResolveReview(control);
-  assert.equal(buttonNamed(control.container, "Resolving…").disabled, true);
+  assert.equal(buttonNamed(control.container, "Continuing…").disabled, true);
   assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
   assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
   assert.equal(buttonNamed(control.container, "Refresh review data").disabled, true);
   await act(async () => {
-    buttonNamed(control.container, "Resolving…").click();
+    buttonNamed(control.container, "Continuing…").click();
   });
   await clickReviewButton(control, "Approve", "Portfolio URL");
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 1);
@@ -3054,7 +3087,7 @@ test("Task 3 mounted resolve failure, conflict recovery, replacement, and unmoun
       await clickResolveReview(control);
       assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
       if (failure === 401 || failure === 403 || failure === 404) {
-        assert.equal((control.container.textContent ?? "").includes("Resolve review"), false);
+        assert.equal((control.container.textContent ?? "").includes("These are right: continue"), false);
       } else {
         assert.equal(resolveReviewButton(control.container).disabled, true);
       }
@@ -3073,7 +3106,7 @@ test("Task 3 mounted resolve failure, conflict recovery, replacement, and unmoun
   });
   try {
     await clickResolveReview(conflict);
-    assert.equal(buttonNamed(conflict.container, "Resolving…").disabled, true);
+    assert.equal(buttonNamed(conflict.container, "Continuing…").disabled, true);
     await clickReviewButton(conflict, "Approve", "Portfolio URL");
     assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 1, "no duplicate resolve POST");
     assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 0);
@@ -3437,11 +3470,11 @@ test("Fill requires an explicit before-Fill acknowledgement that page scripts ma
     });
     await clickButton(control, "Refresh status");
     assert.match(control.container.textContent ?? "", /before you press Submit/i);
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    assert.equal(fillButton(control.container).disabled, true);
     const acknowledgement = control.container.querySelector<HTMLInputElement>('[data-testid="transmission-ack"]');
     assert.ok(acknowledgement);
     await act(async () => { acknowledgement.click(); });
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+    assert.equal(fillButton(control.container).disabled, false);
     assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 0);
   } finally {
     await control.cleanup();
@@ -3467,14 +3500,14 @@ test("human handoff requires its own irreversible confirmation and shows lifetim
       return trustedTargetStatus(packet);
     });
     await clickButton(control, "Refresh status");
-    await clickButton(control, "Finish manually in this browser");
+    await clickButton(control, "Unlock the form");
     assert.equal(commandsSeen.filter((command) => command.type === "HANDOFF_TO_HUMAN").length, 0);
-    assert.match(control.container.textContent ?? "", /refreshing or closing this control page ends the session/i);
-    await clickButton(control, "Confirm human handoff");
+    assert.match(control.container.textContent ?? "", /Reloading or closing this page closes the employer's form/i);
+    await clickButton(control, "Yes, unlock the form");
     assert.equal(commandsSeen.filter((command) => command.type === "HANDOFF_TO_HUMAN").length, 1);
     assert.match(control.container.textContent ?? "", /60-minute maximum/i);
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
-    await clickButton(control, "End human session");
+    assert.equal(fillButton(control.container).disabled, true);
+    await clickButton(control, "End the session");
     assert.equal(commandsSeen.filter((command) => command.type === "END_HUMAN_SESSION").length, 1);
   } finally {
     await control.cleanup();
@@ -3535,7 +3568,7 @@ test("explicit mounted Fill click latches synchronously, locks conflicting UI, a
       return trustedTargetStatus(packet);
     });
     await clickButton(control, "Refresh status");
-    const fill = buttonNamed(control.container, "Fill approved fields");
+    const fill = fillButton(control.container);
     assert.equal(fill.disabled, false);
 
     await act(async () => {
@@ -3550,13 +3583,15 @@ test("explicit mounted Fill click latches synchronously, locks conflicting UI, a
     for (const name of [
       "Filling…",
       "Refresh status",
-      "Open frozen target",
-      "Inspect form",
+      "Read the form again",
       "Close workflow",
       "Refresh review data",
       "Refresh Fill status"
     ]) {
       assert.equal(buttonNamed(control.container, name).disabled, true, name);
+    }
+    for (const name of ["Open and read the form", "Read the form", "Unlock the form"]) {
+      assert.equal(optionalButtonNamed(control.container, name)?.disabled ?? true, true, name);
     }
 
     fillFinished = true;
@@ -3599,7 +3634,7 @@ test("a browser command started in the same turn synchronously prevents Fill dis
     await clickButton(control, "Refresh status");
 
     const refresh = buttonNamed(control.container, "Refresh status");
-    const fill = buttonNamed(control.container, "Fill approved fields");
+    const fill = fillButton(control.container);
     assert.equal(fill.disabled, false);
     await act(async () => {
       refresh.click();
@@ -3631,7 +3666,7 @@ test("unmount leaves a dispatched long-running Fill binding alive and ignores it
     });
     await clickButton(control, "Refresh status");
     await act(async () => {
-      buttonNamed(control.container, "Fill approved fields").click();
+      fillButton(control.container).click();
       await Promise.resolve();
     });
     assert.deepEqual(commandsSeen.map((command) => command.type), [
@@ -3678,7 +3713,7 @@ test("lost Fill binding result performs one read-only paired reconciliation and 
     const beforeFillReads = fillReads;
     const beforeRunReads = control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length;
     const beforePacketReads = control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length;
-    await clickButton(control, "Fill approved fields");
+    await clickFill(control);
 
     assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
     assert.equal(commandsSeen.filter((command) => command.type === "GET_STATUS").length, 1);
@@ -3689,7 +3724,7 @@ test("lost Fill binding result performs one read-only paired reconciliation and 
     assert.match(control.container.textContent ?? "", /Fill status is temporarily unavailable/i);
     assert.doesNotMatch(control.container.textContent ?? "", /Fill has not started/i);
     assert.doesNotMatch(control.container.textContent ?? "", /No Fill attempt has been consumed/i);
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    assert.equal(fillButton(control.container).disabled, true);
 
     await clickButton(control, "Refresh Fill status");
     assert.equal(fillReads, beforeFillReads + 2);
@@ -3725,7 +3760,7 @@ test("FINALIZED bridge disposition with a failed durable Fill-status refresh rem
     });
     await clickButton(control, "Refresh status");
     const beforeFillReads = fillReads;
-    await clickButton(control, "Fill approved fields");
+    await clickFill(control);
 
     assert.deepEqual(commandsSeen.map((command) => command.type), [
       "GET_STATUS",
@@ -3766,7 +3801,7 @@ test("FINALIZED bridge disposition cannot re-authorize the pre-dispatch NO_ATTEM
     });
     await clickButton(control, "Refresh status");
     const beforeFillReads = fillReads;
-    await clickButton(control, "Fill approved fields");
+    await clickFill(control);
 
     assert.deepEqual(commandsSeen.map((command) => command.type), [
       "GET_STATUS",
@@ -3803,7 +3838,7 @@ test("a Fill binding response without a bounded command disposition is mutation-
     });
     await clickButton(control, "Refresh status");
     const beforeFillReads = fillReads;
-    await clickButton(control, "Fill approved fields");
+    await clickFill(control);
 
     assert.deepEqual(commandsSeen.map((command) => command.type), [
       "GET_STATUS",
@@ -3811,7 +3846,7 @@ test("a Fill binding response without a bounded command disposition is mutation-
     ]);
     assert.equal(fillReads, beforeFillReads + 1);
     assert.match(control.container.textContent ?? "", /Fill mutation outcome is uncertain/i);
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    assert.equal(fillButton(control.container).disabled, true);
   } finally {
     await control.cleanup();
   }
@@ -3834,14 +3869,14 @@ test("missing binding is definitely not dispatched and permits a later explicit 
     control.setBinding(binding);
     await clickButton(control, "Refresh status");
     control.setBinding(undefined);
-    await clickButton(control, "Fill approved fields");
+    await clickFill(control);
     assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 0);
     assert.match(control.container.textContent ?? "", /companion is not connected/i);
 
     control.setBinding(binding);
     await clickButton(control, "Retry connection");
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
-    await clickButton(control, "Fill approved fields");
+    assert.equal(fillButton(control.container).disabled, false);
+    await clickFill(control);
     assert.equal(commandsSeen.filter((command) => command.type === "FILL_APPROVED_FIELDS").length, 1);
   } finally {
     await control.cleanup();
@@ -3884,7 +3919,7 @@ test("reload and retained companion Fill status never trigger Fill automatically
         return trustedTargetStatus(packet, { outcome: "IN_PROGRESS" });
       });
       await clickButton(control, "Refresh status");
-      assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+      assert.equal(fillButton(control.container).disabled, true);
     } finally {
       await control.cleanup();
     }
@@ -4295,7 +4330,7 @@ test("human-submit repair keeps terminal completion dominant over a review refre
   try {
     control.setBinding(async () => trustedTargetStatus(packet));
     await clickButton(control, "Refresh status");
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+    assert.equal(fillButton(control.container).disabled, false);
 
     await clickButton(control, "Refresh review data");
     assert.equal(runReads, 2);
@@ -4312,7 +4347,7 @@ test("human-submit repair keeps terminal completion dominant over a review refre
 
     assert.match(control.container.textContent ?? "", /Recorded at/);
     assert.equal(optionalButtonNamed(control.container, "I personally submitted this application"), null);
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    assert.equal(fillButton(control.container).disabled, true);
   } finally {
     await control.cleanup();
   }
@@ -4374,14 +4409,14 @@ test("human-submit repair retains verified READY completion when a packet refres
   try {
     control.setBinding(async () => trustedTargetStatus(packet));
     await clickButton(control, "Refresh status");
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, false);
+    assert.equal(fillButton(control.container).disabled, false);
 
     packetUnavailable = true;
     await clickButton(control, "Refresh review data");
 
     assert.match(control.container.textContent ?? "", /Review data is temporarily unavailable/i);
     assert.equal(optionalButtonNamed(control.container, "I personally submitted this application")?.disabled, false);
-    assert.equal(buttonNamed(control.container, "Fill approved fields").disabled, true);
+    assert.equal(fillButton(control.container).disabled, true);
     assert.equal(resolveReviewButton(control.container).disabled, true);
   } finally {
     await control.cleanup();

@@ -2,7 +2,23 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { PrimaryButton, SecondaryButton } from "@/components/ui";
+import {
+  CheckAnswersStepBody,
+  FillStatusBlock,
+  FillStepBody,
+  FinishStepBody,
+  MoreActions,
+  Notice,
+  noticeClass,
+  OpenFormStepBody,
+  RecordStepBody,
+  StepActionButton,
+  StepSection,
+  stepSummary,
+  StoppedCard,
+  type MoreAction
+} from "@/components/application-browser-steps";
+import { SecondaryButton } from "@/components/ui";
 import {
   applyAuthoritativeBrowserStatus,
   apparentAutomatableFieldCount,
@@ -13,9 +29,6 @@ import {
   buildResolveReviewRequest,
   derivePacketFreshness,
   deriveManualFieldPresentations,
-  dispositionMessage,
-  missingDetailHint,
-  isAnswerReviewEligible,
   isAnswerReviewPostconditionCurrent,
   isAnswerReviewMutationEligible,
   fillRejectionNotice,
@@ -27,15 +40,11 @@ import {
   parseAnswerPacketResponse,
   parseAnswerReviewResponse,
   parseCompleteApplicationRunByUserResponse,
-  presentProposal,
-  REVIEW_REASON_LABELS,
-  readinessMessage,
   shouldOfferRetryConnection,
   type AnswerReviewMutationSnapshot,
   type AnswerPacket,
   type CommandNotice,
   type ControlConnection,
-  type PacketFreshness,
   type PersonalSubmissionCompletionAuthority,
   type PendingReviewMutation,
   type PendingBrowserCommand,
@@ -50,19 +59,20 @@ import {
   type BrowserFillAttemptStatus
 } from "@/lib/application-browser/fill-status-presentation";
 import {
-  answerStatusLabel,
+  controlPageTitle,
+  deriveControlSteps,
+  shouldWarnBeforeLeaving
+} from "@/lib/assisted-apply/control-steps";
+import {
   companionStateLabel,
   companionStatusSentence,
-  dispositionLabel,
-  dispositionReasonLabel,
-  fieldTypeLabel,
-  manualCategoryLabel,
   runStateLabel
 } from "@/lib/assisted-apply/plain-language";
 import {
   APPLICATION_BROWSER_BINDING_NAME,
   type B1Command,
   type B1Status,
+  type B1WorkflowState,
   type B2InspectionCommandStatus
 } from "@/lib/application-browser/types";
 
@@ -193,41 +203,14 @@ function reviewRunReconciliationNotice(
   return null;
 }
 
-function noticeClass(tone: CommandNotice["tone"]): string {
-  if (tone === "SUCCESS") return "bg-emerald-50 text-emerald-800";
-  if (tone === "WARNING") return "bg-amber-50 text-amber-900";
-  if (tone === "ERROR") return "bg-rose-50 text-rose-800";
-  return "bg-sky-50 text-sky-800";
-}
+// What one bridge command came back with. "ACCEPTED" means the binding answered and its status
+// was accepted for this run; anything else (a thrown binding, a refused status, an inactive page,
+// a command already in flight) is "NOT_ACCEPTED".
+type InvokeResult =
+  | Readonly<{ outcome: "ACCEPTED"; state: B1WorkflowState }>
+  | Readonly<{ outcome: "NOT_ACCEPTED" }>;
 
-function freshnessCopy(freshness: PacketFreshness): { className: string; text: string } {
-  if (freshness === "current") {
-    return {
-      className: "border-emerald-200 bg-emerald-50 text-emerald-800",
-      text: "Current packet — versions match the latest verified employer-form inspection in this session."
-    };
-  }
-  if (freshness === "stale") {
-    return {
-      className: "border-amber-300 bg-amber-50 text-amber-950",
-      text: "Stale packet — the employer form changed. Inspect the form again before relying on these answers."
-    };
-  }
-  if (freshness === "unverified") {
-    return {
-      className: "border-slate-300 bg-slate-100 text-slate-800",
-      text: "Unverified packet — these answers have not been matched to a current successful inspection in this control-page session."
-    };
-  }
-  return {
-    className: "border-slate-200 bg-slate-50 text-slate-700",
-    text: "No current answer packet is available for this application run."
-  };
-}
-
-function displayDate(value: string | null): string {
-  return value === null ? "Not acknowledged" : new Date(value).toLocaleString();
-}
+const NOT_ACCEPTED: InvokeResult = { outcome: "NOT_ACCEPTED" };
 
 type CompanionWindow = "checking" | "present" | "absent";
 
@@ -680,39 +663,39 @@ export function ApplicationBrowserControl({
 
   const invoke = useCallback(async (
     command: Exclude<B1Command, { type: "FILL_APPROVED_FIELDS" }>
-  ) => {
-    if (pendingCommandRef.current !== null || pendingFillActivationRef.current) return;
+  ): Promise<InvokeResult> => {
+    if (pendingCommandRef.current !== null || pendingFillActivationRef.current) return NOT_ACCEPTED;
     const expectedGeneration = activeComponentGenerationRef.current;
-    if (expectedGeneration === null) return;
+    if (expectedGeneration === null) return NOT_ACCEPTED;
     pendingCommandRef.current = command.type;
     setPendingCommand(command.type);
     setCommandNotice(null);
     try {
       const binding = (window as ControlWindow)[APPLICATION_BROWSER_BINDING_NAME];
       if (typeof binding !== "function") {
-        if (activeComponentGenerationRef.current !== expectedGeneration) return;
+        if (activeComponentGenerationRef.current !== expectedGeneration) return NOT_ACCEPTED;
         setControlConnection("UNAVAILABLE");
         setCommandNotice({ tone: "WARNING", text: "Local browser companion is not connected to this control page." });
-        return;
+        return NOT_ACCEPTED;
       }
 
       try {
         const nextStatus = await binding(command);
-        if (activeComponentGenerationRef.current !== expectedGeneration) return;
+        if (activeComponentGenerationRef.current !== expectedGeneration) return NOT_ACCEPTED;
         const accepted = acceptAuthoritativeStatus(nextStatus, expectedGeneration);
-        if (!accepted.active) return;
+        if (!accepted.active) return NOT_ACCEPTED;
         if (!accepted.accepted) {
           setCommandNotice({
             tone: "WARNING",
             text: "The local browser companion returned a status that could not be accepted for this run."
           });
-          return;
+          return NOT_ACCEPTED;
         }
         if (!accepted.suppliedNotice) {
           const text = command.type === "OPEN_TARGET"
-            ? "Frozen employer target opened."
+            ? "The employer's form is open."
             : command.type === "HANDOFF_TO_HUMAN"
-              ? "Automation retired. Finish manually in the disposable employer browser."
+              ? "The form is unlocked. Finish it in the employer's window and press Submit yourself."
               : command.type === "END_HUMAN_SESSION"
                 ? "Human browser session ended."
             : command.type === "CLOSE_WORKFLOW"
@@ -722,8 +705,9 @@ export function ApplicationBrowserControl({
                 : "Browser status updated.";
           setCommandNotice({ tone: "INFO", text });
         }
+        return { outcome: "ACCEPTED", state: statusRef.current.state };
       } catch {
-        if (activeComponentGenerationRef.current !== expectedGeneration) return;
+        if (activeComponentGenerationRef.current !== expectedGeneration) return NOT_ACCEPTED;
         const freshness = derivePacketFreshness({
           packet: reviewLoadRef.current.packet,
           latestPacketResponseWasNull: reviewLoadRef.current.latestResponseWasNull,
@@ -741,7 +725,7 @@ export function ApplicationBrowserControl({
             : command.type === "END_HUMAN_SESSION"
               ? "End-session cleanup outcome is uncertain. Do not assume the employer page or submitted application has closed."
           : command.type === "OPEN_TARGET"
-            ? "The target-open command stopped safely. Browser status was checked once."
+            ? "Apply Pilot couldn't open the employer's form, so it stopped safely and didn't try again. Browser status was checked once."
             : command.type === "INSPECT_FORM"
               ? "The inspection command stopped safely. The displayed packet is unverified until browser status is recovered."
               : "The close command stopped safely. Browser status was checked once.";
@@ -756,18 +740,19 @@ export function ApplicationBrowserControl({
         }
         if (!plan.recoverWithGetStatus) {
           setControlConnection(plan.connection);
-          return;
+          return NOT_ACCEPTED;
         }
         try {
           const recoveredStatus = await binding({ type: "GET_STATUS" });
-          if (activeComponentGenerationRef.current !== expectedGeneration) return;
+          if (activeComponentGenerationRef.current !== expectedGeneration) return NOT_ACCEPTED;
           const recovered = acceptAuthoritativeStatus(recoveredStatus, expectedGeneration);
-          if (!recovered.active) return;
+          if (!recovered.active) return NOT_ACCEPTED;
           if (!recovered.accepted) setControlConnection("UNAVAILABLE");
         } catch {
-          if (activeComponentGenerationRef.current !== expectedGeneration) return;
+          if (activeComponentGenerationRef.current !== expectedGeneration) return NOT_ACCEPTED;
           setControlConnection("UNAVAILABLE");
         }
+        return NOT_ACCEPTED;
       }
     } finally {
       if (
@@ -779,6 +764,23 @@ export function ApplicationBrowserControl({
       }
     }
   }, [acceptAuthoritativeStatus, controlConnection, invalidateReviewAuthority, lastAcceptedInspection, updateReviewLoad]);
+
+  // Step 4 (D-C): one explicit click sends the existing OPEN_TARGET and, only when that command
+  // itself came back as an accepted TARGET_OPEN status, the existing INSPECT_FORM. Both only open
+  // and read. A failed open stops here with its notice; nothing is retried automatically.
+  const openAndReadForm = useCallback(async () => {
+    if (pendingCommandRef.current !== null || pendingFillActivationRef.current) return;
+    const opened = await invoke({ type: "OPEN_TARGET" });
+    if (opened.outcome !== "ACCEPTED") return;
+    if (opened.state !== "TARGET_OPEN") {
+      setCommandNotice({
+        tone: "WARNING",
+        text: `Apply Pilot couldn't open the employer's form (${companionStateLabel(opened.state).toLowerCase()}), so it stopped and didn't read it.`
+      });
+      return;
+    }
+    await invoke({ type: "INSPECT_FORM" });
+  }, [invoke]);
 
   const activateFill = useCallback(async () => {
     if (
@@ -1491,15 +1493,12 @@ export function ApplicationBrowserControl({
     };
   }, [companionWindow, detectCompanionWindow]);
 
-  const titleState = hasAcceptedAuthoritativeStatus ? companionStateLabel(status.state) : "Connecting…";
-  useEffect(() => {
-    if (!detectCompanionWindow || companionWindow !== "present") return;
-    const previousTitle = document.title;
-    document.title = `Apply Pilot browser — ${titleState}`;
-    return () => {
-      document.title = previousTitle;
-    };
-  }, [companionWindow, detectCompanionWindow, titleState]);
+  // Remembers that the form was handed over on this page, so a later safe stop or ended session
+  // still leads to step 8 (Record it). Presentation only.
+  const [formHandedOver, setFormHandedOver] = useState(false);
+  const formHandedOverNow = hasAcceptedAuthoritativeStatus &&
+    (status.state === "HANDOFF_PENDING" || status.state === "HUMAN_ONLY");
+  if (formHandedOverNow && !formHandedOver) setFormHandedOver(true);
 
   const availability = browserCommandAvailability({ status, connection: controlConnection, pendingCommand });
   const freshness = useMemo(() => derivePacketFreshness({
@@ -1511,7 +1510,6 @@ export function ApplicationBrowserControl({
     lastAcceptedInspection,
     formInvalidatedSinceVerifiedSuccess
   }), [controlConnection, formInvalidatedSinceVerifiedSuccess, lastAcceptedInspection, reviewLoad, status.state]);
-  const freshnessStatus = freshnessCopy(freshness);
   const resolveReviewEligible = isResolveReviewEligible({
     run: reviewLoad.run,
     packet: reviewLoad.packet,
@@ -1580,67 +1578,125 @@ export function ApplicationBrowserControl({
     ? Math.max(0, Math.ceil((status.humanSession.expiresAtMs - humanClockMs) / 60_000))
     : null;
 
-  const personalSubmissionSection = showPersonalSubmissionSection ? (
-<section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="personal-submission-heading">
-        <div>
-          <h2 id="personal-submission-heading" className="font-semibold text-slate-950">Personal submission</h2>
-          {personalSubmissionRecorded
-            ? <p className="mt-1 text-sm text-slate-600">Personal submission recorded from your explicit attestation. Apply Pilot did not submit or independently verify the employer submission.</p>
-            : <p className="mt-1 text-sm text-slate-600">Only confirm after you personally used the employer site&apos;s Submit control. Apply Pilot does not submit the application for you.</p>}
-        </div>
+  // Which step is "now", its one primary action and why anything is disabled. It only reads the
+  // gates above; it never widens them.
+  const view = deriveControlSteps({
+    companion: {
+      hasStatus: hasAcceptedAuthoritativeStatus,
+      connection: controlConnection,
+      state: status.state,
+      errorCode: status.errorCode ?? null,
+      inspection: status.inspection ?? null,
+      formInvalidated: formInvalidatedSinceVerifiedSuccess,
+      fillCommand: status.fillCommand ?? null,
+      handedOverEarlier: formHandedOver || formHandedOverNow,
+      humanMinutesRemaining,
+      canOpenTarget: availability.OPEN_TARGET,
+      canInspectForm: availability.INSPECT_FORM,
+      canHandOff: availability.HANDOFF_TO_HUMAN,
+      pendingCommand
+    },
+    review: {
+      phase: reviewLoad.phase,
+      verified: !reviewLoad.unverified,
+      runState: reviewLoad.run?.state ?? null,
+      packet: reviewLoad.packet === null ? null : {
+        inspectionVersion: reviewLoad.packet.inspectionVersion,
+        answerPacketVersion: reviewLoad.packet.answerPacketVersion,
+        reviewedAt: reviewLoad.packet.reviewedAt,
+        fieldCount: reviewLoad.packet.summary.fieldCount,
+        proposableCount: reviewLoad.packet.summary.proposableCount,
+        pendingReviewCount: reviewLoad.packet.summary.pendingReviewCount,
+        readyForRunResolution: reviewLoad.packet.summary.readyForRunResolution
+      },
+      pendingMutation: pendingReviewMutation !== null,
+      pendingResolve: pendingReviewMutation?.type === "RESOLVE",
+      resolveEligible: resolveReviewEligible
+    },
+    fill: {
+      phase: fillStatusLoad.phase,
+      verified: fillStatusLoad.verified,
+      category: storedFillPresentation?.category ?? null,
+      fillableCount: apparentEligibleCount,
+      activationEligible: fillActivationEligible,
+      acknowledged: transmissionAcknowledged,
+      pendingActivation: pendingFillActivation,
+      mayHaveDispatched: fillMayHaveDispatched,
+      packetCurrent: freshness === "current"
+    },
+    handoff: { eligible: handoffEligible, confirming: handoffConfirming },
+    record: {
+      eligible: personalSubmissionCompletionEligible,
+      recorded: personalSubmissionRecorded,
+      phase: personalSubmissionCompletion.phase,
+      runVerified: personalSubmissionRunVerified
+    },
+    uiLocked: fillUiLocked
+  });
 
-        {personalSubmissionCompletion.notice ? <p
-          aria-live="polite"
-          role={personalSubmissionCompletion.notice.tone === "ERROR" ? "alert" : undefined}
-          className={`rounded-lg px-3 py-2 text-sm ${noticeClass(personalSubmissionCompletion.notice.tone)}`}
-        >{personalSubmissionCompletion.notice.text}</p> : null}
+  const pageTitle = controlPageTitle(view, hasAcceptedAuthoritativeStatus);
+  useEffect(() => {
+    if (!detectCompanionWindow || companionWindow !== "present") return;
+    const previousTitle = document.title;
+    document.title = pageTitle;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [companionWindow, detectCompanionWindow, pageTitle]);
 
-        {personalSubmissionRecorded ? <dl className="rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-          <div>
-            <dt className="font-semibold">Personal submission recorded</dt>
-            <dd className="mt-1">Recorded at {displayDate(reviewLoad.run?.completedAt ?? null)}</dd>
-          </div>
-        </dl> : null}
+  // While the employer's form is opening, open or handed over, leaving or reloading this page
+  // closes it, so the browser asks first.
+  const warnBeforeLeaving = shouldWarnBeforeLeaving({
+    hasStatus: hasAcceptedAuthoritativeStatus,
+    state: status.state
+  });
+  useEffect(() => {
+    if (!warnBeforeLeaving) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [warnBeforeLeaving]);
 
-        {!personalSubmissionRecorded && personalSubmissionCompletionEligible && personalSubmissionCompletion.phase !== "confirming" ? <PrimaryButton
-          type="button"
-          onClick={openPersonalSubmissionConfirmation}
-        >I personally submitted this application</PrimaryButton> : null}
-
-        {!personalSubmissionRecorded && (personalSubmissionCompletion.phase === "confirming" || personalSubmissionCompletionPending) ? <div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
-          <p className="text-sm font-medium text-amber-950">Confirm only if you personally submitted on the employer site. This records your attestation; it does not verify the employer&apos;s submission result.</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <PrimaryButton
-              type="button"
-              disabled={personalSubmissionCompletionPending || !personalSubmissionCompletionEligible}
-              onClick={() => {
-                if (personalSubmissionConfirmationIntent !== null) {
-                  void completeApplicationRunByUserFromControl(personalSubmissionConfirmationIntent);
-                }
-              }}
-            >{personalSubmissionCompletionPending ? "Recording personal submission…" : "Confirm personal submission"}</PrimaryButton>
-            <SecondaryButton
-              type="button"
-              disabled={personalSubmissionCompletionPending}
-              onClick={() => {
-                if (personalSubmissionConfirmationIntent !== null) {
-                  cancelPersonalSubmissionConfirmation(personalSubmissionConfirmationIntent);
-                }
-              }}
-            >Not yet</SecondaryButton>
-          </div>
-        </div> : null}
-
-        {!personalSubmissionRecorded && personalSubmissionCompletion.phase === "uncertain" && !personalSubmissionRunVerified ? <SecondaryButton
-          type="button"
-          disabled={personalSubmissionCompletionPending}
-          onClick={() => {
-            const generation = activeComponentGenerationRef.current;
-            if (generation !== null) void reconcilePersonalSubmissionCompletion(generation);
-          }}
-        >Refresh personal-submission status</SecondaryButton> : null}
-      </section>
-  ) : null;
+  const recordPhase = personalSubmissionCompletion.phase;
+  const recordEntryIsPrimary = view.primary?.action === "RECORD";
+  const recordEntryAvailable = !personalSubmissionRecorded &&
+    personalSubmissionCompletionEligible &&
+    recordPhase !== "confirming";
+  const recordBody = (inStepper: boolean) => <RecordStepBody
+    show={showPersonalSubmissionSection || (inStepper && recordEntryIsPrimary && view.recordEntryStep === 8)}
+    recorded={personalSubmissionRecorded}
+    recordedAt={reviewLoad.run?.completedAt ?? null}
+    phase={recordPhase}
+    notice={personalSubmissionCompletion.notice}
+    showEntry={inStepper
+      ? view.recordEntryStep === 8 && (recordEntryAvailable || recordEntryIsPrimary)
+      : recordEntryAvailable}
+    entryPrimary={inStepper && recordEntryIsPrimary && view.recordEntryStep === 8}
+    entryState={view.actions.RECORD}
+    confirmPrimary={inStepper && view.primary?.action === "CONFIRM_RECORD"}
+    confirmState={view.actions.CONFIRM_RECORD}
+    showCheck={!personalSubmissionRecorded && recordPhase === "uncertain" && !personalSubmissionRunVerified}
+    checkPrimary={inStepper && view.primary?.action === "CHECK_RECORD"}
+    checkState={view.actions.CHECK_RECORD}
+    onEntry={openPersonalSubmissionConfirmation}
+    onConfirm={() => {
+      if (personalSubmissionConfirmationIntent !== null) {
+        void completeApplicationRunByUserFromControl(personalSubmissionConfirmationIntent);
+      }
+    }}
+    onCancel={() => {
+      if (personalSubmissionConfirmationIntent !== null) {
+        cancelPersonalSubmissionConfirmation(personalSubmissionConfirmationIntent);
+      }
+    }}
+    onCheck={() => {
+      const generation = activeComponentGenerationRef.current;
+      if (generation !== null) void reconcilePersonalSubmissionCompletion(generation);
+    }}
+  />;
 
   if (detectCompanionWindow && companionWindow !== "present") {
     return (
@@ -1661,10 +1717,63 @@ export function ApplicationBrowserControl({
             </div>
           </section>
         )}
-        {companionWindow === "absent" ? personalSubmissionSection : null}
+        {companionWindow === "absent" && showPersonalSubmissionSection ? (
+          <section aria-labelledby="record-heading" className="space-y-3 rounded-lg border border-slate-200 p-4">
+            <h2 id="record-heading" className="font-semibold text-slate-950">Record it</h2>
+            {recordBody(false)}
+          </section>
+        ) : null}
       </div>
     );
   }
+
+  const moreActions: MoreAction[] = [
+    {
+      key: "refresh-status",
+      label: "Refresh status",
+      disabled: fillUiLocked || !availability.GET_STATUS,
+      onClick: () => void invoke({ type: "GET_STATUS" })
+    },
+    ...(!fillUiLocked && shouldOfferRetryConnection(controlConnection, status, pendingCommand) ? [{
+      key: "retry-connection",
+      label: "Retry connection",
+      disabled: false,
+      onClick: () => void invoke({ type: "GET_STATUS" })
+    }] : []),
+    ...(hasAcceptedAuthoritativeStatus && status.state === "TARGET_OPEN" && view.primary?.action !== "READ_FORM" ? [{
+      key: "read-again",
+      label: "Read the form again",
+      disabled: !view.actions.READ_FORM.enabled,
+      onClick: () => void invoke({ type: "INSPECT_FORM" })
+    }] : []),
+    {
+      key: "refresh-review",
+      label: reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data",
+      disabled: fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null,
+      onClick: () => {
+        if (
+          !pendingFillActivationRef.current &&
+          !personalSubmissionCompletionPendingRef.current
+        ) void fetchReviewAuthority();
+      }
+    },
+    {
+      key: "refresh-fill",
+      label: fillStatusLoad.phase === "loading" ? "Refreshing Fill status…" : "Refresh Fill status",
+      disabled: fillUiLocked || pendingCommand !== null || pendingReviewMutation !== null || fillStatusLoad.phase === "loading",
+      onClick: () => {
+        if (!pendingFillActivationRef.current) void fetchFillStatus();
+      }
+    },
+    {
+      key: "close-workflow",
+      label: "Close workflow",
+      disabled: fillUiLocked || !availability.CLOSE_WORKFLOW,
+      onClick: () => void invoke({ type: "CLOSE_WORKFLOW" })
+    }
+  ];
+
+  const ambiguousQuestionCount = reviewLoad.packet?.summary.ambiguousQuestionCount ?? 0;
 
   return (
     <div className="space-y-5 p-5">
@@ -1676,232 +1785,113 @@ export function ApplicationBrowserControl({
       <p data-testid="companion-status" className="text-sm font-medium text-slate-950">
         {companionStatusSentence(status, controlConnection, hasAcceptedAuthoritativeStatus)}
       </p>
-      <details data-technical className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-      <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
-      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
-        <div><dt className="text-xs font-semibold uppercase text-slate-500">Workflow state</dt><dd className="mt-1 font-medium text-slate-950">{hasAcceptedAuthoritativeStatus ? status.state : "Awaiting companion status"}</dd></div>
-        <div><dt className="text-xs font-semibold uppercase text-slate-500">Local connection</dt><dd className="mt-1 font-medium text-slate-950">{controlConnection}</dd></div>
-        <div><dt className="text-xs font-semibold uppercase text-slate-500">Run ID</dt><dd className="mt-1 break-all font-mono text-xs text-slate-800">{runId}</dd></div>
-        {status.targetHost ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Target host</dt><dd className="mt-1 text-slate-800">{status.targetHost}</dd></div> : null}
-        {status.errorCode ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Safe stop code</dt><dd className="mt-1 font-mono text-xs text-rose-700">{status.errorCode}</dd></div> : null}
-      </dl>
-      </details>
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <SecondaryButton type="button" disabled={fillUiLocked || !availability.GET_STATUS} onClick={() => void invoke({ type: "GET_STATUS" })}>Refresh status</SecondaryButton>
-        <PrimaryButton type="button" disabled={fillUiLocked || !availability.OPEN_TARGET} onClick={() => void invoke({ type: "OPEN_TARGET" })}>Open frozen target</PrimaryButton>
-        <PrimaryButton type="button" disabled={fillUiLocked || !availability.INSPECT_FORM} onClick={() => void invoke({ type: "INSPECT_FORM" })}>{pendingCommand === "INSPECT_FORM" ? "Inspecting…" : "Inspect form"}</PrimaryButton>
-        <SecondaryButton type="button" disabled={fillUiLocked || !availability.CLOSE_WORKFLOW} onClick={() => void invoke({ type: "CLOSE_WORKFLOW" })}>Close workflow</SecondaryButton>
-        {!fillUiLocked && shouldOfferRetryConnection(controlConnection, status, pendingCommand) ? <SecondaryButton type="button" onClick={() => void invoke({ type: "GET_STATUS" })}>Retry connection</SecondaryButton> : null}
+      <div className="space-y-2">
+        {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
+        {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
+        <Notice notice={reviewLoad.notice} />
+        <Notice notice={fillStatusLoad.notice} />
       </div>
 
-      {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
-      {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
+      {view.finished === "STOPPED" ? <StoppedCard view={view} /> : null}
 
-      {status.state === "TARGET_OPEN" ? <section className="space-y-3 rounded-lg border border-slate-200 p-4" aria-labelledby="human-handoff-heading">
-        <h2 id="human-handoff-heading" className="font-semibold text-slate-950">Finish manually</h2>
-        <p className="text-sm text-slate-700">Review the entire employer form and complete every remaining manual field. Fill status must be verified before handoff. If Fill is uncertain, do not repeat it.</p>
-        {!handoffConfirming ? <SecondaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
-          onClick={() => setHandoffConfirming(true)}>Finish manually in this browser</SecondaryButton> : <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-          <p>Confirming permanently ends Apply Pilot inspection and Fill for this workflow. The disposable employer page remains for a 60-minute maximum, with warnings at 10 and 2 minutes and no extension. Employer scripts may still transmit or navigate. Refreshing or closing this control page ends the session and may lose unsent work.</p>
-          <div className="flex gap-2">
-            <PrimaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
-              onClick={() => { setHandoffConfirming(false); void invoke({ type: "HANDOFF_TO_HUMAN" }); }}>Confirm human handoff</PrimaryButton>
-            <SecondaryButton type="button" onClick={() => setHandoffConfirming(false)}>Not yet</SecondaryButton>
-          </div>
-        </div>}
-        <p className="text-xs text-slate-600">If same-page handoff is unavailable, close this disposable workflow and reopen the application in your ordinary browser. You must reenter unsent values; no cookies or hidden form state are transferred. Check an uncertain prior submission with the employer before any retry.</p>
-      </section> : null}
-
-      {status.state === "HUMAN_ONLY" ? <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4" aria-labelledby="human-session-heading">
-        <h2 id="human-session-heading" className="font-semibold text-amber-950">Human-only browser session</h2>
-        <p className="text-sm text-amber-950">Apply Pilot automation has ended. This disposable session has a 60-minute maximum with no extension. {humanMinutesRemaining === null ? "Time remaining is unavailable." : `${humanMinutesRemaining} minute(s) remain.`} Review and submit personally on the employer site. A confirmation-looking page does not verify delivery.</p>
-        {humanMinutesRemaining !== null && humanMinutesRemaining <= 10 ? <p className="text-sm font-semibold text-amber-950">Session expiry warning: {humanMinutesRemaining <= 2 ? "2 minutes or less" : "10 minutes or less"} remain. Unsent work may be lost.</p> : null}
-        <p className="text-sm text-amber-950">Refreshing, leaving, or closing this Apply Pilot control page ends the employer session. If submission is uncertain, check the employer&apos;s own status before any retry.</p>
-        <SecondaryButton type="button" disabled={!availability.END_HUMAN_SESSION || fillUiLocked}
-          onClick={() => void invoke({ type: "END_HUMAN_SESSION" })}>End human session</SecondaryButton>
-      </section> : null}
-
-      {personalSubmissionSection}
-
-      <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="fill-heading">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 id="fill-heading" className="font-semibold text-slate-950">Fill approved fields</h2>
-            <p className="mt-1 text-sm text-slate-600">One explicit Fill attempt may process reviewed supported fields. You remain responsible for reviewing and submitting the employer form.</p>
-          </div>
-          <SecondaryButton
-            type="button"
-            disabled={fillUiLocked || pendingCommand !== null || pendingReviewMutation !== null || fillStatusLoad.phase === "loading"}
-            onClick={() => {
-              if (!pendingFillActivationRef.current) void fetchFillStatus();
-            }}
-          >
-            {fillStatusLoad.phase === "loading" ? "Refreshing Fill status…" : "Refresh Fill status"}
-          </SecondaryButton>
-        </div>
-
-        {fillStatusLoad.notice ? <p aria-live="polite" role={fillStatusLoad.notice.tone === "ERROR" ? "alert" : undefined} className={`rounded-lg px-3 py-2 text-sm ${noticeClass(fillStatusLoad.notice.tone)}`}>{fillStatusLoad.notice.text}</p> : null}
-        {fillPresentation ? <div className={`rounded-lg px-4 py-3 text-sm ${noticeClass(fillPresentation.tone)}`}>
-          <h3 className="font-semibold">{fillPresentation.title}</h3>
-          <p className="mt-2 leading-6">{fillPresentation.text}</p>
-          {fillPresentation.category === "COMPLETED" && (reviewLoad.packet?.summary.ambiguousQuestionCount ?? 0) > 0 ?
-            <p className="mt-2 leading-6">Fill finished for approved fields only. {reviewLoad.packet!.summary.ambiguousQuestionCount} ambiguous employer questions still require manual completion. You submit the employer form yourself.</p> : null}
-          {fillPresentation.category === "COMPLETED" && !reviewLoad.packet ?
-            <p className="mt-2 leading-6">Fill finished for approved fields only. Employer questions may still require manual completion. Refresh review data to see the verified manual-work count, and submit the employer form yourself.</p> : null}
-          {stoppedErrorCopy ? <p className="mt-2">{stoppedErrorCopy}</p> : null}
-          {fillStatusLoad.status && fillStatusLoad.status.steps.length > 0 ? <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-5">
-            {[
-              ["Filled", fillPresentation.counts.filled],
-              ["Preserved existing", fillPresentation.counts.preservedExisting],
-              ["Runtime manual", fillPresentation.counts.runtimeManual],
-              ["Failed", fillPresentation.counts.failed],
-              ["Not attempted", fillPresentation.counts.notAttempted]
-            ].map(([label, count]) => <div key={label}><dt className="text-xs font-medium">{label}</dt><dd className="mt-1 font-semibold">{count}</dd></div>)}
-          </dl> : null}
-        </div> : <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">{fillStatusPendingCopy}</p>}
-
-        <label className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
-          <input
-            data-testid="transmission-ack"
-            type="checkbox"
-            checked={transmissionAcknowledged}
-            onChange={(event) => {
-              transmissionAcknowledgedRef.current = event.target.checked;
-              setTransmissionAcknowledged(event.target.checked);
-            }}
+      <div data-testid="control-steps" className="space-y-3">
+        <StepSection step={4} view={view} summary={stepSummary(4, view.progress[4])}>
+          <OpenFormStepBody
+            view={view}
+            formRead={view.progress[4] === "done"}
+            onOpenAndRead={() => void openAndReadForm()}
+            onReadForm={() => void invoke({ type: "INSPECT_FORM" })}
           />
-          <span>I understand that filling a field can trigger the employer page&apos;s own scripts. Values may be sent to the employer or third parties before you press Submit. Apply Pilot will not press Submit and cannot promise network-free filling.</span>
-        </label>
+        </StepSection>
 
-        {apparentEligibleCount > 0 ? <PrimaryButton
-          type="button"
-          disabled={!fillActivationEligible || !transmissionAcknowledged}
-          onClick={() => void activateFill()}
-        >
-          {pendingFillActivation ? "Filling…" : "Fill approved fields"}
-        </PrimaryButton> : <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Apply Pilot has no fields it can fill on this form. {reviewLoad.packet?.summary.ambiguousQuestionCount ? `${reviewLoad.packet.summary.ambiguousQuestionCount} ambiguous employer questions require manual completion. ` : ""}Complete the employer form manually; no Fill attempt will be consumed from this page.</p>}
+        <StepSection step={5} view={view} summary={stepSummary(5, view.progress[5])}>
+          <CheckAnswersStepBody
+            view={view}
+            packet={reviewLoad.packet}
+            run={reviewLoad.run}
+            freshness={freshness}
+            answerReview={{
+              isDisabled: (answer) => fillUiLocked ||
+                pendingReviewMutation !== null ||
+                reviewLoad.phase !== "loaded" ||
+                reviewLoad.unverified ||
+                reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer ||
+                !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true }),
+              pendingFor: (answer) => pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id
+                ? pendingReviewMutation.status
+                : null,
+              onReview: (answer, reviewStatus) => void reviewAnswer(answer, reviewStatus)
+            }}
+            onContinue={() => void resolveReview()}
+          />
+        </StepSection>
 
-        {manualFields.length > 0 ? <div className="rounded-lg border border-slate-200 p-4">
-          <h3 className="font-medium text-slate-950">Manual fields</h3>
-          <p className="mt-1 text-sm text-slate-600">These packet fields remain for you to complete or confirm manually.</p>
-          <ul className="mt-3 space-y-2 text-sm text-slate-800">
-            {manualFields.map((field, index) => <li key={`${field.question}:${field.fieldType}:${index}`}>
-              <span className="font-medium">{field.question || "Unlabeled field"}</span>
-              {` — ${fieldTypeLabel(field.fieldType)} — ${field.required ? "Required" : "Optional"} — ${manualCategoryLabel(field.category)}`}
-            </li>)}
-          </ul>
-        </div> : null}
-      </section>
+        <StepSection step={6} view={view} summary={stepSummary(6, view.progress[6])}>
+          <FillStepBody
+            view={view}
+            manualFields={manualFields}
+            fillableCount={apparentEligibleCount}
+            ambiguousQuestionCount={ambiguousQuestionCount}
+            acknowledged={transmissionAcknowledged}
+            onAcknowledge={(checked) => {
+              transmissionAcknowledgedRef.current = checked;
+              setTransmissionAcknowledged(checked);
+            }}
+            onFill={() => void activateFill()}
+            fillStatusBlock={<FillStatusBlock
+              presentation={fillPresentation}
+              pendingCopy={fillStatusPendingCopy}
+              stoppedErrorCopy={stoppedErrorCopy}
+              hasSteps={fillStatusLoad.status !== null && fillStatusLoad.status.steps.length > 0}
+              ambiguousQuestionCount={ambiguousQuestionCount}
+              packetAvailable={reviewLoad.packet !== null}
+            />}
+          />
+        </StepSection>
 
-      <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="answer-packet-heading">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div><h2 id="answer-packet-heading" className="font-semibold text-slate-950">Current answer packet</h2><p className="mt-1 text-sm text-slate-600">Apply Pilot&apos;s proposed answers for this form. You choose which ones it may fill.</p></div>
-          <SecondaryButton type="button" disabled={fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null} onClick={() => {
-            if (
-              !pendingFillActivationRef.current &&
-              !personalSubmissionCompletionPendingRef.current
-            ) void fetchReviewAuthority();
-          }}>{reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data"}</SecondaryButton>
-        </div>
-        {reviewLoad.notice ? <p aria-live="polite" role={reviewLoad.notice.tone === "ERROR" ? "alert" : undefined} className={`rounded-lg px-3 py-2 text-sm ${noticeClass(reviewLoad.notice.tone)}`}>{reviewLoad.notice.text}</p> : null}
-        <p className={`rounded-lg border px-3 py-2 text-sm ${freshnessStatus.className}`}>{freshnessStatus.text}</p>
+        <StepSection step={7} view={view} summary={stepSummary(7, view.progress[7])}>
+          <FinishStepBody
+            view={view}
+            workflowState={status.state === "TARGET_OPEN" ? "TARGET_OPEN" : status.state === "HUMAN_ONLY" ? "HANDED_OVER" : "OTHER"}
+            handoffConfirming={handoffConfirming}
+            fillResultTitle={fillPresentation && fillPresentation.category !== "NO_ATTEMPT" ? fillPresentation.title : null}
+            humanMinutesRemaining={humanMinutesRemaining}
+            manualFields={manualFields}
+            canEndSession={availability.END_HUMAN_SESSION && !fillUiLocked}
+            onUnlock={() => setHandoffConfirming(true)}
+            onConfirmUnlock={() => {
+              setHandoffConfirming(false);
+              void invoke({ type: "HANDOFF_TO_HUMAN" });
+            }}
+            onCancelUnlock={() => setHandoffConfirming(false)}
+            onEndSession={() => void invoke({ type: "END_HUMAN_SESSION" })}
+            recordEntry={view.recordEntryStep === 7
+              ? <StepActionButton action="RECORD" state={view.actions.RECORD} primary={recordEntryIsPrimary} onClick={openPersonalSubmissionConfirmation} />
+              : null}
+          />
+        </StepSection>
 
-        {reviewLoad.packet ? <div className="space-y-5">
-          <details data-technical className="rounded-lg border border-slate-200 p-3 text-sm">
-          <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
-          <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Inspection version</dt><dd className="mt-1 text-slate-900">{reviewLoad.packet.inspectionVersion}</dd></div>
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Packet version</dt><dd className="mt-1 text-slate-900">{reviewLoad.packet.answerPacketVersion}</dd></div>
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Created</dt><dd className="mt-1 text-slate-900">{displayDate(reviewLoad.packet.createdAt)}</dd></div>
-            <div><dt className="text-xs font-semibold uppercase text-slate-500">Review time</dt><dd className="mt-1 text-slate-900">{displayDate(reviewLoad.packet.reviewedAt)}</dd></div>
-            <div className="sm:col-span-2 lg:col-span-4"><dt className="text-xs font-semibold uppercase text-slate-500">Packet hash</dt><dd className="mt-1 break-all font-mono text-xs text-slate-700">{reviewLoad.packet.packetHash}</dd></div>
-          </dl>
-          </details>
+        <StepSection step={8} view={view} summary={stepSummary(8, view.progress[8])}>
+          {recordBody(true)}
+        </StepSection>
+      </div>
 
-          <div className="rounded-lg border border-slate-200 p-4">
-            <h3 className="font-medium text-slate-950">Packet summary</h3>
-            {reviewLoad.packet.summary.ambiguousQuestionCount > 0 ? <p className="mt-2 text-sm text-amber-900">Review the proposed answers for the fields Apply Pilot could identify safely. {reviewLoad.packet.summary.ambiguousQuestionCount} ambiguous employer questions require manual completion. Confirming this review does not complete those questions.</p> : null}
-            <dl className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-5">
-              {[
-                ["Fields", reviewLoad.packet.summary.fieldCount], ["Proposable", reviewLoad.packet.summary.proposableCount],
-                ["Observed controls", reviewLoad.packet.summary.observedFieldCount], ["Ambiguous manual questions", reviewLoad.packet.summary.ambiguousQuestionCount],
-                ["Ambiguous required", reviewLoad.packet.summary.ambiguousRequiredCount],
-                ["Pending review", reviewLoad.packet.summary.pendingReviewCount], ["Approved", reviewLoad.packet.summary.approvedCount],
-                ["Rejected", reviewLoad.packet.summary.rejectedCount], ["Manual only", reviewLoad.packet.summary.manualOnlyCount],
-                ["Excluded", reviewLoad.packet.summary.excludedCount], ["Unsupported", reviewLoad.packet.summary.unsupportedCount],
-                ["Manual required", reviewLoad.packet.summary.manualRequiredCount]
-              ].map(([label, value]) => <div key={label}><dt className="text-xs text-slate-500">{label}</dt><dd className="mt-1 font-medium text-slate-900">{value}</dd></div>)}
-            </dl>
-            <p id="review-readiness" className="mt-4 text-sm text-slate-700">{readinessMessage(reviewLoad.packet.summary.readyForRunResolution)}</p>
-            {reviewLoad.run ? <div id="review-reasons" className="mt-4 border-t border-slate-200 pt-4">
-              <p className="text-sm text-slate-900">Application status: <span className="font-medium">{runStateLabel(reviewLoad.run.state)}</span></p>
-              <details data-technical className="mt-2 text-sm">
-              <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
-              <dl className="mt-2 grid gap-3 text-sm sm:grid-cols-2">
-                <div><dt className="text-xs text-slate-500">Run state</dt><dd className="mt-1 font-medium text-slate-900">{reviewLoad.run.state}</dd></div>
-                <div><dt className="text-xs text-slate-500">State version</dt><dd className="mt-1 font-medium text-slate-900">{reviewLoad.run.stateVersion}</dd></div>
-              </dl>
-              </details>
-              <h4 className="mt-4 text-xs font-semibold uppercase text-slate-500">Review reasons</h4>
-              {reviewLoad.run.reviewReasons.length === 0
-                ? <p className="mt-2 text-sm text-slate-700">No local rule-based planning review reasons require acknowledgment.</p>
-                : <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-slate-700">{reviewLoad.run.reviewReasons.map((reason) => <li key={reason}>{REVIEW_REASON_LABELS[reason]}</li>)}</ol>}
-            </div> : null}
-            <div className="mt-4">
-              <PrimaryButton
-                type="button"
-                aria-describedby="review-readiness review-reasons"
-                disabled={fillUiLocked || !resolveReviewEligible || pendingReviewMutation !== null}
-                onClick={() => void resolveReview()}
-              >
-                {pendingReviewMutation?.type === "RESOLVE" ? "Resolving…" : "Resolve review"}
-              </PrimaryButton>
-            </div>
-          </div>
+      <MoreActions actions={moreActions} />
 
-          <div className="space-y-4">
-            {reviewLoad.packet.answers.map((answer) => {
-              const proposal = answer.proposal ? presentProposal(answer.proposal, answer.choices, answer) : null;
-              return <article key={answer.id} className="rounded-lg border border-slate-200 p-4">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><h3 className="font-medium text-slate-950">{answer.question}</h3><p className="mt-1 text-xs text-slate-500">{fieldTypeLabel(answer.fieldType)}{answer.required ? " · required" : ""}</p></div><span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{answerStatusLabel(answer.status)}</span></div>
-                <p className="mt-3 text-sm font-medium text-slate-900">{dispositionLabel(answer.disposition)}</p>
-                <details data-technical className="mt-2 text-sm">
-                <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
-                <dl className="mt-2 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-                  <div><dt className="text-xs text-slate-500">Field type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.fieldType}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Question type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.classification}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Review status</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.status}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Required</dt><dd className="mt-1 text-slate-900">{answer.required ? "Yes" : "No"}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Requires review</dt><dd className="mt-1 text-slate-900">{answer.requiresReview ? "Yes" : "No"}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Reviewed by user</dt><dd className="mt-1 text-slate-900">{answer.reviewedByUser ? "Yes" : "No"}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Reviewed at</dt><dd className="mt-1 text-slate-900">{displayDate(answer.reviewedAt)}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Sensitive</dt><dd className="mt-1 text-slate-900">{answer.sensitive ? "Yes" : "No"}</dd></div>
-                  <div><dt className="text-xs text-slate-500">Value redacted</dt><dd className="mt-1 text-slate-900">{answer.valueRedacted ? "Yes" : "No"}</dd></div>
-                  <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition</dt><dd className="mt-1 text-slate-900">{answer.disposition}</dd></div>
-                  {answer.dispositionReason ? <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition reason</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.dispositionReason}</dd></div> : null}
-                </dl>
-                </details>
-                <p className="mt-3 text-sm text-slate-700">{dispositionMessage(answer.disposition)}</p>
-                {answer.dispositionReason ? <p className="mt-2 text-sm text-slate-700">{dispositionReasonLabel(answer.dispositionReason)}</p> : null}
-                {(() => {
-                  const hint = missingDetailHint(answer);
-                  // A new tab: this control tab must stay on the run for the companion bridge.
-                  return hint ? <p className="mt-2 text-sm text-slate-700">{hint.text} <a href={hint.href} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-700 underline">Open Your application details</a></p> : null;
-                })()}
-                {answer.choices.length > 0 ? <div className="mt-4"><h4 className="text-xs font-semibold uppercase text-slate-500">Public choices</h4><ul className="mt-2 space-y-1 text-sm text-slate-700">{answer.choices.map((choice, index) => <li key={`${choice.key}:${index}`}>{choice.label}{choice.disabled ? " — Disabled option" : ""}</li>)}</ul></div> : null}
-                {proposal ? <div className="mt-4 rounded-lg bg-slate-50 p-3"><h4 className="text-sm font-medium text-slate-900">{proposal.label}</h4><ul className="mt-2 space-y-1 text-sm text-slate-800">{proposal.values.map((value, index) => <li key={`${value.text}:${index}`} className="break-words">{value.text}{value.annotation ? ` — ${value.annotation}` : ""}</li>)}</ul></div> : null}
-                {isAnswerReviewEligible(answer) ? <div className="mt-4 flex gap-2">
-                  <PrimaryButton type="button" aria-label={`Approve proposed answer for ${answer.question}`} disabled={fillUiLocked || pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer || !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true })} onClick={() => void reviewAnswer(answer, "APPROVED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "APPROVED" ? "Approving…" : "Approve"}</PrimaryButton>
-                  <SecondaryButton type="button" aria-label={`Reject proposed answer for ${answer.question}`} disabled={fillUiLocked || pendingReviewMutation !== null || reviewLoad.phase !== "loaded" || reviewLoad.unverified || reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer || !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true })} onClick={() => void reviewAnswer(answer, "REJECTED")}>{pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id && pendingReviewMutation.status === "REJECTED" ? "Rejecting…" : "Reject"}</SecondaryButton>
-                </div> : null}
-              </article>;
-            })}
-          </div>
-        </div> : null}
-      </section>
+      <details data-technical className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
+        <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+          <div><dt className="text-xs font-semibold uppercase text-slate-500">Workflow state</dt><dd className="mt-1 font-medium text-slate-950">{hasAcceptedAuthoritativeStatus ? status.state : "Awaiting companion status"}</dd></div>
+          <div><dt className="text-xs font-semibold uppercase text-slate-500">Local connection</dt><dd className="mt-1 font-medium text-slate-950">{controlConnection}</dd></div>
+          <div><dt className="text-xs font-semibold uppercase text-slate-500">Application</dt><dd className="mt-1 text-slate-800">{reviewLoad.run ? `${runStateLabel(reviewLoad.run.state)} (${reviewLoad.run.state})` : "Not loaded"}</dd></div>
+          <div><dt className="text-xs font-semibold uppercase text-slate-500">Run ID</dt><dd className="mt-1 break-all font-mono text-xs text-slate-800">{runId}</dd></div>
+          {status.targetHost ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Target host</dt><dd className="mt-1 text-slate-800">{status.targetHost}</dd></div> : null}
+          {status.errorCode ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Safe stop code</dt><dd className="mt-1 font-mono text-xs text-rose-700">{status.errorCode}</dd></div> : null}
+        </dl>
+      </details>
 
-      <p className="text-xs leading-5 text-slate-500">Apply Pilot may fill reviewed supported fields only after your explicit action. It does not upload documents, click employer controls, or submit the application. Review every employer field, complete all remaining manual work, and personally click the employer&apos;s Submit button.</p>
+      <p className="text-xs leading-5 text-slate-500">Apply Pilot only types answers you approved, only when you press Fill, and only once. It doesn&apos;t upload documents, click the employer&apos;s buttons or press Submit. Check every field on the employer&apos;s form, finish what&apos;s left, and press the employer&apos;s Submit button yourself.</p>
     </div>
   );
 }

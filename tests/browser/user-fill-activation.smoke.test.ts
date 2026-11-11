@@ -346,7 +346,7 @@ async function openProductionControlPage(input: Readonly<{
     });
     await page.goto(CONTROL_URL, { waitUntil: "domcontentloaded" });
     try {
-      await page.getByRole("heading", { name: "Current answer packet", exact: true }).waitFor({ timeout: 5_000 });
+      await page.getByRole("heading", { name: "Step 5 of 8 · Check the answers", exact: true }).waitFor({ timeout: 5_000 });
     } catch (error) {
       const body = await page.locator("body").innerText().catch(() => "<body unavailable>");
       throw new Error(
@@ -363,11 +363,12 @@ async function openProductionControlPage(input: Readonly<{
 }
 
 async function prepareFillEligibleProductionControl(page: Page): Promise<void> {
+  await page.getByTestId("more-actions").locator("summary").click();
   await page.getByRole("button", { name: "Refresh status", exact: true }).click();
   await page.getByTestId("transmission-ack").check();
   await page.waitForFunction(() => {
     const fill = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Fill approved fields"
+      (button) => button.textContent?.trim() === "Fill 1 field (runs once)"
     );
     return fill instanceof HTMLButtonElement && !fill.disabled;
   });
@@ -409,7 +410,7 @@ test("production ApplicationBrowserControl suppresses a rapid duplicate Fill and
   const { browserDiagnostics, context, page } = await openProductionControlPage({ bindingMode: "PENDING" });
   try {
     await prepareFillEligibleProductionControl(page);
-    const fill = page.getByRole("button", { name: "Fill approved fields", exact: true });
+    const fill = page.getByRole("button", { name: "Fill 1 field (runs once)", exact: true });
     await fill.evaluate((button) => {
       if (!(button instanceof HTMLButtonElement)) throw new Error("Fill control is not a button");
       button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -426,8 +427,7 @@ test("production ApplicationBrowserControl suppresses a rapid duplicate Fill and
     for (const name of [
       "Filling…",
       "Refresh status",
-      "Open frozen target",
-      "Inspect form",
+      "Read the form again",
       "Close workflow",
       "Refresh review data",
       "Refresh Fill status"
@@ -455,7 +455,7 @@ test("production ApplicationBrowserControl reconciles a lost Fill result read-on
     const readsBeforeFill = serverState.fillStatusReads;
     serverState.failFillStatus = true;
 
-    await page.getByRole("button", { name: "Fill approved fields", exact: true }).click();
+    await page.getByRole("button", { name: "Fill 1 field (runs once)", exact: true }).click();
     await page.getByText(/Fill mutation outcome is uncertain/i).waitFor();
 
     const bindingState = await page.evaluate(() => window.__productionControlBindingState!);

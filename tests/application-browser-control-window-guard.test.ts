@@ -254,9 +254,10 @@ test("in a browser without the companion, the page says it is the wrong window a
     assert.equal(text.includes("UNKNOWN"), false);
     assert.equal(text.includes("UNAVAILABLE"), false);
     const buttons = buttonTexts(mounted.container);
-    for (const name of ["Refresh status", "Open frozen target", "Inspect form", "Close workflow", "Fill approved fields"]) {
+    for (const name of ["Refresh status", "Open and read the form", "Read the form", "Close workflow"]) {
       assert.equal(buttons.includes(name), false, `${name} should not render`);
     }
+    assert.equal(buttons.some((name) => /^Fill \d+ fields? \(runs once\)$/.test(name)), false, "Fill should not render");
     assert.equal(buttons.includes("Check again"), true);
     const back = mounted.container.querySelector<HTMLAnchorElement>('[data-testid="wrong-window"] a');
     assert.equal(back?.getAttribute("href"), APPLICATION_HREF);
@@ -304,7 +305,8 @@ test("inside the Apply Pilot browser: banner, title and one automatic status rea
     await settle(20);
     assert.equal(mounted.container.querySelector('[data-testid="apply-pilot-browser-banner"]') !== null, true);
     assert.deepEqual(mounted.bindingCalls, [{ type: "GET_STATUS" }]);
-    assert.equal(mounted.window.document.title, "Apply Pilot browser — Employer's form is open");
+    // UX-4a: the tab title now names the current step (redesign §5.3).
+    assert.equal(mounted.window.document.title, "Apply Pilot browser: Step 4, Open the employer's form");
     assert.equal(
       mounted.container.querySelector('[data-testid="companion-status"]')?.textContent?.trim(),
       "Employer's form is open."
@@ -320,7 +322,7 @@ test("a submission can still be recorded from the usual browser", async () => {
     await settle(120);
     const buttons = buttonTexts(mounted.container);
     assert.equal(buttons.includes("I personally submitted this application"), true);
-    assert.equal(buttons.includes("Fill approved fields"), false);
+    assert.equal(buttons.some((name) => /^Fill \d+ fields? \(runs once\)$/.test(name)), false);
   } finally {
     await mounted.cleanup();
   }
