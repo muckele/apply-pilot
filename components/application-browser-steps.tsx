@@ -4,7 +4,7 @@ import { useState, type ReactNode } from "react";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
 import {
-  isAnswerReviewEligible,
+  deriveManualFieldPresentations,
   missingDetailHint,
   presentProposal,
   REVIEW_REASON_LABELS,
@@ -17,6 +17,7 @@ import {
 import type { FillStatusPresentation } from "@/lib/application-browser/fill-status-presentation";
 import {
   answerSourceLabel,
+  approveButtonLabel,
   ASSISTED_APPLY_STEP_NAMES,
   ASSISTED_APPLY_STEP_NUMBERS,
   stepHeading,
@@ -27,7 +28,6 @@ import {
   type StepProgress
 } from "@/lib/assisted-apply/control-steps";
 import {
-  answerStatusLabel,
   dispositionLabel,
   dispositionReasonLabel,
   fieldTypeLabel,
@@ -245,18 +245,28 @@ function freshnessText(freshness: "absent" | "current" | "stale" | "unverified")
   };
 }
 
-function AnswerCard({
-  answer,
-  reviewDisabled,
-  pendingLabel,
-  onReview
-}: {
-  answer: AnswerPacketAnswer;
-  reviewDisabled: boolean;
-  pendingLabel: "APPROVED" | "REJECTED" | null;
-  onReview: (status: "APPROVED" | "REJECTED") => void;
-}) {
-  const proposal = answer.proposal ? presentProposal(answer.proposal, answer.choices, answer) : null;
+function AnswerTechnicalDetails({ answer, proposalLabel }: { answer: AnswerPacketAnswer; proposalLabel: string | null }) {
+  return <details data-technical className="mt-3 text-sm">
+    <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
+    <dl className="mt-2 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+      <div><dt className="text-xs text-slate-500">Field type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.fieldType}</dd></div>
+      <div><dt className="text-xs text-slate-500">Question type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.classification}</dd></div>
+      <div><dt className="text-xs text-slate-500">Review status</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.status}</dd></div>
+      <div><dt className="text-xs text-slate-500">Required</dt><dd className="mt-1 text-slate-900">{answer.required ? "Yes" : "No"}</dd></div>
+      <div><dt className="text-xs text-slate-500">Requires review</dt><dd className="mt-1 text-slate-900">{answer.requiresReview ? "Yes" : "No"}</dd></div>
+      <div><dt className="text-xs text-slate-500">Reviewed by user</dt><dd className="mt-1 text-slate-900">{answer.reviewedByUser ? "Yes" : "No"}</dd></div>
+      <div><dt className="text-xs text-slate-500">Reviewed at</dt><dd className="mt-1 text-slate-900">{displayDate(answer.reviewedAt)}</dd></div>
+      <div><dt className="text-xs text-slate-500">Sensitive</dt><dd className="mt-1 text-slate-900">{answer.sensitive ? "Yes" : "No"}</dd></div>
+      <div><dt className="text-xs text-slate-500">Value redacted</dt><dd className="mt-1 text-slate-900">{answer.valueRedacted ? "Yes" : "No"}</dd></div>
+      <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition</dt><dd className="mt-1 text-slate-900">{answer.disposition}</dd></div>
+      {answer.dispositionReason ? <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition reason</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.dispositionReason}</dd></div> : null}
+      {proposalLabel ? <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Proposal</dt><dd className="mt-1 text-slate-900">{proposalLabel}</dd></div> : null}
+    </dl>
+  </details>;
+}
+
+// A field Apply Pilot didn't propose an answer for: what it is, why, and where to add a detail.
+function AnswerCard({ answer }: { answer: AnswerPacketAnswer }) {
   const hint = missingDetailHint(answer);
   return <article className="rounded-lg border border-slate-200 p-4">
     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -264,81 +274,130 @@ function AnswerCard({
         <h3 className="font-medium text-slate-950">{answer.question}</h3>
         <p className="mt-1 text-xs text-slate-500">{fieldTypeLabel(answer.fieldType)}{answer.required ? " · required" : ""}</p>
       </div>
-      <span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{answerStatusLabel(answer.status)}</span>
+      <span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{dispositionLabel(answer.disposition)}</span>
     </div>
-    <p className="mt-3 text-sm font-medium text-slate-900">{dispositionLabel(answer.disposition)}</p>
     {answer.dispositionReason ? <p className="mt-2 text-sm text-slate-700">{dispositionReasonLabel(answer.dispositionReason)}</p> : null}
     {hint ? <p className="mt-2 text-sm text-slate-700">{hint.text} {/* A new tab: this tab must stay on the run for the companion's connection. */}
       <a href={hint.href} target="_blank" rel="noopener noreferrer" className="font-medium text-brand-700 underline">Open Your application details</a>
     </p> : null}
-    {proposal ? <div className="mt-4 rounded-lg bg-slate-50 p-3">
-      <h4 className="text-sm font-medium text-slate-900">{answer.status === "APPROVED" ? "Apply Pilot will type" : answer.status === "REJECTED" ? "Apply Pilot won't type" : "Apply Pilot proposes"}</h4>
-      <ul className="mt-2 space-y-1 text-sm text-slate-800">{proposal.values.map((value, index) => <li key={`${value.text}:${index}`} className="break-words">{value.text}{value.annotation ? ` — ${value.annotation}` : ""}</li>)}</ul>
-      <p className="mt-2 text-xs text-slate-600">From: {answerSourceLabel(answer)}</p>
-    </div> : null}
-    {answer.choices.length > 0 && !proposal ? <div className="mt-4">
+    {answer.choices.length > 0 ? <div className="mt-4">
       <h4 className="text-xs font-semibold text-slate-500">Choices on the form</h4>
       <ul className="mt-2 space-y-1 text-sm text-slate-700">{answer.choices.map((choice, index) => <li key={`${choice.key}:${index}`}>{choice.label}{choice.disabled ? " — can't be chosen" : ""}</li>)}</ul>
     </div> : null}
-    {isAnswerReviewEligible(answer) ? <div className="mt-4 flex gap-2">
-      <SecondaryButton type="button" aria-label={`Approve proposed answer for ${answer.question}`} disabled={reviewDisabled} onClick={() => onReview("APPROVED")}>{pendingLabel === "APPROVED" ? "Approving…" : "Approve"}</SecondaryButton>
-      <SecondaryButton type="button" aria-label={`Reject proposed answer for ${answer.question}`} disabled={reviewDisabled} onClick={() => onReview("REJECTED")}>{pendingLabel === "REJECTED" ? "Rejecting…" : "Reject"}</SecondaryButton>
-    </div> : null}
-    <details data-technical className="mt-3 text-sm">
-      <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
-      <dl className="mt-2 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-        <div><dt className="text-xs text-slate-500">Field type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.fieldType}</dd></div>
-        <div><dt className="text-xs text-slate-500">Question type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.classification}</dd></div>
-        <div><dt className="text-xs text-slate-500">Review status</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.status}</dd></div>
-        <div><dt className="text-xs text-slate-500">Required</dt><dd className="mt-1 text-slate-900">{answer.required ? "Yes" : "No"}</dd></div>
-        <div><dt className="text-xs text-slate-500">Requires review</dt><dd className="mt-1 text-slate-900">{answer.requiresReview ? "Yes" : "No"}</dd></div>
-        <div><dt className="text-xs text-slate-500">Reviewed by user</dt><dd className="mt-1 text-slate-900">{answer.reviewedByUser ? "Yes" : "No"}</dd></div>
-        <div><dt className="text-xs text-slate-500">Reviewed at</dt><dd className="mt-1 text-slate-900">{displayDate(answer.reviewedAt)}</dd></div>
-        <div><dt className="text-xs text-slate-500">Sensitive</dt><dd className="mt-1 text-slate-900">{answer.sensitive ? "Yes" : "No"}</dd></div>
-        <div><dt className="text-xs text-slate-500">Value redacted</dt><dd className="mt-1 text-slate-900">{answer.valueRedacted ? "Yes" : "No"}</dd></div>
-        <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition</dt><dd className="mt-1 text-slate-900">{answer.disposition}</dd></div>
-        {answer.dispositionReason ? <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition reason</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.dispositionReason}</dd></div> : null}
-        {proposal ? <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Proposal</dt><dd className="mt-1 text-slate-900">{proposal.label}</dd></div> : null}
-      </dl>
-    </details>
+    <AnswerTechnicalDetails answer={answer} proposalLabel={null} />
   </article>;
 }
 
-export type AnswerReviewControls = Readonly<{
-  isDisabled: (answer: AnswerPacketAnswer) => boolean;
-  pendingFor: (answer: AnswerPacketAnswer) => "APPROVED" | "REJECTED" | null;
-  onReview: (answer: AnswerPacketAnswer, status: "APPROVED" | "REJECTED") => void;
-}>;
+// One proposed answer on the approval screen (W6): tick box, the question, what Apply Pilot will
+// type and where the value comes from.
+function ApprovalRow({
+  answer,
+  ticked,
+  locked,
+  fillsThisKind,
+  onToggle
+}: {
+  answer: AnswerPacketAnswer;
+  ticked: boolean;
+  locked: boolean;
+  fillsThisKind: boolean;
+  onToggle: () => void;
+}) {
+  const proposal = answer.proposal ? presentProposal(answer.proposal, answer.choices, answer) : null;
+  const value = proposal?.values.map((entry) => `${entry.text}${entry.annotation ? ` (${entry.annotation})` : ""}`).join(", ") ?? "";
+  const decided = answer.status !== "PENDING";
+  return <li data-testid="approval-row" data-question={answer.question} className="rounded-lg border border-slate-200 p-3">
+    <label className="flex items-start gap-3">
+      <input
+        type="checkbox"
+        data-testid="answer-tick"
+        data-question={answer.question}
+        className="mt-1"
+        checked={ticked}
+        disabled={decided || locked}
+        onChange={onToggle}
+      />
+      <span className="grid flex-1 gap-1 text-sm sm:grid-cols-3 sm:gap-3">
+        <span className="font-medium text-slate-950">{answer.question}{answer.required ? <span className="font-normal text-slate-500"> · required</span> : null}</span>
+        <span className="break-words text-slate-900">{value}</span>
+        <span className="text-slate-600">{answerSourceLabel(answer)}</span>
+      </span>
+    </label>
+    {decided ? <p className="mt-2 pl-7 text-xs text-slate-600">{answer.status === "APPROVED" ? "Already approved." : "Already set not to be filled."}</p> : null}
+    {!fillsThisKind ? <p className="mt-2 pl-7 text-xs text-slate-600">Apply Pilot doesn&apos;t fill this kind of field ({fieldTypeLabel(answer.fieldType)}), so you&apos;ll choose it yourself.</p> : null}
+    <AnswerTechnicalDetails answer={answer} proposalLabel={proposal?.label ?? null} />
+  </li>;
+}
 
-// Step 5 · Check the answers.
+const NO_IDS: ReadonlySet<string> = new Set();
+
+// Step 5 · Check the answers: one approval screen (D-H, W6).
 export function CheckAnswersStepBody({
   view,
   packet,
   run,
   freshness,
-  answerReview,
-  onContinue
+  approving,
+  isTickLocked,
+  onApproveAndContinue
 }: {
   view: ControlStepsView;
   packet: AnswerPacket | null;
   run: ReviewRunAuthority | null;
   freshness: "absent" | "current" | "stale" | "unverified";
-  answerReview: AnswerReviewControls;
-  onContinue: () => void;
+  approving: boolean;
+  isTickLocked: (answer: AnswerPacketAnswer) => boolean;
+  onApproveAndContinue: (displayed: AnswerPacket, ticked: ReadonlySet<string>) => void;
 }) {
   const isNow = view.current === 5;
   const freshnessCopy = freshnessText(freshness);
   const ambiguous = packet?.summary.ambiguousQuestionCount ?? 0;
+  const proposedAnswers = packet?.answers.filter((answer) => answer.disposition === "PROPOSABLE" && answer.proposal !== null) ?? [];
+  const otherAnswers = packet?.answers.filter((answer) => !(answer.disposition === "PROPOSABLE" && answer.proposal !== null)) ?? [];
+  // Unticked answers are remembered for this exact set of answers only.
+  const packetKey = packet ? `${packet.answerPacketVersion}:${packet.packetHash}` : "none";
+  const [unticked, setUnticked] = useState<Readonly<{ key: string; ids: ReadonlySet<string> }>>({ key: packetKey, ids: NO_IDS });
+  const untickedIds = unticked.key === packetKey ? unticked.ids : NO_IDS;
+  const isTicked = (answer: AnswerPacketAnswer) => answer.status === "PENDING" ? !untickedIds.has(answer.id) : answer.status === "APPROVED";
+  const pending = proposedAnswers.filter((answer) => answer.status === "PENDING").length;
+  // The button names exactly what one click approves: answers still waiting and left ticked.
+  const tickedCount = proposedAnswers.filter((answer) => answer.status === "PENDING" && isTicked(answer)).length;
+  // Whether Fill types this kind of field, decided from the answer itself (labels can repeat).
+  const fillsThisKind = (answer: AnswerPacketAnswer) => packet === null || !deriveManualFieldPresentations({ ...packet, answers: [answer] })
+    .some((field) => field.category === "MANUAL_CONTROL_FAMILY" || field.category === "UNSUPPORTED");
+  const toggle = (answer: AnswerPacketAnswer) => {
+    const next = new Set(untickedIds);
+    if (next.has(answer.id)) next.delete(answer.id);
+    else next.add(answer.id);
+    setUnticked({ key: packetKey, ids: next });
+  };
+  const approve = () => {
+    if (packet === null) return;
+    onApproveAndContinue(packet, new Set(proposedAnswers
+      .filter((answer) => answer.status === "PENDING" && isTicked(answer))
+      .map((answer) => answer.id)));
+  };
   return <>
     <p className={`rounded-lg border px-3 py-2 text-sm ${freshnessCopy.className}`}>{freshnessCopy.text}</p>
-    {packet ? <div className="space-y-4">
-      {packet.answers.map((answer) => <AnswerCard
-        key={answer.id}
-        answer={answer}
-        reviewDisabled={answerReview.isDisabled(answer)}
-        pendingLabel={answerReview.pendingFor(answer)}
-        onReview={(status) => answerReview.onReview(answer, status)}
-      />)}
+    {proposedAnswers.length > 0 ? <div className="space-y-2">
+      <div className="hidden grid-cols-3 gap-3 pl-7 text-xs font-semibold text-slate-500 sm:grid" aria-hidden="true">
+        <span>Form asks</span><span>Apply Pilot will type</span><span>From</span>
+      </div>
+      <ul data-testid="approval-list" aria-label="Proposed answers" className="space-y-2">
+        {proposedAnswers.map((answer) => <ApprovalRow
+          key={answer.id}
+          answer={answer}
+          ticked={isTicked(answer)}
+          locked={isTickLocked(answer)}
+          fillsThisKind={fillsThisKind(answer)}
+          onToggle={() => toggle(answer)}
+        />)}
+      </ul>
+      <p className="text-xs text-slate-600">Untick anything you don&apos;t want Apply Pilot to fill. Nothing is sent until you press the button below.</p>
+    </div> : null}
+    {otherAnswers.length > 0 ? <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-slate-950">You&apos;ll answer these yourself</h3>
+      {otherAnswers.map((answer) => <AnswerCard key={answer.id} answer={answer} />)}
     </div> : null}
     {packet || isNow ? <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
       <h3 className="text-sm font-semibold text-slate-950">Before you continue</h3>
@@ -355,17 +414,19 @@ export function CheckAnswersStepBody({
         </details>
       </div> : null}
       {ambiguous > 0 ? <p className="text-sm text-amber-900">{ambiguous} {ambiguous === 1 ? "question" : "questions"} on the form couldn&apos;t be read clearly. You&apos;ll answer {ambiguous === 1 ? "it" : "them"} yourself; continuing doesn&apos;t answer {ambiguous === 1 ? "it" : "them"}.</p> : null}
-      {packet ? <p id="review-readiness" className="text-sm text-slate-700">{packet.summary.readyForRunResolution
-        ? "Every proposed answer has your decision."
-        : packet.summary.pendingReviewCount > 0
-          ? `${packet.summary.pendingReviewCount} proposed ${packet.summary.pendingReviewCount === 1 ? "answer still needs" : "answers still need"} your decision.`
+      {otherAnswers.length > 0 ? <p className="text-sm text-slate-700">{otherAnswers.length} {otherAnswers.length === 1 ? "field is" : "fields are"} yours to fill (listed in step 7).</p> : null}
+      {packet ? <p id="review-readiness" className="text-sm text-slate-700">{pending > 0
+        ? "When you continue, ticked answers are approved and unticked ones won't be filled."
+        : packet.summary.readyForRunResolution
+          ? "Every proposed answer has your decision."
           : "Apply Pilot is still checking the answers."}</p> : null}
       <StepActionButton
         action="CONTINUE_REVIEW"
         state={view.actions.CONTINUE_REVIEW}
         primary={isNow && view.primary?.action === "CONTINUE_REVIEW"}
         describedBy="review-readiness review-reasons"
-        onClick={onContinue}
+        label={approving ? undefined : approveButtonLabel(tickedCount, pending)}
+        onClick={approve}
       />
     </div> : null}
     {packet ? <details data-technical className="rounded-lg border border-slate-200 p-3 text-sm">

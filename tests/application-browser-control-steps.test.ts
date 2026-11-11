@@ -392,7 +392,8 @@ const TABLE: readonly TableCase[] = [
   { name: "form open, read in progress", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "IN_PROGRESS" } }, expect: { step: "4", action: "READ_FORM", enabled: false } },
   { name: "form open, read failed", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "FAILED", errorCode: "FORM_STABILITY_TIMEOUT", retryAllowed: true } }, expect: { step: "4", action: "READ_FORM", enabled: true } },
   { name: "form open, form changed", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "REINSPECTION_REQUIRED", errorCode: "FORM_GENERATION_INVALIDATED", retryAllowed: true } }, expect: { step: "4", action: "READ_FORM", enabled: true } },
-  { name: "answers waiting for decisions", run: { state: "REVIEW_REQUIRED" }, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: false } },
+  { name: "answers waiting for decisions", run: { state: "REVIEW_REQUIRED" }, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: true } },
+  { name: "answers couldn't be loaded", run: null, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: false } },
   { name: "answers all decided", run: { state: "REVIEW_REQUIRED" }, packet: decidedPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(decidedPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: true } },
   { name: "answers checked, box not ticked", packet: reviewedPacket(), status: readStatus(reviewedPacket()), expect: { step: "6", action: "FILL", enabled: false } },
   { name: "answers checked, box ticked", packet: reviewedPacket(), status: readStatus(reviewedPacket()), acknowledge: true, expect: { step: "6", action: "FILL", enabled: true } },
@@ -451,10 +452,10 @@ test("the reason names the blocker in plain words", async () => {
   const cases: Array<[TableCase, RegExp]> = [
     [TABLE[0], /Waiting for the Apply Pilot browser to connect/],
     [TABLE[2], /isn't prepared yet/],
-    [TABLE[9], /Approve or reject each proposed answer first \(2 left\)/],
-    [TABLE[11], /Tick the box above/],
-    [TABLE[13], /Fill is running/],
-    [TABLE[20], /Apply Pilot isn't allowed on this employer's site/]
+    [TABLE.find((entry) => entry.name === "answers couldn't be loaded")!, /couldn't confirm the latest answers/],
+    [TABLE.find((entry) => entry.name === "answers checked, box not ticked")!, /Tick the box above/],
+    [TABLE.find((entry) => entry.name === "Fill running (bridge)")!, /Fill is running/],
+    [TABLE.find((entry) => entry.name === "stopped safely before the form opened")!, /Apply Pilot isn't allowed on this employer's site/]
   ];
   for (const [entry, expected] of cases) {
     const mounted = await mount({ run: entry.run, packet: entry.packet, fill: entry.fill, acknowledge: entry.acknowledge });
@@ -650,14 +651,15 @@ test("a handed-over form that later closes still leads to Record it", async () =
   }
 });
 
-test("answer cards use plain words, keep the new-tab detail link, and keep codes under Details", async () => {
+test("answers use plain words, keep the new-tab detail link, and keep codes under Details", async () => {
   const packet = pendingPacket();
   const mounted = await mount({ run: { state: "REVIEW_REQUIRED" }, packet, fill: noAttempt({ state: "REVIEW_REQUIRED" }) });
   try {
-    const card = [...mounted.container.querySelectorAll("article")].find((article) => article.querySelector("h3")?.textContent === "LinkedIn profile");
+    // UX-4b: proposed answers are rows on the one approval screen (question, value, source).
+    const card = mounted.container.querySelector<HTMLElement>('[data-testid="approval-row"][data-question="LinkedIn profile"]');
     assert.ok(card);
-    assert.match(card.textContent ?? "", /Apply Pilot proposes/);
-    assert.match(card.textContent ?? "", /From: Your application details/);
+    assert.match(card.textContent ?? "", /https:\/\/example\.test\/in\/someone/);
+    assert.match(card.textContent ?? "", /Your application details/);
     const phone = [...mounted.container.querySelectorAll("article")].find((article) => article.querySelector("h3")?.textContent === "Phone number");
     const link = phone?.querySelector<HTMLAnchorElement>('a[href="/settings/application-details"]');
     assert.equal(link?.getAttribute("target"), "_blank");
@@ -695,8 +697,8 @@ function baseInput(): ControlStepInput {
       runState: "READY",
       packet: { inspectionVersion: 2, answerPacketVersion: 3, reviewedAt: "2026-08-29T20:11:00.000Z", fieldCount: 19, proposableCount: 6, pendingReviewCount: 0, readyForRunResolution: true },
       pendingMutation: false,
-      pendingResolve: false,
-      resolveEligible: false
+      approving: false,
+      approveEligible: false
     },
     fill: {
       phase: "loaded",
@@ -894,7 +896,8 @@ test("review fix: when the read after a successful open throws, packet trust fol
     heldPacket.resolve(json({ runId: RUN_ID, current: packet }));
     await flush();
     await flush();
-    const approve = mounted.container.querySelector<HTMLButtonElement>('[aria-label="Approve proposed answer for LinkedIn profile"]');
+    // UX-4b: the answer's tick box is enabled exactly when it could be reviewed.
+    const approve = mounted.container.querySelector<HTMLInputElement>('input[data-testid="answer-tick"][data-question="LinkedIn profile"]');
     assert.equal(approve !== null, true);
     assert.equal(approve?.disabled, true, "the answers stay unverified; the older refresh can't re-trust them");
   } finally {

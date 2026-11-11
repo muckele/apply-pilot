@@ -87,9 +87,10 @@ export type ControlStepInput = Readonly<{
       readyForRunResolution: boolean;
     }> | null;
     pendingMutation: boolean;
-    pendingResolve: boolean;
-    // isResolveReviewEligible, unchanged.
-    resolveEligible: boolean;
+    // The one approval click (D-H) is sending its reviews.
+    approving: boolean;
+    // Trusted answers still waiting for review (the click's own requests keep their gates).
+    approveEligible: boolean;
   }>;
   fill: Readonly<{
     phase: "idle" | "loading" | "loaded" | "error";
@@ -171,6 +172,15 @@ export function controlPageTitle(view: ControlStepsView, hasStatus: boolean): st
 
 function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
+}
+
+// The one approval button names exactly how many answers one click approves (D-H): those still
+// waiting and left ticked. Answers approved earlier are not counted again.
+export function approveButtonLabel(tickedWaitingCount: number, waitingCount: number): string {
+  if (waitingCount === 0) return "Continue";
+  if (tickedWaitingCount === 0) return "Approve none and continue";
+  if (tickedWaitingCount === 1) return "Approve this 1 and continue";
+  return `Approve these ${tickedWaitingCount} and continue`;
 }
 
 // The count is apparentAutomatableFieldCount, an estimate: Fill keeps values already in the form,
@@ -318,10 +328,10 @@ function actionStates(input: ControlStepInput, facts: Facts): Record<ControlStep
   );
 
   const continueReview = action(
-    review.pendingResolve ? "Continuing…" : "These are right: continue",
-    !input.uiLocked && review.resolveEligible && !review.pendingMutation,
+    review.approving ? "Approving…" : "Approve and continue",
+    !input.uiLocked && review.approveEligible && !review.pendingMutation,
     () => firstReason(
-      review.pendingResolve && "Saving…",
+      review.approving && "Approving your answers…",
       review.pendingMutation && "Saving your choice…",
       busyReason(input),
       review.phase === "loading" && "Loading the latest answers…",
@@ -330,9 +340,7 @@ function actionStates(input: ControlStepInput, facts: Facts): Record<ControlStep
       packet === null && "Apply Pilot hasn't proposed any answers yet. Read the form first.",
       packet !== null && packet.reviewedAt !== null && "You've already checked these answers.",
       review.runState !== "REVIEW_REQUIRED" && "These answers can't be confirmed at this stage.",
-      packet !== null && packet.pendingReviewCount > 0 &&
-        `Approve or reject each proposed answer first (${packet.pendingReviewCount} left).`,
-      packet !== null && !packet.readyForRunResolution &&
+      packet !== null && !packet.readyForRunResolution && packet.pendingReviewCount === 0 &&
         "Apply Pilot is still checking the answers. Use Refresh review data under More."
     )
   );
@@ -446,7 +454,7 @@ function readSummary(input: ControlStepInput): string {
   if (packet.proposableCount === 0) {
     return `Apply Pilot read ${packet.fieldCount} ${plural(packet.fieldCount, "field", "fields")} but has no answers to propose. You'll fill them yourself.`;
   }
-  return `Apply Pilot read ${packet.fieldCount} ${plural(packet.fieldCount, "field", "fields")} and proposes answers for ${packet.proposableCount}. Approve or reject each one, then continue.`;
+  return `Apply Pilot read ${packet.fieldCount} ${plural(packet.fieldCount, "field", "fields")} and proposes answers for ${packet.proposableCount}. Untick any you don't want filled, then approve.`;
 }
 
 function place(input: ControlStepInput, facts: Facts): Placement {

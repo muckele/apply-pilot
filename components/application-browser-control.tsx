@@ -29,6 +29,7 @@ import {
   buildResolveReviewRequest,
   derivePacketFreshness,
   deriveManualFieldPresentations,
+  isAnswerReviewEligible,
   isAnswerReviewPostconditionCurrent,
   isAnswerReviewMutationEligible,
   fillRejectionNotice,
@@ -212,6 +213,59 @@ type InvokeResult =
 
 const NOT_ACCEPTED: InvokeResult = { outcome: "NOT_ACCEPTED" };
 
+// Whether a review mutation's own postcondition check confirmed the change it asked for.
+type ReviewStepOutcome = "CONFIRMED" | "NOT_CONFIRMED";
+const CONFIRMED: ReviewStepOutcome = "CONFIRMED";
+const NOT_CONFIRMED: ReviewStepOutcome = "NOT_CONFIRMED";
+
+type PlannedApproval = Readonly<{ answerId: string; fingerprint: string; status: "APPROVED" | "REJECTED" }>;
+
+// What the user saw for one proposed answer: everything except its review status.
+function proposedAnswerFingerprint(answer: AnswerPacket["answers"][number]): string {
+  return JSON.stringify([
+    answer.id,
+    answer.normalizedFieldKey,
+    answer.question,
+    answer.fieldType,
+    answer.classification,
+    answer.disposition,
+    answer.proposal,
+    answer.choices,
+    answer.required,
+    answer.sensitive,
+    answer.valueRedacted
+  ]);
+}
+
+// One review per pending proposed answer, in screen order: ticked → APPROVED, unticked → REJECTED.
+function planAnswerApprovals(packet: AnswerPacket, ticked: ReadonlySet<string>): readonly PlannedApproval[] {
+  return packet.answers
+    .filter((answer) => isAnswerReviewEligible(answer))
+    .map((answer) => ({
+      answerId: answer.id,
+      fingerprint: proposedAnswerFingerprint(answer),
+      status: ticked.has(answer.id) ? "APPROVED" as const : "REJECTED" as const
+    }));
+}
+
+// Before resolving: the same proposed answers, unchanged, each decided as the screen said.
+function proposedAnswersAsPlanned(
+  displayed: AnswerPacket,
+  latest: AnswerPacket,
+  plan: readonly PlannedApproval[]
+): boolean {
+  const proposedIn = (packet: AnswerPacket) => packet.answers.filter((answer) => answer.disposition === "PROPOSABLE");
+  const shown = proposedIn(displayed);
+  const now = proposedIn(latest);
+  if (shown.length !== now.length) return false;
+  return shown.every((answer) => {
+    const current = now.find((entry) => entry.id === answer.id);
+    if (current === undefined || proposedAnswerFingerprint(current) !== proposedAnswerFingerprint(answer)) return false;
+    const planned = plan.find((step) => step.answerId === answer.id);
+    return current.status === (planned ? planned.status : answer.status);
+  });
+}
+
 type CompanionWindow = "checking" | "present" | "absent";
 
 // The companion's connection arrives a moment after its signed-in page loads, so the
@@ -253,6 +307,8 @@ export function ApplicationBrowserControl({
   const [reviewLoad, setReviewLoad] = useState<ReviewLoad>(initialReviewLoad);
   const [fillStatusLoad, setFillStatusLoad] = useState<FillStatusLoad>(initialFillStatusLoad);
   const [pendingReviewMutation, setPendingReviewMutation] = useState<PendingReviewMutation>(null);
+  const [approvalPending, setApprovalPending] = useState(false);
+  const [approvalNotice, setApprovalNotice] = useState<CommandNotice | null>(null);
   const [pendingFillActivation, setPendingFillActivation] = useState(false);
   const [fillMayHaveDispatched, setFillMayHaveDispatched] = useState(false);
   const [transmissionAcknowledged, setTransmissionAcknowledged] = useState(false);
@@ -273,6 +329,7 @@ export function ApplicationBrowserControl({
   const fillStatusAbortControllerRef = useRef<AbortController | null>(null);
   const pendingCommandRef = useRef<PendingBrowserCommand>(null);
   const pendingReviewMutationRef = useRef<PendingReviewMutation>(null);
+  const approvalPendingRef = useRef(false);
   const pendingFillActivationRef = useRef(false);
   const fillMayHaveDispatchedRef = useRef(false);
   const transmissionAcknowledgedRef = useRef(false);
@@ -938,7 +995,7 @@ export function ApplicationBrowserControl({
   const reviewAnswer = useCallback(async (
     answer: AnswerPacket["answers"][number],
     status: "APPROVED" | "REJECTED"
-  ) => {
+  ): Promise<ReviewStepOutcome> => {
     const current = reviewLoadRef.current;
     const currentAnswer = current.packet?.answers.find((entry) => entry.id === answer.id);
     if (
@@ -953,9 +1010,9 @@ export function ApplicationBrowserControl({
         run: current.run,
         trusted: true
       })
-    ) return;
+    ) return NOT_CONFIRMED;
     const expectedGeneration = activeComponentGenerationRef.current;
-    if (expectedGeneration === null) return;
+    if (expectedGeneration === null) return NOT_CONFIRMED;
 
     const mutation: Exclude<PendingReviewMutation, null> = { type: "ANSWER", answerId: currentAnswer.id, status };
     const snapshot: AnswerReviewMutationSnapshot = {
@@ -984,7 +1041,7 @@ export function ApplicationBrowserControl({
         status: snapshot.requestedStatus
       });
       const response = await fetch(request.url, { ...request.init, signal: controller.signal });
-      if (!active()) return;
+      if (!active()) return NOT_CONFIRMED;
       if (response.status === 409) {
         const conflictNotice: CommandNotice = {
           tone: "WARNING",
@@ -995,7 +1052,7 @@ export function ApplicationBrowserControl({
         if (active() && recovery.outcome === "COMMITTED") {
           updateReviewLoad((loaded) => ({ ...loaded, notice: conflictNotice }));
         }
-        return;
+        return NOT_CONFIRMED;
       }
       if (!response.ok) {
         if (response.status === 401) markUnverified({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to review answers." }, true);
@@ -1003,24 +1060,24 @@ export function ApplicationBrowserControl({
         else if (response.status === 404) markUnverified({ tone: "ERROR", text: "This application run or answer is unavailable." }, true);
         else if (response.status === 429) markUnverified({ tone: "WARNING", text: "Review actions are temporarily limited. Wait before refreshing review data." });
         else markUnverified({ tone: "ERROR", text: "The review action outcome is unverified. Refresh review data before another action." });
-        return;
+        return NOT_CONFIRMED;
       }
       let value: unknown;
       try {
         value = await response.json();
       } catch {
         markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
-        return;
+        return NOT_CONFIRMED;
       }
-      if (!active()) return;
+      if (!active()) return NOT_CONFIRMED;
       try {
         parseAnswerReviewResponse(value, { runId, answerId: snapshot.answerId, status: snapshot.requestedStatus });
       } catch {
         markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
-        return;
+        return NOT_CONFIRMED;
       }
       const refreshResult = await fetchReviewAuthority(expectedGeneration);
-      if (!active() || refreshResult.outcome !== "COMMITTED") return;
+      if (!active() || refreshResult.outcome !== "COMMITTED") return NOT_CONFIRMED;
       const refreshed = reviewLoadRef.current;
       if (isAnswerReviewPostconditionCurrent({
         phase: refreshed.phase,
@@ -1032,6 +1089,7 @@ export function ApplicationBrowserControl({
           ...loaded,
           notice: { tone: "SUCCESS", text: status === "APPROVED" ? "Answer approved." : "Answer rejected." }
         }));
+        return CONFIRMED;
       } else {
         updateReviewLoad((loaded) => ({
           ...loaded,
@@ -1047,9 +1105,10 @@ export function ApplicationBrowserControl({
       }
       if (mutationAbortControllerRef.current === controller) mutationAbortControllerRef.current = null;
     }
+    return NOT_CONFIRMED;
   }, [fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
 
-  const resolveReview = useCallback(async () => {
+  const resolveReview = useCallback(async (): Promise<ReviewStepOutcome> => {
     const current = reviewLoadRef.current;
     const expectedGeneration = activeComponentGenerationRef.current;
     if (
@@ -1061,7 +1120,7 @@ export function ApplicationBrowserControl({
       current.run === null ||
       current.packet === null ||
       !isResolveReviewEligible({ run: current.run, packet: current.packet, trusted: true })
-    ) return;
+    ) return NOT_CONFIRMED;
 
     const mutation: Exclude<PendingReviewMutation, null> = { type: "RESOLVE" };
     const snapshot: ResolveReviewMutationSnapshot = {
@@ -1087,7 +1146,7 @@ export function ApplicationBrowserControl({
     try {
       const request = buildResolveReviewRequest({ runId, run: current.run, packet: current.packet });
       const response = await fetch(request.url, { ...request.init, signal: controller.signal });
-      if (!active()) return;
+      if (!active()) return NOT_CONFIRMED;
       if (response.status === 409) {
         const conflictNotice: CommandNotice = {
           tone: "WARNING",
@@ -1098,7 +1157,7 @@ export function ApplicationBrowserControl({
         if (active() && recovery.outcome === "COMMITTED") {
           updateReviewLoad((loaded) => ({ ...loaded, notice: conflictNotice }));
         }
-        return;
+        return NOT_CONFIRMED;
       }
       if (!response.ok) {
         if (response.status === 401) markUnverified({ tone: "ERROR", text: "Your session is no longer authenticated. Sign in again to resolve review." }, true);
@@ -1106,24 +1165,24 @@ export function ApplicationBrowserControl({
         else if (response.status === 404) markUnverified({ tone: "ERROR", text: "This application run is unavailable for review resolution." }, true);
         else if (response.status === 429) markUnverified({ tone: "WARNING", text: "Review actions are temporarily limited. Wait before refreshing review data." });
         else markUnverified({ tone: "ERROR", text: "The review action outcome is unverified. Refresh review data before another action." });
-        return;
+        return NOT_CONFIRMED;
       }
       let value: unknown;
       try {
         value = await response.json();
       } catch {
         markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
-        return;
+        return NOT_CONFIRMED;
       }
-      if (!active()) return;
+      if (!active()) return NOT_CONFIRMED;
       try {
         parseApplicationRunReviewResponse(value, runId);
       } catch {
         markUnverified({ tone: "ERROR", text: "Apply Pilot could not safely read the review action response." });
-        return;
+        return NOT_CONFIRMED;
       }
       const refreshResult = await fetchReviewAuthority(expectedGeneration);
-      if (!active() || refreshResult.outcome !== "COMMITTED") return;
+      if (!active() || refreshResult.outcome !== "COMMITTED") return NOT_CONFIRMED;
       const refreshed = reviewLoadRef.current;
       if (isResolveReviewPostconditionCurrent({
         phase: refreshed.phase,
@@ -1134,6 +1193,7 @@ export function ApplicationBrowserControl({
       })) {
         updateReviewLoad((loaded) => ({ ...loaded, notice: { tone: "SUCCESS", text: "Review resolved." } }));
         await fetchFillStatus(expectedGeneration);
+        return CONFIRMED;
       } else {
         updateReviewLoad((loaded) => ({
           ...loaded,
@@ -1152,7 +1212,100 @@ export function ApplicationBrowserControl({
       }
       if (mutationAbortControllerRef.current === controller) mutationAbortControllerRef.current = null;
     }
+    return NOT_CONFIRMED;
   }, [fetchFillStatus, fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
+
+
+  // Step 5 (D-H): one click sends today's per-answer review for every pending proposed answer
+  // (ticked → APPROVED, unticked → REJECTED) in screen order, then today's resolve-review. Each
+  // request keeps its own shape, postcondition check and authority refresh. Before each one the
+  // latest answer is re-read; if anything failed or changed, nothing more is sent.
+  const approveAndContinue = useCallback(async (
+    displayed: AnswerPacket,
+    ticked: ReadonlySet<string>
+  ) => {
+    if (
+      approvalPendingRef.current ||
+      pendingReviewMutationRef.current !== null ||
+      pendingFillActivationRef.current ||
+      personalSubmissionCompletionPendingRef.current
+    ) return;
+    const expectedGeneration = activeComponentGenerationRef.current;
+    if (expectedGeneration === null) return;
+    const active = () => activeComponentGenerationRef.current === expectedGeneration;
+    approvalPendingRef.current = true;
+    setApprovalPending(true);
+    setApprovalNotice(null);
+
+    const stop = async () => {
+      if (!active()) return;
+      const latest = reviewLoadRef.current;
+      // A refused session or a missing run already cleared the answers; reading again won't help.
+      const cleared = latest.phase === "error" && latest.run === null && latest.packet === null;
+      if (!cleared && (latest.phase !== "loaded" || latest.unverified)) {
+        await fetchReviewAuthority(expectedGeneration);
+        if (!active()) return;
+      }
+      setApprovalNotice({
+        tone: "WARNING",
+        text: cleared ? "Nothing more was approved." : "The answers changed, so nothing more was approved. Check them again."
+      });
+    };
+
+    try {
+      const start = reviewLoadRef.current;
+      if (
+        start.phase !== "loaded" ||
+        start.unverified ||
+        start.packet !== displayed ||
+        start.run?.state !== "REVIEW_REQUIRED"
+      ) {
+        await stop();
+        return;
+      }
+      const plan = planAnswerApprovals(displayed, ticked);
+      for (const step of plan) {
+        if (!active()) return;
+        const latest = reviewLoadRef.current;
+        const answer = latest.packet?.answers.find((entry) => entry.id === step.answerId);
+        if (
+          latest.phase !== "loaded" ||
+          latest.unverified ||
+          latest.packet === null ||
+          latest.packet.answerPacketVersion !== displayed.answerPacketVersion ||
+          answer === undefined ||
+          answer.status !== "PENDING" ||
+          proposedAnswerFingerprint(answer) !== step.fingerprint
+        ) {
+          await stop();
+          return;
+        }
+        const outcome = await reviewAnswer(answer, step.status);
+        if (outcome !== CONFIRMED) {
+          await stop();
+          return;
+        }
+      }
+      if (!active()) return;
+      const latest = reviewLoadRef.current;
+      if (
+        latest.phase !== "loaded" ||
+        latest.unverified ||
+        latest.packet === null ||
+        latest.packet.answerPacketVersion !== displayed.answerPacketVersion ||
+        !proposedAnswersAsPlanned(displayed, latest.packet, plan) ||
+        !isResolveReviewEligible({ run: latest.run, packet: latest.packet, trusted: true })
+      ) {
+        await stop();
+        return;
+      }
+      const resolved = await resolveReview();
+      if (resolved !== CONFIRMED) await stop();
+    } finally {
+      approvalPendingRef.current = false;
+      if (active()) setApprovalPending(false);
+    }
+  }, [fetchReviewAuthority, resolveReview, reviewAnswer]);
 
   const reconcilePersonalSubmissionCompletion = useCallback(async (
     expectedGeneration: number
@@ -1529,6 +1682,13 @@ export function ApplicationBrowserControl({
     packet: reviewLoad.packet,
     trusted: reviewLoad.phase === "loaded" && !reviewLoad.unverified
   });
+  // The one approval click (D-H): trusted answers still waiting for review. Every request it sends
+  // is still checked by isAnswerReviewMutationEligible and isResolveReviewEligible.
+  const approveAndContinueEligible = reviewLoad.phase === "loaded" &&
+    !reviewLoad.unverified &&
+    reviewLoad.run?.state === "REVIEW_REQUIRED" &&
+    reviewLoad.packet !== null &&
+    (resolveReviewEligible || reviewLoad.packet.answers.some((answer) => isAnswerReviewEligible(answer)));
   const personalSubmissionCompletionPending = personalSubmissionCompletion.phase === "pending";
   const personalSubmissionRunVerified = reviewLoad.runVerified;
   const personalSubmissionCompletionEligible = isPersonalSubmissionCompletionEligible({
@@ -1623,9 +1783,9 @@ export function ApplicationBrowserControl({
         pendingReviewCount: reviewLoad.packet.summary.pendingReviewCount,
         readyForRunResolution: reviewLoad.packet.summary.readyForRunResolution
       },
-      pendingMutation: pendingReviewMutation !== null,
-      pendingResolve: pendingReviewMutation?.type === "RESOLVE",
-      resolveEligible: resolveReviewEligible
+      pendingMutation: pendingReviewMutation !== null || approvalPending,
+      approving: approvalPending,
+      approveEligible: approveAndContinueEligible
     },
     fill: {
       phase: fillStatusLoad.phase,
@@ -1763,18 +1923,19 @@ export function ApplicationBrowserControl({
     {
       key: "refresh-review",
       label: reviewLoad.phase === "loading" ? "Refreshing…" : "Refresh review data",
-      disabled: fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null,
+      disabled: fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null || approvalPending,
       onClick: () => {
         if (
           !pendingFillActivationRef.current &&
-          !personalSubmissionCompletionPendingRef.current
+          !personalSubmissionCompletionPendingRef.current &&
+          !approvalPendingRef.current
         ) void fetchReviewAuthority();
       }
     },
     {
       key: "refresh-fill",
       label: fillStatusLoad.phase === "loading" ? "Refreshing Fill status…" : "Refresh Fill status",
-      disabled: fillUiLocked || pendingCommand !== null || pendingReviewMutation !== null || fillStatusLoad.phase === "loading",
+      disabled: fillUiLocked || pendingCommand !== null || pendingReviewMutation !== null || approvalPending || fillStatusLoad.phase === "loading",
       onClick: () => {
         if (!pendingFillActivationRef.current) void fetchFillStatus();
       }
@@ -1804,6 +1965,7 @@ export function ApplicationBrowserControl({
         {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
         {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
         <Notice notice={reviewLoad.notice} />
+        <Notice notice={approvalNotice} />
         <Notice notice={fillStatusLoad.notice} />
       </div>
 
@@ -1825,19 +1987,15 @@ export function ApplicationBrowserControl({
             packet={reviewLoad.packet}
             run={reviewLoad.run}
             freshness={freshness}
-            answerReview={{
-              isDisabled: (answer) => fillUiLocked ||
-                pendingReviewMutation !== null ||
-                reviewLoad.phase !== "loaded" ||
-                reviewLoad.unverified ||
-                reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer ||
-                !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true }),
-              pendingFor: (answer) => pendingReviewMutation?.type === "ANSWER" && pendingReviewMutation.answerId === answer.id
-                ? pendingReviewMutation.status
-                : null,
-              onReview: (answer, reviewStatus) => void reviewAnswer(answer, reviewStatus)
-            }}
-            onContinue={() => void resolveReview()}
+            approving={approvalPending}
+            isTickLocked={(answer) => fillUiLocked ||
+              approvalPending ||
+              pendingReviewMutation !== null ||
+              reviewLoad.phase !== "loaded" ||
+              reviewLoad.unverified ||
+              reviewLoad.packet?.answers.find((entry) => entry.id === answer.id) !== answer ||
+              !isAnswerReviewMutationEligible({ answer, run: reviewLoad.run, trusted: true })}
+            onApproveAndContinue={(displayed, ticked) => void approveAndContinue(displayed, ticked)}
           />
         </StepSection>
 
