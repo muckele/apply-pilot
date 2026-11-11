@@ -125,3 +125,16 @@ test("the save refuses an answer to a stored heading and writes nothing", async 
   );
   assert.equal(created.length, 0);
 });
+
+test("the save refuses a new 201-character owner answer and writes nothing", async (t) => {
+  const created = installTransaction(t);
+  const input = request("requirement:2");
+  const long = `${"Wrote partner documentation ".repeat(8)}.`.slice(0, 201).replace(/\s+$/u, "x").padEnd(201, "x");
+  (input.decisions[1] as { attestedFact: string }).attestedFact = long;
+  assert.equal(long.length, 201);
+  await assert.rejects(
+    saveEvidenceSnapshot("user-1", job.id, input),
+    (error: unknown) => error instanceof PublicApiError && error.status === 422 && error.details?.code === "OWNER_FACT_TOO_LONG"
+  );
+  assert.equal(created.length, 0);
+});

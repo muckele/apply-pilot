@@ -23,7 +23,7 @@ import {
   buildCurrentJobMatchInput,
   currentJobMatchInputHash
 } from "@/lib/jobs/current-job-match";
-import { assertKeptOwnerFactsClean, assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
+import { assertKeptOwnerFactsClean, assertNewOwnerFactShape, assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
 import { prisma } from "@/lib/prisma";
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -96,6 +96,7 @@ function effectiveAcceptedFacts(
     if (!prior || action.factId !== prior.factId || action.action === "REMOVE") return [];
     if (action.action === "RETAIN") return [validateRetainedAcceptedFact(review, prior)];
     assertOwnerFactClean(action.attestedFact);
+    assertNewOwnerFactShape(action.attestedFact);
     const replacement = {
       factId: "",
       originGapId: prior.originGapId,
