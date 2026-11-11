@@ -47,7 +47,7 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
       window.sessionStorage.removeItem(documentsCreatedKey(jobId));
     } catch {}
     // One-time handoff from TailorFlow: bring the new documents into view after the refresh.
-    if (created) requestAnimationFrame(() => document.getElementById("documents")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+    if (created) requestAnimationFrame(() => document.getElementById("apply-documents")?.scrollIntoView({ block: "start", behavior: "smooth" }));
   }, [hasDocuments, jobId]);
 
   return (
@@ -79,7 +79,7 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
 
       <section id="step-3" aria-label="Your documents">
         {hasDocuments ? (
-          <div id="documents" className="job-card job-section">
+          <div id="apply-documents" className="job-card job-section">
             <h2 id="documents-heading" tabIndex={-1} className="job-section-title">Review and edit</h2>
             <p className="job-card-copy">Read each document, edit anything you like, and download it. Your own edits are marked as yours; changed facts are flagged for you to confirm before export.</p>
             {pendingFactChanges ? (

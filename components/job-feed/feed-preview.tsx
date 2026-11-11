@@ -44,7 +44,7 @@ export function FeedPreview({
         <div className="feed-tailor-prompt">
           <p className="job-card-title"><Wand2 size={16} aria-hidden="true" /> Tailor your résumé first</p>
           <p className="job-card-copy">See what this job asks for, line by line, then get a résumé and cover letter written for it.</p>
-          <Link href={`/jobs/${job.id}#tailor`} className="job-button job-button-primary">Tailor your résumé for this job</Link>
+          <Link href={`/jobs/${job.id}/apply`} className="job-button job-button-primary">Tailor your résumé for this job</Link>
         </div>
       </div>
       <MatchCard jobId={job.id} estimate={estimate} checklist={checklist} onSeeBreakdown={estimate ? () => setTab("match") : undefined} />

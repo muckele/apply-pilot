@@ -187,9 +187,16 @@ test("a ready tailored résumé offers the cover letter on its own; an outdated 
 
 test("ready documents appear on the Apply page under step 3, ahead of Apply on my own", async () => {
   await withPage({ detail: { resumeVersions: [VERSION] } }, async (harness) => {
-    const documents = harness.container.querySelector("#step-3 #documents")!;
+    const documents = harness.container.querySelector("#step-3 #apply-documents")!;
     assert.match(documents.textContent ?? "", /Review and edit/u);
     assert.ok(documents.querySelector("[data-product-documents]"));
     assert.ok(harness.button("Create new versions"));
+  });
+});
+
+test("#step-3 exists even before any document does, so the Apply Kit's fix link has a target", async () => {
+  await withPage({}, async (harness) => {
+    assert.equal(harness.container.querySelector("#step-3") !== null, true);
+    assert.equal(harness.container.querySelector("#apply-documents") === null, true);
   });
 });

@@ -101,12 +101,14 @@ test("actual owned product job route reviews full career and exports current fil
         if(theme==="system"){await page.emulateMedia({colorScheme:"dark"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");await page.emulateMedia({colorScheme:"light"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="light");}
         await page.locator("[data-job-workspace] h1").scrollIntoViewIfNeeded();
         await page.screenshot({path:`${outputDir}/${name}-${theme}-source.png`});
-        assert.match(await page.locator("#tailor").innerText(),/Lines you.ve added for this job/u);
+        // Tailoring and documents live on the Apply page (#step-2, #step-3), not the job page.
+        await page.goto(`${origin}/jobs/${job.id}/apply`,{waitUntil:"networkidle"});
+        assert.match(await page.locator("#step-2").innerText(),/Lines you.ve added for this job/u);
         await page.getByRole("button",{name:"Review cover letter",exact:true}).click();
         if(theme!=="light") {
           await page.emulateMedia({colorScheme:"dark"});
           if(theme==="system")await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");
-          const contrasts=await page.locator('[data-job-workspace] h1, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
+          const contrasts=await page.locator('h1, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
             let ancestor:Element|null=element,background="";
             while(ancestor){background=getComputedStyle(ancestor).backgroundColor;if(background!=="rgba(0, 0, 0, 0)"&&background!=="transparent")break;ancestor=ancestor.parentElement;}
             const [a,b]=[getComputedStyle(element).color,background].map(value=>value.match(/[\d.]+/g)!.slice(0,3).map(Number).map(channel=>{const s=channel/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i]!,0));
@@ -121,6 +123,7 @@ test("actual owned product job route reviews full career and exports current fil
         await page.screenshot({path:`${outputDir}/${name}-${theme}-letter.png`});
         const opening=await opener.boundingBox();assert.ok(opening&&opening.y>=0&&opening.y+opening.height<=viewport.height,"The actual product document opening must be visible without manual scrolling: "+JSON.stringify({name,theme,opening}));
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        await page.goto(`${origin}/jobs/${job.id}`,{waitUntil:"networkidle"});
       }
     }
     assert.deepEqual(api,[]);assert.deepEqual(errors,[]);

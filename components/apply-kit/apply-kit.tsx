@@ -424,7 +424,7 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
       if (!response.ok) {
         const json = await readJson(response);
         const text = appliedErrorMessage(json?.code, json?.error ?? "Could not record this application.");
-        setAppliedError({ text, fixHref: response.status === 409 ? "#documents" : null });
+        setAppliedError({ text, fixHref: response.status === 409 ? "#step-3" : null });
         if (response.status === 409) router.refresh();
         return;
       }
