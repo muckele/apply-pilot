@@ -354,7 +354,9 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     return prismaClient.$transaction(async (tx) => {
       // The stable owning row serializes simultaneous first PATCH requests while
       // allowing Prisma to remain the source of CUID and timestamp generation.
-      // All policy writers take this lock before the policy lock.
+      // Policy writers that can create the policy row take this lock before the policy lock. The one
+      // exception is the run-end auto-off: it locks the policy without the User lock, which is safe
+      // because it only updates an existing policy row's mode; the User lock guards row creation.
       const lockedUsers = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "User" WHERE "id" = ${userId} FOR NO KEY UPDATE
       `;

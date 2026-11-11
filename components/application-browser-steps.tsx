@@ -470,7 +470,7 @@ export type FillSwitchView = Readonly<{
 
 export const FILL_SWITCH_QUESTION = {
   title: "Turn on Fill for this form?",
-  body: "Fill types only the answers you approved, once. It leaves anything already in the form alone, and you still press the employer's Submit button yourself. Assisted Fill is for your whole account: it stays on until you record or stop this application, or turn it off in Settings."
+  body: "Fill types only the answers you approved, once. It leaves anything already in the form alone, and you still press the employer's Submit button yourself. Assisted Fill is a setting for your whole account. It turns off by itself when you record or stop an application, and you can turn it off in Settings any time."
 } as const;
 
 function FillSwitch({ fillSwitch }: { fillSwitch: FillSwitchView }) {
