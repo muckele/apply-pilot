@@ -68,3 +68,34 @@ test("applied marks all ten done", () => {
   assert.ok(p.steps.every((s) => s.state === "done"));
   assert.equal(p.steps.length, 10);
 });
+
+const withRun = (state: string, companionState: string | null = null) => derive({ run: { state, companionState } });
+
+test("steps 6 to 9 follow the run and companion states", () => {
+  assert.equal(withRun("READY", "CONTROL_READY").current, 6);
+  assert.equal(withRun("READY", "TARGET_OPEN").current, 6);
+  assert.equal(withRun("REVIEW_REQUIRED", "TARGET_OPEN").current, 6);
+  assert.equal(withRun("FILLING").current, 8);
+  assert.equal(withRun("READY_FOR_USER_SUBMISSION").current, 9);
+});
+
+test("HUMAN_ONLY is step 9", () => {
+  const p = withRun("READY_FOR_USER_SUBMISSION", "HUMAN_ONLY");
+  assert.equal(p.current, 9);
+  assert.equal(p.now, "Complete the rest and press the employer's Submit yourself.");
+  assert.equal(p.next, "Record it");
+  assert.equal(withRun("READY", "HUMAN_ONLY").current, 9);
+});
+
+test("COMPLETED_BY_USER marks ten done", () => {
+  const p = withRun("COMPLETED_BY_USER");
+  assert.equal(p.current, 10);
+  assert.equal(p.next, null);
+  assert.ok(p.steps.every((s) => s.state === "done"));
+});
+
+test("a cancelled run goes back to step 4 and says so", () => {
+  const p = withRun("CANCELLED");
+  assert.equal(p.current, 4);
+  assert.equal(p.now, "This application was stopped. Prepare it again to start over.");
+});

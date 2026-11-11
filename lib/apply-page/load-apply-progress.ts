@@ -4,7 +4,7 @@ import type { ApplicationRunDto, AutomationPolicyDto } from "@/lib/application-r
 import { isHostBlocked } from "@/lib/application-runs/host-policy";
 import { isApplicationAutomationEnabled } from "@/lib/application-runs/policy";
 import { getCurrentApplicationRun, readAutomationPolicy } from "@/lib/application-runs/service";
-import { deriveApplyProgress, type ApplyProgress } from "@/lib/apply-page/apply-progress";
+import { deriveApplyProgress, type ApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
 import { buildReadyList, type ReadyLine } from "@/lib/apply-page/ready-list";
 import type { JobDetail } from "@/lib/jobs/job-detail";
 import { prisma } from "@/lib/prisma";
@@ -23,7 +23,12 @@ export type ApplyProgressFacts = {
 
 /** Pure mapping from loaded facts to progress, so tests need no database. */
 export function applyProgressFromFacts(facts: ApplyProgressFacts): ApplyProgress {
-  return deriveApplyProgress({
+  return deriveApplyProgress(applyProgressInputFromFacts(facts));
+}
+
+/** The inputs behind a job's progress; the Apply page re-derives with a fresher run from them. */
+export function applyProgressInputFromFacts(facts: ApplyProgressFacts): ApplyProgressInput {
+  return {
     hasMasterResume: facts.hasMasterResume,
     hasCurrentMatch: facts.estimateBasis !== null,
     reviewSaved: facts.estimateBasis === "REVIEWED_EVIDENCE",
@@ -33,7 +38,7 @@ export function applyProgressFromFacts(facts: ApplyProgressFacts): ApplyProgress
     automationAvailable: facts.automationAvailable,
     run: facts.run ? { state: facts.run.state, companionState: null } : null,
     applied: facts.application ? !NOT_APPLIED_STATUSES.has(facts.application.status) : false
-  });
+  };
 }
 
 /** What step 4 (Prepare) shows: the ready list, the host it asks about, the Fill mode and the run. */
@@ -97,15 +102,15 @@ async function loadProgressFacts(userId: string, detail: JobDetail) {
     readAutomationPolicy(userId),
     detail.application && application ? getCurrentApplicationRun(userId, detail.application.id) : Promise.resolve(null)
   ]);
-  const progress = applyProgressFromFacts({
+  const progressFacts: ApplyProgressFacts = {
     hasMasterResume: detail.sourceText.trim().length > 0,
     estimateBasis: detail.estimate?.basis ?? null,
     application,
     coverRequired: policy.coverLetterRequired,
     automationAvailable: isApplicationAutomationEnabled(),
     run
-  });
-  return { application, policy, run, progress };
+  };
+  return { application, policy, run, progress: applyProgressFromFacts(progressFacts), progressInput: applyProgressInputFromFacts(progressFacts) };
 }
 
 /** The one server-side place that works out which Apply step a job is on (job page and Apply page). */
@@ -121,8 +126,8 @@ export async function loadApplyProgress(userId: string, detail: JobDetail): Prom
 export async function loadApplyPageState(
   userId: string,
   detail: JobDetail
-): Promise<{ progress: ApplyProgress; coverLetterRequired: boolean; prepare: PrepareStepState }> {
-  const [{ application, policy, run, progress }, details] = await Promise.all([
+): Promise<{ progress: ApplyProgress; progressInput: ApplyProgressInput; coverLetterRequired: boolean; prepare: PrepareStepState }> {
+  const [{ application, policy, run, progress, progressInput }, details] = await Promise.all([
     loadProgressFacts(userId, detail),
     loadApplicationDetails(userId)
   ]);
@@ -135,5 +140,5 @@ export async function loadApplyPageState(
     run,
     details
   });
-  return { progress, coverLetterRequired: policy.coverLetterRequired, prepare };
+  return { progress, progressInput, coverLetterRequired: policy.coverLetterRequired, prepare };
 }

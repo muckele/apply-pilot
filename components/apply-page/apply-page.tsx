@@ -14,7 +14,8 @@ import { ExperienceStep } from "@/components/apply-page/experience-step";
 import { NowCard } from "@/components/apply-page/now-card";
 import { PrepareStep } from "@/components/apply-page/prepare-step";
 import type { ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
-import type { ApplyProgress } from "@/lib/apply-page/apply-progress";
+import { useRunProgress } from "@/components/apply-page/use-run-progress";
+import { deriveApplyProgress, type ApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
 import type { PrepareStepState } from "@/lib/apply-page/load-apply-progress";
 import type { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { experienceDraftKey } from "@/lib/jobs/experience-drafts";
@@ -26,6 +27,8 @@ export type ApplyPageProps = {
   kit: ApplyKitView;
   automationAvailable: boolean;
   progress: ApplyProgress;
+  /** The inputs behind `progress`; with them the page re-derives progress as the run moves on. */
+  progressInput?: ApplyProgressInput;
   /** The account's policy needs a cover letter (Prepare blocks without one): step 3 ticks it by default. */
   coverLetterRequired: boolean;
   /** Step 4's ready list, host, Fill mode and current run, from the server. */
@@ -47,8 +50,10 @@ export function matchResultLine(fit: number, confidence: number | null): string 
   return fit >= 85 && confidence !== null && confidence >= 85 ? head : `${head} Assisted Fill needs an A, with confidence of 85 or more.`;
 }
 
-export function ApplyPage({ detail, kit, automationAvailable, progress, prepare, coverLetterRequired, tailorServer, appOrigin, answeredYes = false }: ApplyPageProps) {
+export function ApplyPage({ detail, kit, automationAvailable, progress: serverProgress, progressInput, prepare, coverLetterRequired, tailorServer, appOrigin, answeredYes = false }: ApplyPageProps) {
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
+  const liveRun = useRunProgress(prepare.run?.id ?? null, progressInput?.run ?? null);
+  const progress = progressInput && prepare.run ? deriveApplyProgress({ ...progressInput, run: liveRun }) : serverProgress;
   const scoreConfirm = useInPageConfirm();
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
   const jobId = detail.view.id;
