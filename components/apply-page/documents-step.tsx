@@ -8,6 +8,7 @@ import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 import { attachDocuments, ensureApplication } from "@/lib/applications/client";
 import type { ApplyKitDocument } from "@/lib/apply-kit/apply-kit-view";
+import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import { chooseAutoAttach, chooseJustReady, isReadyDocument } from "@/lib/apply-page/auto-attach";
 import {
   documentCreationMaximumMicros,
@@ -192,7 +193,7 @@ export function DocumentsStep({
       if (quote) {
         const approved = await confirm({
           title: action === "coverOnly" ? "Write my cover letter?" : includeCover ? "Write my résumé and cover letter?" : "Write my résumé?",
-          body: `Sends your résumé facts and the lines you added to Google Gemini. Most it can cost: ${formatCentsCeiling(documentCreationMaximumMicros(runSteps, quote))}.`
+          body: `Sends ${SENT_TO_GEMINI} to Google Gemini. Most it can cost: ${formatCentsCeiling(documentCreationMaximumMicros(runSteps, quote))}.`
         });
         if (!approved) {
           setMessage({ tone: "info", text: CANCELED });

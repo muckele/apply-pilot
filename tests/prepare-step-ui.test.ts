@@ -12,7 +12,10 @@ import { createDomHarness } from "@/tests/fixtures/dom-harness";
 const APPLICATION_ID = "clz8w7m9a0000qwer1234tyui";
 const RUN_ID = "clz8w7m9a0004qwer1234tyui";
 const HOST = "jobs.example.com";
-const QUESTION = `Prepare plans this application with Google Gemini (usually under 1¢) and lets Apply Pilot work on ${HOST}.`;
+// What Prepare's planner actually sends (lib/ai/application-plan.ts): the job, the résumé, the
+// profile's job preferences and the lines added for this job.
+const QUESTION = "Prepare sends this job, your résumé, your job preferences from your profile (such as target roles, locations and salary) and the lines you added for this job to Google Gemini to plan this application " +
+  `(usually under 1¢), and lets Apply Pilot work on ${HOST}.`;
 const KEY = `application-run-create:${APPLICATION_ID}`;
 
 const READY_INPUT: ReadyListInput = {

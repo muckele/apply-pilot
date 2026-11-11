@@ -242,6 +242,8 @@ test("Update my score sends exactly save then match", async () => {
     await harness.check(tick(harness));
     await harness.click(harness.button("Update my score · about 8¢"));
     await harness.waitForText(/could cost up to \$0\.07272/u);
+    // What the re-score actually sends (lib/ai/job-match.ts), so the question can stand for consent.
+    assert.match(harness.text(), /Sends this job, your résumé, your job preferences from your profile \(such as target roles, locations and salary\) and the lines you added for this job to Google Gemini to update your score\./u);
     assert.equal(calls.length, 0, "nothing is sent before the in-page Confirm");
     await harness.click(harness.button("Confirm"));
     await harness.waitForText(/Your lines were saved and your score was updated\./u);

@@ -6,6 +6,7 @@ import { Loader2, Sparkles } from "lucide-react";
 
 import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
+import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import { formatCentsCeiling, formatUsdMicros, type DocumentCreationQuote } from "@/lib/jobs/document-creation-plan";
 import type { EvidenceCorrectionReview, EvidenceReviewGap } from "@/lib/jobs/evidence-correction-review";
 import { evidenceSnapshotSaveResponseSchema } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -316,7 +317,7 @@ export function ExperienceStep({
         title: "Update my score?",
         body: [
           pending ? "Apply Pilot saves your lines for this job first." : null,
-          "This job, your résumé and the lines saved for this job are sent to Google Gemini to update your score.",
+          `Sends ${SENT_TO_GEMINI} to Google Gemini to update your score.`,
           quote
             ? `This could cost up to ${formatUsdMicros(quote.jobMatchMicros)}; the final charge is usually lower.`
             : "Its cost is shown before anything is charged.",

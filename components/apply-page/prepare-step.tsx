@@ -20,6 +20,7 @@ import {
 } from "@/lib/application-runs/client-run";
 import type { PreparationBlockingReason, PreparationErrorCategory } from "@/lib/application-runs/preparation";
 import { ensureApplication } from "@/lib/applications/client";
+import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import type { ReadyLine } from "@/lib/apply-page/ready-list";
 
 // Step 4 of the Apply page: the ready list, then one "Allow and prepare" that asks once in the page,
@@ -54,7 +55,7 @@ const REPORTED_AI_BLOCKS: ReadonlySet<string> = new Set([
 const NO_LINK = "This job has no secure (https) application link, so Apply Pilot can't prepare it. You can still apply on your own.";
 
 export function prepareQuestion(host: string) {
-  return `Prepare plans this application with Google Gemini (usually under 1¢) and lets Apply Pilot work on ${host}.`;
+  return `Prepare sends ${SENT_TO_GEMINI} to Google Gemini to plan this application (usually under 1¢), and lets Apply Pilot work on ${host}.`;
 }
 
 function blockerCopy(reason: string | null | undefined): { text: string; fix: ReadyFix | null } {

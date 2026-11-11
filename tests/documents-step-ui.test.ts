@@ -19,7 +19,10 @@ const BOTH = "Write my résumé and cover letter · up to 12¢";
 const RESUME_ONLY = "Write my résumé · up to 7¢";
 const COVER_ONLY = "Write my cover letter · up to 5¢";
 const BELOW_A = "Assisted Fill needs an A. You can still apply on your own with these documents.";
-const question = (cents: string) => `Sends your résumé facts and the lines you added to Google Gemini. Most it can cost: ${cents}.`;
+// What the writers actually send (lib/ai/resume-tailoring-payload.ts): the job, the résumé, the
+// profile's job preferences and the lines added for this job.
+const question = (cents: string) =>
+  `Sends ${"this job, your résumé, your job preferences from your profile (such as target roles, locations and salary) and the lines you added for this job"} to Google Gemini. Most it can cost: ${cents}.`;
 
 async function kitDocuments() {
   const kit = (await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
