@@ -8,7 +8,7 @@ import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 import { attachDocuments, ensureApplication } from "@/lib/applications/client";
 import type { ApplyKitDocument } from "@/lib/apply-kit/apply-kit-view";
-import { chooseAutoAttach, isReadyDocument } from "@/lib/apply-page/auto-attach";
+import { chooseAutoAttach, chooseJustReady, isReadyDocument } from "@/lib/apply-page/auto-attach";
 import {
   documentCreationMaximumMicros,
   formatCentsCeiling,
@@ -34,6 +34,7 @@ export type DocumentsStepProps = {
   coverLetters: ApplyKitDocument[];
   // What the application actually has attached (not the Apply Kit's local picks).
   attached: { resumeId: string | null; coverId: string | null };
+  // The job's grade; null before it is scored (then nothing is said about Fill).
   letter: GradeLetter | null;
   // Set by the page while step 2 isn't done; both Write buttons stay off and this is shown.
   blockedReason?: string | null;
@@ -45,10 +46,12 @@ type WriteStep = "resume" | "cover";
 type StepState = "pending" | "running" | "done" | "failed";
 type Message = { tone: "success" | "error" | "info"; text: string };
 type ErrorPayload = { error?: unknown; billingStatus?: unknown; actualCostMicros?: unknown } | null;
+type ReadyIds = { resume: Set<string>; cover: Set<string> };
 
 const BELOW_A = "Assisted Fill needs an A. You can still apply on your own with these documents.";
 const WRITING_OFF = "Document writing is switched off on this server (no AI provider is configured).";
 const CANCELED = "Canceled. Nothing was sent and nothing was charged.";
+const STILL_ATTACHING = "Still attaching your documents. Try again in a moment.";
 
 const ENDPOINTS: Record<WriteStep, string> = { resume: "tailored-resume", cover: "cover-letter" };
 const STEP_LABELS: Record<WriteStep, string> = { resume: "Writing your tailored résumé", cover: "Writing your cover letter" };
@@ -103,14 +106,14 @@ export function DocumentsStep({
   const [running, setRunning] = useState<"write" | "coverOnly" | null>(null);
   const [progress, setProgress] = useState<Array<{ step: WriteStep; state: StepState }>>([]);
   const [message, setMessage] = useState<Message | null>(null);
-  const [attachMessage, setAttachMessage] = useState<string | null>(null);
+  const [attachMessage, setAttachMessage] = useState<Message | null>(null);
   const writing = useRef(false);
   const attaching = useRef(false);
   // An application this step saved, until the refreshed page brings its id.
   const savedApplicationId = useRef<string | null>(null);
-  // Ready documents already seen, so attaching runs on mount and whenever a document becomes ready
-  // (a new version was written, or its review was confirmed), not on every refresh.
-  const seenReady = useRef<Set<string> | null>(null);
+  // Ready documents already seen, per kind, so attaching runs on mount and whenever a document
+  // becomes ready (a new version was written, or its review was confirmed), not on every refresh.
+  const seenReady = useRef<ReadyIds | null>(null);
 
   const steps: WriteStep[] = includeCover ? ["resume", "cover"] : ["resume"];
   const label = writeLabel(includeCover ? "Write my résumé and cover letter" : "Write my résumé", steps, quote);
@@ -120,10 +123,17 @@ export function DocumentsStep({
   const hasCurrentResume = resumes.some((document) => document.exportReady);
   const reason = !generationAvailable ? WRITING_OFF : blockedReason;
   const canWrite = !reason && running === null;
+  // Read again after the cost question: step 2 may have changed while it was open.
+  const latestReason = useRef(reason);
+  useEffect(() => {
+    latestReason.current = reason;
+  }, [reason]);
 
-  const resumePick = attachable ? chooseAutoAttach(resumes, attached.resumeId) : null;
-  const coverPick = attachable ? chooseAutoAttach(coverLetters, attached.coverId) : null;
-  const readyKey = JSON.stringify([...resumes, ...coverLetters].filter(isReadyDocument).map((document) => document.id).sort());
+  const attachedResumeId = attached.resumeId;
+  const attachedCoverId = attached.coverId;
+  const readyKey = (documents: ApplyKitDocument[]) => JSON.stringify(documents.filter(isReadyDocument).map((document) => document.id).sort());
+  const readyResumeKey = readyKey(resumes);
+  const readyCoverKey = readyKey(coverLetters);
 
   const attach = useCallback(async (picks: { resumeVersionId?: string; coverLetterVersionId?: string }) => {
     if (attaching.current) return;
@@ -139,25 +149,38 @@ export function DocumentsStep({
       router.refresh();
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Something went wrong.";
-      setAttachMessage(`Apply Pilot couldn't attach your documents to this application. ${detail}`);
+      setAttachMessage({ tone: "error", text: `Apply Pilot couldn't attach your documents to this application. ${detail}` });
     } finally {
       attaching.current = false;
     }
   }, [applicationId, jobId, router]);
 
   useEffect(() => {
-    const ready = new Set<string>(JSON.parse(readyKey) as string[]);
+    const ready: ReadyIds = {
+      resume: new Set<string>(JSON.parse(readyResumeKey) as string[]),
+      cover: new Set<string>(JSON.parse(readyCoverKey) as string[])
+    };
     const previous = seenReady.current;
-    const newlyReady = previous === null || [...ready].some((id) => !previous.has(id));
+    const changed = previous === null ||
+      [...ready.resume].some((id) => !previous.resume.has(id)) || [...ready.cover].some((id) => !previous.cover.has(id));
     // While an attach is running, keep this change unseen so the refresh after it tries again.
-    if (newlyReady && attaching.current) return;
+    if (changed && attaching.current) return;
     seenReady.current = ready;
-    if (!newlyReady || (!resumePick && !coverPick)) return;
+    if (!changed || !attachable) return;
+    // On mount, fill an empty or out-of-date slot. Later, a version that just became ready (it was
+    // written, or its review was confirmed) replaces the attached one, for that kind only.
+    const resumeId = previous === null
+      ? chooseAutoAttach(resumes, attachedResumeId)
+      : chooseJustReady(resumes, previous.resume, attachedResumeId);
+    const coverId = previous === null
+      ? chooseAutoAttach(coverLetters, attachedCoverId)
+      : chooseJustReady(coverLetters, previous.cover, attachedCoverId);
+    if (!resumeId && !coverId) return;
     void attach({
-      ...(resumePick ? { resumeVersionId: resumePick } : {}),
-      ...(coverPick ? { coverLetterVersionId: coverPick } : {})
+      ...(resumeId ? { resumeVersionId: resumeId } : {}),
+      ...(coverId ? { coverLetterVersionId: coverId } : {})
     });
-  }, [readyKey, resumePick, coverPick, attach]);
+  }, [readyResumeKey, readyCoverKey, resumes, coverLetters, attachedResumeId, attachedCoverId, attachable, attach]);
 
   async function write(action: "write" | "coverOnly") {
     if (writing.current || !canWrite) return;
@@ -175,6 +198,11 @@ export function DocumentsStep({
           setMessage({ tone: "info", text: CANCELED });
           return;
         }
+      }
+      const blockedNow = latestReason.current;
+      if (blockedNow) {
+        setMessage({ tone: "info", text: `${blockedNow} Nothing was sent and nothing was charged.` });
+        return;
       }
       setRunning(action);
       setProgress(runSteps.map((step) => ({ step, state: "pending" })));
@@ -209,6 +237,10 @@ export function DocumentsStep({
   }
 
   function chooseVersion(kind: "resume" | "cover", id: string) {
+    if (attaching.current) {
+      setAttachMessage({ tone: "info", text: STILL_ATTACHING });
+      return;
+    }
     void attach(kind === "resume" ? { resumeVersionId: id } : { coverLetterVersionId: id });
   }
 
@@ -248,7 +280,7 @@ export function DocumentsStep({
 
   return (
     <div className="job-tailor" data-documents-step>
-      {letter !== "A" ? <p className="job-note" data-below-a>{BELOW_A}</p> : null}
+      {letter !== null && letter !== "A" ? <p className="job-note" data-below-a>{BELOW_A}</p> : null}
 
       <section className="job-step">
         <p className="job-step-copy">
@@ -295,7 +327,9 @@ export function DocumentsStep({
 
       {versions("resume", resumes, attached.resumeId)}
       {versions("cover", coverLetters, attached.coverId)}
-      {attachMessage ? <p role="alert" className="job-message job-message-error" data-attach-message>{attachMessage}</p> : null}
+      {attachMessage ? (
+        <p role={attachMessage.tone === "error" ? "alert" : "status"} className={`job-message job-message-${attachMessage.tone}`} data-attach-message>{attachMessage.text}</p>
+      ) : null}
     </div>
   );
 }

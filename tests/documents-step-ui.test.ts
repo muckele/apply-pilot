@@ -168,6 +168,94 @@ test("the new résumé is attached with a PATCH that has no status", async () =>
   }
 });
 
+test("rewriting with a ready version attached attaches the new version, and only that kind", async () => {
+  const { byId } = await kitDocuments();
+  const { harness, calls } = setup();
+  try {
+    // A ready résumé and a ready letter attached; another ready letter exists that isn't attached.
+    const before = props({
+      coverByDefault: false, resumes: [byId("resume-v2")], coverLetters: [byId("cover-legacy")], attached: { resumeId: "resume-v2", coverId: null }
+    });
+    await harness.render(React.createElement(DocumentsStep, { ...before, attached: { resumeId: "resume-v2", coverId: "cover-legacy" } }));
+    await settle();
+    assert.equal(calls.length, 0, "ready versions are attached");
+    await harness.click(harness.button(RESUME_ONLY));
+    await harness.waitForText(/Most it can cost/u);
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/Your résumé is ready to review below\./u);
+    // The refresh brings the new résumé. The letter's attachment is left alone, even though
+    // chooseAutoAttach would pick cover-legacy for an empty letter slot.
+    await harness.render(React.createElement(DocumentsStep, { ...before, resumes: [newerVersion(byId("resume-v2"), "resume-v3", 3), byId("resume-v2")] }));
+    await waitUntil(() => calls.some((call) => call.method === "PATCH"), "the attach request");
+    await settle();
+    assert.deepEqual(calls.filter((call) => call.method === "PATCH").map((call) => [call.url, call.body]), [
+      ["/api/applications/application-1", { resumeVersionId: "resume-v3" }]
+    ]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("on mount, an attached version waiting for its review is not swapped for an older ready one", async () => {
+  const { byId } = await kitDocuments();
+  const { harness, calls } = setup();
+  try {
+    // cover-edited (newest, NEEDS_REVIEW) is attached; cover-legacy is older and ready.
+    await harness.render(React.createElement(DocumentsStep, props({
+      resumes: [byId("resume-v2")], coverLetters: [byId("cover-edited"), byId("cover-legacy")],
+      attached: { resumeId: "resume-v2", coverId: "cover-edited" }
+    })));
+    await settle();
+    assert.deepEqual(calls, []);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a step blocked while the question is open sends nothing on Confirm", async () => {
+  const { harness, calls } = setup();
+  try {
+    const open = props();
+    await harness.render(React.createElement(DocumentsStep, open));
+    await harness.click(harness.button(BOTH));
+    await harness.waitForText(/Most it can cost/u);
+    const reason = "Update your score in step 2 first, so your documents include your new lines.";
+    await harness.render(React.createElement(DocumentsStep, { ...open, blockedReason: reason }));
+    await harness.click(harness.button("Confirm"));
+    await settle();
+    assert.deepEqual(calls, []);
+    assert.match(harness.container.querySelector("[data-documents-message]")?.textContent ?? "", /Update your score in step 2 first.*Nothing was sent/u);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Use this version during another attach says to wait instead of doing nothing", async () => {
+  const { byId } = await kitDocuments();
+  const calls: Call[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const stub = apiStub(calls);
+  let started = 0;
+  const { harness } = setup({ fetch: (async (input: RequestInfo | URL, init?: RequestInit) => { started += 1; await gate; return stub(input, init); }) as typeof fetch });
+  try {
+    await harness.render(React.createElement(DocumentsStep, props({
+      resumes: [newerVersion(byId("resume-v2"), "resume-v3", 3), byId("resume-v2")], attached: { resumeId: "resume-v2", coverId: null },
+      coverLetters: [byId("cover-legacy")]
+    })));
+    // Mount is attaching the letter (held at the gate); a click now is told to wait.
+    await waitUntil(() => started === 1, "the mount attach");
+    await harness.click(row(harness, "resume-v3").querySelector("button"));
+    assert.match(harness.container.querySelector("[data-attach-message]")?.textContent ?? "", /Still attaching/u);
+    release();
+    await waitUntil(() => harness.refreshes === 1, "the mount attach to finish");
+    assert.equal(calls.length, 1, "the click wasn't queued");
+    assert.equal(harness.container.querySelector("[data-attach-message]"), null);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("Cancel sends nothing", async () => {
   const { byId } = await kitDocuments();
   const { harness, calls } = setup();
@@ -197,6 +285,8 @@ test("below an A the step says Fill needs an A", async () => {
     }
     await harness.render(React.createElement(DocumentsStep, props({ letter: "A" })));
     assert.equal(harness.text().includes(BELOW_A), false);
+    await harness.render(React.createElement(DocumentsStep, props({ letter: null })));
+    assert.equal(harness.text().includes(BELOW_A), false, "no grade yet is not below an A");
   } finally {
     await harness.close();
   }

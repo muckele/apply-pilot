@@ -6,7 +6,9 @@ import React, { act } from "react";
 import { ApplyPage, matchResultLine, type ApplyPageProps } from "@/components/apply-page/apply-page";
 import { loadApplyKitView, type ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { deriveApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
-import { applyProgressFromFacts } from "@/lib/apply-page/load-apply-progress";
+import { applyProgressFromFacts, loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
+import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
+import { prisma } from "@/lib/prisma";
 import type { JobDetail } from "@/lib/jobs/job-detail";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
@@ -73,6 +75,8 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
     automationAvailable: false,
     progress: deriveApplyProgress(PROGRESS_INPUT),
     tailorServer: { quote: { provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250 }, generationAvailable: true },
+    // Most tests here exercise the résumé-only path; the policy default (true) has its own test.
+    coverLetterRequired: false,
     ...rest,
     detail
   };
@@ -376,6 +380,50 @@ test("step 3 attaches to the job's own application: what it has attached, no sec
     assert.deepEqual(applied.calls, []);
   } finally {
     await harness.close();
+  }
+});
+
+test("step 3 blocked while its question is open: Confirm sends nothing", async () => {
+  const { harness, calls, render } = recordingPage(REVIEWED);
+  try {
+    await render();
+    await harness.click(harness.button("Write my résumé · up to 7¢"));
+    await harness.waitForText(/Most it can cost: 7¢/u);
+    // Step 2 becomes pending while the question is still open.
+    await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
+    await harness.click(harness.button("Confirm"));
+    await settled();
+    assert.deepEqual(calls, []);
+    assert.match(harness.container.querySelector("#step-3 [data-documents-message]")?.textContent ?? "", /^Update your score in step 2 first/u);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the cover-letter tick follows the account's rule: on when Prepare needs a cover letter", async () => {
+  await withPage({ detail: REVIEWED, coverLetterRequired: true }, async (harness) => {
+    const tick = [...harness.container.querySelectorAll("#step-3 label")].find((node) => node.textContent === "Include a cover letter")!.querySelector("input")!;
+    assert.equal(tick.checked, true);
+    assert.ok(harness.button("Write my résumé and cover letter · up to 12¢"));
+  });
+  await withPage({ detail: REVIEWED, coverLetterRequired: false }, async (harness) => {
+    assert.ok(harness.button("Write my résumé · up to 7¢"));
+  });
+});
+
+test("the Apply page's server state carries the cover-letter rule (default on)", async () => {
+  const delegate = (prisma as unknown as { applicationAutomationPolicy: { findUnique: unknown } }).applicationAutomationPolicy;
+  const original = delegate.findUnique;
+  const detail = { application: null, sourceText: "Service operations leader.", estimate: null } as unknown as JobDetail;
+  try {
+    delegate.findUnique = async () => null;
+    const defaults = await loadApplyPageState("user-synthetic-alex-rivera", detail);
+    assert.equal(defaults.coverLetterRequired, true);
+    assert.equal(defaults.progress.current, 1);
+    delegate.findUnique = async () => ({ ...automationPolicyDefaultValues(), coverLetterRequired: false });
+    assert.equal((await loadApplyPageState("user-synthetic-alex-rivera", detail)).coverLetterRequired, false);
+  } finally {
+    delegate.findUnique = original;
   }
 });
 

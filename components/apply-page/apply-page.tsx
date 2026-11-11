@@ -23,6 +23,8 @@ export type ApplyPageProps = {
   kit: ApplyKitView;
   automationAvailable: boolean;
   progress: ApplyProgress;
+  /** The account's policy needs a cover letter (Prepare blocks without one): step 3 ticks it by default. */
+  coverLetterRequired: boolean;
   /** Server-computed values for steps 2 and 3 (they read server env). */
   tailorServer: { quote: ReturnType<typeof buildDocumentCreationQuote>; generationAvailable: boolean };
   answeredYes?: boolean;
@@ -35,7 +37,7 @@ export function matchResultLine(fit: number, confidence: number | null): string 
   return fit >= 85 && confidence !== null && confidence >= 85 ? head : `${head} Assisted Fill needs an A, with confidence of 85 or more.`;
 }
 
-export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = false }: ApplyPageProps) {
+export function ApplyPage({ detail, kit, progress, coverLetterRequired, tailorServer, answeredYes = false }: ApplyPageProps) {
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
   const scoreConfirm = useInPageConfirm();
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
@@ -105,9 +107,7 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
             applicationId={detail.application?.id ?? null}
             quote={tailorServer.quote}
             generationAvailable={tailorServer.generationAvailable}
-            // Off, as before: no cover letter has been generated in a live run yet, and its stricter
-            // evidence checks have no fallback, so a failure would cost a paid call. One tick adds it.
-            coverByDefault={false}
+            coverByDefault={coverLetterRequired}
             resumes={kit.resumes}
             coverLetters={kit.coverLetters}
             attached={{ resumeId: detail.application?.resumeVersionId ?? null, coverId: detail.application?.coverLetterVersionId ?? null }}
