@@ -110,15 +110,17 @@ test("hypothetical native form: real classification, protected Fill, manual fiel
     const profile = byQuestion("LinkedIn profile URL");
     assert.deepEqual([profile.classification, profile.permittedDisposition, profile.fieldType],
       ["PROFESSIONAL_LINK", "PROPOSABLE", "URL"]);
+    // D034: contact fields may be proposed from confirmed details; this one is never approved
+    // here, so Fill must leave it empty (asserted below).
     assert.deepEqual([byQuestion("Email address").classification, byQuestion("Email address").permittedDisposition],
-      ["CONTACT", "MANUAL_ONLY"]);
+      ["CONTACT", "PROPOSABLE"]);
     assert.deepEqual([byQuestion("Resume").classification, byQuestion("Resume").permittedDisposition, byQuestion("Resume").fieldType],
       ["DOCUMENT", "PROPOSABLE", "FILE_UPLOAD"]);
     assert.deepEqual([byQuestion("I certify this application").classification,
       byQuestion("I certify this application").permittedDisposition],
       ["LEGAL_ATTESTATION", "MANUAL_ONLY"]);
     // The document question may be proposable as a reference; FILE_UPLOAD remains unwritable.
-    assert.equal(fields.filter((field) => field.permittedDisposition === "PROPOSABLE").length, 2);
+    assert.equal(fields.filter((field) => field.permittedDisposition === "PROPOSABLE").length, 3);
     assert.equal(JSON.stringify(generation.inspectionReport).includes("SYNTHETIC-HIDDEN-DO-NOT-EXPORT"), false);
 
     const approved = {

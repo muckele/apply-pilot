@@ -118,9 +118,11 @@ test("guarded orchestration uses the exact private generation and server order w
     assert.equal(location.unsupportedReason, "CUSTOM_COMBOBOX");
     assert.equal(location.permittedDisposition, "UNSUPPORTED");
     assert.equal(location.required, true);
+    // D034: contact fields may be proposed from confirmed details. None is in the acquired
+    // set below, so Fill must leave them empty (asserted after Fill).
     for (const contact of [firstName, lastName, email, phone]) {
       assert.equal(contact.classification, "CONTACT");
-      assert.equal(contact.permittedDisposition, "MANUAL_ONLY");
+      assert.equal(contact.permittedDisposition, "PROPOSABLE");
       assert.equal(contact.required, true);
     }
     assert.equal(url.permittedDisposition, "PROPOSABLE");
