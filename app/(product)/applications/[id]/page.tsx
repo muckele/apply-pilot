@@ -10,7 +10,7 @@ import {
   latestSentDocumentsEvent,
   readSentDocumentsSnapshot
 } from "@/lib/apply-kit/sent-documents";
-import { loadApplyProgress } from "@/lib/apply-page/load-apply-progress";
+import { loadApplicationSummaryProgress } from "@/lib/apply-page/application-summary-progress";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
 import { latestSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import {
@@ -21,7 +21,6 @@ import {
   readCurrentJobMatchSources
 } from "@/lib/jobs/current-job-match";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
-import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -57,9 +56,8 @@ export default async function ApplicationDetailPage({ params }: Props) {
     notFound();
   }
 
-  // The same server-side progress the Apply page shows, for the summary card.
-  const jobDetail = application.jobPostingId ? await loadJobDetail(userId, application.jobPostingId) : null;
-  const applyProgress = jobDetail ? await loadApplyProgress(userId, jobDetail) : null;
+  // The same server-side progress the Apply page shows, for the summary card (hidden if it fails).
+  const applyProgress = application.jobPostingId ? await loadApplicationSummaryProgress(userId, application.jobPostingId) : null;
   const attention = getApplicationAttention(application);
   // "What I sent": the frozen snapshot recorded when the application entered APPLIED.
   const sent = latestSentDocumentsEvent(application.events);
