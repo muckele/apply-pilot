@@ -13,7 +13,7 @@ export type ApplyProgressInput = {
   resumeAttached: boolean;
   coverAttached: boolean;
   coverRequired: boolean;
-  /** Carried for later tasks. */
+  /** This server runs application automation. Without it, steps 4 to 10 are "Apply on my own". */
   automationAvailable: boolean;
   run: { state: string; companionState: string | null } | null;
   applied: boolean;
@@ -24,6 +24,8 @@ export type ApplyProgress = {
   steps: Array<{ number: AssistedApplyStepNumber; name: string; state: "done" | "now" | "later" }>;
   now: string;
   next: string | null;
+  /** Without application automation, from step 4 on the way to apply is "Apply on my own". */
+  applyOnYourOwn: boolean;
 };
 
 const BROWSER_NOW = "Continue in the Apply Pilot browser window.";
@@ -42,6 +44,7 @@ const NOW_TEXT: Record<AssistedApplyStepNumber, string> = {
 };
 
 const STOPPED_NOW = "This application was stopped. Prepare it again to start over.";
+const ON_YOUR_OWN_NOW = "Apply on your own with your documents: open Apply on my own.";
 
 // Runs that are prepared or further along. CANCELLED is handled before this (it sends the user back to step 4).
 const PREPARED_STATES: ReadonlySet<string> = new Set([
@@ -89,6 +92,7 @@ function allDone(now: string): ApplyProgress {
     })),
     now,
     next: null,
+    applyOnYourOwn: false,
   };
 }
 
@@ -96,7 +100,8 @@ export function deriveApplyProgress(input: ApplyProgressInput): ApplyProgress {
   if (input.applied) return allDone("You applied. Nothing left to do.");
   if (input.run?.state === "COMPLETED_BY_USER") return allDone("You applied. Nothing left to do.");
   const current = currentStep(input);
-  const nextNumber = ASSISTED_APPLY_STEP_NUMBERS.find((n) => n === current + 1);
+  const applyOnYourOwn = !input.automationAvailable && current >= 4;
+  const nextNumber = applyOnYourOwn ? undefined : ASSISTED_APPLY_STEP_NUMBERS.find((n) => n === current + 1);
   return {
     current,
     steps: ASSISTED_APPLY_STEP_NUMBERS.map((number) => ({
@@ -106,9 +111,12 @@ export function deriveApplyProgress(input: ApplyProgressInput): ApplyProgress {
     })),
     now: !input.hasMasterResume
       ? "Add your master résumé first, so Apply Pilot can check your match."
-      : current === 4 && input.run?.state === "CANCELLED"
-        ? STOPPED_NOW
-        : NOW_TEXT[current],
+      : applyOnYourOwn
+        ? ON_YOUR_OWN_NOW
+        : current === 4 && input.run?.state === "CANCELLED"
+          ? STOPPED_NOW
+          : NOW_TEXT[current],
     next: nextNumber ? ASSISTED_APPLY_STEP_NAMES[nextNumber] : null,
+    applyOnYourOwn,
   };
 }

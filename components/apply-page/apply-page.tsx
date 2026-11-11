@@ -176,7 +176,8 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
         )}
       </section>
 
-      <details className="job-card job-disclosure" open={answeredYes || undefined}>
+      {/* Open when it's the way to apply: after "Yes, I applied", or without application automation. */}
+      <details className="job-card job-disclosure" open={answeredYes || progress.applyOnYourOwn || undefined}>
         <summary>Apply on my own</summary>
         <ApplyKit view={kit} answeredYes={answeredYes} />
       </details>

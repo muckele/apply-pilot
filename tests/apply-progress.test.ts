@@ -99,3 +99,23 @@ test("a cancelled run goes back to step 4 and says so", () => {
   assert.equal(p.current, 4);
   assert.equal(p.now, "This application was stopped. Prepare it again to start over.");
 });
+
+test("without application automation, step 4 on points to Apply on my own instead of Prepare", () => {
+  const own = derive({ automationAvailable: false });
+  assert.equal(own.current, 4);
+  assert.equal(own.now, "Apply on your own with your documents: open Apply on my own.");
+  assert.equal(own.next, null);
+  assert.equal(own.applyOnYourOwn, true);
+  assert.equal(derive({ automationAvailable: false, run: { state: "READY", companionState: null } }).applyOnYourOwn, true, "a run left from before");
+  // Before step 4 the earlier steps still lead.
+  const writing = derive({ automationAvailable: false, resumeAttached: false });
+  assert.equal(writing.current, 3);
+  assert.equal(writing.now, "Write my résumé and cover letter, review them");
+  assert.equal(writing.applyOnYourOwn, false);
+  // With automation, step 4 is Prepare; once applied, nothing is left either way.
+  assert.equal(derive({}).applyOnYourOwn, false);
+  assert.equal(derive({}).now, "Fix anything on the ready list, then Allow and prepare");
+  const applied = derive({ automationAvailable: false, applied: true });
+  assert.equal(applied.now, "You applied. Nothing left to do.");
+  assert.equal(applied.applyOnYourOwn, false);
+});

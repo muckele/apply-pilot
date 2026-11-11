@@ -715,3 +715,17 @@ test("step 5 follows the run's live state when you come back to the tab", async 
     await harness.close();
   }
 });
+
+test("without application automation, the Now card points to Apply on my own, which opens by default", async () => {
+  const atPrepare = { ...PROGRESS_INPUT, reviewSaved: true, resumeAttached: true, coverAttached: true };
+  const ownDetails = (harness: ReturnType<typeof createDomHarness>) =>
+    [...harness.container.querySelectorAll("details")].find((node) => node.querySelector(":scope > summary")?.textContent === "Apply on my own")!;
+  await withPage({ detail: REVIEWED, progress: deriveApplyProgress({ ...atPrepare, automationAvailable: false }) }, async (harness) => {
+    assert.match(harness.container.querySelector("[data-now-card]")?.textContent ?? "", /Apply on your own with your documents: open Apply on my own\./u);
+    assert.equal(ownDetails(harness).open, true);
+  });
+  await withPage({ detail: REVIEWED, automationAvailable: true, progress: deriveApplyProgress({ ...atPrepare, automationAvailable: true }) }, async (harness) => {
+    assert.match(harness.container.querySelector("[data-now-card]")?.textContent ?? "", /Allow and prepare/u);
+    assert.equal(ownDetails(harness).open, false);
+  });
+});
