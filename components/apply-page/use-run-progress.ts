@@ -13,7 +13,8 @@ type RunProgress = ApplyProgressInput["run"];
  * the initial value. A failed read keeps the last known value.
  */
 export function useRunProgress(runId: string | null, initial: RunProgress): RunProgress {
-  const [run, setRun] = useState<RunProgress>(initial);
+  // The state belongs to the run id it was read for; another run id falls back to its own `initial`.
+  const [stored, setStored] = useState<{ runId: string | null; run: RunProgress }>({ runId, run: initial });
 
   useEffect(() => {
     if (!runId) return undefined;
@@ -27,7 +28,10 @@ export function useRunProgress(runId: string | null, initial: RunProgress): RunP
         const body = (await response.json()) as { run?: { state?: unknown } };
         const state = body?.run?.state;
         if (!active || ticket !== latest || typeof state !== "string") return;
-        setRun((previous) => ({ state, companionState: previous?.companionState ?? null }));
+        setStored((previous) => ({
+          runId,
+          run: { state, companionState: previous.runId === runId ? (previous.run?.companionState ?? null) : (initial?.companionState ?? null) }
+        }));
       } catch {
         // Keep the last known value.
       }
@@ -43,5 +47,5 @@ export function useRunProgress(runId: string | null, initial: RunProgress): RunP
     };
   }, [runId]);
 
-  return run;
+  return stored.runId === runId ? stored.run : initial;
 }

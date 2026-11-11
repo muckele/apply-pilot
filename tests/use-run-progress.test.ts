@@ -6,9 +6,9 @@ import React, { act } from "react";
 import { useRunProgress } from "@/components/apply-page/use-run-progress";
 import { createDomHarness } from "@/tests/fixtures/dom-harness";
 
-function Probe({ runId }: { runId: string | null }) {
-  const run = useRunProgress(runId, { state: "READY", companionState: null });
-  return React.createElement("p", { "data-state": "" }, run?.state ?? "none");
+function Probe({ runId, initialState = "READY" }: { runId: string | null; initialState?: string }) {
+  const run = useRunProgress(runId, { state: initialState, companionState: null });
+  return React.createElement("p", null, run?.state ?? "none");
 }
 
 const runResponse = (state: string) => new Response(JSON.stringify({ run: { state } }));
@@ -71,6 +71,80 @@ test("never calls setInterval or setTimeout", async () => {
   } finally {
     globalThis.setInterval = realInterval;
     globalThis.setTimeout = realTimeout;
+    await harness.close();
+  }
+});
+
+const fireVisible = async (harness: ReturnType<typeof createDomHarness>) => {
+  Object.defineProperty(harness.window.document, "visibilityState", { configurable: true, value: "visible" });
+  await act(async () => { harness.window.document.dispatchEvent(new harness.window.Event("visibilitychange")); });
+};
+
+test("a new run id uses its own initial state, even when its read fails", async () => {
+  const harness = createDomHarness({ fetch: (async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("run-a")) return runResponse("CANCELLED");
+    throw new Error("offline");
+  }) as typeof fetch });
+  try {
+    await harness.render(React.createElement(Probe, { runId: "run-a" }));
+    await settle();
+    await harness.waitForText(/CANCELLED/u);
+    await harness.render(React.createElement(Probe, { runId: "run-b", initialState: "REVIEW_REQUIRED" }));
+    await settle();
+    assert.equal(harness.text(), "REVIEW_REQUIRED");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the later read wins when responses arrive out of order", async () => {
+  const resolvers: Array<(response: Response) => void> = [];
+  const harness = createDomHarness({ fetch: (() => new Promise<Response>((resolve) => { resolvers.push(resolve); })) as typeof fetch });
+  try {
+    await harness.render(React.createElement(Probe, { runId: "run-1" }));
+    await fireVisible(harness);
+    assert.equal(resolvers.length, 2);
+    await act(async () => { resolvers[1](runResponse("FILLING")); await new Promise((resolve) => setImmediate(resolve)); });
+    await act(async () => { resolvers[0](runResponse("READY_FOR_USER_SUBMISSION")); await new Promise((resolve) => setImmediate(resolve)); });
+    assert.equal(harness.text(), "FILLING");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a response after unmount changes nothing and logs no warning", async () => {
+  let resolve!: (response: Response) => void;
+  const harness = createDomHarness({ fetch: (() => new Promise<Response>((r) => { resolve = r; })) as typeof fetch });
+  const errors: unknown[][] = [];
+  const realError = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args); };
+  try {
+    await harness.render(React.createElement(Probe, { runId: "run-1" }));
+    await harness.render(React.createElement("p", null, "gone"));
+    await act(async () => { resolve(runResponse("FILLING")); await new Promise((r) => setImmediate(r)); });
+    assert.equal(harness.text(), "gone");
+    assert.deepEqual(errors, []);
+  } finally {
+    console.error = realError;
+    await harness.close();
+  }
+});
+
+test("visibilitychange after unmount or with no run id makes no fetch", async () => {
+  let calls = 0;
+  const harness = createDomHarness({ fetch: (async () => { calls += 1; return runResponse("READY"); }) as typeof fetch });
+  try {
+    await harness.render(React.createElement(Probe, { runId: "run-1" }));
+    await settle();
+    assert.equal(calls, 1);
+    await harness.render(React.createElement(Probe, { runId: null }));
+    await fireVisible(harness);
+    await settle();
+    assert.equal(calls, 1, "runId null removed the listener");
+    await harness.render(React.createElement("p", null, "gone"));
+    await fireVisible(harness);
+    assert.equal(calls, 1, "unmount removed the listener");
+  } finally {
     await harness.close();
   }
 });

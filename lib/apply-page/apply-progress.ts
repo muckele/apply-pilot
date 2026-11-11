@@ -56,7 +56,7 @@ const PREPARED_STATES: ReadonlySet<string> = new Set([
  * Single place that maps a prepared run to a step (5 to 9). The run endpoint reports the run state
  * but not the form inspection or the review answers, so READY and REVIEW_REQUIRED cannot tell
  * "form read, answers awaiting approval" (7) or "review resolved" (8) from "form not opened" (5/6):
- * they take the earlier step. A companion state, when one is supplied, moves it forward.
+ * they take the earlier step. A companion state, when one is supplied, moves it forward (for a future companion feed: nothing supplies one today).
  */
 function stepFromRun(run: NonNullable<ApplyProgressInput["run"]>): AssistedApplyStepNumber {
   if (run.state === "READY_FOR_USER_SUBMISSION" || run.companionState === "HUMAN_ONLY") return 9;
