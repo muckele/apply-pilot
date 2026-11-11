@@ -1975,7 +1975,7 @@ export function ApplicationBrowserControl({
         <StepSection step={6} view={view} summary={stepSummary(6, view.progress[6])}>
           <OpenFormStepBody
             view={view}
-            formRead={view.progress[4] === "done"}
+            formRead={view.progress[6] === "done"}
             onOpenAndRead={() => void openAndReadForm()}
             onReadForm={() => void invoke({ type: "INSPECT_FORM" })}
           />

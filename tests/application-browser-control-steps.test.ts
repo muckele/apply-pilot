@@ -904,3 +904,17 @@ test("review fix: when the read after a successful open throws, packet trust fol
     await mounted.cleanup();
   }
 });
+
+test("review fix: before the form is read, a non-primary step 6 says it opens and then reads the form", async () => {
+  const mounted = await mount({ run: { state: "CANCELLED", stateVersion: 9 } });
+  try {
+    mounted.setBinding(async () => ({ state: "CONTROL_READY", runId: RUN_ID }));
+    await refreshStatus(mounted);
+    assert.equal(primarySnapshot(mounted.container).count, 0, "step 6 is not primary for a stopped application");
+    const text = mounted.container.querySelector<HTMLElement>("#step-6-body")?.textContent ?? "";
+    assert.match(text, /opens the employer's form in a second window, then reads it/);
+    assert.doesNotMatch(text, /Apply Pilot read the employer's form/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
