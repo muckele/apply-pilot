@@ -1987,7 +1987,6 @@ export function ApplicationBrowserControl({
             packet={reviewLoad.packet}
             run={reviewLoad.run}
             freshness={freshness}
-            manualFields={manualFields}
             approving={approvalPending}
             isTickLocked={(answer) => fillUiLocked ||
               approvalPending ||

@@ -174,12 +174,13 @@ function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
 }
 
-// The one approval button names exactly how many ticked answers it approves (D-H).
-export function approveButtonLabel(tickedCount: number, proposedCount: number): string {
-  if (proposedCount === 0) return "Continue";
-  if (tickedCount === 0) return "Approve none and continue";
-  if (tickedCount === 1) return "Approve this 1 and continue";
-  return `Approve these ${tickedCount} and continue`;
+// The one approval button names exactly how many answers one click approves (D-H): those still
+// waiting and left ticked. Answers approved earlier are not counted again.
+export function approveButtonLabel(tickedWaitingCount: number, waitingCount: number): string {
+  if (waitingCount === 0) return "Continue";
+  if (tickedWaitingCount === 0) return "Approve none and continue";
+  if (tickedWaitingCount === 1) return "Approve this 1 and continue";
+  return `Approve these ${tickedWaitingCount} and continue`;
 }
 
 // The count is apparentAutomatableFieldCount, an estimate: Fill keeps values already in the form,

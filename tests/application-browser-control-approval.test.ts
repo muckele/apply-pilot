@@ -370,7 +370,8 @@ test("already decided answers send nothing; only the review is resolved", async 
     : answer));
   const mounted = await mount(server);
   try {
-    assert.equal(approveButton(mounted.container).textContent?.trim(), "Approve these 3 and continue");
+    // Review fix: the label names only what the click approves; nothing is waiting here.
+    assert.equal(approveButton(mounted.container).textContent?.trim(), "Continue");
     await approveAll(mounted);
     assert.deepEqual(server.posts().map((post) => post.url), [RESOLVE_PATH]);
   } finally {
@@ -539,6 +540,65 @@ test("after approval the page moves on to Fill when the form was read in this wi
     assert.equal(approveButton(mounted.container).getAttribute("data-primary-action"), "CONTINUE_REVIEW");
     await approveAll(mounted);
     assert.equal(mounted.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "6");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+// Review fixes (UX-4b).
+
+test("review fix: after a run that stopped part-way, the label counts only the answers still to approve", async () => {
+  const server = new FakeServer(threeAnswers());
+  server.failReviewFor = "answer-b";
+  const mounted = await mount(server);
+  try {
+    await approveAll(mounted);
+    assert.deepEqual(server.posts().map((post) => post.url), [reviewPath("answer-a"), reviewPath("answer-b")]);
+    assert.equal(tick(mounted.container, "LinkedIn profile").disabled, true, "A is already approved");
+    assert.equal(approveButton(mounted.container).textContent?.trim(), "Approve these 2 and continue");
+    server.failReviewFor = null;
+    const before = server.posts().length;
+    await approveAll(mounted);
+    assert.deepEqual(server.posts().slice(before).map((post) => post.url), [reviewPath("answer-b"), reviewPath("answer-c"), RESOLVE_PATH]);
+    assert.equal(server.posts().slice(before).filter((post) => post.url !== RESOLVE_PATH).length, 2, "it approved exactly the 2 it named");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("review fix: the 'doesn't fill this kind of field' note follows each answer, even when two share a label", async () => {
+  const phoneBox = proposed("answer-phone-box", "Phone", "+1 555 555 0100", "1");
+  const phoneChoice = {
+    ...proposed("answer-phone-choice", "Phone", "", "2"),
+    fieldType: "RADIO_GROUP",
+    classification: "CONTACT",
+    choices: [{ key: "mobile", label: "Mobile", disabled: false }, { key: "home", label: "Home", disabled: false }],
+    proposal: { kind: "OPTIONS", optionKeys: ["mobile"] }
+  } as Answer;
+  const server = new FakeServer([phoneBox, phoneChoice]);
+  const mounted = await mount(server);
+  try {
+    const rows = [...mounted.container.querySelectorAll('[data-testid="approval-row"]')];
+    assert.equal(rows.length, 2);
+    const note = /doesn't fill this kind of field/;
+    assert.equal(note.test(rows[0].textContent ?? ""), false, "the phone box is a kind Fill types");
+    assert.equal(note.test(rows[1].textContent ?? ""), true, "the choice buttons are not");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("review check: a proposed answer without a value never reaches the screen, so nothing is sent for it", async () => {
+  // The packet parser refuses a PROPOSABLE answer whose proposal is null, so such a packet is never
+  // shown and the approval click can't plan a write the screen didn't name.
+  const server = new FakeServer(threeAnswers());
+  server.answers[1] = { ...server.answers[1], proposal: null };
+  const mounted = await mount(server);
+  try {
+    assert.equal(mounted.container.querySelector('[data-testid="approval-list"]') === null, true);
+    assert.equal(mounted.container.querySelector('[data-step-action="CONTINUE_REVIEW"]') === null, true);
+    assert.match(mounted.container.textContent ?? "", /could not safely read the review authority response/i);
+    assert.deepEqual(server.posts(), []);
   } finally {
     await mounted.cleanup();
   }

@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 
 import { PrimaryButton, SecondaryButton } from "@/components/ui";
 import {
+  deriveManualFieldPresentations,
   missingDetailHint,
   presentProposal,
   REVIEW_REASON_LABELS,
@@ -336,7 +337,6 @@ export function CheckAnswersStepBody({
   packet,
   run,
   freshness,
-  manualFields,
   approving,
   isTickLocked,
   onApproveAndContinue
@@ -345,7 +345,6 @@ export function CheckAnswersStepBody({
   packet: AnswerPacket | null;
   run: ReviewRunAuthority | null;
   freshness: "absent" | "current" | "stale" | "unverified";
-  manualFields: readonly ManualFieldPresentation[];
   approving: boolean;
   isTickLocked: (answer: AnswerPacketAnswer) => boolean;
   onApproveAndContinue: (displayed: AnswerPacket, ticked: ReadonlySet<string>) => void;
@@ -360,11 +359,12 @@ export function CheckAnswersStepBody({
   const [unticked, setUnticked] = useState<Readonly<{ key: string; ids: ReadonlySet<string> }>>({ key: packetKey, ids: NO_IDS });
   const untickedIds = unticked.key === packetKey ? unticked.ids : NO_IDS;
   const isTicked = (answer: AnswerPacketAnswer) => answer.status === "PENDING" ? !untickedIds.has(answer.id) : answer.status === "APPROVED";
-  const tickedCount = proposedAnswers.filter(isTicked).length;
-  const manualQuestions = new Set(manualFields
-    .filter((field) => field.category === "MANUAL_CONTROL_FAMILY" || field.category === "UNSUPPORTED")
-    .map((field) => field.question));
   const pending = proposedAnswers.filter((answer) => answer.status === "PENDING").length;
+  // The button names exactly what one click approves: answers still waiting and left ticked.
+  const tickedCount = proposedAnswers.filter((answer) => answer.status === "PENDING" && isTicked(answer)).length;
+  // Whether Fill types this kind of field, decided from the answer itself (labels can repeat).
+  const fillsThisKind = (answer: AnswerPacketAnswer) => packet === null || !deriveManualFieldPresentations({ ...packet, answers: [answer] })
+    .some((field) => field.category === "MANUAL_CONTROL_FAMILY" || field.category === "UNSUPPORTED");
   const toggle = (answer: AnswerPacketAnswer) => {
     const next = new Set(untickedIds);
     if (next.has(answer.id)) next.delete(answer.id);
@@ -389,7 +389,7 @@ export function CheckAnswersStepBody({
           answer={answer}
           ticked={isTicked(answer)}
           locked={isTickLocked(answer)}
-          fillsThisKind={!manualQuestions.has(answer.question)}
+          fillsThisKind={fillsThisKind(answer)}
           onToggle={() => toggle(answer)}
         />)}
       </ul>
@@ -425,7 +425,7 @@ export function CheckAnswersStepBody({
         state={view.actions.CONTINUE_REVIEW}
         primary={isNow && view.primary?.action === "CONTINUE_REVIEW"}
         describedBy="review-readiness review-reasons"
-        label={approving ? undefined : approveButtonLabel(tickedCount, proposedAnswers.length)}
+        label={approving ? undefined : approveButtonLabel(tickedCount, pending)}
         onClick={approve}
       />
     </div> : null}
