@@ -134,9 +134,6 @@ export async function loadJobDetail(userId: string, id: string) {
     applyHost: parseExecutionTargetUrl(job.applyUrl ?? job.sourceUrl)?.host ?? null,
     estimate: estimate ? buildEstimateView(estimate) : null,
     checklist: { items: checklist.items, counts: checklist.counts },
-    readOnlyGaps: estimate && !reviewAnalysis
-      ? checklist.items.filter((item) => item.status === "not_shown").map((item) => item.requirement)
-      : [],
     hasValidCurrentSnapshot: context.effectiveEvidenceSnapshotId !== null,
     sourceText: masterResume?.rawText ?? "",
     // D031: "evidenceCurrent" is export/packet readiness — exactly generated from current evidence,

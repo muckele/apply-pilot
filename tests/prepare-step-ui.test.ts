@@ -70,7 +70,6 @@ function recorder(overrides: Record<string, Route> = {}) {
 
 function props(overrides: Partial<PrepareStepProps> = {}): PrepareStepProps {
   return {
-    jobId: "job-1",
     applicationId: APPLICATION_ID,
     applyHost: HOST,
     readyList: buildReadyList(READY_INPUT),
@@ -150,6 +149,19 @@ test("a double click still sends each request once", async () => {
       "PATCH /api/application-automation-policy",
       `POST /api/application-runs/${RUN_ID}/prepare`
     ]);
+  });
+});
+
+test("without an application there is nothing to prepare: Allow and prepare stays off and sends nothing", async () => {
+  // The page's ready list already blocks then (no résumé can be attached without an application);
+  // the step doesn't save the job itself.
+  const recorded = recorder();
+  await withStep(props({ applicationId: null }), recorded.fetchImpl, async (harness) => {
+    assert.equal(mainButton(harness).disabled, true);
+    await harness.click(mainButton(harness));
+    await settle();
+    assert.deepEqual(recorded.calls, []);
+    assert.equal(question(harness), null);
   });
 });
 

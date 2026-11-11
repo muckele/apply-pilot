@@ -116,3 +116,12 @@ test("the application carries the documents actually attached to it", async () =
     });
   } finally { restore(); }
 });
+
+test("the loader carries no field nothing reads", async () => {
+  const restore = stubPrisma({ job: true });
+  try {
+    const detail = await loadJobDetail(userId, "job-1");
+    assert.ok(detail);
+    assert.equal("readOnlyGaps" in detail, false, "step 2's list replaced the read-only gaps");
+  } finally { restore(); }
+});

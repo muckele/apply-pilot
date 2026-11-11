@@ -69,7 +69,6 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
     view: { id: "job-1", title: "Platform Engineer", company: "Example Co", location: "Remote" },
     estimate: { score: 68, basis: "MASTER_RESUME", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" },
     checklist: { items: built.items, counts: built.counts },
-    readOnlyGaps: [],
     hasValidCurrentSnapshot: false,
     sourceText: "Service operations leader.",
     resumeVersions: [],

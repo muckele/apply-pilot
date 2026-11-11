@@ -157,7 +157,6 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
           <p className="job-note">This application is already recorded, so there&apos;s nothing to prepare.</p>
         ) : (
           <PrepareStep
-            jobId={jobId}
             applicationId={detail.application?.id ?? null}
             applyHost={prepare.applyHost}
             readyList={prepare.readyList}
