@@ -1,15 +1,35 @@
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
 import { ApplyPage } from "@/components/apply-page/apply-page";
 import { ButtonLink, PageHeader } from "@/components/ui";
 import { loadApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availability";
+import { parseApplyPilotOrigin } from "@/lib/application-browser/types";
 import { isApplicationAutomationEnabled } from "@/lib/application-runs/policy";
 import { loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
 import { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
+
+// The origin the companion is told to use: the configured app URL, else this request's own host.
+// parseApplyPilotOrigin is the companion's own validator, so an origin it would refuse is never shown.
+async function companionAppOrigin(): Promise<string | null> {
+  const configured = process.env.APP_BASE_URL ?? process.env.AUTH_URL;
+  const requestHeaders = await headers();
+  const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host");
+  const proto = requestHeaders.get("x-forwarded-proto")?.split(",")[0]?.trim() || "http";
+  for (const candidate of [configured, host ? `${proto}://${host}` : undefined]) {
+    if (!candidate) continue;
+    try {
+      return parseApplyPilotOrigin(new URL(candidate).origin);
+    } catch {
+      // try the next source
+    }
+  }
+  return null;
+}
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -50,6 +70,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
         prepare={prepare}
         coverLetterRequired={coverLetterRequired}
         tailorServer={{ quote: buildDocumentCreationQuote(), generationAvailable: isDocumentGenerationAvailable() }}
+        appOrigin={await companionAppOrigin()}
         answeredYes={answeredYes}
       />
     </>

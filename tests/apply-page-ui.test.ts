@@ -88,6 +88,7 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
     tailorServer: { quote: { provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250 }, generationAvailable: true },
     // Most tests here exercise the résumé-only path; the policy default (true) has its own test.
     coverLetterRequired: false,
+    appOrigin: "https://app.example.com",
     ...rest,
     detail
   };
@@ -532,4 +533,16 @@ test("step 1 asks in the page, not with window.confirm", async () => {
   } finally {
     await harness.close();
   }
+});
+
+test("step 5 waits for Prepare, then shows the start command for the prepared run", async () => {
+  await withPage({}, async (harness) => {
+    assert.match(harness.container.querySelector("#step-5")?.textContent ?? "", /After Prepare, start the Apply Pilot browser here\./u);
+    assert.equal(harness.container.querySelector("[data-browser-step]"), null);
+  });
+  const prepared = prepareStateFromFacts({ ...PREPARE_FACTS, run: { id: "clz8w7m9a0004qwer1234tyui", applyHost: "jobs.example.com", state: "READY", blockingReason: null, errorCategory: null } } as never);
+  await withPage({ prepare: prepared }, async (harness) => {
+    const command = harness.container.querySelector("#step-5 [data-browser-start-command]");
+    assert.equal(command?.textContent, "npm run application-browser -- --app-origin https://app.example.com --run-id clz8w7m9a0004qwer1234tyui");
+  });
 });
