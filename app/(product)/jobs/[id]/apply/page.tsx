@@ -37,9 +37,10 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
   return (
     <>
       <PageHeader
+        tone="branded"
         title={`Apply: ${kit.job.title}`}
         description={`${kit.job.company}${kit.job.location ? ` · ${kit.job.location}` : ""} · Check your match, write your documents, then apply.`}
-        action={<ButtonLink href={`/jobs/${kit.job.id}`} variant="secondary">Back to job</ButtonLink>}
+        action={<ButtonLink href={`/jobs/${kit.job.id}`} variant="secondary" tone="branded">Back to job</ButtonLink>}
       />
       <ApplyPage
         detail={detail}

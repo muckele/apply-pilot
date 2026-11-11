@@ -126,9 +126,12 @@ test("actual owned product job route reviews full career and exports current fil
         await page.goto(`${origin}/jobs/${job.id}`,{waitUntil:"networkidle"});
       }
     }
+    // None of the Apply page's client components fetch an /api route on mount, so this still means
+    // "no API calls from the theme flow, the Apply page's first render or the document switching above".
     assert.deepEqual(api,[]);assert.deepEqual(errors,[]);
     assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration);
-    await page.reload({waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
+    // The rest of the journey works the tailoring flow and documents, which live on the Apply page.
+    await page.goto(`${origin}/jobs/${job.id}/apply`,{waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
     await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Edit document text$/}).click();
     const draft=tailored.resumeText+"\nUnsaved synthetic owner edit";
     await page.getByLabel("Tailored résumé text").fill(draft);
@@ -271,7 +274,7 @@ test("actual owned product job route reviews full career and exports current fil
     const stale=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:version.id,format:"pdf"}});assert.equal(stale.status(),409);
     await page.waitForFunction(()=>document.querySelector("[data-product-documents]")!==null);
     assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
-    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,explicitPdfFontChecks:fontChecks,docxGeorgiaPreserved:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
+    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}/apply`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,explicitPdfFontChecks:fontChecks,docxGeorgiaPreserved:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
     await page.close();
   }finally{await browser.close();await nextServer?.stop();await client.user.delete({where:{id:user.id}});await client.$disconnect();}
 });
