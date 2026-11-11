@@ -237,6 +237,14 @@ test("ensureApplicationRun sends nothing without session storage, and refuses an
   }), { status: 201 })) as typeof fetch;
   await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl: other, storage: new MemoryStorage() }), (error: Error & { kind?: string }) => error.kind === "uncertain");
 
+  // A replay of a run that has since ended is not a run to use: its key is dropped for a fresh request.
+  for (const state of ["CANCELLED", "COMPLETED_BY_USER"]) {
+    const storage = new MemoryStorage();
+    const ended = (async () => createdResponse(state)) as typeof fetch;
+    await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl: ended, storage }), (error: Error & { kind?: string }) => error.kind === "ended");
+    assert.equal(storage.getItem(`application-run-create:${APPLICATION_ID}`), null, state);
+  }
+
   for (const [status, kind] of [[409, "conflict"], [401, "unauthorized"], [403, "unauthorized"]] as const) {
     const refused = (async () => new Response(JSON.stringify({ error: "no" }), { status })) as typeof fetch;
     await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl: refused, storage: new MemoryStorage() }), (error: Error & { kind?: string }) => error.kind === kind);

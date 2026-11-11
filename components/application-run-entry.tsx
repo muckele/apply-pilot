@@ -13,6 +13,7 @@ function failureMessage(error: unknown): string {
   if (kind === "storage") return "Browser session storage is unavailable. No creation request was sent.";
   if (kind === "conflict") return "An active run may already exist. The page is refreshing; any retry uses the same creation request.";
   if (kind === "unauthorized") return "Sign in as the application owner to create a browser run.";
+  if (kind === "ended") return "That creation request belonged to a browser run that has already ended. Try again to create a new one.";
   if (kind === "refused") return "The run was not confirmed. Refresh the page before retrying; a retry uses the same creation request.";
   return "The creation response is uncertain. The page is refreshing; a retry uses the same request.";
 }

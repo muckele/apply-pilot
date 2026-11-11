@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 
@@ -9,6 +9,7 @@ import type { ConfirmFn } from "@/lib/ai/browser-request";
 import { PREPARE_BLOCKER_COPY, PREPARE_FAILURE_COPY, type ReadyFix } from "@/lib/application-runs/blocker-copy";
 import {
   allowHostForRun,
+  clearRunCreateKey,
   ensureApplicationRun,
   prepareRun,
   readApplicationRun,
@@ -42,6 +43,14 @@ export type PrepareStepProps = {
 const STARTABLE = new Set(["DRAFT", "BLOCKED", "FAILED"]);
 const CANCELED = "Canceled. Prepare didn't run and nothing was charged.";
 const UNCONFIRMED = "Preparation wasn't confirmed. Refresh the page before trying again.";
+// Enable refusals that mean the page's view of the policy or run is out of date: the refreshed
+// page brings the ready-list line (Fill on, blocked host) or run state that carries the fix.
+const REFRESH_CODES: ReadonlySet<string> = new Set(["RUN_INVALID_STATE", "AUTOMATION_POLICY_MODE_REQUIRES_REVIEW", "RUN_HOST_BLOCKED"]);
+// Prepare refusals that report an outcome the server committed (a block or a failure), as opposed
+// to refusals before Prepare ran (rate limit, stale attempt, server error).
+const REPORTED_AI_BLOCKS: ReadonlySet<string> = new Set([
+  "AI_BUDGET_EXCEEDED", "AI_REQUEST_COST_LIMIT", "AI_COST_CONFIRMATION_REQUIRED", "AI_DUPLICATE_IN_PROGRESS"
+]);
 const NO_LINK = "This job has no secure (https) application link, so Apply Pilot can't prepare it. You can still apply on your own.";
 
 export function prepareQuestion(host: string) {
@@ -88,6 +97,8 @@ function runFailureText(error: unknown) {
       return "Sign in again to prepare this application.";
     case "refused":
       return "The browser run wasn't created. Try again.";
+    case "ended":
+      return "That request belonged to a browser run that has already ended. Try again to start a new one.";
     default:
       return "The browser run wasn't confirmed. Trying again reuses the same request, so it won't create a second run.";
   }
@@ -101,6 +112,27 @@ function allowFailureText(error: unknown, host: string) {
   if (code === "RUN_HOST_BLOCKED") return `${host} is blocked or isn't a usable application site, so nothing was prepared.`;
   if (code === "RUN_INVALID_STATE") return "This browser run can't be prepared from its current state. The page is refreshing.";
   return `Apply Pilot wasn't allowed on ${host}, so nothing was prepared. Try again.`;
+}
+
+type Refusal = { error: string | null; reported: boolean };
+
+// What a non-2xx Prepare response says: the server's own message when it is short plain text, and
+// whether it reports a committed outcome (a block reason, a failure category or an AI block).
+async function readRefusal(response: Response): Promise<Refusal> {
+  const body: unknown = await response.json().catch(() => null);
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const error = typeof record.error === "string" ? record.error.trim() : "";
+  return {
+    error: error && error.length <= 160 && !/[\n\r<>]/.test(error) ? error : null,
+    reported: typeof record.reason === "string" || typeof record.category === "string" ||
+      (typeof record.code === "string" && REPORTED_AI_BLOCKS.has(record.code))
+  };
+}
+
+function didntRunText(serverError: string | null) {
+  if (!serverError) return "Prepare didn't run. Try again.";
+  const said = /[.!?]$/.test(serverError) ? serverError : `${serverError}.`;
+  return /try again/i.test(said) ? `Prepare didn't run: ${said}` : `Prepare didn't run: ${said} Try again.`;
 }
 
 // The run after a Prepare request. A 2xx carries the run; otherwise (or when the response was lost)
@@ -137,6 +169,20 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
   const [learned, setLearned] = useState<{ basis: string; run: RunSnapshot } | null>(null);
   const [fillOffBasis, setFillOffBasis] = useState<string | null>(null);
   const [dismissedBasis, setDismissedBasis] = useState<string | null>(null);
+  // A different run on the page (or none): what this step learned about the old one no longer applies.
+  const propRunId = run?.id ?? null;
+  const [seenRunId, setSeenRunId] = useState(propRunId);
+  if (seenRunId !== propRunId) {
+    setSeenRunId(propRunId);
+    setLearned(null);
+    setDismissedBasis(null);
+  }
+  useEffect(() => {
+    createdRunId.current = null;
+    savedApplicationId.current = null;
+    // The page shows this application's run, so a kept create key has nothing left to do.
+    if (propRunId && applicationId) clearRunCreateKey(applicationId);
+  }, [propRunId, applicationId]);
 
   const current: PrepareStepRun | null = learned && learned.basis === runKey ? learned.run : run;
   const currentKey = JSON.stringify(current);
@@ -156,6 +202,8 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
     inFlight.current = true;
     setPhase("asking");
     setMessage(null);
+    // A new attempt shows its own outcome, even when it is the block a fix button dismissed.
+    setDismissedBasis(null);
     const host = applyHost;
     const basis = runKey;
     let changedServer = false;
@@ -173,6 +221,10 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
 
       stage = "run";
       let runId = current?.id ?? createdRunId.current;
+      // How the run stood before Prepare, to tell "Prepare didn't run" from a reported outcome.
+      let before: RunSnapshot | null = current
+        ? { id: current.id, state: current.state, blockingReason: current.blockingReason ?? null, errorCategory: current.errorCategory ?? null }
+        : null;
       if (!runId) {
         const created = await ensureApplicationRun(appId);
         changedServer = true;
@@ -184,6 +236,7 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
           return;
         }
         runId = created.id;
+        before = { id: created.id, state: created.state, blockingReason: null, errorCategory: null };
       }
 
       stage = "allow";
@@ -207,12 +260,17 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
         }
         // Lost response: read what happened instead of sending it again.
       }
+      const refusal = response && !response.ok ? await readRefusal(response) : null;
       const outcome = await preparedRun(response, runId);
       if (!outcome) {
         setMessage(UNCONFIRMED);
         return;
       }
       setLearned({ basis, run: outcome });
+      // Refused or lost, and the run is still a draft or exactly as it was: Prepare didn't run.
+      const unchanged = outcome.state === "DRAFT" || (before !== null && outcome.state === before.state &&
+        outcome.blockingReason === before.blockingReason && outcome.errorCategory === before.errorCategory);
+      if (!response?.ok && unchanged && !refusal?.reported) setMessage(didntRunText(refusal?.error ?? null));
     } catch (error) {
       if (stage === "application") setMessage("Apply Pilot couldn't save this job, so nothing was prepared. Try again.");
       else if (stage === "run") setMessage(runFailureText(error));
@@ -220,7 +278,7 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
       else setMessage(UNCONFIRMED);
       // These change what the server holds (or say it holds something else): let the page catch up.
       const code = error instanceof RunRequestError ? error.code : null;
-      if ((error instanceof RunRequestError && error.kind === "conflict") || code === "RUN_INVALID_STATE") changedServer = true;
+      if ((error instanceof RunRequestError && error.kind === "conflict") || (code !== null && REFRESH_CODES.has(code))) changedServer = true;
     } finally {
       if (changedServer) router.refresh();
       inFlight.current = false;

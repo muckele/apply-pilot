@@ -37,7 +37,9 @@ export type RunRequestErrorKind =
   // The server answered with an error, so nothing was confirmed.
   | "refused"
   // The response was lost or didn't match the request; the outcome is unknown.
-  | "uncertain";
+  | "uncertain"
+  // The create request replayed a run that has since ended; its key is dropped, so a retry makes a new run.
+  | "ended";
 
 export class RunRequestError extends Error {
   readonly kind: RunRequestErrorKind;
@@ -51,6 +53,10 @@ export class RunRequestError extends Error {
     this.code = code;
   }
 }
+
+// The server's terminal run states (TERMINAL_RUN_STATES in lib/application-runs/state-machine.ts,
+// which this browser module can't import).
+const ENDED_RUN_STATES: ReadonlySet<string> = new Set(["CANCELLED", "COMPLETED_BY_USER"]);
 
 const JSON_HEADERS = { "content-type": "application/json" } as const;
 const POLICY_URL = "/api/application-automation-policy";
@@ -130,6 +136,9 @@ export async function ensureApplicationRun(
   }
   clearRunCreateKey(applicationId, storage);
   const { run } = parsed.data;
+  if (ENDED_RUN_STATES.has(run.state)) {
+    throw new RunRequestError("ended", "The creation request replayed a run that has already ended.");
+  }
   return { id: run.id, state: run.state, applyHost: run.applyHost ?? null };
 }
 
