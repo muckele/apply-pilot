@@ -81,7 +81,12 @@ test("actual owned product job route reviews full career and exports current fil
     const version=await client.resumeVersion.create({data:{userId:user.id,resumeId:resume.id,jobPostingId:job.id,evidenceSnapshotId:saved.snapshot.id,title:"Synthetic complete tailored résumé",fullText:tailored.resumeText,skills:[],bullets:[]}});
     const customVersion=await client.resumeVersion.create({data:{userId:user.id,resumeId:resume.id,jobPostingId:job.id,evidenceSnapshotId:saved.snapshot.id,title:"Synthetic Georgia custom format",fullText:tailored.resumeText,skills:[],bullets:[],template:"MODERN",pageSize:"A4",fontFamily:"GEORGIA",fontSize:12,lineSpacing:150,accentColor:"#A1B2C3",createdAt:new Date("2026-10-01T00:00:00Z")}});
     const coverDocument=await client.generatedDocument.create({data:{userId:user.id,jobPostingId:job.id,evidenceSnapshotId:saved.snapshot.id,type:"COVER_LETTER",title:letter.title,content:letter.coverLetter}});
-    nextServer=await startNextTestServer({environment:{...process.env,ALLOW_DEMO_USER:"true",DEFAULT_DEMO_USER_ID:user.id,AUTH_SECRET:"synthetic-product-review-local-secret"},readinessPath:"/login",startupTimeoutMs:60_000});
+    // A real user's server has an AI provider, so the Apply page offers "Update my score" and "Write my résumé"; the guarded runner
+    // turns AI off, which makes the page say scoring and writing are switched off. Show them as available, but never reach a provider:
+    // every AI route this journey calls is answered by page.route below, the key is a placeholder, and a 1-cent per-request ceiling
+    // (env can only lower it) refuses JOB_MATCH, RESUME_TAILOR and COVER_LETTER before any provider call.
+    const generationShownAvailable={AI_ENABLED:"true",AI_MOCK_MODE:"false",AI_PROVIDER:"gemini",GEMINI_API_KEY:"synthetic-placeholder-not-a-key",AI_MAX_REQUEST_COST_CENTS:"1"};
+    nextServer=await startNextTestServer({environment:{...process.env,...generationShownAvailable,ALLOW_DEMO_USER:"true",DEFAULT_DEMO_USER_ID:user.id,AUTH_SECRET:"synthetic-product-review-local-secret"},readinessPath:"/login",startupTimeoutMs:60_000});
     const origin=nextServer.origin,page=await browser.newPage({viewport:{width:1440,height:1000}}),api:string[]=[],errors:string[]=[];
     page.on("request",request=>{const url=new URL(request.url());if(url.pathname.startsWith("/api/")&&url.pathname!=="/api/auth/session")api.push(url.pathname);});
     page.on("pageerror",error=>errors.push(error.message));
