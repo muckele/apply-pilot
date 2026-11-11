@@ -10,6 +10,8 @@ import { prisma } from "@/lib/prisma";
 /**
  * Freshness and dedupe rules for imported postings (MVP Bible §6, ingestion rules):
  * - unchanged postings are not rewritten (content fingerprint over the stored fields);
+ * - a refresh whose posting content is unchanged keeps what the job match reads, so a paid match
+ *   stays current (keepUnchangedMatchContent);
  * - duplicates are dropped across sources by normalized apply URL, then by normalized
  *   company + title + location;
  * - postings that vanished from their board are marked EXPIRED.
@@ -104,6 +106,90 @@ export function jobContentFingerprint(job: NormalizedJob) {
   return createHash("sha256").update(JSON.stringify(content)).digest("hex");
 }
 
+// Line breaks, spacing and list bullets are formatting, not content. Text pasted from a posting
+// page keeps its line breaks and bullets; the board API text has them flattened and gains a space
+// wherever an inline tag sat ("<strong>SQL</strong>," reads "SQL ,").
+const formattingOnly = /[\s\u00b7\u2022\u2023\u2043\u25aa\u25ab\u25cb\u25cf\u25e6]+/gu;
+
+function postingText(value: string | null | undefined) {
+  return (value ?? "").normalize("NFC").replace(formattingOnly, "");
+}
+
+/** A source that does not list a value leaves the stored one in place, as the upsert does. */
+function sameUnlessUnlisted<T>(stored: T | undefined, incoming: T | undefined, same: (left: T, right: T) => boolean) {
+  return incoming === undefined || (stored !== undefined && same(stored, incoming));
+}
+
+function sameNormalizedText(left: string, right: string) {
+  return normalizeText(left) === normalizeText(right);
+}
+
+/**
+ * Requirement and qualification lists are lines taken out of the description, by the board's
+ * extractor or by the manual import form. Two extractions of the same text are the same content
+ * when every line on both sides is part of that text; a line the text does not contain is new.
+ */
+function sameExtractedLines(stored: string[], incoming: string[], text: string) {
+  const left = stored.map(postingText);
+  const right = incoming.map(postingText);
+  if (left.length === right.length && left.every((line, index) => line === right[index])) {
+    return true;
+  }
+  return [...left, ...right].every((line) => text.includes(line));
+}
+
+function sameTerms(stored: string[], incoming: string[]) {
+  const key = (terms: string[]) => [...new Set(terms.map((term) => term.trim().toLowerCase()))].sort().join("\n");
+  return key(stored) === key(incoming);
+}
+
+/**
+ * True when `incoming` says the same as `stored` in every field the job match reads (see
+ * buildCurrentJobMatchInput in lib/jobs/current-job-match.ts) and differs at most in formatting
+ * or in how its lists were extracted. Any changed word, value or list line counts as a change.
+ */
+export function hasSameMatchContent(stored: NormalizedJob, incoming: NormalizedJob) {
+  const text = postingText(stored.description);
+  return (
+    text === postingText(incoming.description) &&
+    sameNormalizedText(stored.title, incoming.title) &&
+    sameNormalizedText(stored.company, incoming.company) &&
+    sameUnlessUnlisted(stored.location, incoming.location, sameNormalizedText) &&
+    sameUnlessUnlisted(stored.remoteStatus, incoming.remoteStatus, sameNormalizedText) &&
+    sameUnlessUnlisted(stored.salaryMin, incoming.salaryMin, Object.is) &&
+    sameUnlessUnlisted(stored.salaryMax, incoming.salaryMax, Object.is) &&
+    sameExtractedLines(stored.requirements, incoming.requirements, text) &&
+    sameExtractedLines(stored.preferredQualifications, incoming.preferredQualifications, text) &&
+    sameTerms(stored.detectedTechStack, incoming.detectedTechStack)
+  );
+}
+
+/**
+ * What a refresh should store. When the posting's content did not change, the stored values of
+ * every field the job match reads are kept, so a paid (and possibly reviewed) match stays current;
+ * provenance and the other fields still come from the source. This also covers a board taking over
+ * a job the user imported by hand: the pasted text and the board's text of one unchanged posting
+ * differ only in formatting. When the content changed, the source's values replace them.
+ */
+export function keepUnchangedMatchContent(stored: NormalizedJob, incoming: NormalizedJob): NormalizedJob {
+  if (!hasSameMatchContent(stored, incoming)) {
+    return incoming;
+  }
+  return {
+    ...incoming,
+    title: stored.title,
+    company: stored.company,
+    location: stored.location,
+    remoteStatus: stored.remoteStatus,
+    salaryMin: stored.salaryMin,
+    salaryMax: stored.salaryMax,
+    description: stored.description,
+    requirements: stored.requirements,
+    preferredQualifications: stored.preferredQualifications,
+    detectedTechStack: stored.detectedTechStack
+  };
+}
+
 export async function persistCandidates({
   userId,
   jobSourceId,
@@ -163,10 +249,12 @@ export async function persistCandidates({
 
     const sameUrl = applyKey ? byApplyKey.get(applyKey) : undefined;
     if (sameUrl && postingRowIdentity(sameUrl) === identity) {
-      if (jobContentFingerprint(normalizedJobFromPosting(sameUrl)) === jobContentFingerprint(job)) {
+      const stored = normalizedJobFromPosting(sameUrl);
+      const refreshed = keepUnchangedMatchContent(stored, job);
+      if (jobContentFingerprint(stored) === jobContentFingerprint(refreshed)) {
         result.unchanged.push(sameUrl);
       } else {
-        result.updated.push(await upsertNormalizedJob({ userId, jobSourceId, job }));
+        result.updated.push(await upsertNormalizedJob({ userId, jobSourceId, job: refreshed }));
       }
       continue;
     }
