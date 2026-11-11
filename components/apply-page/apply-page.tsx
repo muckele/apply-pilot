@@ -64,9 +64,9 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
   const documentsBlockedReason = !detail.evidenceReview
     ? "Add your master résumé first, so Apply Pilot has facts to work from."
     : pendingFactChanges
-      ? "Update your score in step 2 first, so your documents include your new lines."
+      ? "Update my score in step 2 first, so your documents include your new lines."
       : !matchBoundToReview || !detail.hasValidCurrentSnapshot
-        ? "Finish step 2 first (Update my score), so your documents use your reviewed lines."
+        ? "Update my score in step 2 first, so your documents use your reviewed lines."
         : null;
 
   return (

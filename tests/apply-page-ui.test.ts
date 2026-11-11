@@ -311,7 +311,7 @@ test("step 3 waits for step 2: without a saved review its Write is blocked and s
     await render();
     const create = harness.button("Write my résumé · up to 7¢");
     assert.equal(create.disabled, true);
-    assert.equal(step3Reason(harness), "Finish step 2 first (Update my score), so your documents use your reviewed lines.");
+    assert.equal(step3Reason(harness), "Update my score in step 2 first, so your documents use your reviewed lines.");
     await harness.click(create);
     assert.equal(calls.length, 0);
   } finally {
@@ -326,7 +326,7 @@ test("step 3 waits for step 2: unsaved lines block Write until they're saved", a
     assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
     await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
     assert.equal(harness.button("Write my résumé · up to 7¢").disabled, true);
-    assert.equal(step3Reason(harness), "Update your score in step 2 first, so your documents include your new lines.");
+    assert.equal(step3Reason(harness), "Update my score in step 2 first, so your documents include your new lines.");
     await harness.click(harness.button("Write my résumé · up to 7¢"));
     assert.equal(calls.length, 0);
     await harness.type(harness.container.querySelector("#step-2 textarea"), "");
@@ -456,7 +456,7 @@ test("step 3 blocked while its question is open: Confirm sends nothing", async (
     await harness.click(harness.button("Confirm"));
     await settled();
     assert.deepEqual(calls, []);
-    assert.match(harness.container.querySelector("#step-3 [data-documents-message]")?.textContent ?? "", /^Update your score in step 2 first/u);
+    assert.match(harness.container.querySelector("#step-3 [data-documents-message]")?.textContent ?? "", /^Update my score in step 2 first/u);
   } finally {
     await harness.close();
   }
@@ -530,6 +530,50 @@ test("step 1 asks in the page, not with window.confirm", async () => {
     assert.equal(requests.length, 3);
     assert.equal(new Headers(requests[2].headers).get("x-ai-cost-confirmed"), "true");
     assert.equal(windowConfirms, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a saved empty review whose re-score failed keeps a way on: step 2's own Update my score only re-scores", async () => {
+  // What the page shows after "Nothing to add · update my score" saved the review but the re-score
+  // failed: the estimate predates the review (no new lines), and there is no analysis to review.
+  const unreviewable = buildEvidenceCorrectionReview({
+    jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+    resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
+  });
+  const calls: Array<{ url: string; confirmed: string | null }> = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const confirmed = new Headers(init?.headers).get("x-ai-cost-confirmed");
+    calls.push({ url, confirmed });
+    if (url.endsWith("/match") && !confirmed) return costResponse();
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { throw new Error("window.confirm must not run"); } });
+  try {
+    await harness.render(React.createElement(ApplyPage, await pageProps({
+      detail: {
+        application: ATTACHED,
+        hasValidCurrentSnapshot: true,
+        evidenceReview: unreviewable,
+        estimate: { score: 68, basis: "MASTER_RESUME_NO_NEW_FACTS", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" }
+      }
+    })));
+    await settled();
+    calls.length = 0;
+    const step2 = harness.container.querySelector("#step-2")!;
+    assert.match(step2.textContent ?? "", /Your review is saved\. Update my score to continue\./u);
+    assert.equal(step3Reason(harness), "Update my score in step 2 first, so your documents use your reviewed lines.");
+    const update = [...step2.querySelectorAll("button")].find((button) => button.textContent === "Update my score · about 8¢");
+    assert.ok(update, "step 2 offers the re-score itself");
+    await harness.click(update);
+    await harness.waitForText(/could cost up to \$0\.07272/u);
+    assert.equal(calls.length, 0, "nothing is sent before the in-page Confirm");
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/Your score was updated\./u);
+    assert.deepEqual(calls.map((call) => [call.url, call.confirmed]), [["/api/jobs/job-1/match", null], ["/api/jobs/job-1/match", "true"]]);
+    assert.equal(harness.refreshes, 1);
   } finally {
     await harness.close();
   }

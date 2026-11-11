@@ -593,11 +593,48 @@ test("after a save whose re-score failed, the refreshed step keeps the outcome a
     });
     await harness.render(React.createElement(ExperienceStep, props({ review: refreshed, hasValidCurrentSnapshot: true })));
     assert.match(harness.text(), /Your lines were saved, but your score wasn't updated\. Gemini is busy\. You weren't charged for this step\./u);
-    assert.match(harness.text(), /Your lines are saved\. Update your score in step 1 to use them\./u);
+    assert.match(harness.text(), /Your lines are saved\. Update my score to use them\./u);
     assert.match(harness.text(), /Earned the Quenby certification in 2024\./u);
     assert.doesNotMatch(harness.text(), /before adding lines/u);
+    assert.ok(harness.button("Update my score · about 8¢"), "the step offers the re-score itself");
   } finally {
     await harness.close();
+  }
+});
+
+test("a saved review with nothing to review re-scores only, and Cancel sends nothing", async () => {
+  const { harness, calls } = setup();
+  try {
+    const saved = buildEvidenceCorrectionReview({
+      jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+      resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
+    });
+    await harness.render(React.createElement(ExperienceStep, props({ review: saved, hasValidCurrentSnapshot: true })));
+    assert.match(harness.text(), /Your review is saved\. Update my score to continue\./u);
+    await harness.click(harness.button("Update my score · about 8¢"));
+    await harness.waitForText(/could cost up to/u);
+    await harness.click(harness.button("Cancel"));
+    await harness.waitForText(/Canceled\. Nothing was sent and nothing was charged\./u);
+    assert.equal(calls.length, 0);
+    await harness.click(harness.button("Update my score · about 8¢"));
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/Your score was updated\./u);
+    assert.deepEqual(significant(calls), [["match", null], ["match", "true"]], "never a save");
+    assert.equal(harness.refreshes, 1);
+  } finally {
+    await harness.close();
+  }
+  const off = setup();
+  try {
+    const saved = buildEvidenceCorrectionReview({
+      jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+      resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
+    });
+    await off.harness.render(React.createElement(ExperienceStep, props({ review: saved, hasValidCurrentSnapshot: true, generationAvailable: false })));
+    assert.equal(off.harness.button("Update my score · about 8¢").disabled, true);
+    assert.match(blockedReason(off.harness) ?? "", /Scoring is switched off/u);
+  } finally {
+    await off.harness.close();
   }
 });
 

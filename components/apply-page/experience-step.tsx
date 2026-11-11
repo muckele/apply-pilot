@@ -228,7 +228,10 @@ export function ExperienceStep({
     factEntries.some((entry) => entry.draft.action !== "RETAIN");
   const needsTick = entries.some((entry) => entry.gapDraft.choice === "add") || factEntries.some((entry) => entry.replacing);
   const done = matchBoundToReview && !pending;
-  const savesReview = pending || !hasValidCurrentSnapshot;
+  // With no analysis to review, a saved review only needs the re-score (for example after
+  // "Nothing to add" saved it and the re-score failed or was cancelled).
+  const rescoreOnly = !reviewable && hasValidCurrentSnapshot;
+  const savesReview = reviewable && (pending || !hasValidCurrentSnapshot);
   const running = phase !== null;
 
   const firstProblem = entries.find((entry) => entry.problems.length)?.item.gap.requirement ??
@@ -240,9 +243,8 @@ export function ExperienceStep({
       : needsTick && !attested
         ? `Tick "${TRUTH}" first.`
         : null;
-  const label = pending
-    ? quote ? `Update my score · about ${formatCentsCeiling(quote.jobMatchMicros)}` : "Update my score"
-    : "Nothing to add · update my score";
+  const updateLabel = quote ? `Update my score · about ${formatCentsCeiling(quote.jobMatchMicros)}` : "Update my score";
+  const label = pending || rescoreOnly ? updateLabel : "Nothing to add · update my score";
 
   useEffect(() => {
     onPendingChanges?.(pending);
@@ -302,7 +304,7 @@ export function ExperienceStep({
   }
 
   async function update() {
-    if (busy.current || blockedReason || done || !reviewable) return;
+    if (busy.current || blockedReason || done || !(reviewable || rescoreOnly)) return;
     busy.current = true;
     setPhase("asking");
     setMessage(null);
@@ -379,22 +381,36 @@ export function ExperienceStep({
   ) : null;
 
   // No match to answer against: never scored, or the last save invalidated it (for example when
-  // the re-score after a save failed and the page refreshed). Lines already saved are shown.
+  // the re-score after a save failed or was cancelled, and the page refreshed). Lines already saved
+  // are shown, and with a saved review this step re-scores it itself, so the user is never stuck.
   if (!reviewable) {
     const savedFacts = review.acceptedFacts;
     return (
       <div className="job-tailor" data-experience-step>
-        {outcome}
         <p className="job-note">
-          {!hasValidCurrentSnapshot
+          {!rescoreOnly
             ? "Check your match in step 1 first, so Apply Pilot can see what this job asks for."
             : savedFacts.length
-              ? "Your lines are saved. Update your score in step 1 to use them."
-              : "Your review is saved. Update your score in step 1 to continue."}
+              ? "Your lines are saved. Update my score to use them."
+              : "Your review is saved. Update my score to continue."}
         </p>
-        {hasValidCurrentSnapshot && savedFacts.length ? (
+        {rescoreOnly && savedFacts.length ? (
           <ul className="job-plain-list" data-saved-lines-summary>{savedFacts.map((fact) => <li key={fact.factId}>{fact.fact}</li>)}</ul>
         ) : null}
+        {rescoreOnly ? (
+          <>
+            <div className="job-create-row">
+              <button type="button" className="job-button job-button-primary job-button-large" onClick={update} disabled={Boolean(blockedReason) || running}>
+                {running ? <Loader2 className="animate-spin" size={18} aria-hidden="true" /> : <Sparkles size={18} aria-hidden="true" />}
+                {label}
+              </button>
+            </div>
+            {blockedReason ? <p className="job-hint" data-blocked-reason>{blockedReason}</p> : null}
+            {dialog}
+            {phase === "scoring" ? <p role="status" className="job-hint">Updating your score…</p> : null}
+          </>
+        ) : null}
+        {outcome}
       </div>
     );
   }
