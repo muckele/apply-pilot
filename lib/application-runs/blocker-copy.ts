@@ -1,4 +1,4 @@
-import type { PreparationBlockingReason } from "@/lib/application-runs/preparation";
+import type { PreparationBlockingReason, PreparationErrorCategory } from "@/lib/application-runs/preparation";
 
 export type ReadyFix = {
   label: string;
@@ -41,4 +41,13 @@ export const PREPARE_BLOCKER_COPY: Record<PreparationBlockingReason, { text: str
     text: "Another planner request is in progress. Review the run state before deciding whether to retry.",
     fix: { label: "Try again", target: "retry" }
   }
+};
+
+// Why a FAILED run failed, by its error category. A failed run can be prepared again.
+export const PREPARE_FAILURE_COPY: Record<PreparationErrorCategory, string> = {
+  planner_input_invalid: "Preparation failed because the bounded planner input was invalid.",
+  planner_output_invalid: "Preparation failed because the planner output was invalid.",
+  planner_confidence_invalid: "Preparation failed because the planner confidence was invalid.",
+  planner_provider_failure: "Preparation failed while building the application plan.",
+  ai_provider_usage_exceeded_reservation: "Preparation failed because provider usage exceeded its reservation."
 };

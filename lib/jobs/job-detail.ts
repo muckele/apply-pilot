@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { type JobCoverLetterOption, type JobResumeVersionOption } from "@/components/job-document-workspace";
 import { readTailoredResumeLeftOut, readTailoredResumeReversions } from "@/lib/ai/tailored-resume-keep-rule";
+import { parseExecutionTargetUrl } from "@/lib/application-runs/host-policy";
 import { loadApplyReturnState } from "@/lib/applications/apply-return-service";
 import { formatApplicationStatus } from "@/lib/applications/pipeline";
 import { buildDocumentReviewView } from "@/lib/documents/document-review";
@@ -128,6 +129,9 @@ export async function loadJobDetail(userId: string, id: string) {
     draftUserKey: createHash("sha256").update(userId).digest("hex").slice(0, 16),
     currentConfidenceScore: readConfidenceScore(currentAnalysis?.output),
     view: buildJobDetailView(job),
+    // The host a browser run for this job would target (the same parse run creation uses), or null
+    // when the job has no safe HTTPS application link. Shown in the Prepare question; never a URL.
+    applyHost: parseExecutionTargetUrl(job.applyUrl ?? job.sourceUrl)?.host ?? null,
     estimate: estimate ? buildEstimateView(estimate) : null,
     checklist: { items: checklist.items, counts: checklist.counts },
     readOnlyGaps: estimate && !reviewAnalysis

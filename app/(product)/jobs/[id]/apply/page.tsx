@@ -32,7 +32,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
     notFound();
   }
 
-  const { progress, coverLetterRequired } = await loadApplyPageState(userId, detail);
+  const { progress, coverLetterRequired, prepare } = await loadApplyPageState(userId, detail);
 
   return (
     <>
@@ -47,6 +47,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
         kit={kit}
         automationAvailable={isApplicationAutomationEnabled()}
         progress={progress}
+        prepare={prepare}
         coverLetterRequired={coverLetterRequired}
         tailorServer={{ quote: buildDocumentCreationQuote(), generationAvailable: isDocumentGenerationAvailable() }}
         answeredYes={answeredYes}

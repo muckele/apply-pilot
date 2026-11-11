@@ -11,8 +11,10 @@ import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { DocumentsStep } from "@/components/apply-page/documents-step";
 import { ExperienceStep } from "@/components/apply-page/experience-step";
 import { NowCard } from "@/components/apply-page/now-card";
+import { PrepareStep } from "@/components/apply-page/prepare-step";
 import type { ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import type { ApplyProgress } from "@/lib/apply-page/apply-progress";
+import type { PrepareStepState } from "@/lib/apply-page/load-apply-progress";
 import type { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { experienceDraftKey } from "@/lib/jobs/experience-drafts";
 import { gradeLetter } from "@/lib/jobs/grade";
@@ -25,6 +27,8 @@ export type ApplyPageProps = {
   progress: ApplyProgress;
   /** The account's policy needs a cover letter (Prepare blocks without one): step 3 ticks it by default. */
   coverLetterRequired: boolean;
+  /** Step 4's ready list, host, Fill mode and current run, from the server. */
+  prepare: PrepareStepState;
   /** Server-computed values for steps 2 and 3 (they read server env). */
   tailorServer: { quote: ReturnType<typeof buildDocumentCreationQuote>; generationAvailable: boolean };
   answeredYes?: boolean;
@@ -37,7 +41,7 @@ export function matchResultLine(fit: number, confidence: number | null): string 
   return fit >= 85 && confidence !== null && confidence >= 85 ? head : `${head} Assisted Fill needs an A, with confidence of 85 or more.`;
 }
 
-export function ApplyPage({ detail, kit, progress, coverLetterRequired, tailorServer, answeredYes = false }: ApplyPageProps) {
+export function ApplyPage({ detail, kit, automationAvailable, progress, prepare, coverLetterRequired, tailorServer, answeredYes = false }: ApplyPageProps) {
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
   const scoreConfirm = useInPageConfirm();
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
@@ -131,12 +135,22 @@ export function ApplyPage({ detail, kit, progress, coverLetterRequired, tailorSe
         ) : null}
       </section>
 
-      <section id="step-4" className="job-card job-section" aria-label="Prepare">
-        {detail.application ? (
-          <p className="job-card-copy">
-            Prepare this application on its <Link href={`/applications/${detail.application.id}`}>application page</Link> for now.
-          </p>
-        ) : null}
+      <section id="step-4" className="job-card job-section" aria-labelledby="prepare-heading">
+        <h2 id="prepare-heading" tabIndex={-1} className="job-section-title">Prepare</h2>
+        {!automationAvailable ? (
+          <p className="job-note">Assisted apply isn&apos;t switched on for this server, so there&apos;s nothing to prepare here. You can still apply on your own below.</p>
+        ) : !kit.canRecordApplied ? (
+          <p className="job-note">This application is already recorded, so there&apos;s nothing to prepare.</p>
+        ) : (
+          <PrepareStep
+            jobId={jobId}
+            applicationId={detail.application?.id ?? null}
+            applyHost={prepare.applyHost}
+            readyList={prepare.readyList}
+            fillMode={prepare.fillMode}
+            run={prepare.run}
+          />
+        )}
       </section>
 
       <details className="job-card job-disclosure" open={answeredYes || undefined}>

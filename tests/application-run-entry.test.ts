@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 
 import { ApplicationRunEntry } from "@/components/application-run-entry";
+import { ensureApplicationRun } from "@/lib/application-runs/client-run";
 
 const APPLICATION_ID = "clz8w7m9a0000qwer1234tyui";
 const RUN_ID = "clz8w7m9a0004qwer1234tyui";
@@ -53,6 +54,8 @@ async function mountEntry(
     prior.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
+  let windowConfirms = 0;
+  Object.defineProperty(dom.window, "confirm", { configurable: true, value: () => { windowConfirms += 1; return true; } });
   const fetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
   const priorFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   Object.defineProperty(globalThis, "fetch", {
@@ -70,7 +73,7 @@ async function mountEntry(
       createElement(ApplicationRunEntry, { applicationId: APPLICATION_ID, initialRun })));
   });
   return {
-    dom, container, fetchCalls, get refreshes() { return refreshes; },
+    dom, container, fetchCalls, get refreshes() { return refreshes; }, get windowConfirms() { return windowConfirms; },
     async clickCreate() {
       const button = container.querySelector<HTMLButtonElement>("button[data-testid='create-browser-run']");
       assert.ok(button);
@@ -178,5 +181,64 @@ test("active-run conflict, unauthenticated response, and malformed success do no
       assert.equal(mounted.fetchCalls.length, 1);
       assert.ok(mounted.refreshes >= 1);
     } finally { await mounted.cleanup(); }
+  }
+});
+
+test("no window.confirm: creating a run asks nothing in a browser pop-up", async () => {
+  const mounted = await mountEntry(null, async () => createdResponse());
+  try {
+    await mounted.clickCreate();
+    assert.equal(mounted.fetchCalls.length, 1);
+    assert.equal(mounted.windowConfirms, 0);
+  } finally { await mounted.cleanup(); }
+});
+
+// The create-run helper the Apply page and this panel share.
+
+class MemoryStorage {
+  private values = new Map<string, string>();
+  get length() { return this.values.size; }
+  clear() { this.values.clear(); }
+  getItem(key: string) { return this.values.get(key) ?? null; }
+  key(index: number) { return [...this.values.keys()][index] ?? null; }
+  removeItem(key: string) { this.values.delete(key); }
+  setItem(key: string, value: string) { this.values.set(key, value); }
+}
+
+test("ensureApplicationRun keeps its request key until a confirmed run, then clears it", async () => {
+  const storage = new MemoryStorage();
+  const bodies: Array<{ applicationId: string; idempotencyKey: string }> = [];
+  let calls = 0;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    calls += 1;
+    bodies.push(JSON.parse(String(init?.body)));
+    if (calls === 1) throw new Error("connection dropped");
+    if (calls === 2) return new Response(JSON.stringify({ error: "busy" }), { status: 503 });
+    return createdResponse();
+  }) as typeof fetch;
+  await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl, storage }), (error: Error & { kind?: string }) => error.kind === "uncertain");
+  const key = storage.getItem(`application-run-create:${APPLICATION_ID}`);
+  assert.match(key ?? "", /^[a-f0-9-]{36}$/);
+  await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl, storage }), (error: Error & { kind?: string }) => error.kind === "refused");
+  assert.deepEqual(await ensureApplicationRun(APPLICATION_ID, { fetchImpl, storage }), { id: RUN_ID, state: "DRAFT", applyHost: null });
+  assert.deepEqual(bodies.map((body) => body.idempotencyKey), [key, key, key]);
+  assert.deepEqual(bodies.map((body) => Object.keys(body).sort()), Array(3).fill(["applicationId", "idempotencyKey"]));
+  assert.equal(storage.getItem(`application-run-create:${APPLICATION_ID}`), null);
+});
+
+test("ensureApplicationRun sends nothing without session storage, and refuses another application's run", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => { calls += 1; return createdResponse(); }) as typeof fetch;
+  await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl, storage: null }), (error: Error & { kind?: string }) => error.kind === "storage");
+  assert.equal(calls, 0);
+
+  const other = (async () => new Response(JSON.stringify({
+    run: { id: RUN_ID, applicationId: "clz8w7m9a0009qwer1234tyui", state: "DRAFT" }, replayed: false
+  }), { status: 201 })) as typeof fetch;
+  await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl: other, storage: new MemoryStorage() }), (error: Error & { kind?: string }) => error.kind === "uncertain");
+
+  for (const [status, kind] of [[409, "conflict"], [401, "unauthorized"], [403, "unauthorized"]] as const) {
+    const refused = (async () => new Response(JSON.stringify({ error: "no" }), { status })) as typeof fetch;
+    await assert.rejects(ensureApplicationRun(APPLICATION_ID, { fetchImpl: refused, storage: new MemoryStorage() }), (error: Error & { kind?: string }) => error.kind === kind);
   }
 });
