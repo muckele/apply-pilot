@@ -297,7 +297,7 @@ test("companion cleanup attempts every stage and retains the first failure", asy
 const START_LINE = "Starting the Apply Pilot browser. Look for a new window titled \"Apply Pilot browser\" " +
   "(in the Dock it shows as \"Google Chrome for Testing\"). " +
   "If you can't see it, check behind other windows or on your other desktops.\n";
-const SIGN_IN_LINE = "Sign in the Apply Pilot browser with the one-time code from this job's application page " +
+const SIGN_IN_LINE = "Sign in the Apply Pilot browser with the one-time code from step 5 of this job's Apply page " +
   "in your usual browser. Google sign-in doesn't work in that window.\n";
 const READY_LINE = `The Apply Pilot browser is connected (run ${RUN_ID}). Continue in that window.\n`;
 const SIGN_IN_URL = `${APP_ORIGIN}/login?next=%2Fapplication-runs%2F${RUN_ID}%2Fbrowser`;

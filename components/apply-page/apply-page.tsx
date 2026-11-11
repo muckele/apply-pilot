@@ -40,8 +40,9 @@ export type ApplyPageProps = {
   answeredYes?: boolean;
 };
 
-// A run the browser can open: prepared (READY, or REVIEW_REQUIRED) and so not terminal.
-const PREPARED_RUN_STATES: ReadonlySet<string> = new Set(["READY", "REVIEW_REQUIRED"]);
+// A run the Apply Pilot browser works on: prepared and not finished. Step 5 keeps its start command
+// and sign-in code through all of these, so a closed window can always be reopened.
+const BROWSER_RUN_STATES: ReadonlySet<string> = new Set(["READY", "REVIEW_REQUIRED", "FILLING", "READY_FOR_USER_SUBMISSION"]);
 
 export function matchResultLine(fit: number, confidence: number | null): string | null {
   const letter = gradeLetter(fit);
@@ -54,6 +55,8 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
   const liveRun = useRunProgress(prepare.run?.id ?? null, progressInput?.run ?? null);
   const progress = progressInput && prepare.run ? deriveApplyProgress({ ...progressInput, run: liveRun }) : serverProgress;
+  // The run's state as last read (the tab may have been away while the run moved on).
+  const runState = liveRun?.state ?? prepare.run?.state ?? null;
   const scoreConfirm = useInPageConfirm();
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
   const jobId = detail.view.id;
@@ -166,7 +169,7 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
 
       <section id="step-5" className="job-card job-section" aria-labelledby="browser-heading">
         <h2 id="browser-heading" tabIndex={-1} className="job-section-title">Open the Apply Pilot browser</h2>
-        {prepare.run && PREPARED_RUN_STATES.has(prepare.run.state) && appOrigin ? (
+        {prepare.run && runState !== null && BROWSER_RUN_STATES.has(runState) ? (
           <BrowserStep appOrigin={appOrigin} runId={prepare.run.id} />
         ) : (
           <p className="job-note">After Prepare, start the Apply Pilot browser here.</p>

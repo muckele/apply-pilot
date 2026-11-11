@@ -657,3 +657,61 @@ test("step 5 waits for Prepare, then shows the start command for the prepared ru
     assert.equal(command?.textContent, "npm run application-browser -- --app-origin https://app.example.com --run-id clz8w7m9a0004qwer1234tyui");
   });
 });
+
+const RUN_ID = "clz8w7m9a0004qwer1234tyui";
+const START_COMMAND = `npm run application-browser -- --app-origin https://app.example.com --run-id ${RUN_ID}`;
+const runAt = (state: string) =>
+  prepareStateFromFacts({ ...PREPARE_FACTS, run: { id: RUN_ID, applyHost: "jobs.example.com", state, blockingReason: null, errorCategory: null } } as never);
+
+test("step 5 keeps the start command and sign-in code for a run anywhere from READY to submitting", async () => {
+  for (const state of ["READY", "REVIEW_REQUIRED", "FILLING", "READY_FOR_USER_SUBMISSION"]) {
+    await withPage({ prepare: runAt(state) }, async (harness) => {
+      const step5 = harness.container.querySelector("#step-5")!;
+      assert.equal(step5.querySelector("[data-browser-start-command]")?.textContent, START_COMMAND, state);
+      assert.ok(step5.querySelector('[data-testid="companion-code-button"]'), `${state}: the sign-in code`);
+      assert.doesNotMatch(step5.textContent ?? "", /After Prepare/u, state);
+    });
+  }
+  for (const state of ["DRAFT", "BLOCKED", "PREPARING", "CANCELLED"]) {
+    await withPage({ prepare: runAt(state) }, async (harness) => {
+      assert.equal(harness.container.querySelector("#step-5 [data-browser-step]"), null, state);
+    });
+  }
+});
+
+test("without an app origin, step 5 still says how to continue and offers the sign-in code", async () => {
+  await withPage({ prepare: runAt("FILLING"), appOrigin: null }, async (harness) => {
+    const step5 = harness.container.querySelector("#step-5")!;
+    const text = step5.textContent ?? "";
+    assert.doesNotMatch(text, /After Prepare/u);
+    assert.equal(step5.querySelector("[data-browser-start-command]")?.textContent,
+      `npm run application-browser -- --app-origin <this site's address> --run-id ${RUN_ID}`);
+    assert.match(text, /address bar/u);
+    assert.ok(step5.querySelector('[data-testid="companion-code-button"]'), "the sign-in code");
+  });
+});
+
+test("step 5 follows the run's live state when you come back to the tab", async () => {
+  const liveState = { value: "READY" };
+  const fetchImpl = (async (input: RequestInfo | URL) => String(input) === `/api/application-runs/${RUN_ID}`
+    ? new Response(JSON.stringify({ run: { state: liveState.value } }), { status: 200 })
+    : new Response("{}")) as typeof fetch;
+  const harness = createDomHarness({ fetch: fetchImpl, confirm: () => true });
+  try {
+    // Loaded while Prepare was still running; the run has since been prepared.
+    await harness.render(React.createElement(ApplyPage, await pageProps({
+      prepare: runAt("PREPARING"),
+      progressInput: { ...PROGRESS_INPUT, reviewSaved: true, resumeAttached: true, run: { state: "PREPARING", companionState: null } }
+    })));
+    await settled();
+    assert.equal(harness.container.querySelector("#step-5 [data-browser-start-command]")?.textContent, START_COMMAND);
+    // Cancelled in the other window: the way in goes.
+    liveState.value = "CANCELLED";
+    Object.defineProperty(harness.window.document, "visibilityState", { configurable: true, value: "visible" });
+    await act(async () => { harness.window.document.dispatchEvent(new harness.window.Event("visibilitychange")); });
+    await settled();
+    assert.equal(harness.container.querySelector("#step-5 [data-browser-step]"), null);
+  } finally {
+    await harness.close();
+  }
+});

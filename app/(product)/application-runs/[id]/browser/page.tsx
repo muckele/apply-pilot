@@ -16,10 +16,10 @@ export default async function ApplicationBrowserPage({ params }: Props) {
   const parsed = applicationRunPathSchema.safeParse(await params);
   if (!parsed.success) notFound();
 
-  let applicationId: string;
+  let jobId: string;
   try {
     const run = await getApplicationRun(userId, parsed.data.id);
-    applicationId = run.applicationId;
+    jobId = run.jobPostingId;
   } catch (error) {
     if (error instanceof PublicApiError && error.status === 404) notFound();
     throw error;
@@ -40,7 +40,7 @@ export default async function ApplicationBrowserPage({ params }: Props) {
           runId={parsed.data.id}
           authenticatedOwnerPage
           detectCompanionWindow
-          applicationHref={`/applications/${applicationId}`}
+          applyPageHref={`/jobs/${jobId}/apply`}
         />
       </Panel>
     </>

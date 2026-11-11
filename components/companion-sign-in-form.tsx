@@ -11,7 +11,7 @@ import {
 type Problem = "refused" | "too-many-tries" | "unreachable";
 
 // Shown in the Apply Pilot browser window, which Google refuses to sign in. You type the
-// one-time code you got from this job's application page in your usual, signed-in browser.
+// one-time code you got from step 5 of this job's Apply page in your usual, signed-in browser.
 export function CompanionSignInForm({
   callbackUrl,
   navigate = (url: string) => window.location.assign(url)
@@ -106,14 +106,14 @@ export function CompanionSignInForm({
             <li>It was replaced by a newer code. Getting a new code cancels the old one.</li>
             <li>It was already used.</li>
           </ul>
-          <p>Get a new code from this job&apos;s application page in your usual browser, then type it here.</p>
+          <p>Get a new code from step 5 of this job&apos;s Apply page in your usual browser, then type it here.</p>
         </div>
       ) : null}
       {problem === "too-many-tries" ? (
         <div role="alert" className="public-code-problem">
           <p>
-            <strong>Too many tries.</strong> Wait 10 minutes, then get a new code from this job&apos;s application page
-            in your usual browser.
+            <strong>Too many tries.</strong> Wait 10 minutes, then get a new code from step 5 of this job&apos;s Apply
+            page in your usual browser.
           </p>
         </div>
       ) : null}

@@ -78,7 +78,7 @@ function CodeFirstAuthPage({
         <section className="public-auth-card" aria-labelledby="auth-card-title">
           <div className="public-auth-card-content">
             <h1 id="auth-card-title">Sign in this window with a code</h1>
-            <p>Get a one-time code from this job&apos;s application page in your usual browser, where you&apos;re signed in to Apply Pilot.</p>
+            <p>Get a one-time code from step 5 of this job&apos;s Apply page in your usual browser, where you&apos;re signed in to Apply Pilot.</p>
             {codeSignIn}
             <details className="public-auth-google-fallback">
               <summary>Not in the Apply Pilot browser? Sign in with Google</summary>
