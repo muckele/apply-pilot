@@ -508,3 +508,23 @@ test("a given confirm is asked instead of window.confirm, for the plan and for a
     await second.close();
   }
 });
+
+test("a blocked reason from the page disables both Create buttons, shows the reason and sends nothing", async () => {
+  const calls: Call[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: () => true });
+  try {
+    await harness.render(React.createElement(TailorFlow, props({
+      ...readyResume, documentsOnly: true, blockedReason: "Update your score in step 2 first, so your documents include your new lines."
+    })));
+    assert.equal(harness.button("Create new versions").disabled, true);
+    assert.equal(harness.button("Create cover letter only").disabled, true);
+    assert.equal(harness.container.querySelector("[data-blocked-reason]")?.textContent, "Update your score in step 2 first, so your documents include your new lines.");
+    await harness.click(harness.button("Create new versions"));
+    assert.equal(calls.length, 0);
+    // Without a résumé, that comes first.
+    await harness.render(React.createElement(TailorFlow, props({ review: null, documentsOnly: true, blockedReason: "Finish step 2 first." })));
+    assert.match(harness.container.querySelector("[data-blocked-reason]")?.textContent ?? "", /Add your master résumé first/u);
+  } finally {
+    await harness.close();
+  }
+});

@@ -170,6 +170,8 @@ test("a placeholder is flagged under its box before any request", async () => {
     const problems = [...box(harness, "Current Quenby certification").querySelectorAll("[data-problem]")];
     assert.equal(problems.length, 1);
     assert.match(problems[0]!.textContent ?? "", /\[X\]/u);
+    const describedBy = (textarea(harness, "Current Quenby certification").getAttribute("aria-describedby") ?? "").split(" ");
+    assert.equal(describedBy.some((id) => id && harness.window.document.getElementById(id)?.contains(problems[0]!)), true, "the box names its problem");
     assert.equal(box(harness, "Working knowledge of SQL").querySelector("[data-problem]") === null, true, "only the box with the problem");
     assert.equal(harness.button("Update my score · about 8¢").disabled, true);
     assert.equal(blockedReason(harness), 'Fix the line for "Current Quenby certification" first.');
@@ -559,6 +561,58 @@ test("without a current match the step points back to step 1", async () => {
     assert.match(harness.text(), /Check your match in step 1 first/u);
     assert.equal(harness.container.querySelector("fieldset[data-requirement]") === null, true);
     assert.equal(harness.maybeButton(/update my score/iu) === undefined, true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("after a save whose re-score failed, the refreshed step keeps the outcome and says the lines are saved", async () => {
+  const calls: Call[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, confirmed: new Headers(init?.headers).get("x-ai-cost-confirmed"), body: null });
+    if (url.endsWith("/evidence-snapshots")) return savedResponse();
+    return json(503, { error: "Gemini is busy.", billingStatus: "not_charged" });
+  }) as typeof fetch;
+  const { harness } = setup({ calls, fetch: fetchImpl });
+  try {
+    await harness.render(React.createElement(ExperienceStep, props()));
+    await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
+    await harness.check(tick(harness));
+    await harness.click(harness.button("Update my score · about 8¢"));
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/score wasn't updated/u);
+    // What router.refresh() delivers: the save invalidated the match, so nothing is reviewable yet.
+    const refreshed = buildEvidenceCorrectionReview({
+      jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+      resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null,
+      acceptedFacts: [{
+        factId: "fact:owner-2", originGapId: "gap:0", fact: "Earned the Quenby certification in 2024.",
+        provenance: { kind: "OWNER_ATTESTED", ownerAttested: true }, reuseScope: "JOB_ONLY", masterProfileOptIn: false
+      }]
+    });
+    await harness.render(React.createElement(ExperienceStep, props({ review: refreshed, hasValidCurrentSnapshot: true })));
+    assert.match(harness.text(), /Your lines were saved, but your score wasn't updated\. Gemini is busy\. You weren't charged for this step\./u);
+    assert.match(harness.text(), /Your lines are saved\. Update your score in step 1 to use them\./u);
+    assert.match(harness.text(), /Earned the Quenby certification in 2024\./u);
+    assert.doesNotMatch(harness.text(), /before adding lines/u);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Nothing to add keeps a line typed before switching to the résumé picker", async () => {
+  const { harness } = setup();
+  try {
+    await harness.render(React.createElement(ExperienceStep, props()));
+    await harness.type(textarea(harness, "Working knowledge of SQL"), "Wrote SQL reports for the service desk.");
+    const sql = box(harness, "Working knowledge of SQL");
+    await harness.click([...sql.querySelectorAll("button")].find((node) => node.textContent === "It's on my résumé"));
+    await harness.click(harness.button("Nothing to add · update my score"));
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/Your score was updated\./u);
+    assert.deepEqual(storedDrafts(harness), { "Working knowledge of SQL": { line: "Wrote SQL reports for the service desk.", resumeLine: "" } });
+    assert.equal(textarea(harness, "Working knowledge of SQL").value, "Wrote SQL reports for the service desk.");
   } finally {
     await harness.close();
   }

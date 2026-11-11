@@ -271,6 +271,8 @@ test("actual owned product job route reviews full career and exports current fil
     await page.getByText("Your lines were saved and your score was updated.").waitFor({timeout:30_000});
     // The refreshed page shows the changed line as saved; step 3 has remounted for the new review.
     await page.locator("#step-2 [data-saved-line]").filter({hasText:replacementOwnerFact}).waitFor({timeout:30_000});
+    // Step 2 is done (the match is scored on the saved review), which is what lets step 3 write documents.
+    await page.locator("#step-2 [data-experience-done]").waitFor({timeout:30_000});
     assert.equal(matchCalls,2);
     await page.locator("#step-3").getByLabel("Include a cover letter",{exact:true}).check();
     await page.getByRole("button",{name:"Create new versions",exact:true}).click();

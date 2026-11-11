@@ -135,6 +135,11 @@ test("progress facts map the way the plan says", () => {
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: { ...attached, status: "REJECTED" } }).steps.every((step) => step.state === "done"), true);
 });
 
+const REVIEWED = {
+  hasValidCurrentSnapshot: true,
+  estimate: { score: 90, basis: "REVIEWED_EVIDENCE", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" }
+};
+
 const VERSION = { id: "resume-version-1", title: "Example tailored résumé", fullText: "Alex Rivera\nService operations leader.", summary: null, atsCompatibility: null, jobFitScore: null, evidenceCurrent: true, createdAt: "2026-11-05T11:00:00.000Z" };
 
 test("after a partial run the refreshed page keeps step 3's outcome message", async () => {
@@ -155,17 +160,17 @@ test("after a partial run the refreshed page keeps step 3's outcome message", as
   }) as typeof fetch;
   const harness = createDomHarness({ fetch: fetchStub, confirm: () => { throw new Error("window.confirm must not run"); } });
   try {
-    await harness.render(React.createElement(ApplyPage, await pageProps({})));
+    await harness.render(React.createElement(ApplyPage, await pageProps({ detail: REVIEWED })));
     await harness.click(harness.button("Create my résumé"));
     await harness.waitForText(/could cost up to/u);
     await harness.click(harness.button("Confirm"));
     await harness.waitForText(/The writer is unavailable/u);
-    const next = await pageProps({});
-    // What router.refresh() delivers: the saved review is now in force and bound to a new analysis.
+    const next = await pageProps({ detail: REVIEWED });
+    // What router.refresh() delivers: the same review, remounting step 3 under a new identity.
     await harness.render(React.createElement(ApplyPage, {
-      ...next, detail: { ...next.detail, hasValidCurrentSnapshot: true, evidenceReview: { ...next.detail.evidenceReview!, analysisId: "analysis-2" } }
+      ...next, detail: { ...next.detail, evidenceReview: { ...next.detail.evidenceReview!, analysisId: "analysis-2" } }
     }));
-    assert.match(harness.container.querySelector("#step-3")?.textContent ?? "", /Your answers were saved\. The writer is unavailable\./u);
+    assert.match(harness.container.querySelector("#step-3")?.textContent ?? "", /The writer is unavailable\. You weren't charged for this step\./u);
   } finally {
     await harness.close();
   }
@@ -202,12 +207,87 @@ test("unsaved lines in step 2 hold back the documents in step 3", async () => {
   });
 });
 
+function recordingPage(detail: Record<string, unknown>) {
+  const calls: Array<{ url: string; confirmed: string | null }> = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const confirmed = new Headers(init?.headers).get("x-ai-cost-confirmed");
+    calls.push({ url, confirmed });
+    if (!confirmed) {
+      return new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 1, dataType: "application_packet" }), { status: 428 });
+    }
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { throw new Error("window.confirm must not run"); } });
+  Object.assign(harness.window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
+  return {
+    calls,
+    harness,
+    render: async () => harness.render(React.createElement(ApplyPage, await pageProps({ detail })))
+  };
+}
+
+const step3Reason = (harness: ReturnType<typeof createDomHarness>) =>
+  harness.container.querySelector("#step-3 [data-blocked-reason]")?.textContent ?? null;
+
+test("step 3 waits for step 2: without a saved review its Create is blocked and sends nothing", async () => {
+  const { harness, calls, render } = recordingPage({});
+  try {
+    await render();
+    const create = harness.button("Create my résumé");
+    assert.equal(create.disabled, true);
+    assert.equal(step3Reason(harness), "Finish step 2 first (Update my score), so your documents use your reviewed lines.");
+    await harness.click(create);
+    assert.equal(calls.length, 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("step 3 waits for step 2: unsaved lines block Create until they're saved", async () => {
+  const { harness, calls, render } = recordingPage(REVIEWED);
+  try {
+    await render();
+    assert.equal(harness.button("Create my résumé").disabled, false);
+    await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
+    assert.equal(harness.button("Create my résumé").disabled, true);
+    assert.equal(step3Reason(harness), "Update your score in step 2 first, so your documents include your new lines.");
+    await harness.click(harness.button("Create my résumé"));
+    assert.equal(calls.length, 0);
+    await harness.type(harness.container.querySelector("#step-2 textarea"), "");
+    assert.equal(harness.button("Create my résumé").disabled, false);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("with step 2 done, step 3's Create sends only the document requests, never a save", async () => {
+  const { harness, calls, render } = recordingPage(REVIEWED);
+  try {
+    await render();
+    assert.equal(step3Reason(harness), null);
+    const cover = [...harness.container.querySelectorAll("#step-3 label")].find((node) => node.textContent === "Include a cover letter")!.querySelector("input");
+    await harness.check(cover);
+    await harness.click(harness.button("Create my résumé and cover letter"));
+    await harness.waitForText(/could cost up to/u);
+    assert.equal(calls.length, 0);
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/ready to review/u);
+    assert.deepEqual(calls.map((call) => [call.url.split("/").at(-1), call.confirmed]), [
+      ["tailored-resume", null], ["tailored-resume", "true"], ["cover-letter", null], ["cover-letter", "true"]
+    ]);
+    assert.equal(calls.some((call) => call.url.endsWith("/evidence-snapshots")), false);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("a ready tailored résumé offers the cover letter on its own; an outdated one does not", async () => {
-  await withPage({ detail: { hasValidCurrentSnapshot: true, resumeVersions: [VERSION] } }, async (harness) => {
+  await withPage({ detail: { ...REVIEWED, resumeVersions: [VERSION] } }, async (harness) => {
     assert.equal(harness.button("Create cover letter only").disabled, false);
     assert.equal(harness.button("Create new versions").disabled, false);
   });
-  await withPage({ detail: { hasValidCurrentSnapshot: true, resumeVersions: [{ ...VERSION, evidenceCurrent: false }] } }, async (harness) => {
+  await withPage({ detail: { ...REVIEWED, resumeVersions: [{ ...VERSION, evidenceCurrent: false }] } }, async (harness) => {
     assert.equal(harness.maybeButton("Create cover letter only"), undefined);
     assert.ok(harness.button("Create new versions"));
   });

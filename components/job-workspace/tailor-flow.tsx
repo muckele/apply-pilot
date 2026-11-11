@@ -65,6 +65,9 @@ export type TailorFlowProps = {
   documentsOnly?: boolean;
   // Ask cost questions in the page instead of with window.confirm.
   confirm?: ConfirmFn;
+  // Set by the page while an earlier step isn't done (the Apply page: step 2). Both Create
+  // buttons stay off and this is shown instead.
+  blockedReason?: string | null;
 };
 
 export type TailorFlowMessage = { tone: "success" | "error" | "info"; text: string };
@@ -137,7 +140,8 @@ export function TailorFlow({
   coverLetterByDefault = false,
   hasCurrentResume = false,
   documentsOnly = false,
-  confirm
+  confirm,
+  blockedReason: pageBlockedReason = null
 }: TailorFlowProps) {
   const router = useRouter();
   const [gapDrafts, setGapDrafts] = useState<Record<string, GapDraft>>({});
@@ -167,7 +171,7 @@ export function TailorFlow({
   const pendingFactChanges = decisionKinds.some((kind) => kind !== "UNRESOLVED") || acceptedActions.some((action) => action !== "RETAIN");
   const draftsComplete = (review?.gaps ?? []).every((gap) => gapDraftComplete(gapDraft(gap.id))) &&
     (review?.acceptedFacts ?? []).every((fact) => savedLineDraftComplete(lineDraft(fact.factId)));
-  const canCreate = Boolean(review) && plan.ok && draftsComplete && generationAvailable && !running;
+  const canCreate = Boolean(review) && plan.ok && draftsComplete && generationAvailable && !running && !pageBlockedReason;
   const coverOnlyPlan = planCoverLetterOnly({
     hasCurrentResume,
     hasValidCurrentSnapshot,
@@ -175,7 +179,7 @@ export function TailorFlow({
     acceptedFactActions: acceptedActions
   });
   const showCoverOnly = Boolean(review) && hasCurrentResume;
-  const canCreateCoverOnly = Boolean(review) && coverOnlyPlan.ok && generationAvailable && !running;
+  const canCreateCoverOnly = Boolean(review) && coverOnlyPlan.ok && generationAvailable && !running && !pageBlockedReason;
   const createLabel = hasDocuments ? "Create new versions" : includeCover ? "Create my résumé and cover letter" : "Create my résumé";
 
   useEffect(() => {
@@ -281,13 +285,15 @@ export function TailorFlow({
     ? "Add your master résumé first, so Apply Pilot has facts to work from."
     : !generationAvailable
       ? "Document writing is switched off on this server (no AI provider is configured)."
-      : !plan.ok
-        ? plan.reason === "SCORE_FIRST"
-          ? "Score this job first, so Apply Pilot can see what it asks for."
-          : "Check this job again before adding lines, so your answers match its current gaps."
-        : !draftsComplete
-          ? "Finish each line you started (with the confirmation box ticked), or set it back to Skip."
-          : null;
+      : pageBlockedReason
+        ? pageBlockedReason
+        : !plan.ok
+          ? plan.reason === "SCORE_FIRST"
+            ? "Score this job first, so Apply Pilot can see what it asks for."
+            : "Check this job again before adding lines, so your answers match its current gaps."
+          : !draftsComplete
+            ? "Finish each line you started (with the confirmation box ticked), or set it back to Skip."
+            : null;
   const coverOnlyMaximum = coverOnlyPlan.ok && quote ? documentCreationMaximumMicros(coverOnlyPlan.steps, quote) : null;
   // The page-wide reason above already says why nothing can be created; this only explains the rest.
   const coverOnlyBlockedReason = coverOnlyPlan.ok || blockedReason

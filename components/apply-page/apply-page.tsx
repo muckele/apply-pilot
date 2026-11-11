@@ -44,6 +44,14 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
   const hasCurrentResume = detail.resumeVersions.some((version) => version.evidenceCurrent);
   const jobId = detail.view.id;
   const result = detail.estimate ? matchResultLine(detail.estimate.score, detail.currentConfidenceScore) : null;
+  const matchBoundToReview = detail.estimate?.basis === "REVIEWED_EVIDENCE";
+  // Step 3 writes documents only from a finished step 2: the saved review in force and the shown
+  // match scored on it, with no unsaved lines. So step 3 never saves a review itself.
+  const documentsBlockedReason = pendingFactChanges
+    ? "Update your score in step 2 first, so your documents include your new lines."
+    : !matchBoundToReview || !detail.hasValidCurrentSnapshot
+      ? "Finish step 2 first (Update my score), so your documents use your reviewed lines."
+      : null;
 
   useEffect(() => {
     if (!hasDocuments) return;
@@ -87,7 +95,7 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
             jobId={jobId}
             review={detail.evidenceReview}
             hasValidCurrentSnapshot={detail.hasValidCurrentSnapshot}
-            matchBoundToReview={detail.estimate?.basis === "REVIEWED_EVIDENCE"}
+            matchBoundToReview={matchBoundToReview}
             quote={tailorServer.quote}
             draftKey={experienceDraftKey(detail.draftUserKey, jobId)}
             generationAvailable={tailorServer.generationAvailable}
@@ -108,6 +116,7 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
             key={tailorReviewIdentity(detail.evidenceReview, detail.hasValidCurrentSnapshot)}
             documentsOnly
             confirm={documentsConfirm.confirmFn}
+            blockedReason={documentsBlockedReason}
             jobId={jobId}
             hasDocuments={hasDocuments}
             hasCurrentResume={hasCurrentResume}

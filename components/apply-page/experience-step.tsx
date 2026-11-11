@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Sparkles } from "lucide-react";
 
@@ -136,12 +136,14 @@ function errorText(json: ErrorPayload, fallback: string) {
   return parts.join(" ");
 }
 
-function LineCounter({ line }: { line: string }) {
-  return <p className="job-hint" data-counter>{line.trim().length}/{OWNER_FACT_MAX_CHARACTERS}</p>;
-}
-
-function Problems({ problems }: { problems: string[] }) {
-  return problems.map((problem) => <p key={problem} className="job-hint job-problem" data-problem>{problem}</p>);
+// The counter and any problems under a box; the box points at both with aria-describedby.
+function LineHints({ id, line, problems }: { id: string; line: string; problems: string[] }) {
+  return (
+    <div id={id}>
+      <p className="job-hint" data-counter>{line.trim().length}/{OWNER_FACT_MAX_CHARACTERS}</p>
+      {problems.map((problem) => <p key={problem} className="job-hint job-problem" data-problem>{problem}</p>)}
+    </div>
+  );
 }
 
 export function ExperienceStep({
@@ -157,6 +159,7 @@ export function ExperienceStep({
   const router = useRouter();
   const { confirm, confirmFn, dialog } = useInPageConfirm();
   const hydrated = useHydrated();
+  const idPrefix = useId();
   const reviewable = Boolean(review.analysisId);
 
   const items = useMemo(() => {
@@ -276,9 +279,13 @@ export function ExperienceStep({
     setSavedLines((current) => ({ ...current, [factId]: { ...(current[factId] ?? EMPTY_SAVED_LINE_DRAFT), ...patch } }));
   }
 
-  function forgetDrafts() {
-    clearExperienceDrafts(draftKey, browserStorage());
-    setEdited({});
+  // Saved to the account: drop the drafts that went into the save. A line typed before switching
+  // to the résumé picker (and so not sent) stays.
+  function forgetSavedDrafts(sentKeys: ReadonlySet<string>) {
+    const remaining = Object.fromEntries(Object.entries(drafts).filter(([key]) => !sentKeys.has(key)));
+    if (Object.keys(remaining).length) setWriteFailed(!writeExperienceDrafts(draftKey, remaining, browserStorage()));
+    else clearExperienceDrafts(draftKey, browserStorage());
+    setEdited(remaining);
     setRemovedEarlier(0);
     setModes({});
     setSavedLines({});
@@ -300,6 +307,7 @@ export function ExperienceStep({
     setPhase("asking");
     setMessage(null);
     const stale = storageAvailable ? STALE : STALE_NOT_KEPT;
+    const sentKeys = new Set(entries.filter((entry) => entry.gapDraft.choice !== "skip").map((entry) => entry.item.key));
     let saved = false;
     try {
       const approved = await confirm({
@@ -344,10 +352,9 @@ export function ExperienceStep({
           setMessage({ tone: "error", text: stale });
           return;
         }
-        // Saved to the account: the browser copy is no longer needed.
         saved = true;
         saveRequest.current = null;
-        forgetDrafts();
+        forgetSavedDrafts(sentKeys);
       }
       setPhase("scoring");
       const response = await fetchWithApprovedAiCost(`/api/jobs/${jobId}/match`, { method: "POST" }, quote?.jobMatchMicros ?? 0, { confirm: confirmFn });
@@ -367,14 +374,27 @@ export function ExperienceStep({
     }
   }
 
+  const outcome = message ? (
+    <p role={message.tone === "error" ? "alert" : "status"} className={`job-message job-message-${message.tone}`} data-experience-message>{message.text}</p>
+  ) : null;
+
+  // No match to answer against: never scored, or the last save invalidated it (for example when
+  // the re-score after a save failed and the page refreshed). Lines already saved are shown.
   if (!reviewable) {
+    const savedFacts = review.acceptedFacts;
     return (
       <div className="job-tailor" data-experience-step>
+        {outcome}
         <p className="job-note">
-          {hasValidCurrentSnapshot
-            ? "Check your match again in step 1 before adding lines, so they match this job's current requirements."
-            : "Check your match in step 1 first, so Apply Pilot can see what this job asks for."}
+          {!hasValidCurrentSnapshot
+            ? "Check your match in step 1 first, so Apply Pilot can see what this job asks for."
+            : savedFacts.length
+              ? "Your lines are saved. Update your score in step 1 to use them."
+              : "Your review is saved. Update your score in step 1 to continue."}
         </p>
+        {hasValidCurrentSnapshot && savedFacts.length ? (
+          <ul className="job-plain-list" data-saved-lines-summary>{savedFacts.map((fact) => <li key={fact.factId}>{fact.fact}</li>)}</ul>
+        ) : null}
       </div>
     );
   }
@@ -398,7 +418,7 @@ export function ExperienceStep({
         ) : (
           <p className="job-note">Apply Pilot didn&apos;t flag any listed requirement as missing from your résumé. It can&apos;t check every requirement (years of experience, for example), so read your match before you apply.</p>
         )}
-        {entries.map(({ item, draft, mode, chosen, problems }) => (
+        {entries.map(({ item, draft, mode, chosen, problems }, index) => (
           <fieldset key={item.key} className="job-gap" data-requirement={item.gap.id}>
             <legend className="job-gap-requirement">{item.gap.requirement}</legend>
             {item.gap.tenureSummary ? <p className="job-hint" data-tenure>{item.gap.tenureSummary}</p> : null}
@@ -410,11 +430,11 @@ export function ExperienceStep({
                     value={draft.line}
                     placeholder={PLACEHOLDER}
                     aria-label={`Your line for: ${item.gap.requirement}`}
+                    aria-describedby={`${idPrefix}-requirement-${index}`}
                     onChange={(event) => updateDraft(item.key, { line: event.target.value })}
                   />
                 </div>
-                <LineCounter line={draft.line} />
-                <Problems problems={problems} />
+                <LineHints id={`${idPrefix}-requirement-${index}`} line={draft.line} problems={problems} />
                 {lines.length ? (
                   <button type="button" className="job-link-button" onClick={() => setMode(item.key, "resume")}>It&apos;s on my résumé</button>
                 ) : null}
@@ -440,7 +460,7 @@ export function ExperienceStep({
         {factEntries.length ? (
           <section aria-labelledby="saved-lines-heading" className="job-step">
             <h3 id="saved-lines-heading" className="job-step-title">Lines you&apos;ve added before</h3>
-            {factEntries.map(({ fact, draft, replacing, problems }) => (
+            {factEntries.map(({ fact, draft, replacing, problems }, index) => (
               <fieldset key={fact.factId} className="job-gap" data-saved-line={fact.factId}>
                 <legend className="job-gap-requirement">{fact.fact}</legend>
                 <div className="job-gap-choices" role="radiogroup" aria-label={`Keep or change: ${fact.fact}`}>
@@ -455,10 +475,9 @@ export function ExperienceStep({
                   <div className="job-gap-detail">
                     <label className="job-field">
                       New line
-                      <textarea rows={2} value={draft.line} onChange={(event) => updateSavedLine(fact.factId, { line: event.target.value })} />
+                      <textarea rows={2} value={draft.line} aria-describedby={`${idPrefix}-saved-${index}`} onChange={(event) => updateSavedLine(fact.factId, { line: event.target.value })} />
                     </label>
-                    <LineCounter line={draft.line} />
-                    <Problems problems={problems} />
+                    <LineHints id={`${idPrefix}-saved-${index}`} line={draft.line} problems={problems} />
                   </div>
                 ) : null}
               </fieldset>
@@ -487,9 +506,7 @@ export function ExperienceStep({
       {phase === "saving" || phase === "scoring" ? (
         <p role="status" className="job-hint">{phase === "saving" ? "Saving your lines…" : "Updating your score…"}</p>
       ) : null}
-      {message ? (
-        <p role={message.tone === "error" ? "alert" : "status"} className={`job-message job-message-${message.tone}`} data-experience-message>{message.text}</p>
-      ) : null}
+      {outcome}
     </div>
   );
 }
