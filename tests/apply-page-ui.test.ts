@@ -73,6 +73,8 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
 
 async function withPage(overrides: PageOverrides, run: (harness: ReturnType<typeof createDomHarness>) => Promise<void>) {
   const harness = createDomHarness({ fetch: (async () => new Response("{}")) as typeof fetch, confirm: () => true });
+  // react-dom's fallback input listener calls the IE-only attachEvent/detachEvent.
+  Object.assign(harness.window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
   try {
     await harness.render(React.createElement(ApplyPage, await pageProps(overrides)));
     await run(harness);
@@ -135,7 +137,7 @@ test("progress facts map the way the plan says", () => {
 
 const VERSION = { id: "resume-version-1", title: "Example tailored résumé", fullText: "Alex Rivera\nService operations leader.", summary: null, atsCompatibility: null, jobFitScore: null, evidenceCurrent: true, createdAt: "2026-11-05T11:00:00.000Z" };
 
-test("after a partial run the refreshed page keeps the outcome message but resets answers for the new review", async () => {
+test("after a partial run the refreshed page keeps step 3's outcome message", async () => {
   const fetchStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/evidence-snapshots")) {
@@ -151,27 +153,53 @@ test("after a partial run the refreshed page keeps the outcome message but reset
     }
     return new Response(JSON.stringify({ error: "The writer is unavailable.", billingStatus: "not_charged" }), { status: 503 });
   }) as typeof fetch;
-  const harness = createDomHarness({ fetch: fetchStub, confirm: () => true });
+  const harness = createDomHarness({ fetch: fetchStub, confirm: () => { throw new Error("window.confirm must not run"); } });
   try {
     await harness.render(React.createElement(ApplyPage, await pageProps({})));
-    const gap = harness.container.querySelector("fieldset[data-gap]")!;
-    await harness.click([...gap.querySelectorAll("label")].find((label) => /^Skip$/u.test(label.textContent ?? ""))?.querySelector("input"));
     await harness.click(harness.button("Create my résumé"));
+    await harness.waitForText(/could cost up to/u);
+    await harness.click(harness.button("Confirm"));
     await harness.waitForText(/The writer is unavailable/u);
-    const refreshed = async (analysisId: string) => {
-      const next = await pageProps({});
-      return React.createElement(ApplyPage, { ...next, detail: { ...next.detail, hasValidCurrentSnapshot: true, evidenceReview: { ...next.detail.evidenceReview!, analysisId } } });
-    };
+    const next = await pageProps({});
     // What router.refresh() delivers: the saved review is now in force and bound to a new analysis.
-    await harness.render(await refreshed("analysis-2"));
-    assert.match(harness.text(), /Your answers were saved\. The writer is unavailable\./u);
-    await harness.click([...harness.container.querySelector("fieldset[data-gap]")!.querySelectorAll("label")].find((label) => /I have this/u.test(label.textContent ?? ""))?.querySelector("input"));
-    await harness.render(await refreshed("analysis-3"));
-    const choice = [...harness.container.querySelector("fieldset[data-gap]")!.querySelectorAll("label")].find((label) => /^Skip$/u.test(label.textContent ?? ""))?.querySelector("input");
-    assert.equal(choice?.checked, true, "answers drafted against an older review are cleared");
+    await harness.render(React.createElement(ApplyPage, {
+      ...next, detail: { ...next.detail, hasValidCurrentSnapshot: true, evidenceReview: { ...next.detail.evidenceReview!, analysisId: "analysis-2" } }
+    }));
+    assert.match(harness.container.querySelector("#step-3")?.textContent ?? "", /Your answers were saved\. The writer is unavailable\./u);
   } finally {
     await harness.close();
   }
+});
+
+test("step 2 is Your experience: one box per requirement, and step 3 only writes documents", async () => {
+  await withPage({}, async (harness) => {
+    const step2 = harness.container.querySelector("#step-2")!;
+    assert.equal(step2.querySelector("h2")?.textContent, "Your experience");
+    assert.equal(step2.querySelector("[data-experience-step]") !== null, true);
+    assert.deepEqual([...step2.querySelectorAll("fieldset[data-requirement] legend")].map((node) => node.textContent),
+      ["Current Quenby certification", "Working knowledge of SQL"]);
+    assert.ok([...step2.querySelectorAll("button")].some((button) => button.textContent === "Nothing to add · update my score"));
+    assert.equal(harness.container.querySelector("fieldset[data-gap]") === null, true, "TailorFlow's gap list is gone from the page");
+    const step3 = harness.container.querySelector("#step-3")!;
+    assert.match(step3.textContent ?? "", /Create your documents/u);
+    assert.ok([...step3.querySelectorAll("button")].some((button) => button.textContent === "Create my résumé"));
+    await harness.type(step2.querySelector("textarea"), "Earned the Quenby certification in 2024.");
+    assert.equal(harness.window.localStorage.getItem("apply-pilot:experience:0123456789abcdef:job-1") !== null, true, "drafts use the server's user key");
+  });
+  await withPage({ detail: { hasValidCurrentSnapshot: true, estimate: { score: 90, basis: "REVIEWED_EVIDENCE", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" } } }, async (harness) => {
+    assert.equal(harness.container.querySelector("#step-2 [data-experience-done]")?.textContent, "Done");
+  });
+  await withPage({ detail: { evidenceReview: null } }, async (harness) => {
+    assert.match(harness.container.querySelector("#step-2")?.textContent ?? "", /needs your master résumé/u);
+  });
+});
+
+test("unsaved lines in step 2 hold back the documents in step 3", async () => {
+  await withPage({ detail: { resumeVersions: [VERSION] } }, async (harness) => {
+    assert.doesNotMatch(harness.text(), /these documents don.t include yet/u);
+    await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
+    assert.match(harness.container.querySelector("#step-3")?.textContent ?? "", /these documents don.t include yet/u);
+  });
 });
 
 test("a ready tailored résumé offers the cover letter on its own; an outdated one does not", async () => {

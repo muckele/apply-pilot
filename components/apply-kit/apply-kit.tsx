@@ -23,6 +23,7 @@ import {
 import { CopyButton } from "@/components/apply-kit/copy-button";
 import { DocumentReviewPanel } from "@/components/document-review-panel";
 import { Panel, PanelHeader, PrimaryButton, SecondaryButton } from "@/components/ui";
+import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 import { prefillEffortMinutes } from "@/lib/applications/apply-return";
 import { MAX_EFFORT_MINUTES, parseEffortMinutesInput } from "@/lib/applications/self-reported-effort";
@@ -243,6 +244,7 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
   const [includeCover, setIncludeCover] = useState(view.selectedCoverLetterId !== null);
   const [busy, setBusy] = useState<Busy>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const generateConfirm = useInPageConfirm();
   const [confirming, setConfirming] = useState(false);
   const [attested, setAttested] = useState(false);
   const [appliedError, setAppliedError] = useState<{ text: string; fixHref: string | null } | null>(null);
@@ -389,7 +391,8 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
     try {
       const response = await fetchWithAiCostConfirmation(
         `/api/jobs/${view.job.id}/${kind === "RESUME" ? "tailored-resume" : "cover-letter"}`,
-        { method: "POST" }
+        { method: "POST" },
+        { confirm: generateConfirm.confirmFn }
       );
       if (!response.ok) {
         const json = await readJson(response);
@@ -471,6 +474,7 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
 
       <Panel>
         <PanelHeader title="1. Documents" description="Download the exact files you will upload. Edited documents are used only after you confirm their changed facts." />
+        {generateConfirm.dialog ? <div className="px-5 pt-5">{generateConfirm.dialog}</div> : null}
         <div id="documents" className="grid gap-4 p-5 lg:grid-cols-2">
           <DocumentSlot
             kind="RESUME"

@@ -85,6 +85,12 @@ export function formatUsdCentsCeiling(micros: number) {
   return `$${(Math.ceil(micros / 10_000) / 100).toFixed(2)}`;
 }
 
+// For button labels ("about 8¢"): whole cents rounded up; a dollar or more stays in dollars.
+export function formatCentsCeiling(micros: number) {
+  const cents = Math.ceil(micros / 10_000);
+  return cents < 100 ? `${cents}¢` : formatUsdCentsCeiling(micros);
+}
+
 const STEP_PHRASES: Partial<Record<DocumentCreationStep, string>> = {
   rescore: "update your fit estimate",
   resume: "write your tailored résumé",

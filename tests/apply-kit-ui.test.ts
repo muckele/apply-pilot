@@ -269,6 +269,30 @@ test("without documents the kit offers generation, and explains when AI is unava
   });
 });
 
+test("the kit's Generate asks its cost question in the page, never with window.confirm", async () => {
+  const empty = (data: ReturnType<typeof fixtures>) => { data.resumeVersion = []; data.generatedDocument = []; };
+  const respond = (request: Request) => new Headers(request.init.headers).get("x-ai-cost-confirmed") === "true"
+    ? new Response(JSON.stringify({ version: { id: "new" } }), { headers: { "content-type": "application/json" } })
+    : new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 64_500, dataType: "application_packet" }), { status: 428 });
+  await mounted(await kitView(empty, true), respond, async ({ container, requests, refreshes }) => {
+    (globalThis.window as unknown as { confirm: () => boolean }).confirm = () => { throw new Error("window.confirm must not run"); };
+    await click(element(container, "[data-generate='resume']"));
+    for (let attempt = 0; attempt < 20 && !/could cost up to/u.test(container.textContent ?? ""); attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    assert.match(container.textContent ?? "", /could cost up to \$0\.0645/u);
+    assert.equal(requests.length, 1);
+    const confirmButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Confirm")!;
+    await click(confirmButton);
+    for (let attempt = 0; attempt < 20 && refreshes() === 0; attempt += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    }
+    assert.equal(requests.length, 2);
+    assert.equal(new Headers(requests[1]!.init.headers).get("x-ai-cost-confirmed"), "true");
+    assert.equal(refreshes(), 1);
+  });
+});
+
 test("an application already recorded as applied shows what was sent instead of the button", async () => {
   const view = await kitView();
   const applied: ApplyKitView = {

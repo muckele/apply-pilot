@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Loader2, Sparkles } from "lucide-react";
 
 import { fetchWithAiCostConfirmation, type ConfirmFn } from "@/lib/ai/browser-request";
-import { formatUsdCentsCeiling } from "@/lib/jobs/document-creation-plan";
+import { formatCentsCeiling } from "@/lib/jobs/document-creation-plan";
 
 // The one control that asks Apply Pilot to (re)score a job. It uses the existing
 // cost-confirmed /api/jobs/[id]/match request and refreshes the page on success.
@@ -59,16 +59,9 @@ export function ScoreJobButton({
         disabled={pending || disabled}
       >
         {pending ? <Loader2 className="animate-spin" size={16} aria-hidden="true" /> : <Sparkles size={16} aria-hidden="true" />}
-        {maximumMicros === undefined ? label : `${label} · about ${centsLabel(maximumMicros)}`}
+        {maximumMicros === undefined ? label : `${label} · about ${formatCentsCeiling(maximumMicros)}`}
       </button>
       {message ? <p role={message.error ? "alert" : "status"} className={`job-message ${message.error ? "job-message-error" : "job-message-info"}`}>{message.text}</p> : null}
     </div>
   );
-}
-
-// "$0.08" -> "8¢"; amounts of a dollar or more stay in dollars.
-function centsLabel(micros: number) {
-  const ceiling = formatUsdCentsCeiling(micros);
-  const cents = Math.round(Number(ceiling.slice(1)) * 100);
-  return cents < 100 ? `${cents}¢` : ceiling;
 }

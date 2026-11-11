@@ -476,6 +476,7 @@ h2.job-title { font-size:24px; }
 .job-card-title { display:flex; align-items:center; gap:8px; margin:0 0 6px; font-size:15px; font-weight:700; color:var(--product-text); }
 .job-card-copy { margin:0 0 10px; font-size:14.5px; line-height:1.6; color:var(--product-copy); }
 .job-hint { margin:4px 0 0; font-size:13px; line-height:1.5; color:var(--product-muted); }
+.job-hint.job-problem { color:var(--product-danger-text); }
 .job-section-title { margin:0 0 12px; font-size:21px; font-weight:750; color:var(--product-text); scroll-margin-top:96px; }
 .job-subhead { margin:0 0 6px; font-size:15px; font-weight:700; color:var(--product-text); }
 .job-stack { display:grid; gap:20px; }

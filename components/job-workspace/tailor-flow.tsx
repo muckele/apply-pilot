@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { CheckCircle2, Circle, FileText, Loader2, Sparkles, XCircle } from "lucide-react";
 
 import { ScoreJobButton } from "@/components/job-workspace/score-job-button";
-import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
+import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost, type ConfirmFn } from "@/lib/ai/browser-request";
 import {
   documentCreationConfirmation,
   documentCreationMaximumMicros,
@@ -60,6 +60,11 @@ export type TailorFlowProps = {
   // A tailored résumé for this job is ready to use with the current evidence. Then the cover letter
   // can be written on its own, so a good résumé isn't rewritten (or paid for) again.
   hasCurrentResume?: boolean;
+  // Temporary (removed with this component): the Apply page's step 3 shows only "Create your
+  // documents"; step 2 (ExperienceStep) owns the requirement lines and saved lines.
+  documentsOnly?: boolean;
+  // Ask cost questions in the page instead of with window.confirm.
+  confirm?: ConfirmFn;
 };
 
 export type TailorFlowMessage = { tone: "success" | "error" | "info"; text: string };
@@ -130,7 +135,9 @@ export function TailorFlow({
   message: ownedMessage,
   onMessage,
   coverLetterByDefault = false,
-  hasCurrentResume = false
+  hasCurrentResume = false,
+  documentsOnly = false,
+  confirm
 }: TailorFlowProps) {
   const router = useRouter();
   const [gapDrafts, setGapDrafts] = useState<Record<string, GapDraft>>({});
@@ -202,7 +209,8 @@ export function TailorFlow({
 
   async function run(action: "create" | "coverOnly", steps: DocumentCreationStep[]) {
     if (!review) return;
-    if (quote && !window.confirm(documentCreationConfirmation(steps, quote))) {
+    const question = quote ? documentCreationConfirmation(steps, quote) : null;
+    if (question !== null && !(confirm ? await confirm(question) : window.confirm(question))) {
       setMessage({ tone: "info", text: "Canceled. Nothing was sent and nothing was charged." });
       return;
     }
@@ -230,9 +238,10 @@ export function TailorFlow({
           }
         } else {
           const url = `/api/jobs/${jobId}/${ENDPOINTS[step]}`;
+          const asking = confirm ? { confirm } : undefined;
           const response = quote
-            ? await fetchWithApprovedAiCost(url, { method: "POST" }, stepMaximumMicros(step, quote))
-            : await fetchWithAiCostConfirmation(url, { method: "POST" });
+            ? await fetchWithApprovedAiCost(url, { method: "POST" }, stepMaximumMicros(step, quote), asking)
+            : await fetchWithAiCostConfirmation(url, { method: "POST" }, asking);
           if (!response.ok) {
             const json = (await response.json().catch(() => null)) as ErrorPayload;
             throw new Error(describeFailure(json, `${STEP_LABELS[step]} failed.`));
@@ -291,7 +300,7 @@ export function TailorFlow({
 
   return (
     <div className="job-tailor" data-tailor-flow>
-      {!review ? (
+      {documentsOnly ? null : !review ? (
         <p className="job-note">
           Apply Pilot needs your master résumé before it can compare it with this job.{" "}
           <Link className="job-inline-link" href="/resumes">Add your résumé</Link>
@@ -303,7 +312,7 @@ export function TailorFlow({
         </div>
       ) : null}
 
-      {review && review.gaps.length ? (
+      {documentsOnly ? null : review && review.gaps.length ? (
         <section aria-labelledby="gaps-heading" className="job-step">
           <h3 id="gaps-heading" className="job-step-title">Anything missing? <span className="job-step-optional">Optional</span></h3>
           <p className="job-step-copy" data-gap-intro>
@@ -368,16 +377,16 @@ export function TailorFlow({
         <p className="job-note">Apply Pilot didn&apos;t flag any listed requirement as missing from your résumé. It can&apos;t check every requirement (years of experience, for example), so read the Match tab before you apply.</p>
       ) : null}
 
-      {review && !reviewable && readOnlyGaps.length ? (
+      {!documentsOnly && review && !reviewable && readOnlyGaps.length ? (
         <section aria-labelledby="gaps-heading" className="job-step">
           <h3 id="gaps-heading" className="job-step-title">Not shown on your résumé</h3>
           <ul className="job-plain-list">{readOnlyGaps.map((gap) => <li key={gap}>{gap}</li>)}</ul>
           <p className="job-step-copy">You skipped these last time. To add a line for one, check this job again first.</p>
-          <ScoreJobButton jobId={jobId} label="Check this job again" variant="secondary" disabled={running} />
+          <ScoreJobButton jobId={jobId} label="Check this job again" variant="secondary" disabled={running} confirm={confirm} />
         </section>
       ) : null}
 
-      {review && review.acceptedFacts.length ? (
+      {!documentsOnly && review && review.acceptedFacts.length ? (
         <section aria-labelledby="saved-lines-heading" className="job-step">
           <h3 id="saved-lines-heading" className="job-step-title">Lines you&apos;ve added for this job</h3>
           <fieldset disabled={running} className="job-gap-list">
@@ -414,7 +423,7 @@ export function TailorFlow({
         </section>
       ) : null}
 
-      {review ? (
+      {!documentsOnly && review ? (
         <details className="job-disclosure">
           <summary>See everything Apply Pilot read from your résumé ({review.facts.length})</summary>
           <ul className="job-fact-list" data-extracted-facts>
