@@ -308,20 +308,26 @@ function retainButtonClickHandler(button: HTMLButtonElement): () => void {
   return () => onClick(new MouseEvent("click", { bubbles: true }));
 }
 
-function reviewButton(container: HTMLElement, action: "Approve" | "Reject", question: string): HTMLButtonElement {
-  const article = [...container.querySelectorAll("article")].find((candidate) =>
-    candidate.querySelector("h3")?.textContent?.trim() === question
-  );
-  assert.ok(article, `Expected article for ${question}.`);
-  const button = [...article.querySelectorAll("button")].find((candidate) =>
-    candidate.getAttribute("aria-label") === `${action} proposed answer for ${question}`
-  );
-  assert.ok(button, `Expected ${action} button for ${question}.`);
-  return button;
+// UX-4b (D-H): the per-answer Approve and Reject buttons became one tick box per proposed answer
+// and one "Approve these N and continue" button. The tick box stands for the old per-answer
+// control: it is enabled exactly when that answer could be reviewed. "Approve" now means
+// "leave it ticked", "Reject" means "untick it", and both are sent by the one button.
+function reviewButton(container: HTMLElement, _action: "Approve" | "Reject", question: string): HTMLInputElement {
+  const box = container.querySelector<HTMLInputElement>(`input[data-testid="answer-tick"][data-question="${question}"]`);
+  assert.ok(box, `Expected the tick box for ${question}.`);
+  return box;
 }
 
 function resolveReviewButton(container: HTMLElement): HTMLButtonElement {
-  return buttonNamed(container, "These are right: continue");
+  const button = container.querySelector<HTMLButtonElement>('[data-step-action="CONTINUE_REVIEW"]');
+  assert.ok(button, "Expected the approve-and-continue button.");
+  return button;
+}
+
+function setTick(container: HTMLElement, action: "Approve" | "Reject", question: string): void {
+  const box = reviewButton(container, action, question);
+  // A disabled tick box ignores the click, as a disabled button did.
+  if (box.checked !== (action === "Approve")) box.click();
 }
 
 // UX-4a: "Fill approved fields" is now "Fill N fields (runs once)" ("Filling…" while pending).
@@ -380,9 +386,12 @@ async function clickReviewButton(
   question: string
 ): Promise<void> {
   await act(async () => {
-    reviewButton(control.container, action, question).click();
+    setTick(control.container, action, question);
   });
-  await flushComponentWork();
+  await act(async () => {
+    resolveReviewButton(control.container).click();
+  });
+  for (let turn = 0; turn < 4; turn += 1) await flushComponentWork();
 }
 
 async function startReviewButton(
@@ -391,7 +400,10 @@ async function startReviewButton(
   question: string
 ): Promise<void> {
   await act(async () => {
-    reviewButton(control.container, action, question).click();
+    setTick(control.container, action, question);
+  });
+  await act(async () => {
+    resolveReviewButton(control.container).click();
     await Promise.resolve();
   });
 }
@@ -432,6 +444,33 @@ async function waitForTrustedReviewLoadRef(button: HTMLButtonElement): Promise<{
   assert.fail("Expected the component-owned reviewLoadRef to advance to trusted answer B.");
 }
 
+// UX-4b: after a failed or unconfirmed step, the one approval click reloads the review data once
+// (read-only). This holds every read after the given POST, so a test can check that the page stays
+// closed until a fresh, verified read lands.
+function holdReadsAfterPost(
+  handler: FetchHandler,
+  isPost: (url: string) => boolean
+): { handler: FetchHandler; release: () => void; held: () => number } {
+  let posted = false;
+  let held = 0;
+  const gate = deferred<void>();
+  return {
+    handler: async (input, init) => {
+      if (isPost(String(input))) {
+        posted = true;
+        return handler(input, init);
+      }
+      if (posted && (init?.method ?? "GET") === "GET") {
+        held += 1;
+        await gate.promise;
+      }
+      return handler(input, init);
+    },
+    release: () => gate.resolve(),
+    held: () => held
+  };
+}
+
 async function clickButton(control: MountedControl, name: string): Promise<void> {
   await act(async () => {
     buttonNamed(control.container, name).click();
@@ -443,7 +482,7 @@ async function clickResolveReview(control: MountedControl): Promise<void> {
   await act(async () => {
     resolveReviewButton(control.container).click();
   });
-  await flushComponentWork();
+  for (let turn = 0; turn < 4; turn += 1) await flushComponentWork();
 }
 
 const workflowStates: B1WorkflowState[] = [
@@ -2134,14 +2173,22 @@ test("Task 2 mounted 401 mutation failure fences an older automatic paired autho
 test("Task 2 mounted uncertain mutation failure fences an older paired read until an explicitly new refresh commits", async (t) => {
   const staleRun = deferred<Response>();
   const stalePacket = deferred<Response>();
+  // UX-4b: the one approval click reloads the review data once after the failure. That reload is
+  // the explicitly new refresh; it is held here so the older read can be checked on its own.
+  const reloadRun = deferred<Response>();
+  const reloadPacket = deferred<Response>();
   const post = deferred<Response>();
   let runReads = 0;
   let packetReads = 0;
   const control = await mountControl(async (input) => {
     const url = String(input);
     if (url === answerReviewPath()) return post.promise;
-    if (url.endsWith("/answer-packet")) return packetReads++ === 0 ? packetResponse(validPacket()) : stalePacket.promise;
-    return runReads++ === 0 ? runResponse() : staleRun.promise;
+    if (url.endsWith("/answer-packet")) {
+      packetReads += 1;
+      return packetReads === 1 ? packetResponse(validPacket()) : packetReads === 2 ? stalePacket.promise : reloadPacket.promise;
+    }
+    runReads += 1;
+    return runReads === 1 ? runResponse() : runReads === 2 ? staleRun.promise : reloadRun.promise;
   });
   t.after(() => control.cleanup());
   control.setBinding(async () => ({
@@ -2172,6 +2219,12 @@ test("Task 2 mounted uncertain mutation failure fences an older paired read unti
   await flushComponentWork();
   const staleReadRestoredTrustedAction = reviewButton(control.container, "Approve", "Portfolio URL").disabled;
   assert.equal(staleReadRestoredTrustedAction, true);
+  assert.equal(runReads, 3, "the click's own reload is a new read");
+
+  reloadRun.resolve(runResponse());
+  reloadPacket.resolve(packetResponse(validPacket()));
+  for (let turn = 0; turn < 4; turn += 1) await flushComponentWork();
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, false, "the new reload restores trust");
 
   control.setFetchHandler(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
   await clickButton(control, "Refresh review data");
@@ -2322,9 +2375,9 @@ test("Task 2 mounted pending manual-only excluded and unsupported answers expose
   const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(packet) : runResponse());
   t.after(() => control.cleanup());
 
+  // UX-4b: fields without a proposed answer get no tick box on the approval screen.
   for (const question of ["Résumé", "Excluded", "Unsupported"]) {
-    assert.equal(control.container.querySelector(`[aria-label="Approve proposed answer for ${question}"]`), null);
-    assert.equal(control.container.querySelector(`[aria-label="Reject proposed answer for ${question}"]`), null);
+    assert.equal(control.container.querySelector(`input[data-testid="answer-tick"][data-question="${question}"]`) === null, true, question);
   }
 });
 
@@ -2332,9 +2385,11 @@ test("Task 2 mounted approved and rejected proposable answers expose no review c
   const control = await mountControl(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse());
   t.after(() => control.cleanup());
 
-  for (const question of ["Available immediately?", "Preferred office"]) {
-    assert.equal(control.container.querySelector(`[aria-label="Approve proposed answer for ${question}"]`), null);
-    assert.equal(control.container.querySelector(`[aria-label="Reject proposed answer for ${question}"]`), null);
+  // UX-4b: decided answers stay listed, ticked or not as decided, and can't be changed here.
+  for (const [question, approved] of [["Available immediately?", true], ["Preferred office", false]] as const) {
+    const box = reviewButton(control.container, "Approve", question);
+    assert.equal(box.disabled, true, question);
+    assert.equal(box.checked, approved, question);
   }
 });
 
@@ -2416,7 +2471,8 @@ test("Task 2 mounted confirmed approve replaces display only from paired refresh
   assert.match(control.container.textContent ?? "", /Answer approved/);
   assert.equal(control.fetchCalls.filter((call) => String(call.input).endsWith("/answer-packet")).length, 2);
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === `/api/application-runs/${RUN_ID}`).length, 2);
-  assert.equal(control.container.querySelector('[aria-label="Approve proposed answer for Portfolio URL"]'), null);
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true, "the approved answer is locked");
+  assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").checked, true);
 });
 
 test("Task 2 mounted confirmed reject replaces display only from paired refreshed authority", async (t) => {
@@ -2432,7 +2488,8 @@ test("Task 2 mounted confirmed reject replaces display only from paired refreshe
   t.after(() => control.cleanup());
   await clickReviewButton(control, "Reject", "Portfolio URL");
   assert.match(control.container.textContent ?? "", /Answer rejected/);
-  assert.equal(control.container.querySelector('[aria-label="Reject proposed answer for Portfolio URL"]'), null);
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true, "the rejected answer is locked");
+  assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").checked, false);
 });
 
 test("Task 2 mounted approve and reject remain pending until their deferred paired authority refresh confirms", async () => {
@@ -2631,14 +2688,21 @@ test("Task 2 mounted confirmed answer flow releases lock for newly current eligi
 });
 
 test("Task 2 mounted post failure releases lock while separately unverified authority remains inert", async (t) => {
-  const control = await mountControl(async (input) => {
+  const held = holdReadsAfterPost(async (input) => {
     if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
     if (String(input) === answerReviewPath()) return new Response("{}", { status: 500 });
     return runResponse();
-  });
+  }, (url) => url === answerReviewPath());
+  const control = await mountControl(held.handler);
   t.after(() => control.cleanup());
   await clickReviewButton(control, "Approve", "Portfolio URL");
+  // UX-4b: the one approval click reloads the review data once after a failure; until that
+  // read-only reload lands, the unverified answers stay inert.
+  assert.equal(held.held(), 2, "one paired read-only reload");
   assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+  held.release();
+  for (let turn = 0; turn < 4; turn += 1) await flushComponentWork();
+  assert.match(control.container.textContent ?? "", /The answers changed, so nothing more was approved\. Check them again\./);
   control.setFetchHandler(async (input) => {
     if (String(input).endsWith("/answer-packet")) return packetResponse(validPacket());
     if (String(input) === answerReviewPath()) return new Response("{}", { status: 500 });
@@ -2719,7 +2783,8 @@ test("Task 2 mounted current answer object guard rejects a still-connected stale
     return runReads++ === 0 ? runResponse() : replacementRun.promise;
   });
   t.after(() => control.cleanup());
-  const oldButton = reviewButton(control.container, "Approve", "Portfolio URL");
+  // UX-4b: the stale action is the one approval button still showing the old answers.
+  const oldButton = resolveReviewButton(control.container);
   await clickButton(control, "Refresh review data");
   await act(async () => {
     replacementRun.resolve(jsonResponse({ run: validRunAuthority({ stateVersion: 8 }) }));
@@ -2849,11 +2914,15 @@ test("Task 2 mounted invalid json and invalid 2xx review responses fail closed",
       : String(input).endsWith("/answer-packet") ? packetResponse(validPacket()) : runResponse()
   ];
   for (const handler of invalids) {
-    const control = await mountControl(handler);
+    // UX-4b: hold the one read-only reload that follows the failed step.
+    const held = holdReadsAfterPost(handler, (url) => url === answerReviewPath());
+    const control = await mountControl(held.handler);
     try {
       await clickReviewButton(control, "Approve", "Portfolio URL");
       assert.doesNotMatch(control.container.textContent ?? "", /Answer approved/);
       assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
+      assert.equal(control.fetchCalls.filter((call) => String(call.input).includes("/review")).length, 1, "nothing more is sent");
+      held.release();
     } finally {
       await control.cleanup();
     }
@@ -2918,14 +2987,18 @@ function readyReviewPacket(overrides: Partial<AnswerPacket> = {}): AnswerPacket 
   return {
     ...packet,
     reviewedAt: null,
-    summary: { ...packet.summary, readyForRunResolution: true },
+    summary: { ...packet.summary, pendingReviewCount: 0, approvedCount: 2, readyForRunResolution: true },
+    answers: packet.answers.map((answer) => answer.id === "answer-scalar"
+      ? { ...answer, status: "APPROVED" as const, reviewedByUser: true, reviewedAt: "2026-08-29T20:30:00.000Z" }
+      : answer),
     ...overrides
   };
 }
 
 test("Task 3 mounted Resolve review remains visible but enables only current trusted unreviewed REVIEW_REQUIRED authority", async () => {
   const cases: Array<[string, ReturnType<typeof validRunAuthority>, AnswerPacket, boolean]> = [
-    ["not ready", validRunAuthority(), validPacket(), false],
+    // UX-4b: one click now decides waiting answers, so a packet with one waiting is actionable.
+    ["an answer is waiting", validRunAuthority(), validPacket(), true],
     ["not review required", validRunAuthority({ state: "READY" }), readyReviewPacket(), false],
     ["already reviewed", validRunAuthority(), readyReviewPacket({ reviewedAt: "2026-08-30T00:00:00.000Z" }), false],
     ["complete", validRunAuthority(), readyReviewPacket(), true]
@@ -2984,12 +3057,12 @@ test("Task 3 mounted resolve posts only exact current run and packet authority a
   t.after(() => control.cleanup());
 
   await clickResolveReview(control);
-  assert.equal(buttonNamed(control.container, "Continuing…").disabled, true);
+  assert.equal(buttonNamed(control.container, "Approving…").disabled, true);
   assert.equal(reviewButton(control.container, "Approve", "Portfolio URL").disabled, true);
   assert.equal(reviewButton(control.container, "Reject", "Portfolio URL").disabled, true);
   assert.equal(buttonNamed(control.container, "Refresh review data").disabled, true);
   await act(async () => {
-    buttonNamed(control.container, "Continuing…").click();
+    buttonNamed(control.container, "Approving…").click();
   });
   await clickReviewButton(control, "Approve", "Portfolio URL");
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 1);
@@ -3079,18 +3152,22 @@ test("Task 3 mounted committed resolve mismatch renders trusted authority and ex
 
 test("Task 3 mounted resolve failure, conflict recovery, replacement, and unmount all fail closed", async () => {
   for (const failure of [401, 403, 404, 429, 500, 503]) {
-    const control = await mountControl(async (input) => {
+    // UX-4b: the one click reloads the review data once after a failure; hold that reload.
+    const held = holdReadsAfterPost(async (input) => {
       if (String(input) === resolveReviewPath()) return new Response("{}", { status: failure });
       return String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse();
-    });
+    }, (url) => url === resolveReviewPath());
+    const control = await mountControl(held.handler);
     try {
       await clickResolveReview(control);
       assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./);
       if (failure === 401 || failure === 403 || failure === 404) {
-        assert.equal((control.container.textContent ?? "").includes("These are right: continue"), false);
+        assert.equal(control.container.querySelector('[data-step-action="CONTINUE_REVIEW"]') === null, true);
+        assert.equal(held.held(), 0, "a refused session is not read again");
       } else {
         assert.equal(resolveReviewButton(control.container).disabled, true);
       }
+      held.release();
     } finally {
       await control.cleanup();
     }
@@ -3106,7 +3183,7 @@ test("Task 3 mounted resolve failure, conflict recovery, replacement, and unmoun
   });
   try {
     await clickResolveReview(conflict);
-    assert.equal(buttonNamed(conflict.container, "Continuing…").disabled, true);
+    assert.equal(buttonNamed(conflict.container, "Approving…").disabled, true);
     await clickReviewButton(conflict, "Approve", "Portfolio URL");
     assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === resolveReviewPath()).length, 1, "no duplicate resolve POST");
     assert.equal(conflict.fetchCalls.filter((call) => String(call.input) === answerReviewPath()).length, 0);
@@ -3192,7 +3269,8 @@ test("Task 3 mounted pending answer and pending resolve disable every review act
   const control = await mountControl(async (input) => {
     const url = String(input);
     if (url === answerReviewPath()) return answerPost.promise;
-    if (url.endsWith("/answer-packet")) return packetResponse(readyReviewPacket());
+    // UX-4b: a packet with an answer still waiting, which the one click approves first.
+    if (url.endsWith("/answer-packet")) return packetResponse(validPacket());
     return runResponse();
   });
   t.after(() => control.cleanup());
@@ -3217,13 +3295,16 @@ test("Task 3 mounted invalid and rejected resolve responses fail closed and rele
     ["strict extra field", async (input) => String(input) === resolveReviewPath() ? new Response(JSON.stringify({ run: validRunAuthority(), extra: true }), { status: 200 }) : String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse()]
   ];
   for (const [name, handler] of invalidResponses) {
-    const control = await mountControl(handler);
+    // UX-4b: the one click reloads the review data once after the failed resolve; hold it.
+    const held = holdReadsAfterPost(handler, (url) => url === resolveReviewPath());
+    const control = await mountControl(held.handler);
     try {
       await clickResolveReview(control);
       assert.doesNotMatch(control.container.textContent ?? "", /Review resolved\./, name);
       assert.equal(resolveReviewButton(control.container).disabled, true, name);
       control.setFetchHandler(async (input) => String(input).endsWith("/answer-packet") ? packetResponse(readyReviewPacket()) : runResponse());
-      await clickButton(control, "Refresh review data");
+      held.release();
+      for (let turn = 0; turn < 4; turn += 1) await flushComponentWork();
       assert.equal(resolveReviewButton(control.container).disabled, false, `${name} releases lock after failure handling`);
     } finally {
       await control.cleanup();
