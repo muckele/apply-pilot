@@ -536,10 +536,10 @@ test("after approval the page moves on to Fill when the form was read in this wi
     const refreshStatus = [...mounted.container.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Refresh status");
     await act(async () => refreshStatus!.click());
     await flush();
-    assert.equal(mounted.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "5");
+    assert.equal(mounted.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "7");
     assert.equal(approveButton(mounted.container).getAttribute("data-primary-action"), "CONTINUE_REVIEW");
     await approveAll(mounted);
-    assert.equal(mounted.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "6");
+    assert.equal(mounted.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "8");
   } finally {
     await mounted.cleanup();
   }

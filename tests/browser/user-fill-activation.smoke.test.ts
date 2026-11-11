@@ -346,7 +346,7 @@ async function openProductionControlPage(input: Readonly<{
     });
     await page.goto(CONTROL_URL, { waitUntil: "domcontentloaded" });
     try {
-      await page.getByRole("heading", { name: "Step 5 of 8 · Check the answers", exact: true }).waitFor({ timeout: 5_000 });
+      await page.getByRole("heading", { name: "Step 7 of 10 · Check the answers", exact: true }).waitFor({ timeout: 5_000 });
     } catch (error) {
       const body = await page.locator("body").innerText().catch(() => "<body unavailable>");
       throw new Error(

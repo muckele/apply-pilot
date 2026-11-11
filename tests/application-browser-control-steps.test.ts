@@ -22,7 +22,7 @@ import {
   type B1Status
 } from "@/lib/application-browser/types";
 
-// UX-4a: the control page as steps 4–8 with a "Now" card and one primary action.
+// UX-4a: the control page as steps 6–10 with a "Now" card and one primary action.
 
 const RUN_ID = "cm12345678901234567890123";
 const ATTEMPT_ID = "550e8400-e29b-41d4-a716-446655440000";
@@ -383,29 +383,29 @@ type TableCase = Readonly<{
 }>;
 
 const TABLE: readonly TableCase[] = [
-  { name: "no companion status yet", expect: { step: "4", action: "OPEN_AND_READ", enabled: false } },
-  { name: "connected, form not open", status: { state: "CONTROL_READY", runId: RUN_ID }, expect: { step: "4", action: "OPEN_AND_READ", enabled: true } },
-  { name: "connected, application not prepared", run: { state: "DRAFT" }, status: { state: "CONTROL_READY", runId: RUN_ID }, expect: { step: "4", action: "OPEN_AND_READ", enabled: false } },
-  { name: "browser not signed in", status: { state: "APPLY_PILOT_AUTH_REQUIRED", runId: RUN_ID }, expect: { step: "4", action: "OPEN_AND_READ", enabled: false } },
-  { name: "form opening", status: { state: "OPENING_TARGET", runId: RUN_ID }, expect: { step: "4", action: "OPEN_AND_READ", enabled: false } },
-  { name: "form open, not read", status: { state: "TARGET_OPEN", runId: RUN_ID }, expect: { step: "4", action: "READ_FORM", enabled: true } },
-  { name: "form open, read in progress", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "IN_PROGRESS" } }, expect: { step: "4", action: "READ_FORM", enabled: false } },
-  { name: "form open, read failed", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "FAILED", errorCode: "FORM_STABILITY_TIMEOUT", retryAllowed: true } }, expect: { step: "4", action: "READ_FORM", enabled: true } },
-  { name: "form open, form changed", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "REINSPECTION_REQUIRED", errorCode: "FORM_GENERATION_INVALIDATED", retryAllowed: true } }, expect: { step: "4", action: "READ_FORM", enabled: true } },
-  { name: "answers waiting for decisions", run: { state: "REVIEW_REQUIRED" }, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: true } },
-  { name: "answers couldn't be loaded", run: null, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: false } },
-  { name: "answers all decided", run: { state: "REVIEW_REQUIRED" }, packet: decidedPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(decidedPacket()), expect: { step: "5", action: "CONTINUE_REVIEW", enabled: true } },
-  { name: "answers checked, box not ticked", packet: reviewedPacket(), status: readStatus(reviewedPacket()), expect: { step: "6", action: "FILL", enabled: false } },
-  { name: "answers checked, box ticked", packet: reviewedPacket(), status: readStatus(reviewedPacket()), acknowledge: true, expect: { step: "6", action: "FILL", enabled: true } },
-  { name: "Fill running (bridge)", packet: reviewedPacket(), status: readStatus(reviewedPacket(), { fillCommand: { outcome: "IN_PROGRESS" } }), acknowledge: true, expect: { step: "6", action: "FILL", enabled: false } },
-  { name: "Fill running (server), no companion status", run: { state: "FILLING", stateVersion: 8 }, packet: reviewedPacket(), fill: fillingFill(), acknowledge: true, expect: { step: "6", action: "FILL", enabled: false } },
-  { name: "Fill refused by the companion", packet: reviewedPacket(), status: readStatus(reviewedPacket(), { fillCommand: { outcome: "REJECTED", errorCode: "FILL_POLICY_DENIED" } }), acknowledge: true, expect: { step: "6", action: "FILL", enabled: false } },
-  { name: "nothing to fill", packet: reviewedNothingFillablePacket(), status: readStatus(reviewedNothingFillablePacket()), expect: { step: "7", action: "UNLOCK", enabled: true } },
-  { name: "Fill finished, form open", run: { state: "READY_FOR_USER_SUBMISSION", stateVersion: 8 }, packet: reviewedPacket(), fill: completedFill(), status: readStatus(reviewedPacket(), { fillCommand: { outcome: "FINALIZED" } }), expect: { step: "7", action: "UNLOCK", enabled: true } },
-  { name: "form handed over", run: { state: "READY_FOR_USER_SUBMISSION", stateVersion: 8 }, packet: reviewedPacket(), fill: completedFill(), status: { state: "HUMAN_ONLY", runId: RUN_ID, humanSession: { expiresAtMs: Date.now() + 30 * 60_000 } }, expect: { step: "7", action: "RECORD", enabled: true } },
-  { name: "Fill finished, form closed", run: { state: "READY_FOR_USER_SUBMISSION", stateVersion: 8 }, packet: reviewedPacket(), fill: completedFill(), status: { state: "CONTROL_READY", runId: RUN_ID }, expect: { step: "8", action: "RECORD", enabled: true } },
-  { name: "stopped safely before the form opened", status: { state: "ERROR", runId: RUN_ID, errorCode: "RUN_HOST_NOT_ALLOWED" }, expect: { step: "4", action: "OPEN_AND_READ", enabled: false } },
-  { name: "workflow closed", status: { state: "CLOSED", runId: RUN_ID }, expect: { step: "4", action: "OPEN_AND_READ", enabled: false } },
+  { name: "no companion status yet", expect: { step: "6", action: "OPEN_AND_READ", enabled: false } },
+  { name: "connected, form not open", status: { state: "CONTROL_READY", runId: RUN_ID }, expect: { step: "6", action: "OPEN_AND_READ", enabled: true } },
+  { name: "connected, application not prepared", run: { state: "DRAFT" }, status: { state: "CONTROL_READY", runId: RUN_ID }, expect: { step: "6", action: "OPEN_AND_READ", enabled: false } },
+  { name: "browser not signed in", status: { state: "APPLY_PILOT_AUTH_REQUIRED", runId: RUN_ID }, expect: { step: "6", action: "OPEN_AND_READ", enabled: false } },
+  { name: "form opening", status: { state: "OPENING_TARGET", runId: RUN_ID }, expect: { step: "6", action: "OPEN_AND_READ", enabled: false } },
+  { name: "form open, not read", status: { state: "TARGET_OPEN", runId: RUN_ID }, expect: { step: "6", action: "READ_FORM", enabled: true } },
+  { name: "form open, read in progress", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "IN_PROGRESS" } }, expect: { step: "6", action: "READ_FORM", enabled: false } },
+  { name: "form open, read failed", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "FAILED", errorCode: "FORM_STABILITY_TIMEOUT", retryAllowed: true } }, expect: { step: "6", action: "READ_FORM", enabled: true } },
+  { name: "form open, form changed", status: { state: "TARGET_OPEN", runId: RUN_ID, inspection: { outcome: "REINSPECTION_REQUIRED", errorCode: "FORM_GENERATION_INVALIDATED", retryAllowed: true } }, expect: { step: "6", action: "READ_FORM", enabled: true } },
+  { name: "answers waiting for decisions", run: { state: "REVIEW_REQUIRED" }, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "7", action: "CONTINUE_REVIEW", enabled: true } },
+  { name: "answers couldn't be loaded", run: null, packet: pendingPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(pendingPacket()), expect: { step: "7", action: "CONTINUE_REVIEW", enabled: false } },
+  { name: "answers all decided", run: { state: "REVIEW_REQUIRED" }, packet: decidedPacket(), fill: noAttempt({ state: "REVIEW_REQUIRED" }), status: readStatus(decidedPacket()), expect: { step: "7", action: "CONTINUE_REVIEW", enabled: true } },
+  { name: "answers checked, box not ticked", packet: reviewedPacket(), status: readStatus(reviewedPacket()), expect: { step: "8", action: "FILL", enabled: false } },
+  { name: "answers checked, box ticked", packet: reviewedPacket(), status: readStatus(reviewedPacket()), acknowledge: true, expect: { step: "8", action: "FILL", enabled: true } },
+  { name: "Fill running (bridge)", packet: reviewedPacket(), status: readStatus(reviewedPacket(), { fillCommand: { outcome: "IN_PROGRESS" } }), acknowledge: true, expect: { step: "8", action: "FILL", enabled: false } },
+  { name: "Fill running (server), no companion status", run: { state: "FILLING", stateVersion: 8 }, packet: reviewedPacket(), fill: fillingFill(), acknowledge: true, expect: { step: "8", action: "FILL", enabled: false } },
+  { name: "Fill refused by the companion", packet: reviewedPacket(), status: readStatus(reviewedPacket(), { fillCommand: { outcome: "REJECTED", errorCode: "FILL_POLICY_DENIED" } }), acknowledge: true, expect: { step: "8", action: "FILL", enabled: false } },
+  { name: "nothing to fill", packet: reviewedNothingFillablePacket(), status: readStatus(reviewedNothingFillablePacket()), expect: { step: "9", action: "UNLOCK", enabled: true } },
+  { name: "Fill finished, form open", run: { state: "READY_FOR_USER_SUBMISSION", stateVersion: 8 }, packet: reviewedPacket(), fill: completedFill(), status: readStatus(reviewedPacket(), { fillCommand: { outcome: "FINALIZED" } }), expect: { step: "9", action: "UNLOCK", enabled: true } },
+  { name: "form handed over", run: { state: "READY_FOR_USER_SUBMISSION", stateVersion: 8 }, packet: reviewedPacket(), fill: completedFill(), status: { state: "HUMAN_ONLY", runId: RUN_ID, humanSession: { expiresAtMs: Date.now() + 30 * 60_000 } }, expect: { step: "9", action: "RECORD", enabled: true } },
+  { name: "Fill finished, form closed", run: { state: "READY_FOR_USER_SUBMISSION", stateVersion: 8 }, packet: reviewedPacket(), fill: completedFill(), status: { state: "CONTROL_READY", runId: RUN_ID }, expect: { step: "10", action: "RECORD", enabled: true } },
+  { name: "stopped safely before the form opened", status: { state: "ERROR", runId: RUN_ID, errorCode: "RUN_HOST_NOT_ALLOWED" }, expect: { step: "6", action: "OPEN_AND_READ", enabled: false } },
+  { name: "workflow closed", status: { state: "CLOSED", runId: RUN_ID }, expect: { step: "6", action: "OPEN_AND_READ", enabled: false } },
   { name: "already recorded", run: { state: "COMPLETED_BY_USER", stateVersion: 9, completedAt: "2026-09-12T18:00:00.000Z" }, fill: completedFill(), status: { state: "CLOSED", runId: RUN_ID }, expect: null },
   { name: "application stopped", run: { state: "CANCELLED", stateVersion: 9 }, status: { state: "CONTROL_READY", runId: RUN_ID }, expect: null }
 ];
@@ -429,16 +429,16 @@ test("table: each state renders exactly one primary action, in the expected step
       assert.equal(snapshot.action, entry.expect.action, `${entry.name}: action`);
       assert.equal(snapshot.step, entry.expect.step, `${entry.name}: the action sits in its step`);
       assert.equal(snapshot.nowStep, entry.expect.step, `${entry.name}: the Now card is that step`);
-      assert.equal(snapshot.heading.startsWith(`Step ${entry.expect.step} of 8 · `), true, `${entry.name}: heading ${snapshot.heading}`);
+      assert.equal(snapshot.heading.startsWith(`Step ${entry.expect.step} of 10 · `), true, `${entry.name}: heading ${snapshot.heading}`);
       assert.equal(snapshot.disabled, !entry.expect.enabled, `${entry.name}: enabled`);
       if (snapshot.disabled) {
         assert.equal(snapshot.reason.length > 10, true, `${entry.name}: a disabled primary says why`);
         assert.equal(/[A-Z]{2,}_[A-Z_]+/.test(snapshot.reason), false, `${entry.name}: the reason is plain words: ${snapshot.reason}`);
       }
       const list = mounted.container.querySelector('[data-testid="now-card"] [data-testid="step-list"]');
-      assert.equal(list?.querySelectorAll("li").length, 8, `${entry.name}: compact list of eight steps`);
+      assert.equal(list?.querySelectorAll("li").length, 10, `${entry.name}: compact list of ten steps`);
       const progress = [...(list?.querySelectorAll("li") ?? [])].map((item) => item.getAttribute("data-progress"));
-      assert.deepEqual(progress.slice(0, 3), ["done", "done", "done"], `${entry.name}: steps 1–3 done`);
+      assert.deepEqual(progress.slice(0, 5), ["done", "done", "done", "done", "done"], `${entry.name}: steps 1–5 done`);
       assert.equal(progress[Number(entry.expect.step) - 1], "now", `${entry.name}: current step marked now`);
       const next = mounted.container.querySelector('[data-testid="now-card"] [data-testid="now-next"]')?.textContent ?? "";
       assert.equal(next.length > 0, true, `${entry.name}: next line`);
@@ -480,10 +480,10 @@ test("Check the answers comes before Fill on the page, and nothing says Read-onl
     await refreshStatus(mounted);
     const container = mounted.container;
     const steps = [...container.querySelectorAll("[data-step]")].map((section) => section.getAttribute("data-step"));
-    assert.deepEqual(steps, ["4", "5", "6", "7", "8"]);
+    assert.deepEqual(steps, ["6", "7", "8", "9", "10"]);
     const fill = container.querySelector('[data-step-action="FILL"]');
     const continueButton = container.querySelector('[data-step-action="CONTINUE_REVIEW"]');
-    const firstAnswer = container.querySelector('[data-step="5"] article');
+    const firstAnswer = container.querySelector('[data-step="7"] article');
     assert.ok(fill && continueButton && firstAnswer);
     const following = container.ownerDocument.defaultView!.Node.DOCUMENT_POSITION_FOLLOWING;
     assert.equal(Boolean(firstAnswer.compareDocumentPosition(fill) & following), true, "answers come before Fill");
@@ -501,10 +501,10 @@ test("only the current step is open; other steps shrink to one line and can be s
     mounted.setBinding(async () => readStatus(packet));
     await refreshStatus(mounted);
     const body = (step: number) => mounted.container.querySelector<HTMLElement>(`#step-${step}-body`);
-    assert.equal(body(5)?.hidden, false, "step 5 is open");
-    assert.equal(body(6)?.hidden, true, "step 6 is hidden");
-    await click(mounted.container.querySelector<HTMLButtonElement>('[aria-controls="step-6-body"]'), "Show step 6");
-    assert.equal(body(6)?.hidden, false, "step 6 can be shown");
+    assert.equal(body(7)?.hidden, false, "step 7 is open");
+    assert.equal(body(8)?.hidden, true, "step 8 is hidden");
+    await click(mounted.container.querySelector<HTMLButtonElement>('[aria-controls="step-8-body"]'), "Show step 8");
+    assert.equal(body(8)?.hidden, false, "step 8 can be shown");
   } finally {
     await mounted.cleanup();
   }
@@ -538,7 +538,7 @@ test("Open and read the form sends nothing before the click, then OPEN_TARGET an
     await flush();
     await flush();
     assert.deepEqual(mounted.bindingCalls, ["GET_STATUS", "OPEN_TARGET", "INSPECT_FORM"]);
-    assert.equal(primarySnapshot(mounted.container).nowStep, "5", "the answers come next");
+    assert.equal(primarySnapshot(mounted.container).nowStep, "7", "the answers come next");
   } finally {
     await mounted.cleanup();
   }
@@ -640,11 +640,11 @@ test("a handed-over form that later closes still leads to Record it", async () =
     let status: B1Status = { state: "HUMAN_ONLY", runId: RUN_ID, humanSession: { expiresAtMs: Date.now() + 30 * 60_000 } };
     mounted.setBinding(async () => status);
     await refreshStatus(mounted);
-    assert.equal(primarySnapshot(mounted.container).nowStep, "7");
+    assert.equal(primarySnapshot(mounted.container).nowStep, "9");
     status = { state: "CLOSED", runId: RUN_ID };
     await refreshStatus(mounted);
     const snapshot = primarySnapshot(mounted.container);
-    assert.equal(snapshot.nowStep, "8");
+    assert.equal(snapshot.nowStep, "10");
     assert.equal(snapshot.action, "RECORD");
   } finally {
     await mounted.cleanup();
@@ -717,9 +717,9 @@ function baseInput(): ControlStepInput {
   };
 }
 
-test("pure: step 6 says how many fields Fill can do, and the Fill button follows the existing gate exactly", () => {
+test("pure: step 8 says how many fields Fill can do, and the Fill button follows the existing gate exactly", () => {
   const view = deriveControlSteps(baseInput());
-  assert.equal(view.current, 6);
+  assert.equal(view.current, 8);
   assert.equal(view.sentence, "Apply Pilot can fill 6 of 19 fields. You'll do the rest.");
   assert.equal(view.actions.FILL.label, "Fill your 6 approved answers (runs once)");
   for (const activationEligible of [true, false]) {
@@ -732,7 +732,7 @@ test("pure: step 6 says how many fields Fill can do, and the Fill button follows
   }
 });
 
-test("pure: whenever Fill could be activated, step 6 is current with Fill as its primary action", () => {
+test("pure: whenever Fill could be activated, step 8 is current with Fill as its primary action", () => {
   const states = B1_WORKFLOW_STATES;
   const runStates = ["READY", "REVIEW_REQUIRED", "FILLING", "READY_FOR_USER_SUBMISSION", "COMPLETED_BY_USER", "CANCELLED", null] as const;
   const categories = ["NO_ATTEMPT", "FILLING", "COMPLETED", "ATTEMPT_CONSUMED", "RECOVERY_PENDING", null] as const;
@@ -759,7 +759,7 @@ test("pure: whenever Fill could be activated, step 6 is current with Fill as its
           // The Fill gate is the caller's isFillActivationEligible; when that and the box say yes,
           // the page must be on Fill (unless a submission record is in progress).
           if (state === "TARGET_OPEN" && runState === "READY" && category === "NO_ATTEMPT" && recordPhase === "idle") {
-            assert.equal(view.current, 6);
+            assert.equal(view.current, 8);
             assert.equal(view.primary?.action, "FILL");
           }
           checked += 1;
@@ -776,13 +776,13 @@ test("pure: the leave warning covers exactly the four listed companion states", 
   assert.equal(B1_WORKFLOW_STATES.some((state) => shouldWarnBeforeLeaving({ hasStatus: false, state })), false);
 });
 
-test("pure: nothing fillable moves straight on to step 7", () => {
+test("pure: nothing fillable moves straight on to step 9", () => {
   const input = baseInput();
   const view = deriveControlSteps({ ...input, fill: { ...input.fill, fillableCount: 0, activationEligible: false } });
-  assert.equal(view.current, 7);
+  assert.equal(view.current, 9);
   assert.equal(view.primary?.action, "UNLOCK");
   assert.match(view.sentence, /nothing it can fill/);
-  assert.equal(view.progress[6], "done");
+  assert.equal(view.progress[8], "done");
 });
 
 test("pure: an unconfirmed Fill result is never offered again", () => {
@@ -791,7 +791,7 @@ test("pure: an unconfirmed Fill result is never offered again", () => {
     ...input,
     fill: { ...input.fill, mayHaveDispatched: true, verified: false, activationEligible: false }
   });
-  assert.equal(view.current, 6);
+  assert.equal(view.current, 8);
   assert.equal(view.actions.FILL.enabled, false);
   assert.match(view.actions.FILL.reason ?? "", /won't run Fill again/);
 });
@@ -805,15 +805,15 @@ test("review fix: the Fill button names the approved answers, not an exact numbe
   assert.equal(fillButtonLabel(6), "Fill your 6 approved answers (runs once)");
 });
 
-test("review fix: a stopped application keeps a live employer form's step 7 on screen", async () => {
+test("review fix: a stopped application keeps a live employer form's step 9 on screen", async () => {
   const handedOver = await mount({ run: { state: "CANCELLED", stateVersion: 9 } });
   try {
     handedOver.setBinding(async () => ({ state: "HUMAN_ONLY", runId: RUN_ID, humanSession: { expiresAtMs: Date.now() + 9 * 60_000 } }));
     await refreshStatus(handedOver);
     const now = handedOver.container.querySelector('[data-testid="now-card"]');
-    assert.equal(now?.getAttribute("data-step"), "7", "step 7 stays the Now card");
+    assert.equal(now?.getAttribute("data-step"), "9", "step 9 stays the Now card");
     assert.equal(handedOver.container.querySelectorAll('[data-testid="now-card"]').length, 1);
-    assert.equal(handedOver.container.querySelector<HTMLElement>("#step-7-body")?.hidden, false, "step 7 content is visible");
+    assert.equal(handedOver.container.querySelector<HTMLElement>("#step-9-body")?.hidden, false, "step 9 content is visible");
     const text = now?.textContent ?? "";
     assert.match(text, /minute\(s\) left/);
     assert.match(text, /10 minutes or less remain/);
@@ -828,8 +828,8 @@ test("review fix: a stopped application keeps a live employer form's step 7 on s
   try {
     open.setBinding(async () => ({ state: "TARGET_OPEN", runId: RUN_ID }));
     await refreshStatus(open);
-    assert.equal(open.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "7");
-    assert.equal(open.container.querySelector<HTMLElement>("#step-7-body")?.hidden, false);
+    assert.equal(open.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "9");
+    assert.equal(open.container.querySelector<HTMLElement>("#step-9-body")?.hidden, false);
     assert.equal(button(open.container, "Unlock the form") !== null, true, "the open form can still be unlocked to finish by hand");
   } finally {
     await open.cleanup();
