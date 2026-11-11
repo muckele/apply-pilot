@@ -3,6 +3,7 @@ import { createHash, randomBytes as nodeRandomBytes } from "node:crypto";
 import { PublicApiError } from "@/lib/api-errors";
 import { cuidPathIdSchema } from "@/lib/application-runs/contracts";
 import { isTerminalRunState } from "@/lib/application-runs/state-machine";
+import { COMPANION_CODE_ALPHABET, COMPANION_CODE_LENGTH } from "@/lib/companion-sign-in-code-format";
 import type { ApplicationRunState } from "@prisma/client";
 
 // Companion sign-in: Google refuses sign-in inside an automated browser, so the local
@@ -19,8 +20,9 @@ export const COMPANION_SIGN_IN_CODE_TTL_MS = 5 * 60_000;
 export const COMPANION_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 
 // 32 symbols without I, O, 0 or 1, so a typed code is never ambiguous. 12 symbols = 60 bits.
-const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const CODE_LENGTH = 12;
+// Shared with the code box in the browser, which flags characters codes never use.
+const ALPHABET = COMPANION_CODE_ALPHABET;
+const CODE_LENGTH = COMPANION_CODE_LENGTH;
 const CODE_PATTERN = new RegExp(`^[${ALPHABET}]{${CODE_LENGTH}}$`);
 const IDENTIFIER_PREFIX = "companion-sign-in:";
 
@@ -68,10 +70,22 @@ export function runIdFromCompanionCallback(callbackUrl: unknown): string | null 
   return cuidPathIdSchema.safeParse(match[1]).success ? match[1] : null;
 }
 
-export function companionSignInHref(callbackUrl: unknown): string | null {
-  return runIdFromCompanionCallback(callbackUrl)
-    ? `/companion-sign-in?callbackUrl=${encodeURIComponent(callbackUrl as string)}`
-    : null;
+// The login page leads with the code form only on the way to a run's control page, which
+// only the companion's window opens signed out.
+export function companionCallbackForLogin(callbackUrl: unknown): string | null {
+  return runIdFromCompanionCallback(callbackUrl) ? (callbackUrl as string) : null;
+}
+
+// The Apply Pilot browser's terminal line tells the owner to look for a window titled
+// "Apply Pilot browser"; its sign-in page carries that name too.
+export function loginPageTitle(callbackUrl: unknown): string {
+  return companionCallbackForLogin(callbackUrl) ? "Apply Pilot browser — Sign in" : "Sign in — Apply Pilot";
+}
+
+// The former code-only page now sends people to the login page, which leads with the code.
+export function companionLoginPath(callbackUrl: unknown): string {
+  const callback = companionCallbackForLogin(callbackUrl);
+  return callback ? `/login?callbackUrl=${encodeURIComponent(callback)}` : "/login";
 }
 
 export function sessionCookieName(secure: boolean): string {

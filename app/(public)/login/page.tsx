@@ -1,19 +1,26 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { CompanionSignInForm } from "@/components/companion-sign-in-form";
 import { GoogleSignInButton } from "@/components/google-sign-in-button";
 import { PublicAuthPage } from "@/components/public-auth/public-auth-page";
 import { auth, signOut } from "@/lib/auth";
 import { isEmailAllowedForAuth } from "@/lib/auth-access";
-import { companionSignInHref } from "@/lib/companion-sign-in";
+import { companionCallbackForLogin, loginPageTitle } from "@/lib/companion-sign-in";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = {
-  title: "Sign in — Apply Pilot",
-  description: "Continue your job search with Apply Pilot using your Google account."
-};
+export async function generateMetadata({
+  searchParams
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}): Promise<Metadata> {
+  const params = await searchParams;
+  return {
+    title: loginPageTitle(params.callbackUrl),
+    description: "Continue your job search with Apply Pilot using your Google account."
+  };
+}
 
 export default async function LoginPage({
   searchParams
@@ -21,7 +28,9 @@ export default async function LoginPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const companionHref = companionSignInHref(params.callbackUrl);
+  // Only the Apply Pilot browser window opens a run's control page signed out, and Google
+  // refuses to sign in there, so on that way the page leads with the sign-in code instead.
+  const companionCallbackUrl = companionCallbackForLogin(params.callbackUrl);
   const session = await auth();
   const sessionEmailAllowed = session?.user ? isEmailAllowedForAuth(session.user.email) : false;
 
@@ -41,11 +50,7 @@ export default async function LoginPage({
       mode="login"
       authState={authState}
       googleAction={googleConfigured ? <GoogleSignInButton variant="public" /> : undefined}
-      companionAction={companionHref ? (
-        <p className="public-auth-companion">
-          <Link href={companionHref}>Signing in the Apply Pilot companion? Use a sign-in code instead.</Link>
-        </p>
-      ) : undefined}
+      codeSignIn={companionCallbackUrl ? <CompanionSignInForm callbackUrl={companionCallbackUrl} /> : undefined}
       deniedAction={
         <form
           action={async () => {
