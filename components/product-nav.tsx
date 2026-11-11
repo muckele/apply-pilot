@@ -15,7 +15,8 @@ import {
   ListFilter,
   ListChecks,
   Mic,
-  Settings
+  Settings,
+  UserRound
 } from "lucide-react";
 
 const navItems = [
@@ -28,6 +29,7 @@ const navItems = [
   { href: "/interviews", label: "Interviews", icon: Mic },
   { href: "/interviews/library", label: "Interview Library", icon: LibraryBig },
   { href: "/tasks", label: "Tasks", icon: ListChecks },
+  { href: "/settings/application-details", label: "Application Details", icon: UserRound },
   { href: "/settings/application-answers", label: "Answer Vault", icon: ClipboardList },
   { href: "/settings/ai", label: "AI Controls", icon: BrainCircuit },
   { href: "/settings/profile", label: "Profile", icon: Settings },

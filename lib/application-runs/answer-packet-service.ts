@@ -762,7 +762,10 @@ async function lockAnswerVaultRows(
   const includeAvailability = fields.some(
     (field) => field.permittedDisposition === "PROPOSABLE" && field.classification === "AVAILABILITY"
   );
-  if (!includeLinks && !includeAvailability) return [];
+  const includeContact = fields.some(
+    (field) => field.permittedDisposition === "PROPOSABLE" && field.classification === "CONTACT"
+  );
+  if (!includeLinks && !includeAvailability && !includeContact) return [];
   const rows = await tx.$queryRaw<AnswerVaultRow[]>`
     SELECT "id", "category", "question", "answer", "updatedAt"
     FROM "ApplicationAnswer"
@@ -772,6 +775,7 @@ async function lockAnswerVaultRows(
       AND (
         (${includeLinks} = TRUE AND "category" = 'LINKS')
         OR (${includeAvailability} = TRUE AND "category" = 'AVAILABILITY')
+        OR (${includeContact} = TRUE AND "category" = 'CONTACT')
       )
     ORDER BY "id" ASC
     LIMIT 257
@@ -842,7 +846,12 @@ function baseNonproposableAnswer(field: NormalizedApplicationFormField): Candida
 
 function downgradedAnswer(
   field: NormalizedApplicationFormField,
-  dispositionReason: "NO_ELIGIBLE_SOURCE" | "AMBIGUOUS_SOURCE" | "INVALID_SOURCE_VALUE" | "NO_SELECTED_DOCUMENT"
+  dispositionReason:
+    | "NO_ELIGIBLE_SOURCE"
+    | "AMBIGUOUS_SOURCE"
+    | "INVALID_SOURCE_VALUE"
+    | "NO_SELECTED_DOCUMENT"
+    | "UNCONFIRMED_APPLICANT_CONTACT"
 ): CandidateAnswer {
   return {
     ...baseNonproposableAnswer(field),
@@ -863,10 +872,19 @@ function assertDisposition(field: NormalizedApplicationFormField, answer: Candid
   return answer;
 }
 
+type AnswerVaultSourceCategory = "LINKS" | "AVAILABILITY" | "CONTACT";
+
+// A "confirm your email/phone" field takes the same confirmed value as the field it repeats.
+function sourceSemanticKey(semanticFieldKey: string): string {
+  return semanticFieldKey.endsWith(".confirmation")
+    ? semanticFieldKey.slice(0, -".confirmation".length)
+    : semanticFieldKey;
+}
+
 function sourceMatchesField(
   candidate: AnswerVaultRow,
   field: NormalizedApplicationFormField,
-  expectedCategory: "LINKS" | "AVAILABILITY"
+  expectedCategory: AnswerVaultSourceCategory
 ): boolean {
   if (candidate.category !== expectedCategory || field.semanticFieldKey === null) return false;
   try {
@@ -882,7 +900,7 @@ function sourceMatchesField(
       classification.classification === field.classification &&
       classification.permittedDisposition === "PROPOSABLE" &&
       classification.semanticFieldKey !== null &&
-      classification.semanticFieldKey === field.semanticFieldKey
+      sourceSemanticKey(classification.semanticFieldKey) === sourceSemanticKey(field.semanticFieldKey)
     );
   } catch {
     return false;
@@ -894,12 +912,16 @@ function answerVaultResolution(
   candidates: readonly AnswerVaultRow[],
   sourceLookups: Array<{ normalizedFieldKey: string; candidateSourceFingerprints: string[] }>
 ): CandidateAnswer {
-  const expectedCategory = field.classification === "PROFESSIONAL_LINK"
+  const expectedCategory: AnswerVaultSourceCategory | null = field.classification === "PROFESSIONAL_LINK"
     ? "LINKS"
     : field.classification === "AVAILABILITY"
       ? "AVAILABILITY"
-      : null;
+      : field.classification === "CONTACT"
+        ? "CONTACT"
+        : null;
   if (!expectedCategory) return assertDisposition(field, downgradedAnswer(field, "NO_ELIGIBLE_SOURCE"));
+  // A contact field the applicant has not confirmed keeps saying so (D034).
+  const noSourceReason = expectedCategory === "CONTACT" ? "UNCONFIRMED_APPLICANT_CONTACT" : "NO_ELIGIBLE_SOURCE";
   const matching = candidates.filter((candidate) => sourceMatchesField(candidate, field, expectedCategory));
   const fingerprinted = matching.flatMap((candidate) => {
     try {
@@ -918,7 +940,7 @@ function answerVaultResolution(
     normalizedFieldKey: field.normalizedFieldKey,
     candidateSourceFingerprints: fingerprinted
   });
-  if (matching.length === 0) return assertDisposition(field, downgradedAnswer(field, "NO_ELIGIBLE_SOURCE"));
+  if (matching.length === 0) return assertDisposition(field, downgradedAnswer(field, noSourceReason));
   if (matching.length > 1) return assertDisposition(field, downgradedAnswer(field, "AMBIGUOUS_SOURCE"));
 
   const candidate = matching[0];

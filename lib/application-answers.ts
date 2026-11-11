@@ -4,6 +4,7 @@ export const applicationAnswerCategories = [
   "AVAILABILITY",
   "COMPENSATION",
   "EXPERIENCE",
+  "CONTACT",
   "LINKS",
   "EEO",
   "OTHER"
