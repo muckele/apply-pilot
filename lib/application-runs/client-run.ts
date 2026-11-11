@@ -3,9 +3,9 @@ import { z } from "zod";
 import { fetchWithAiCostConfirmation, type ConfirmFn } from "@/lib/ai/browser-request";
 
 // Browser helpers for the run requests behind Prepare: create the run (idempotently), allow its
-// employer's host, prepare it, read it back, and turn Assisted Fill off. Shared by the Apply page's
-// step 4 and the application page's run panels. Each sends exactly one request (Prepare may send a
-// second, confirmed one when the server asks about cost and the user says yes).
+// employer's host, prepare it, read it back, and read or set Assisted Fill. Used by the Apply page's
+// step 4, the control page's Fill switch (step 8) and Settings' off switch. Each sends exactly one
+// request (Prepare may send a second, confirmed one when the server asks about cost and the user says yes).
 
 const RUN_STATES = [
   "DRAFT", "PREPARING", "READY", "FILLING", "REVIEW_REQUIRED",
