@@ -257,7 +257,7 @@ test("in a browser without the companion, the page says it is the wrong window a
     for (const name of ["Refresh status", "Open and read the form", "Read the form", "Close workflow"]) {
       assert.equal(buttons.includes(name), false, `${name} should not render`);
     }
-    assert.equal(buttons.some((name) => /^Fill \d+ fields? \(runs once\)$/.test(name)), false, "Fill should not render");
+    assert.equal(buttons.some((name) => /^Fill your \d+ approved answers? \(runs once\)$/.test(name)), false, "Fill should not render");
     assert.equal(buttons.includes("Check again"), true);
     const back = mounted.container.querySelector<HTMLAnchorElement>('[data-testid="wrong-window"] a');
     assert.equal(back?.getAttribute("href"), APPLICATION_HREF);
@@ -322,7 +322,7 @@ test("a submission can still be recorded from the usual browser", async () => {
     await settle(120);
     const buttons = buttonTexts(mounted.container);
     assert.equal(buttons.includes("I personally submitted this application"), true);
-    assert.equal(buttons.some((name) => /^Fill \d+ fields? \(runs once\)$/.test(name)), false);
+    assert.equal(buttons.some((name) => /^Fill your \d+ approved answers? \(runs once\)$/.test(name)), false);
   } finally {
     await mounted.cleanup();
   }

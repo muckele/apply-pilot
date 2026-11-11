@@ -297,7 +297,7 @@ export function ApplicationBrowserControl({
     detectCompanionWindow ? "checking" : "present"
   );
   const [status, setStatus] = useState<B1Status>({ state: "STARTING", runId });
-  const [controlConnection, setControlConnection] = useState<ControlConnection>("UNKNOWN");
+  const [controlConnection, setControlConnectionState] = useState<ControlConnection>("UNKNOWN");
   const [hasAcceptedAuthoritativeStatus, setHasAcceptedAuthoritativeStatus] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<PendingBrowserCommand>(null);
   const [commandNotice, setCommandNotice] = useState<CommandNotice | null>({
@@ -316,7 +316,7 @@ export function ApplicationBrowserControl({
   const [humanClockMs, setHumanClockMs] = useState(() => Date.now());
   const [personalSubmissionCompletion, setPersonalSubmissionCompletion] =
     useState<PersonalSubmissionCompletion>(initialPersonalSubmissionCompletion);
-  const [lastAcceptedInspection, setLastAcceptedInspection] = useState<B2InspectionCommandStatus | null>(null);
+  const [lastAcceptedInspection, setLastAcceptedInspectionState] = useState<B2InspectionCommandStatus | null>(null);
   const [formInvalidatedSinceVerifiedSuccess, setFormInvalidatedSinceVerifiedSuccess] = useState(false);
 
   const statusRef = useRef(status);
@@ -344,6 +344,19 @@ export function ApplicationBrowserControl({
     const next = update(reviewLoadRef.current);
     reviewLoadRef.current = next;
     setReviewLoad(next);
+  }, []);
+
+  // The latest connection and accepted inspection, for code that runs after an await (for example
+  // the read that follows "Open and read the form"): a render's values may be older by then.
+  const controlConnectionRef = useRef<ControlConnection>("UNKNOWN");
+  const lastAcceptedInspectionRef = useRef<B2InspectionCommandStatus | null>(null);
+  const setControlConnection = useCallback((next: ControlConnection) => {
+    controlConnectionRef.current = next;
+    setControlConnectionState(next);
+  }, []);
+  const setLastAcceptedInspection = useCallback((next: B2InspectionCommandStatus | null) => {
+    lastAcceptedInspectionRef.current = next;
+    setLastAcceptedInspectionState(next);
   }, []);
 
   const updateFillStatusLoad = useCallback((update: (current: FillStatusLoad) => FillStatusLoad) => {
@@ -716,7 +729,7 @@ export function ApplicationBrowserControl({
       }
     }
     return { active: true, accepted: true, suppliedNotice: result.notice !== null };
-  }, [fetchFillStatus, fetchReviewAuthority, runId]);
+  }, [fetchFillStatus, fetchReviewAuthority, runId, setControlConnection, setLastAcceptedInspection]);
 
   const invoke = useCallback(async (
     command: Exclude<B1Command, { type: "FILL_APPROVED_FIELDS" }>
@@ -769,9 +782,9 @@ export function ApplicationBrowserControl({
           packet: reviewLoadRef.current.packet,
           latestPacketResponseWasNull: reviewLoadRef.current.latestResponseWasNull,
           packetLoadUnverified: reviewLoadRef.current.unverified,
-          connection: controlConnection,
+          connection: controlConnectionRef.current,
           workflowState: statusRef.current.state,
-          lastAcceptedInspection,
+          lastAcceptedInspection: lastAcceptedInspectionRef.current,
           formInvalidatedSinceVerifiedSuccess: formInvalidatedRef.current
         });
         const plan = bindingRejectionPlan(command.type, statusRef.current, freshness);
@@ -820,7 +833,7 @@ export function ApplicationBrowserControl({
         setPendingCommand(null);
       }
     }
-  }, [acceptAuthoritativeStatus, controlConnection, invalidateReviewAuthority, lastAcceptedInspection, updateReviewLoad]);
+  }, [acceptAuthoritativeStatus, invalidateReviewAuthority, setControlConnection, updateReviewLoad]);
 
   // Step 4 (D-C): one explicit click sends the existing OPEN_TARGET and, only when that command
   // itself came back as an accepted TARGET_OPEN status, the existing INSPECT_FORM. Both only open
@@ -975,6 +988,7 @@ export function ApplicationBrowserControl({
     invalidateFillStatusAuthority,
     invalidateReviewAuthority,
     lastAcceptedInspection,
+    setControlConnection,
     updateReviewLoad
   ]);
 
@@ -1955,7 +1969,7 @@ export function ApplicationBrowserControl({
         <Notice notice={fillStatusLoad.notice} />
       </div>
 
-      {view.finished === "STOPPED" ? <StoppedCard view={view} /> : null}
+      {view.finished === "STOPPED" && view.current === null ? <StoppedCard view={view} /> : null}
 
       <div data-testid="control-steps" className="space-y-3">
         <StepSection step={4} view={view} summary={stepSummary(4, view.progress[4])}>

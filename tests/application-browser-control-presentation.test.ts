@@ -330,8 +330,8 @@ function setTick(container: HTMLElement, action: "Approve" | "Reject", question:
   if (box.checked !== (action === "Approve")) box.click();
 }
 
-// UX-4a: "Fill approved fields" is now "Fill N fields (runs once)" ("Filling…" while pending).
-const FILL_BUTTON_LABEL = /^(Fill \d+ fields? \(runs once\)|Filling…)$/;
+// UX-4a: "Fill approved fields" is now "Fill your N approved answers (runs once)" ("Filling…" while pending).
+const FILL_BUTTON_LABEL = /^(Fill your \d+ approved answers? \(runs once\)|Filling…)$/;
 
 function fillButton(container: HTMLElement): HTMLButtonElement {
   const button = [...container.querySelectorAll("button")].find(
