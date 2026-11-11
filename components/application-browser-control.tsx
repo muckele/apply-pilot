@@ -50,6 +50,16 @@ import {
   type BrowserFillAttemptStatus
 } from "@/lib/application-browser/fill-status-presentation";
 import {
+  answerStatusLabel,
+  companionStateLabel,
+  companionStatusSentence,
+  dispositionLabel,
+  dispositionReasonLabel,
+  fieldTypeLabel,
+  manualCategoryLabel,
+  runStateLabel
+} from "@/lib/assisted-apply/plain-language";
+import {
   APPLICATION_BROWSER_BINDING_NAME,
   type B1Command,
   type B1Status,
@@ -219,13 +229,36 @@ function displayDate(value: string | null): string {
   return value === null ? "Not acknowledged" : new Date(value).toLocaleString();
 }
 
+type CompanionWindow = "checking" | "present" | "absent";
+
+// The companion's connection arrives a moment after its signed-in page loads, so the
+// page waits this long before saying it is in the wrong window.
+export const COMPANION_WINDOW_WAIT_MS = 8_000;
+const COMPANION_WINDOW_POLL_MS = 250;
+
+function hasCompanionBinding(): boolean {
+  return typeof (window as ControlWindow)[APPLICATION_BROWSER_BINDING_NAME] === "function";
+}
+
 export function ApplicationBrowserControl({
   runId,
-  authenticatedOwnerPage
+  authenticatedOwnerPage,
+  detectCompanionWindow = false,
+  companionWindowWaitMs = COMPANION_WINDOW_WAIT_MS,
+  applicationHref
 }: {
   runId: string;
   authenticatedOwnerPage: boolean;
+  // When true, the page first checks that it is inside the Apply Pilot browser (the only
+  // tab the companion connects to). Elsewhere it says so instead of showing controls
+  // that can never work. Presentation only: the companion and server keep every check.
+  detectCompanionWindow?: boolean;
+  companionWindowWaitMs?: number;
+  applicationHref?: string;
 }) {
+  const [companionWindow, setCompanionWindow] = useState<CompanionWindow>(
+    detectCompanionWindow ? "checking" : "present"
+  );
   const [status, setStatus] = useState<B1Status>({ state: "STARTING", runId });
   const [controlConnection, setControlConnection] = useState<ControlConnection>("UNKNOWN");
   const [hasAcceptedAuthoritativeStatus, setHasAcceptedAuthoritativeStatus] = useState(false);
@@ -1414,6 +1447,60 @@ export function ApplicationBrowserControl({
     };
   }, [fetchFillStatus, fetchReviewAuthority]);
 
+  // Wrong-window guard (redesign UX-1). Reads a window property only; sends nothing.
+  useEffect(() => {
+    if (!detectCompanionWindow || companionWindow !== "checking") return;
+    const startedAt = Date.now();
+    const settled = () => {
+      if (hasCompanionBinding()) {
+        setCompanionWindow("present");
+        return true;
+      }
+      if (Date.now() - startedAt >= companionWindowWaitMs) {
+        setCompanionWindow("absent");
+        return true;
+      }
+      return false;
+    };
+    let interval: number | undefined;
+    const first = window.setTimeout(() => {
+      if (settled()) return;
+      interval = window.setInterval(() => {
+        if (settled()) window.clearInterval(interval);
+      }, Math.max(10, Math.min(COMPANION_WINDOW_POLL_MS, companionWindowWaitMs)));
+    }, 0);
+    return () => {
+      window.clearTimeout(first);
+      if (interval !== undefined) window.clearInterval(interval);
+    };
+  }, [companionWindow, companionWindowWaitMs, detectCompanionWindow]);
+
+  // Inside the Apply Pilot browser, read its status once instead of asking for a click.
+  // GET_STATUS is read-only and payload-free.
+  const invokeRef = useRef(invoke);
+  useEffect(() => {
+    invokeRef.current = invoke;
+  }, [invoke]);
+  const automaticStatusReadRef = useRef(false);
+  useEffect(() => {
+    if (!detectCompanionWindow || companionWindow !== "present" || automaticStatusReadRef.current) return;
+    automaticStatusReadRef.current = true;
+    void invokeRef.current({ type: "GET_STATUS" });
+    return () => {
+      automaticStatusReadRef.current = false;
+    };
+  }, [companionWindow, detectCompanionWindow]);
+
+  const titleState = hasAcceptedAuthoritativeStatus ? companionStateLabel(status.state) : "Connecting…";
+  useEffect(() => {
+    if (!detectCompanionWindow || companionWindow !== "present") return;
+    const previousTitle = document.title;
+    document.title = `Apply Pilot browser — ${titleState}`;
+    return () => {
+      document.title = previousTitle;
+    };
+  }, [companionWindow, detectCompanionWindow, titleState]);
+
   const availability = browserCommandAvailability({ status, connection: controlConnection, pendingCommand });
   const freshness = useMemo(() => derivePacketFreshness({
     packet: reviewLoad.packet,
@@ -1493,52 +1580,8 @@ export function ApplicationBrowserControl({
     ? Math.max(0, Math.ceil((status.humanSession.expiresAtMs - humanClockMs) / 60_000))
     : null;
 
-  return (
-    <div className="space-y-5 p-5">
-      <dl className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm sm:grid-cols-2">
-        <div><dt className="text-xs font-semibold uppercase text-slate-500">Workflow state</dt><dd className="mt-1 font-medium text-slate-950">{hasAcceptedAuthoritativeStatus ? status.state : "Awaiting companion status"}</dd></div>
-        <div><dt className="text-xs font-semibold uppercase text-slate-500">Local connection</dt><dd className="mt-1 font-medium text-slate-950">{controlConnection}</dd></div>
-        <div><dt className="text-xs font-semibold uppercase text-slate-500">Run ID</dt><dd className="mt-1 break-all font-mono text-xs text-slate-800">{runId}</dd></div>
-        {status.targetHost ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Target host</dt><dd className="mt-1 text-slate-800">{status.targetHost}</dd></div> : null}
-        {status.errorCode ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Safe stop code</dt><dd className="mt-1 font-mono text-xs text-rose-700">{status.errorCode}</dd></div> : null}
-      </dl>
-
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <SecondaryButton type="button" disabled={fillUiLocked || !availability.GET_STATUS} onClick={() => void invoke({ type: "GET_STATUS" })}>Refresh status</SecondaryButton>
-        <PrimaryButton type="button" disabled={fillUiLocked || !availability.OPEN_TARGET} onClick={() => void invoke({ type: "OPEN_TARGET" })}>Open frozen target</PrimaryButton>
-        <PrimaryButton type="button" disabled={fillUiLocked || !availability.INSPECT_FORM} onClick={() => void invoke({ type: "INSPECT_FORM" })}>{pendingCommand === "INSPECT_FORM" ? "Inspecting…" : "Inspect form"}</PrimaryButton>
-        <SecondaryButton type="button" disabled={fillUiLocked || !availability.CLOSE_WORKFLOW} onClick={() => void invoke({ type: "CLOSE_WORKFLOW" })}>Close workflow</SecondaryButton>
-        {!fillUiLocked && shouldOfferRetryConnection(controlConnection, status, pendingCommand) ? <SecondaryButton type="button" onClick={() => void invoke({ type: "GET_STATUS" })}>Retry connection</SecondaryButton> : null}
-      </div>
-
-      {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
-      {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
-
-      {status.state === "TARGET_OPEN" ? <section className="space-y-3 rounded-lg border border-slate-200 p-4" aria-labelledby="human-handoff-heading">
-        <h2 id="human-handoff-heading" className="font-semibold text-slate-950">Finish manually</h2>
-        <p className="text-sm text-slate-700">Review the entire employer form and complete every remaining manual field. Fill status must be verified before handoff. If Fill is uncertain, do not repeat it.</p>
-        {!handoffConfirming ? <SecondaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
-          onClick={() => setHandoffConfirming(true)}>Finish manually in this browser</SecondaryButton> : <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-          <p>Confirming permanently ends Apply Pilot inspection and Fill for this workflow. The disposable employer page remains for a 60-minute maximum, with warnings at 10 and 2 minutes and no extension. Employer scripts may still transmit or navigate. Refreshing or closing this control page ends the session and may lose unsent work.</p>
-          <div className="flex gap-2">
-            <PrimaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
-              onClick={() => { setHandoffConfirming(false); void invoke({ type: "HANDOFF_TO_HUMAN" }); }}>Confirm human handoff</PrimaryButton>
-            <SecondaryButton type="button" onClick={() => setHandoffConfirming(false)}>Not yet</SecondaryButton>
-          </div>
-        </div>}
-        <p className="text-xs text-slate-600">If same-page handoff is unavailable, close this disposable workflow and reopen the application in your ordinary browser. You must reenter unsent values; no cookies or hidden form state are transferred. Check an uncertain prior submission with the employer before any retry.</p>
-      </section> : null}
-
-      {status.state === "HUMAN_ONLY" ? <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4" aria-labelledby="human-session-heading">
-        <h2 id="human-session-heading" className="font-semibold text-amber-950">Human-only browser session</h2>
-        <p className="text-sm text-amber-950">Apply Pilot automation has ended. This disposable session has a 60-minute maximum with no extension. {humanMinutesRemaining === null ? "Time remaining is unavailable." : `${humanMinutesRemaining} minute(s) remain.`} Review and submit personally on the employer site. A confirmation-looking page does not verify delivery.</p>
-        {humanMinutesRemaining !== null && humanMinutesRemaining <= 10 ? <p className="text-sm font-semibold text-amber-950">Session expiry warning: {humanMinutesRemaining <= 2 ? "2 minutes or less" : "10 minutes or less"} remain. Unsent work may be lost.</p> : null}
-        <p className="text-sm text-amber-950">Refreshing, leaving, or closing this Apply Pilot control page ends the employer session. If submission is uncertain, check the employer&apos;s own status before any retry.</p>
-        <SecondaryButton type="button" disabled={!availability.END_HUMAN_SESSION || fillUiLocked}
-          onClick={() => void invoke({ type: "END_HUMAN_SESSION" })}>End human session</SecondaryButton>
-      </section> : null}
-
-      {showPersonalSubmissionSection ? <section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="personal-submission-heading">
+  const personalSubmissionSection = showPersonalSubmissionSection ? (
+<section className="space-y-3 border-t border-slate-200 pt-5" aria-labelledby="personal-submission-heading">
         <div>
           <h2 id="personal-submission-heading" className="font-semibold text-slate-950">Personal submission</h2>
           {personalSubmissionRecorded
@@ -1596,7 +1639,90 @@ export function ApplicationBrowserControl({
             if (generation !== null) void reconcilePersonalSubmissionCompletion(generation);
           }}
         >Refresh personal-submission status</SecondaryButton> : null}
+      </section>
+  ) : null;
+
+  if (detectCompanionWindow && companionWindow !== "present") {
+    return (
+      <div className="space-y-5 p-5">
+        {companionWindow === "checking" ? (
+          <p role="status" className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">Connecting to the Apply Pilot browser…</p>
+        ) : (
+          <section data-testid="wrong-window" aria-labelledby="wrong-window-heading" className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+            <h2 id="wrong-window-heading" className="text-base font-semibold">This page only works inside the Apply Pilot browser</h2>
+            <p>You&apos;re in your usual browser. Opening, checking and filling the employer&apos;s form happen in the separate window titled &ldquo;Apply Pilot browser&rdquo;.</p>
+            <ul className="list-disc space-y-1 pl-5">
+              <li>Can&apos;t find it? Look for &ldquo;Google Chrome for Testing&rdquo; in the Dock, or on your other desktops.</li>
+              <li>Not started yet? Start the Apply Pilot browser from Terminal, then sign it in with a one-time code from this job&apos;s application page.</li>
+            </ul>
+            <div className="flex flex-wrap gap-2">
+              {applicationHref ? <a href={applicationHref} className="inline-flex items-center rounded-lg bg-slate-950 px-4 py-2 font-semibold text-white">Back to the application</a> : null}
+              <SecondaryButton type="button" onClick={() => setCompanionWindow("checking")}>Check again</SecondaryButton>
+            </div>
+          </section>
+        )}
+        {companionWindow === "absent" ? personalSubmissionSection : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5 p-5">
+      {detectCompanionWindow ? (
+        <p data-testid="apply-pilot-browser-banner" className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white">
+          Apply Pilot browser <span className="font-normal">· this window opens, checks and fills the employer&apos;s form</span>
+        </p>
+      ) : null}
+      <p data-testid="companion-status" className="text-sm font-medium text-slate-950">
+        {companionStatusSentence(status, controlConnection, hasAcceptedAuthoritativeStatus)}
+      </p>
+      <details data-technical className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+      <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
+      <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+        <div><dt className="text-xs font-semibold uppercase text-slate-500">Workflow state</dt><dd className="mt-1 font-medium text-slate-950">{hasAcceptedAuthoritativeStatus ? status.state : "Awaiting companion status"}</dd></div>
+        <div><dt className="text-xs font-semibold uppercase text-slate-500">Local connection</dt><dd className="mt-1 font-medium text-slate-950">{controlConnection}</dd></div>
+        <div><dt className="text-xs font-semibold uppercase text-slate-500">Run ID</dt><dd className="mt-1 break-all font-mono text-xs text-slate-800">{runId}</dd></div>
+        {status.targetHost ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Target host</dt><dd className="mt-1 text-slate-800">{status.targetHost}</dd></div> : null}
+        {status.errorCode ? <div><dt className="text-xs font-semibold uppercase text-slate-500">Safe stop code</dt><dd className="mt-1 font-mono text-xs text-rose-700">{status.errorCode}</dd></div> : null}
+      </dl>
+      </details>
+
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <SecondaryButton type="button" disabled={fillUiLocked || !availability.GET_STATUS} onClick={() => void invoke({ type: "GET_STATUS" })}>Refresh status</SecondaryButton>
+        <PrimaryButton type="button" disabled={fillUiLocked || !availability.OPEN_TARGET} onClick={() => void invoke({ type: "OPEN_TARGET" })}>Open frozen target</PrimaryButton>
+        <PrimaryButton type="button" disabled={fillUiLocked || !availability.INSPECT_FORM} onClick={() => void invoke({ type: "INSPECT_FORM" })}>{pendingCommand === "INSPECT_FORM" ? "Inspecting…" : "Inspect form"}</PrimaryButton>
+        <SecondaryButton type="button" disabled={fillUiLocked || !availability.CLOSE_WORKFLOW} onClick={() => void invoke({ type: "CLOSE_WORKFLOW" })}>Close workflow</SecondaryButton>
+        {!fillUiLocked && shouldOfferRetryConnection(controlConnection, status, pendingCommand) ? <SecondaryButton type="button" onClick={() => void invoke({ type: "GET_STATUS" })}>Retry connection</SecondaryButton> : null}
+      </div>
+
+      {controlConnection === "UNAVAILABLE" ? <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">{hasAcceptedAuthoritativeStatus ? "The local companion connection is unavailable. The last accepted browser status is preserved." : "The local companion connection is unavailable. No companion status received."}</p> : null}
+      {commandNotice ? <p className={`rounded-lg px-3 py-2 text-sm ${noticeClass(commandNotice.tone)}`}>{commandNotice.text}</p> : null}
+
+      {status.state === "TARGET_OPEN" ? <section className="space-y-3 rounded-lg border border-slate-200 p-4" aria-labelledby="human-handoff-heading">
+        <h2 id="human-handoff-heading" className="font-semibold text-slate-950">Finish manually</h2>
+        <p className="text-sm text-slate-700">Review the entire employer form and complete every remaining manual field. Fill status must be verified before handoff. If Fill is uncertain, do not repeat it.</p>
+        {!handoffConfirming ? <SecondaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
+          onClick={() => setHandoffConfirming(true)}>Finish manually in this browser</SecondaryButton> : <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <p>Confirming permanently ends Apply Pilot inspection and Fill for this workflow. The disposable employer page remains for a 60-minute maximum, with warnings at 10 and 2 minutes and no extension. Employer scripts may still transmit or navigate. Refreshing or closing this control page ends the session and may lose unsent work.</p>
+          <div className="flex gap-2">
+            <PrimaryButton type="button" disabled={!handoffEligible || !availability.HANDOFF_TO_HUMAN || fillUiLocked}
+              onClick={() => { setHandoffConfirming(false); void invoke({ type: "HANDOFF_TO_HUMAN" }); }}>Confirm human handoff</PrimaryButton>
+            <SecondaryButton type="button" onClick={() => setHandoffConfirming(false)}>Not yet</SecondaryButton>
+          </div>
+        </div>}
+        <p className="text-xs text-slate-600">If same-page handoff is unavailable, close this disposable workflow and reopen the application in your ordinary browser. You must reenter unsent values; no cookies or hidden form state are transferred. Check an uncertain prior submission with the employer before any retry.</p>
       </section> : null}
+
+      {status.state === "HUMAN_ONLY" ? <section className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4" aria-labelledby="human-session-heading">
+        <h2 id="human-session-heading" className="font-semibold text-amber-950">Human-only browser session</h2>
+        <p className="text-sm text-amber-950">Apply Pilot automation has ended. This disposable session has a 60-minute maximum with no extension. {humanMinutesRemaining === null ? "Time remaining is unavailable." : `${humanMinutesRemaining} minute(s) remain.`} Review and submit personally on the employer site. A confirmation-looking page does not verify delivery.</p>
+        {humanMinutesRemaining !== null && humanMinutesRemaining <= 10 ? <p className="text-sm font-semibold text-amber-950">Session expiry warning: {humanMinutesRemaining <= 2 ? "2 minutes or less" : "10 minutes or less"} remain. Unsent work may be lost.</p> : null}
+        <p className="text-sm text-amber-950">Refreshing, leaving, or closing this Apply Pilot control page ends the employer session. If submission is uncertain, check the employer&apos;s own status before any retry.</p>
+        <SecondaryButton type="button" disabled={!availability.END_HUMAN_SESSION || fillUiLocked}
+          onClick={() => void invoke({ type: "END_HUMAN_SESSION" })}>End human session</SecondaryButton>
+      </section> : null}
+
+      {personalSubmissionSection}
 
       <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="fill-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1662,7 +1788,7 @@ export function ApplicationBrowserControl({
           <ul className="mt-3 space-y-2 text-sm text-slate-800">
             {manualFields.map((field, index) => <li key={`${field.question}:${field.fieldType}:${index}`}>
               <span className="font-medium">{field.question || "Unlabeled field"}</span>
-              {` — ${field.fieldType} — ${field.required ? "Required" : "Optional"} — ${field.category}`}
+              {` — ${fieldTypeLabel(field.fieldType)} — ${field.required ? "Required" : "Optional"} — ${manualCategoryLabel(field.category)}`}
             </li>)}
           </ul>
         </div> : null}
@@ -1670,7 +1796,7 @@ export function ApplicationBrowserControl({
 
       <section className="space-y-4 border-t border-slate-200 pt-5" aria-labelledby="answer-packet-heading">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div><h2 id="answer-packet-heading" className="font-semibold text-slate-950">Current answer packet</h2><p className="mt-1 text-sm text-slate-600">Read-only proposed answers from the authenticated ApplicationRun packet API.</p></div>
+          <div><h2 id="answer-packet-heading" className="font-semibold text-slate-950">Current answer packet</h2><p className="mt-1 text-sm text-slate-600">Apply Pilot&apos;s proposed answers for this form. You choose which ones it may fill.</p></div>
           <SecondaryButton type="button" disabled={fillUiLocked || reviewLoad.phase === "loading" || pendingReviewMutation !== null} onClick={() => {
             if (
               !pendingFillActivationRef.current &&
@@ -1682,13 +1808,16 @@ export function ApplicationBrowserControl({
         <p className={`rounded-lg border px-3 py-2 text-sm ${freshnessStatus.className}`}>{freshnessStatus.text}</p>
 
         {reviewLoad.packet ? <div className="space-y-5">
-          <dl className="grid gap-3 rounded-lg border border-slate-200 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <details data-technical className="rounded-lg border border-slate-200 p-3 text-sm">
+          <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
+          <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <div><dt className="text-xs font-semibold uppercase text-slate-500">Inspection version</dt><dd className="mt-1 text-slate-900">{reviewLoad.packet.inspectionVersion}</dd></div>
             <div><dt className="text-xs font-semibold uppercase text-slate-500">Packet version</dt><dd className="mt-1 text-slate-900">{reviewLoad.packet.answerPacketVersion}</dd></div>
             <div><dt className="text-xs font-semibold uppercase text-slate-500">Created</dt><dd className="mt-1 text-slate-900">{displayDate(reviewLoad.packet.createdAt)}</dd></div>
             <div><dt className="text-xs font-semibold uppercase text-slate-500">Review time</dt><dd className="mt-1 text-slate-900">{displayDate(reviewLoad.packet.reviewedAt)}</dd></div>
             <div className="sm:col-span-2 lg:col-span-4"><dt className="text-xs font-semibold uppercase text-slate-500">Packet hash</dt><dd className="mt-1 break-all font-mono text-xs text-slate-700">{reviewLoad.packet.packetHash}</dd></div>
           </dl>
+          </details>
 
           <div className="rounded-lg border border-slate-200 p-4">
             <h3 className="font-medium text-slate-950">Packet summary</h3>
@@ -1706,10 +1835,14 @@ export function ApplicationBrowserControl({
             </dl>
             <p id="review-readiness" className="mt-4 text-sm text-slate-700">{readinessMessage(reviewLoad.packet.summary.readyForRunResolution)}</p>
             {reviewLoad.run ? <div id="review-reasons" className="mt-4 border-t border-slate-200 pt-4">
-              <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              <p className="text-sm text-slate-900">Application status: <span className="font-medium">{runStateLabel(reviewLoad.run.state)}</span></p>
+              <details data-technical className="mt-2 text-sm">
+              <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
+              <dl className="mt-2 grid gap-3 text-sm sm:grid-cols-2">
                 <div><dt className="text-xs text-slate-500">Run state</dt><dd className="mt-1 font-medium text-slate-900">{reviewLoad.run.state}</dd></div>
                 <div><dt className="text-xs text-slate-500">State version</dt><dd className="mt-1 font-medium text-slate-900">{reviewLoad.run.stateVersion}</dd></div>
               </dl>
+              </details>
               <h4 className="mt-4 text-xs font-semibold uppercase text-slate-500">Review reasons</h4>
               {reviewLoad.run.reviewReasons.length === 0
                 ? <p className="mt-2 text-sm text-slate-700">No local rule-based planning review reasons require acknowledgment.</p>
@@ -1731,8 +1864,14 @@ export function ApplicationBrowserControl({
             {reviewLoad.packet.answers.map((answer) => {
               const proposal = answer.proposal ? presentProposal(answer.proposal, answer.choices, answer) : null;
               return <article key={answer.id} className="rounded-lg border border-slate-200 p-4">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><h3 className="font-medium text-slate-950">{answer.question}</h3><p className="mt-1 text-xs text-slate-500">{answer.fieldType} · {answer.classification}</p></div><span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{answer.status}</span></div>
-                <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"><div><h3 className="font-medium text-slate-950">{answer.question}</h3><p className="mt-1 text-xs text-slate-500">{fieldTypeLabel(answer.fieldType)}{answer.required ? " · required" : ""}</p></div><span className="w-fit rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">{answerStatusLabel(answer.status)}</span></div>
+                <p className="mt-3 text-sm font-medium text-slate-900">{dispositionLabel(answer.disposition)}</p>
+                <details data-technical className="mt-2 text-sm">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-600">Details (for troubleshooting)</summary>
+                <dl className="mt-2 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                  <div><dt className="text-xs text-slate-500">Field type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.fieldType}</dd></div>
+                  <div><dt className="text-xs text-slate-500">Question type</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.classification}</dd></div>
+                  <div><dt className="text-xs text-slate-500">Review status</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.status}</dd></div>
                   <div><dt className="text-xs text-slate-500">Required</dt><dd className="mt-1 text-slate-900">{answer.required ? "Yes" : "No"}</dd></div>
                   <div><dt className="text-xs text-slate-500">Requires review</dt><dd className="mt-1 text-slate-900">{answer.requiresReview ? "Yes" : "No"}</dd></div>
                   <div><dt className="text-xs text-slate-500">Reviewed by user</dt><dd className="mt-1 text-slate-900">{answer.reviewedByUser ? "Yes" : "No"}</dd></div>
@@ -1740,9 +1879,11 @@ export function ApplicationBrowserControl({
                   <div><dt className="text-xs text-slate-500">Sensitive</dt><dd className="mt-1 text-slate-900">{answer.sensitive ? "Yes" : "No"}</dd></div>
                   <div><dt className="text-xs text-slate-500">Value redacted</dt><dd className="mt-1 text-slate-900">{answer.valueRedacted ? "Yes" : "No"}</dd></div>
                   <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition</dt><dd className="mt-1 text-slate-900">{answer.disposition}</dd></div>
+                  {answer.dispositionReason ? <div className="sm:col-span-2"><dt className="text-xs text-slate-500">Disposition reason</dt><dd className="mt-1 font-mono text-xs text-slate-900">{answer.dispositionReason}</dd></div> : null}
                 </dl>
+                </details>
                 <p className="mt-3 text-sm text-slate-700">{dispositionMessage(answer.disposition)}</p>
-                {answer.dispositionReason ? <p className="mt-2 text-sm text-slate-700">Disposition reason: <span className="font-mono text-xs">{answer.dispositionReason}</span></p> : null}
+                {answer.dispositionReason ? <p className="mt-2 text-sm text-slate-700">{dispositionReasonLabel(answer.dispositionReason)}</p> : null}
                 {(() => {
                   const hint = missingDetailHint(answer);
                   // A new tab: this control tab must stay on the run for the companion bridge.
