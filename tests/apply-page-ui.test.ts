@@ -6,7 +6,8 @@ import React, { act } from "react";
 import { ApplyPage, matchResultLine, type ApplyPageProps } from "@/components/apply-page/apply-page";
 import { loadApplyKitView, type ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { deriveApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
-import { applyProgressFromFacts, loadApplyPageState, prepareStateFromFacts, type PrepareStepFacts } from "@/lib/apply-page/load-apply-progress";
+import { attachedDocumentState } from "@/lib/apply-page/attached-documents";
+import { applyProgressFromFacts, loadApplyPageState, loadApplyProgress, prepareStateFromFacts, type PrepareStepFacts } from "@/lib/apply-page/load-apply-progress";
 import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
 import { prisma } from "@/lib/prisma";
 import type { JobDetail } from "@/lib/jobs/job-detail";
@@ -33,7 +34,7 @@ const PREPARE_FACTS: PrepareStepFacts = {
   jobApplyHost: "jobs.example.com",
   estimate: { score: 90, basis: "REVIEWED_EVIDENCE" },
   confidenceScore: 88,
-  application: { resumeVersionId: "resume-v2", coverLetterVersionId: "cover-legacy" },
+  documents: { resume: "ready", cover: "ready" },
   policy: { ...automationPolicyDefaultValues(), mode: "PREPARE_ONLY" },
   run: null,
   details: { fields: Array.from({ length: 10 }, () => ({}) as never), confirmedCount: 6, missingRequired: [] }
@@ -194,18 +195,84 @@ test("step 4's state mirrors Prepare's gates: the reviewed match, documents, pol
   assert.equal(withRun.applyHost, "apply.example.org");
   assert.deepEqual(withRun.run, { id: "run-1", state: "BLOCKED", blockingReason: "fit_below_threshold", errorCategory: null });
   assert.equal(prepareStateFromFacts({ ...PREPARE_FACTS, jobApplyHost: null }).applyHost, "");
+
+  // An attached document Prepare wouldn't accept (out of date, or edited and unconfirmed) isn't ready.
+  const notReady = prepareStateFromFacts({ ...PREPARE_FACTS, documents: { resume: "out_of_date", cover: "needs_review" } });
+  assert.deepEqual(notReady.readyList.filter((line) => !line.ok).map((line) => [line.key, line.text]), [
+    ["resume_required", "Your attached résumé is out of date. Write a new one in step 3."],
+    ["cover_letter_required", "Your attached cover letter needs your review before it can be used. Review it in step 3."]
+  ]);
 });
 
 test("progress facts map the way the plan says", () => {
-  const base = { hasMasterResume: true, estimateBasis: "MASTER_RESUME" as const, application: null, coverRequired: true, automationAvailable: false, run: null };
+  const base = {
+    hasMasterResume: true, estimateBasis: "MASTER_RESUME" as const, application: null,
+    documents: { resume: "none", cover: "none" } as const, coverRequired: true, automationAvailable: false, run: null
+  };
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: null }).current, 1);
   assert.equal(applyProgressFromFacts(base).current, 2);
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE" }).current, 3);
   const attached = { status: "INTERESTED", resumeVersionId: "r", coverLetterVersionId: null };
-  assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached }).current, 3);
-  assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached, coverRequired: false }).current, 4);
+  const resumeReady = { resume: "ready", cover: "none" } as const;
+  assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached, documents: resumeReady }).current, 3);
+  assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached, documents: resumeReady, coverRequired: false }).current, 4);
+  // Attached isn't enough: Prepare accepts only a document that is ready to use.
+  for (const resume of ["out_of_date", "needs_review"] as const) {
+    assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached, documents: { resume, cover: "none" }, coverRequired: false }).current, 3, resume);
+  }
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: { ...attached, status: "APPLIED" } }).current, 10);
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: { ...attached, status: "REJECTED" } }).steps.every((step) => step.state === "done"), true);
+});
+
+test("an attached document counts only when it is ready to use, by the readiness Prepare uses", async () => {
+  const versions = [
+    { id: "resume-ready", evidenceCurrent: true, review: { state: "EVIDENCE_CURRENT" } },
+    { id: "resume-stale", evidenceCurrent: false, review: { state: "EVIDENCE_STALE" } },
+    { id: "resume-edited", evidenceCurrent: false, review: { state: "EDITED_NEEDS_REVIEW" } }
+  ] as const;
+  assert.equal(attachedDocumentState(null, versions), "none");
+  assert.equal(attachedDocumentState("resume-ready", versions), "ready");
+  assert.equal(attachedDocumentState("resume-stale", versions), "out_of_date");
+  assert.equal(attachedDocumentState("resume-edited", versions), "needs_review");
+  assert.equal(attachedDocumentState("not-this-job", versions), "out_of_date", "a version Prepare can't find for this job isn't ready either");
+
+  // The loader reads it from the job's own versions: an attached but out-of-date résumé keeps
+  // progress at step 3 and gives step 4's ready list the reason.
+  type Delegates = {
+    applicationAutomationPolicy: { findUnique: unknown };
+    applicationAnswer: { findMany: unknown };
+    resume: { findMany: unknown };
+    application: { findFirst: unknown };
+    applicationRun: { findFirst: unknown };
+  };
+  const delegates = prisma as unknown as Delegates;
+  const originals = [
+    delegates.applicationAutomationPolicy.findUnique, delegates.applicationAnswer.findMany, delegates.resume.findMany,
+    delegates.application.findFirst, delegates.applicationRun.findFirst
+  ] as const;
+  const applicationId = "clz8w7m9a0004qwer1234tyui";
+  const detail = {
+    application: { id: applicationId, statusLabel: "Saved", resumeVersionId: "resume-stale", coverLetterVersionId: null },
+    resumeVersions: versions, coverLetters: [], sourceText: "Service operations leader.", currentConfidenceScore: 90,
+    applyHost: "jobs.example.com", estimate: { score: 90, basis: "REVIEWED_EVIDENCE" }
+  } as unknown as JobDetail;
+  try {
+    delegates.applicationAutomationPolicy.findUnique = async () => ({ ...automationPolicyDefaultValues(), coverLetterRequired: false });
+    delegates.applicationAnswer.findMany = async () => [];
+    delegates.resume.findMany = async () => [];
+    delegates.application.findFirst = async () => ({ status: "SAVED", resumeVersionId: "resume-stale", coverLetterVersionId: null });
+    delegates.applicationRun.findFirst = async () => null;
+    const state = await loadApplyPageState("user-synthetic-alex-rivera", detail);
+    assert.equal(state.progress.current, 3);
+    assert.equal(state.progressInput.resumeAttached, false);
+    assert.equal(state.prepare.readyList.find((line) => line.key === "resume_required")?.text, "Your attached résumé is out of date. Write a new one in step 3.");
+    assert.equal((await loadApplyProgress("user-synthetic-alex-rivera", detail)).current, 3, "the job and application pages agree");
+  } finally {
+    [
+      delegates.applicationAutomationPolicy.findUnique, delegates.applicationAnswer.findMany, delegates.resume.findMany,
+      delegates.application.findFirst, delegates.applicationRun.findFirst
+    ] = originals;
+  }
 });
 
 const REVIEWED = {

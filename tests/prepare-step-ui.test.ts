@@ -16,7 +16,7 @@ const QUESTION = `Prepare plans this application with Google Gemini (usually und
 const KEY = `application-run-create:${APPLICATION_ID}`;
 
 const READY_INPUT: ReadyListInput = {
-  fitScore: 90, confidenceScore: 88, hasCurrentMatch: true, resumeAttached: true, coverAttached: true,
+  fitScore: 90, confidenceScore: 88, hasCurrentMatch: true, resume: "ready", cover: "ready",
   coverRequired: true, fillMode: "PREPARE_ONLY", hostBlocked: false,
   details: { confirmed: 6, total: 10, missing: [] }
 };

@@ -251,7 +251,16 @@ export function DocumentsStep({
         <span id={titleId} className="job-version-title">{document.title} · v{document.versionNumber}</span>
         <span className="job-hint">{document.statusLabel}</span>
         {document.id === attachedId ? (
-          <span className="job-version-used" data-attached>Used for this application</span>
+          // Prepare uses an attached version only when it's ready, so one that isn't says so.
+          document.exportReady ? (
+            <span className="job-version-used" data-attached="ready">Used for this application</span>
+          ) : (
+            <span className="job-hint job-problem" data-attached="not-ready">
+              {document.status === "NEEDS_REGENERATION"
+                ? "Attached to this application, but out of date. Write a new one above."
+                : "Attached to this application, but it needs your review before it can be used. Review it below."}
+            </span>
+          )
         ) : attachable && isReadyDocument(document) ? (
           <button type="button" className="job-link-button" aria-describedby={titleId} onClick={() => chooseVersion(kind, document.id)}>
             Use this version

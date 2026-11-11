@@ -356,6 +356,28 @@ test("versions: the attached one is Used for this application, other ready ones 
   }
 });
 
+test("an attached version that isn't ready to use says so instead of Used for this application", async () => {
+  const { byId } = await kitDocuments();
+  const { harness, calls } = setup();
+  try {
+    await harness.render(React.createElement(DocumentsStep, props({
+      resumes: [byId("resume-v1")],
+      coverLetters: [byId("cover-edited")],
+      attached: { resumeId: "resume-v1", coverId: "cover-edited" }
+    })));
+    await settle();
+    assert.equal(calls.length, 0, "nothing ready to attach instead");
+    const resume = row(harness, "resume-v1");
+    assert.doesNotMatch(resume.textContent ?? "", /Used for this application/u);
+    assert.match(resume.querySelector("[data-attached]")?.textContent ?? "", /^Attached to this application, but out of date\. Write a new one above\.$/u);
+    const cover = row(harness, "cover-edited");
+    assert.doesNotMatch(cover.textContent ?? "", /Used for this application/u);
+    assert.match(cover.querySelector("[data-attached]")?.textContent ?? "", /^Attached to this application, but it needs your review before it can be used\. Review it below\.$/u);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("a version that becomes ready when its review is confirmed is attached", async () => {
   const { byId } = await kitDocuments();
   const { harness, calls } = setup();
