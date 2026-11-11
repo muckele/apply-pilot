@@ -16,8 +16,10 @@ export default async function ApplicationBrowserPage({ params }: Props) {
   const parsed = applicationRunPathSchema.safeParse(await params);
   if (!parsed.success) notFound();
 
+  let applicationId: string;
   try {
-    await getApplicationRun(userId, parsed.data.id);
+    const run = await getApplicationRun(userId, parsed.data.id);
+    applicationId = run.applicationId;
   } catch (error) {
     if (error instanceof PublicApiError && error.status === 404) notFound();
     throw error;
@@ -26,15 +28,20 @@ export default async function ApplicationBrowserPage({ params }: Props) {
   return (
     <>
       <PageHeader
-        title="Local application browser"
-        description="Inspect the frozen employer form, review its answer packet, and explicitly Fill reviewed supported fields from this authenticated, run-owned page."
+        title="Apply Pilot browser"
+        description="Open the employer's form, check Apply Pilot's proposed answers, and fill the ones you approve. You press the employer's Submit yourself."
       />
       <Panel>
         <PanelHeader
-          title="Browser companion"
-          description="The companion independently reads the run's frozen target through the authenticated session."
+          title="This application"
+          description="Works only inside the Apply Pilot browser window."
         />
-        <ApplicationBrowserControl runId={parsed.data.id} authenticatedOwnerPage />
+        <ApplicationBrowserControl
+          runId={parsed.data.id}
+          authenticatedOwnerPage
+          detectCompanionWindow
+          applicationHref={`/applications/${applicationId}`}
+        />
       </Panel>
     </>
   );
