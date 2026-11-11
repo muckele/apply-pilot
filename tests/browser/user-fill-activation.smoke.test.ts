@@ -628,8 +628,10 @@ test("downstream synthetic trigger writes only policy-eligible fields without em
         [field("Portfolio URL"), "TEXT", { kind: "SCALAR", value: "MUST-NOT-OVERWRITE" }]
       ] as const;
       for (const [candidate] of definitions) assert.equal(candidate.permittedDisposition, "PROPOSABLE");
-      assert.equal(field("Empty email").permittedDisposition, "MANUAL_ONLY");
-      assert.equal(field("Empty telephone").permittedDisposition, "MANUAL_ONLY");
+      // D034: contact fields may be proposed from confirmed details. These two are not in the
+      // acquired set, so Fill must leave them empty (asserted after Fill).
+      assert.equal(field("Empty email").permittedDisposition, "PROPOSABLE");
+      assert.equal(field("Empty telephone").permittedDisposition, "PROPOSABLE");
       const eligibleFields = definitions.map(([candidate, fieldType, proposal]) => Object.freeze({
         stepKey: `fill:${ATTEMPT_ID}:${candidate.normalizedFieldKey}`,
         normalizedFieldKey: candidate.normalizedFieldKey,
