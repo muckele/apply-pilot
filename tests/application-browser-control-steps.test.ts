@@ -10,6 +10,7 @@ import type { AnswerPacket } from "@/lib/application-browser/control-presentatio
 import {
   CONTROL_STEP_ACTIONS,
   deriveControlSteps,
+  fillButtonLabel,
   shouldWarnBeforeLeaving,
   type ControlStepAction,
   type ControlStepInput
@@ -236,6 +237,7 @@ async function mount(options: {
   packet?: AnswerPacket | null;
   fill?: Record<string, unknown>;
   acknowledge?: boolean;
+  onFetch?: (url: string) => Promise<Response> | undefined;
 }): Promise<Mounted> {
   const dom = new JSDOM("<!doctype html><html><head><title>Apply Pilot</title></head><body><div id=\"root\"></div></body></html>", {
     url: "http://localhost/application-runs/test/browser"
@@ -266,6 +268,8 @@ async function mount(options: {
     value: async (input: RequestInfo | URL) => {
       const url = String(input);
       fetchCalls.push(url);
+      const overridden = options.onFetch?.(url);
+      if (overridden) return overridden;
       if (url === `/api/application-runs/${RUN_ID}`) {
         return options.run === null ? json({}, 503) : json({ run: run(options.run ?? {}) });
       }
@@ -715,7 +719,7 @@ test("pure: step 6 says how many fields Fill can do, and the Fill button follows
   const view = deriveControlSteps(baseInput());
   assert.equal(view.current, 6);
   assert.equal(view.sentence, "Apply Pilot can fill 6 of 19 fields. You'll do the rest.");
-  assert.equal(view.actions.FILL.label, "Fill 6 fields (runs once)");
+  assert.equal(view.actions.FILL.label, "Fill your 6 approved answers (runs once)");
   for (const activationEligible of [true, false]) {
     for (const acknowledged of [true, false]) {
       const input = baseInput();
@@ -788,4 +792,112 @@ test("pure: an unconfirmed Fill result is never offered again", () => {
   assert.equal(view.current, 6);
   assert.equal(view.actions.FILL.enabled, false);
   assert.match(view.actions.FILL.reason ?? "", /won't run Fill again/);
+});
+
+
+// Review fixes (UX-4a).
+
+test("review fix: the Fill button names the approved answers, not an exact number of fields", () => {
+  // apparentAutomatableFieldCount is an estimate: Fill keeps values already in the form.
+  assert.equal(fillButtonLabel(1), "Fill your 1 approved answer (runs once)");
+  assert.equal(fillButtonLabel(6), "Fill your 6 approved answers (runs once)");
+});
+
+test("review fix: a stopped application keeps a live employer form's step 7 on screen", async () => {
+  const handedOver = await mount({ run: { state: "CANCELLED", stateVersion: 9 } });
+  try {
+    handedOver.setBinding(async () => ({ state: "HUMAN_ONLY", runId: RUN_ID, humanSession: { expiresAtMs: Date.now() + 9 * 60_000 } }));
+    await refreshStatus(handedOver);
+    const now = handedOver.container.querySelector('[data-testid="now-card"]');
+    assert.equal(now?.getAttribute("data-step"), "7", "step 7 stays the Now card");
+    assert.equal(handedOver.container.querySelectorAll('[data-testid="now-card"]').length, 1);
+    assert.equal(handedOver.container.querySelector<HTMLElement>("#step-7-body")?.hidden, false, "step 7 content is visible");
+    const text = now?.textContent ?? "";
+    assert.match(text, /minute\(s\) left/);
+    assert.match(text, /10 minutes or less remain/);
+    assert.match(text, /stopped/i);
+    assert.equal(button(handedOver.container, "End the session")?.disabled, false, "End the session stays available");
+    assert.equal(primarySnapshot(handedOver.container).count, 0, "nothing new is offered for a stopped application");
+  } finally {
+    await handedOver.cleanup();
+  }
+
+  const open = await mount({ run: { state: "CANCELLED", stateVersion: 9 } });
+  try {
+    open.setBinding(async () => ({ state: "TARGET_OPEN", runId: RUN_ID }));
+    await refreshStatus(open);
+    assert.equal(open.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step"), "7");
+    assert.equal(open.container.querySelector<HTMLElement>("#step-7-body")?.hidden, false);
+    assert.equal(button(open.container, "Unlock the form") !== null, true, "the open form can still be unlocked to finish by hand");
+  } finally {
+    await open.cleanup();
+  }
+
+  const closed = await mount({ run: { state: "CANCELLED", stateVersion: 9 } });
+  try {
+    closed.setBinding(async () => ({ state: "CONTROL_READY", runId: RUN_ID }));
+    await refreshStatus(closed);
+    assert.equal(closed.container.querySelector('[data-testid="now-card"]')?.getAttribute("data-step") ?? null, null, "no live form: the Stopped card");
+  } finally {
+    await closed.cleanup();
+  }
+});
+
+test("review fix: when the read after a successful open throws, packet trust follows the post-open state", async () => {
+  // Before the open, the page accepted a status saying the form had changed (stale). The open
+  // then succeeds with a clean reading, so the read failure must mark the answers UNVERIFIED (and
+  // stop the in-flight refresh), not keep the pre-open STALE decision.
+  const packet = pendingPacket();
+  const heldRun = deferred<Response>();
+  const heldPacket = deferred<Response>();
+  let runReads = 0;
+  let packetReads = 0;
+  const mounted = await mount({
+    run: { state: "REVIEW_REQUIRED" },
+    packet,
+    fill: noAttempt({ state: "REVIEW_REQUIRED" }),
+    onFetch: (url) => {
+      if (url === `/api/application-runs/${RUN_ID}`) {
+        runReads += 1;
+        return runReads === 2 ? heldRun.promise : undefined;
+      }
+      if (url === `/api/application-runs/${RUN_ID}/answer-packet`) {
+        packetReads += 1;
+        return packetReads === 2 ? heldPacket.promise : undefined;
+      }
+      return undefined;
+    }
+  });
+  try {
+    let statusReads = 0;
+    mounted.setBinding(async (command) => {
+      if (command.type === "GET_STATUS") {
+        statusReads += 1;
+        if (statusReads === 1) {
+          return {
+            state: "CONTROL_READY",
+            runId: RUN_ID,
+            inspection: { outcome: "REINSPECTION_REQUIRED", errorCode: "FORM_GENERATION_INVALIDATED", retryAllowed: true }
+          };
+        }
+        throw new Error("recovery unavailable");
+      }
+      if (command.type === "OPEN_TARGET") return readStatus(packet);
+      if (command.type === "INSPECT_FORM") throw new Error("read lost");
+      throw new Error(`unexpected ${command.type}`);
+    });
+    await refreshStatus(mounted);
+    await click(button(mounted.container, "Open and read the form"), "Open and read the form");
+    await flush();
+    assert.deepEqual(mounted.bindingCalls, ["GET_STATUS", "OPEN_TARGET", "INSPECT_FORM", "GET_STATUS"]);
+    heldRun.resolve(json({ run: run({ state: "REVIEW_REQUIRED" }) }));
+    heldPacket.resolve(json({ runId: RUN_ID, current: packet }));
+    await flush();
+    await flush();
+    const approve = mounted.container.querySelector<HTMLButtonElement>('[aria-label="Approve proposed answer for LinkedIn profile"]');
+    assert.equal(approve !== null, true);
+    assert.equal(approve?.disabled, true, "the answers stay unverified; the older refresh can't re-trust them");
+  } finally {
+    await mounted.cleanup();
+  }
 });

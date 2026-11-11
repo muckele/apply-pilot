@@ -173,8 +173,10 @@ function plural(count: number, one: string, many: string): string {
   return count === 1 ? one : many;
 }
 
+// The count is apparentAutomatableFieldCount, an estimate: Fill keeps values already in the form,
+// so the label names the approved answers rather than promising a number of fields.
 export function fillButtonLabel(fillableCount: number): string {
-  return `Fill ${fillableCount} ${plural(fillableCount, "field", "fields")} (runs once)`;
+  return `Fill your ${fillableCount} approved ${plural(fillableCount, "answer", "answers")} (runs once)`;
 }
 
 type Facts = Readonly<{
@@ -460,6 +462,18 @@ function place(input: ControlStepInput, facts: Facts): Placement {
     };
   }
   if (review.runState === "CANCELLED") {
+    // The employer's form may still be live in the other window: keep step 7 (the timer, its
+    // warnings, End the session, or Unlock) on screen, but offer nothing new.
+    if (facts.handedOver || facts.formOpen) {
+      const minutes = companion.humanMinutesRemaining;
+      return {
+        current: 7,
+        finished: "STOPPED",
+        primary: null,
+        sentence: `This application was stopped, so Apply Pilot won't do anything more with it. The employer's form is still open in the other window${facts.handedOver && minutes !== null ? ` (${minutes} ${plural(minutes, "minute", "minutes")} left)` : ""}: finish it there yourself if you still want to apply, or close it.`,
+        next: "Nothing more for Apply Pilot to do here."
+      };
+    }
     return {
       current: null,
       finished: "STOPPED",
@@ -635,7 +649,7 @@ export function deriveControlSteps(input: ControlStepInput): ControlStepsView {
     else progress[step] = step < placement.current ? "done" : step === placement.current ? "now" : "later";
   }
   const heading = placement.finished === "STOPPED"
-    ? "Stopped"
+    ? placement.current === null ? "Stopped" : `${stepHeading(placement.current)}: application stopped`
     : placement.finished === "RECORDED"
       ? `${stepHeading(8)}: done`
       : stepHeading(placement.current ?? 4);

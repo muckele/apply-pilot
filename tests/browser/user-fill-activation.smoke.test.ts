@@ -368,7 +368,7 @@ async function prepareFillEligibleProductionControl(page: Page): Promise<void> {
   await page.getByTestId("transmission-ack").check();
   await page.waitForFunction(() => {
     const fill = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.trim() === "Fill 1 field (runs once)"
+      (button) => button.textContent?.trim() === "Fill your 1 approved answer (runs once)"
     );
     return fill instanceof HTMLButtonElement && !fill.disabled;
   });
@@ -410,7 +410,7 @@ test("production ApplicationBrowserControl suppresses a rapid duplicate Fill and
   const { browserDiagnostics, context, page } = await openProductionControlPage({ bindingMode: "PENDING" });
   try {
     await prepareFillEligibleProductionControl(page);
-    const fill = page.getByRole("button", { name: "Fill 1 field (runs once)", exact: true });
+    const fill = page.getByRole("button", { name: "Fill your 1 approved answer (runs once)", exact: true });
     await fill.evaluate((button) => {
       if (!(button instanceof HTMLButtonElement)) throw new Error("Fill control is not a button");
       button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -455,7 +455,7 @@ test("production ApplicationBrowserControl reconciles a lost Fill result read-on
     const readsBeforeFill = serverState.fillStatusReads;
     serverState.failFillStatus = true;
 
-    await page.getByRole("button", { name: "Fill 1 field (runs once)", exact: true }).click();
+    await page.getByRole("button", { name: "Fill your 1 approved answer (runs once)", exact: true }).click();
     await page.getByText(/Fill mutation outcome is uncertain/i).waitFor();
 
     const bindingState = await page.evaluate(() => window.__productionControlBindingState!);

@@ -324,8 +324,8 @@ function resolveReviewButton(container: HTMLElement): HTMLButtonElement {
   return buttonNamed(container, "These are right: continue");
 }
 
-// UX-4a: "Fill approved fields" is now "Fill N fields (runs once)" ("Filling…" while pending).
-const FILL_BUTTON_LABEL = /^(Fill \d+ fields? \(runs once\)|Filling…)$/;
+// UX-4a: "Fill approved fields" is now "Fill your N approved answers (runs once)" ("Filling…" while pending).
+const FILL_BUTTON_LABEL = /^(Fill your \d+ approved answers? \(runs once\)|Filling…)$/;
 
 function fillButton(container: HTMLElement): HTMLButtonElement {
   const button = [...container.querySelectorAll("button")].find(
