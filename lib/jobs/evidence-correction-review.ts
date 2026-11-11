@@ -1,7 +1,9 @@
 import { JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 import { hasEvidenceNegationCue } from "@/lib/evidence-negation";
+import { isRequirementLine } from "@/lib/job-sources/requirement-lines";
 import type { AcceptedEvidenceFact } from "@/lib/jobs/evidence-snapshot-contracts";
 import { assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
+import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
 
 export type EvidenceFactSection =
   | "raw_source"
@@ -47,6 +49,11 @@ export type EvidenceCorrectionReview = Readonly<{
   facts: ExtractedEvidenceFact[];
   acceptedFacts: AcceptedEvidenceFact[];
   gaps: EvidenceReviewGap[];
+  // Listed requirements this analysis neither matched nor flagged ("not checked" on the Match
+  // tab), so the owner can answer every requirement in one pass. Ids are "requirement:<index in
+  // job.requirements>". Unlike gaps they need no decision: a save may add an answer for any of
+  // them after the gap decisions, and an unanswered one is simply left out.
+  uncheckedRequirements: EvidenceReviewGap[];
 }>;
 
 type ReuseFields = {
@@ -156,8 +163,12 @@ function addIndexedFacts(
   values.forEach((value, index) => addTypedFacts(facts, value, `${ref}[${index}]`, section, `${label} ${index + 1}`));
 }
 
+function isCurrentAnalysisOutput(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && value.contractVersion === "3" && value.promptVersion === JOB_MATCH_PROMPT_VERSION;
+}
+
 function readGaps(value: unknown): EvidenceReviewGap[] {
-  if (!isRecord(value) || value.contractVersion !== "3" || value.promptVersion !== JOB_MATCH_PROMPT_VERSION) return [];
+  if (!isCurrentAnalysisOutput(value)) return [];
   if (!Array.isArray(value.requirementGaps)) return [];
   return value.requirementGaps.flatMap((candidate, index) => {
     if (!isRecord(candidate) || typeof candidate.requirement !== "string" || !candidate.requirement.trim()) return [];
@@ -177,6 +188,30 @@ function readGaps(value: unknown): EvidenceReviewGap[] {
   });
 }
 
+// Same linking as the Match tab's checklist, so both show the same requirements as not checked.
+// Left out: lines that cannot be requirements (a heading or pay line an older import stored), and
+// requirements the owner already answered with a line, so a rescore that again leaves one
+// unchecked does not ask about it a second time.
+function readUncheckedRequirements(
+  analysisId: string | null,
+  output: unknown,
+  job: { requirements: readonly string[]; description?: string | null } | undefined,
+  acceptedFacts: readonly AcceptedEvidenceFact[]
+): EvidenceReviewGap[] {
+  if (!analysisId || !job || !isCurrentAnalysisOutput(output)) return [];
+  const answered = new Set(acceptedFacts.map((fact) => fact.originGapId));
+  return buildRequirementChecklist(job.requirements, output, { description: job.description ?? null }).items
+    .flatMap((item, index) => item.status === "not_assessed" && item.requirement.trim() && isRequirementLine(item.requirement) &&
+      !answered.has(`requirement:${index}`)
+      ? [Object.freeze({
+          id: `requirement:${index}`,
+          requirement: item.requirement.trim(),
+          jobRef: `job.requirements[${index}]`,
+          missingKeywords: []
+        })]
+      : []);
+}
+
 export function buildEvidenceCorrectionReview(input: {
   jobId: string;
   resumeId: string;
@@ -190,6 +225,8 @@ export function buildEvidenceCorrectionReview(input: {
   selectedResumeDocumentId?: string | null;
   selectedCoverLetterDocumentId?: string | null;
   acceptedFacts?: AcceptedEvidenceFact[];
+  // The job's listed requirements and description. Without them nothing is listed as unchecked.
+  job?: { requirements: readonly string[]; description?: string | null };
 }): EvidenceCorrectionReview {
   const resume = isRecord(input.resume) ? input.resume : {};
   const facts: ExtractedEvidenceFact[] = [];
@@ -215,7 +252,8 @@ export function buildEvidenceCorrectionReview(input: {
     selectedCoverLetterDocumentId: input.selectedCoverLetterDocumentId ?? null,
     facts,
     acceptedFacts: input.acceptedFacts ?? [],
-    gaps: readGaps(input.analysisOutput)
+    gaps: readGaps(input.analysisOutput),
+    uncheckedRequirements: readUncheckedRequirements(input.analysisId, input.analysisOutput, input.job, input.acceptedFacts ?? [])
   });
 }
 
@@ -351,6 +389,8 @@ function normalizeDecision(
   };
 }
 
+// Every gap gets exactly one decision, in order. Answers to unchecked requirements may follow, in
+// their listed order; each must add a line or cite a résumé line (an unanswered one is left out).
 export function normalizeEvidenceCorrectionDecisions(
   review: EvidenceCorrectionReview,
   decisions: EvidenceCorrectionDecision[]
@@ -359,16 +399,30 @@ export function normalizeEvidenceCorrectionDecisions(
   for (const decision of decisions) {
     if (seen.has(decision.gapId)) throw new Error("Each disputed gap can have only one review decision.");
     seen.add(decision.gapId);
-    if (!review.gaps.some((gap) => gap.id === decision.gapId)) throw new Error("Unknown disputed gap.");
+    if (![...review.gaps, ...review.uncheckedRequirements].some((gap) => gap.id === decision.gapId)) {
+      throw new Error("Unknown disputed gap.");
+    }
   }
+  const gapDecisions = decisions.slice(0, review.gaps.length);
   if (
-    decisions.length !== review.gaps.length ||
-    decisions.some((decision, index) => decision.gapId !== review.gaps[index]?.id)
+    gapDecisions.length !== review.gaps.length ||
+    gapDecisions.some((decision, index) => decision.gapId !== review.gaps[index]?.id)
   ) {
     throw new Error("Submit exactly one ordered review decision for every disputed gap.");
   }
-  return review.gaps.map((gap) =>
-    normalizeDecision(review, gap, decisions.find((decision) => decision.gapId === gap.id)));
+  const answers = decisions.slice(review.gaps.length);
+  const positions = answers.map((decision) =>
+    review.uncheckedRequirements.findIndex((requirement) => requirement.id === decision.gapId));
+  if (positions.some((position, index) => position < 0 || (index > 0 && position <= positions[index - 1]!))) {
+    throw new Error("Answers to requirements Apply Pilot didn't check must follow every gap decision, in listed order.");
+  }
+  if (answers.some((decision) => decision.kind === "UNRESOLVED")) {
+    throw new Error("Leave out a requirement Apply Pilot didn't check to Skip it.");
+  }
+  return [
+    ...review.gaps.map((gap, index) => normalizeDecision(review, gap, gapDecisions[index])),
+    ...answers.map((decision, index) => normalizeDecision(review, review.uncheckedRequirements[positions[index]!]!, decision))
+  ];
 }
 
 export async function createReviewedEvidenceSnapshot(

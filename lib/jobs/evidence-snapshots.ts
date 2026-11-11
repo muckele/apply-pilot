@@ -320,7 +320,9 @@ export async function saveEvidenceSnapshot(
         analysisOutput: analysis.output,
         selectedResumeDocumentId: application?.resumeVersionId ?? null,
         selectedCoverLetterDocumentId: application?.coverLetterVersionId ?? null,
-        acceptedFacts
+        acceptedFacts,
+        // Must match the job page's review, so answers to unchecked requirements validate.
+        job: { requirements: job.requirements, description: job.description }
       });
       let decisions;
       try {
