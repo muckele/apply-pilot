@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 
 import { ApplyKit } from "@/components/apply-kit/apply-kit";
 import { JobDocumentWorkspace } from "@/components/job-document-workspace";
 import { MatchCard } from "@/components/job-workspace/match-card";
-import { TailorFlow, documentsCreatedKey, tailorReviewIdentity, type TailorFlowMessage } from "@/components/job-workspace/tailor-flow";
 import { ScoreJobButton } from "@/components/job-workspace/score-job-button";
 import { useInPageConfirm } from "@/components/ui/in-page-confirm";
+import { DocumentsStep } from "@/components/apply-page/documents-step";
 import { ExperienceStep } from "@/components/apply-page/experience-step";
 import { NowCard } from "@/components/apply-page/now-card";
 import type { ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
@@ -23,7 +23,7 @@ export type ApplyPageProps = {
   kit: ApplyKitView;
   automationAvailable: boolean;
   progress: ApplyProgress;
-  /** Server-computed values for TailorFlow (they read server env). */
+  /** Server-computed values for steps 2 and 3 (they read server env). */
   tailorServer: { quote: ReturnType<typeof buildDocumentCreationQuote>; generationAvailable: boolean };
   answeredYes?: boolean;
 };
@@ -38,31 +38,19 @@ export function matchResultLine(fit: number, confidence: number | null): string 
 export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = false }: ApplyPageProps) {
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
   const scoreConfirm = useInPageConfirm();
-  const documentsConfirm = useInPageConfirm();
-  const [tailorMessage, setTailorMessage] = useState<TailorFlowMessage | null>(null);
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
-  const hasCurrentResume = detail.resumeVersions.some((version) => version.evidenceCurrent);
   const jobId = detail.view.id;
   const result = detail.estimate ? matchResultLine(detail.estimate.score, detail.currentConfidenceScore) : null;
   const matchBoundToReview = detail.estimate?.basis === "REVIEWED_EVIDENCE";
   // Step 3 writes documents only from a finished step 2: the saved review in force and the shown
   // match scored on it, with no unsaved lines. So step 3 never saves a review itself.
-  const documentsBlockedReason = pendingFactChanges
-    ? "Update your score in step 2 first, so your documents include your new lines."
-    : !matchBoundToReview || !detail.hasValidCurrentSnapshot
-      ? "Finish step 2 first (Update my score), so your documents use your reviewed lines."
-      : null;
-
-  useEffect(() => {
-    if (!hasDocuments) return;
-    let created: string | null = null;
-    try {
-      created = window.sessionStorage.getItem(documentsCreatedKey(jobId));
-      window.sessionStorage.removeItem(documentsCreatedKey(jobId));
-    } catch {}
-    // One-time handoff from TailorFlow: bring the new documents into view after the refresh.
-    if (created) requestAnimationFrame(() => document.getElementById("apply-documents")?.scrollIntoView({ block: "start", behavior: "smooth" }));
-  }, [hasDocuments, jobId]);
+  const documentsBlockedReason = !detail.evidenceReview
+    ? "Add your master résumé first, so Apply Pilot has facts to work from."
+    : pendingFactChanges
+      ? "Update your score in step 2 first, so your documents include your new lines."
+      : !matchBoundToReview || !detail.hasValidCurrentSnapshot
+        ? "Finish step 2 first (Update my score), so your documents use your reviewed lines."
+        : null;
 
   return (
     <div className="product-page product-page-themed job-workspace apply-page" data-apply-page>
@@ -112,30 +100,29 @@ export function ApplyPage({ detail, kit, progress, tailorServer, answeredYes = f
       <section id="step-3" aria-labelledby="documents-step-heading">
         <div className="job-card job-section">
           <h2 id="documents-step-heading" tabIndex={-1} className="job-section-title">Your documents</h2>
-          <TailorFlow
-            key={tailorReviewIdentity(detail.evidenceReview, detail.hasValidCurrentSnapshot)}
-            documentsOnly
-            confirm={documentsConfirm.confirmFn}
-            blockedReason={documentsBlockedReason}
+          <DocumentsStep
             jobId={jobId}
-            hasDocuments={hasDocuments}
-            hasCurrentResume={hasCurrentResume}
-            message={tailorMessage}
-            onMessage={setTailorMessage}
-            review={detail.evidenceReview}
-            hasValidCurrentSnapshot={detail.hasValidCurrentSnapshot}
-            readOnlyGaps={detail.readOnlyGaps}
+            applicationId={detail.application?.id ?? null}
             quote={tailorServer.quote}
             generationAvailable={tailorServer.generationAvailable}
+            // Off, as before: no cover letter has been generated in a live run yet, and its stricter
+            // evidence checks have no fallback, so a failure would cost a paid call. One tick adds it.
+            coverByDefault={false}
+            resumes={kit.resumes}
+            coverLetters={kit.coverLetters}
+            attached={{ resumeId: detail.application?.resumeVersionId ?? null, coverId: detail.application?.coverLetterVersionId ?? null }}
+            letter={gradeLetter(detail.estimate?.score)}
+            blockedReason={documentsBlockedReason}
+            // Once applied (or archived), what's attached is the record and stays as it is.
+            attachable={kit.canRecordApplied}
           />
-          {documentsConfirm.dialog}
         </div>
         {hasDocuments ? (
           <div id="apply-documents" className="job-card job-section">
             <h2 id="documents-heading" tabIndex={-1} className="job-section-title">Review and edit</h2>
             <p className="job-card-copy">Read each document, edit anything you like, and download it. Your own edits are marked as yours; changed facts are flagged for you to confirm before export.</p>
             {pendingFactChanges ? (
-              <p role="status" className="job-message job-message-info">You&apos;ve written lines in step 2 that these documents don&apos;t include yet. Update your score, then create new versions to use them; export waits until then.</p>
+              <p role="status" className="job-message job-message-info">You&apos;ve written lines in step 2 that these documents don&apos;t include yet. Update your score, then write new versions to use them; export waits until then.</p>
             ) : null}
             <div className="application-review-workspace job-documents">
               <JobDocumentWorkspace resumeVersions={detail.resumeVersions} coverLetters={detail.coverLetters} evidenceInvalidated={pendingFactChanges} />

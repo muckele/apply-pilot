@@ -170,7 +170,15 @@ export async function loadJobDetail(userId: string, id: string) {
         createdAt: document.createdAt.toISOString()
       };
     }),
-    application: application ? { id: application.id, statusLabel: formatApplicationStatus(application.status) } : null,
+    // The documents actually attached to the application (the Apply page's step 3 labels and auto-attach).
+    application: application
+      ? {
+          id: application.id,
+          statusLabel: formatApplicationStatus(application.status),
+          resumeVersionId: application.resumeVersionId,
+          coverLetterVersionId: application.coverLetterVersionId
+        }
+      : null,
     applyReturn,
     contacts,
     salaryTarget: profile ? { min: profile.salaryTargetMin, max: profile.salaryTargetMax } : null,

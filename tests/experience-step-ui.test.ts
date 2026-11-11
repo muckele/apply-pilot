@@ -617,3 +617,27 @@ test("Nothing to add keeps a line typed before switching to the résumé picker"
     await harness.close();
   }
 });
+
+// Step 2 owns the requirement list: it never claims to cover everything, and speaks plainly.
+test("with nothing flagged, the step never claims the résumé covers every requirement", async () => {
+  const { harness } = setup();
+  try {
+    await harness.render(React.createElement(ExperienceStep, props({ review: { ...review(), gaps: [], uncheckedRequirements: [], acceptedFacts: [] } })));
+    assert.doesNotMatch(harness.text(), /Every requirement/u);
+    assert.match(harness.text(), /didn't flag any listed requirement/u);
+    assert.match(harness.text(), /can't check every requirement \(years of experience, for example\)/u);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("plain language: no internal jargon", async () => {
+  const { harness } = setup();
+  try {
+    await harness.render(React.createElement(ExperienceStep, props()));
+    await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
+    assert.doesNotMatch(harness.text(), /immutable|snapshot|Correction-first|reassess|Build packet|provenance|ATS score/iu);
+  } finally {
+    await harness.close();
+  }
+});

@@ -126,9 +126,12 @@ test("actual owned product job route reviews full career and exports current fil
         await page.goto(`${origin}/jobs/${job.id}`,{waitUntil:"networkidle"});
       }
     }
-    // None of the Apply page's client components fetch an /api route on mount, so this still means
-    // "no API calls from the theme flow, the Apply page's first render or the document switching above".
-    assert.deepEqual(api,[]);assert.deepEqual(errors,[]);
+    // The Apply page's first visit attaches the ready documents to the job, once: it saves the job (SAVED,
+    // there was no application) and attaches the newest ready résumé and the cover letter without a status.
+    // Nothing else calls an /api route: not the theme flow, the later visits or the document switching above.
+    const attachedApplication=await client.application.findFirstOrThrow({where:{userId:user.id,jobPostingId:job.id}});
+    assert.deepEqual(api,["/api/applications",`/api/applications/${attachedApplication.id}`]);assert.deepEqual(errors,[]);
+    assert.deepEqual([attachedApplication.status,attachedApplication.resumeVersionId,attachedApplication.coverLetterVersionId,attachedApplication.dateApplied],["SAVED",version.id,coverDocument.id,null]);
     assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration);
     // The rest of the journey works the tailoring flow and documents, which live on the Apply page.
     await page.goto(`${origin}/jobs/${job.id}/apply`,{waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
@@ -269,13 +272,13 @@ test("actual owned product job route reviews full career and exports current fil
     await page.locator("#step-2").getByRole("button",{name:/^Update my score · about \d+¢$/u}).click();
     await page.locator("#step-2").getByRole("button",{name:"Confirm",exact:true}).click();
     await page.getByText("Your lines were saved and your score was updated.").waitFor({timeout:30_000});
-    // The refreshed page shows the changed line as saved; step 3 has remounted for the new review.
+    // The refreshed page shows the changed line as saved.
     await page.locator("#step-2 [data-saved-line]").filter({hasText:replacementOwnerFact}).waitFor({timeout:30_000});
     // Step 2 is done (the match is scored on the saved review), which is what lets step 3 write documents.
     await page.locator("#step-2 [data-experience-done]").waitFor({timeout:30_000});
     assert.equal(matchCalls,2);
     await page.locator("#step-3").getByLabel("Include a cover letter",{exact:true}).check();
-    await page.getByRole("button",{name:"Create new versions",exact:true}).click();
+    await page.locator("#step-3").getByRole("button",{name:/^Write my résumé and cover letter · up to \d+¢$/u}).click();
     await page.locator("#step-3").getByRole("button",{name:"Confirm",exact:true}).click();
     await page.getByText(/Your résumé and cover letter are ready/u).first().waitFor({timeout:30_000});
     assert.deepEqual(dialogs,[],"Every cost question is asked in the page.");

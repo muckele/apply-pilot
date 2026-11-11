@@ -519,6 +519,10 @@ h2.job-title { font-size:24px; }
 .job-tabpanel:focus-visible { outline:2px solid var(--product-accent); outline-offset:-4px; }
 .job-description { margin:0; white-space:pre-wrap; font-size:15px; line-height:1.7; color:var(--product-copy); overflow-wrap:anywhere; }
 .job-plain-list { margin:0; padding-left:20px; list-style:disc; display:grid; gap:6px; font-size:14.5px; line-height:1.55; color:var(--product-copy); }
+.job-versions { margin:0; padding:0; list-style:none; display:grid; gap:4px; }
+.job-version { display:flex; flex-wrap:wrap; align-items:center; gap:2px 12px; min-height:44px; font-size:14.5px; color:var(--product-copy); }
+.job-version-title { font-weight:650; color:var(--product-text); overflow-wrap:anywhere; }
+.job-version-used { font-weight:650; color:var(--product-accent); }
 .job-remote-check { border:1px solid var(--product-border); border-radius:12px; padding:14px 16px; background:color-mix(in srgb, var(--product-mint) 5%, var(--product-surface)); }
 .job-salary { margin:0; font-size:18px; color:var(--product-text); }
 .job-steps { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 18px; padding:0; list-style:none; }
