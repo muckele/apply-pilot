@@ -49,7 +49,7 @@ const syntheticResume = {
 
 const syntheticAnalysis = {
   contractVersion: "3",
-  promptVersion: "3.4",
+  promptVersion: "3.5",
   requirementGaps: [{
     requirement: "Bachelor's degree in business or equivalent experience",
     jobRequirement: {
@@ -104,7 +104,7 @@ export default function SyntheticEvidenceCorrectionPage() {
     analysisId: "synthetic-analysis-1",
     analysisInputHash: "a".repeat(64),
     analysisModel: "gemini-3.8-flash",
-    analysisPromptVersion: "3.4",
+    analysisPromptVersion: "3.5",
     analysisOutput: syntheticAnalysis,
     selectedResumeDocumentId: "synthetic-resume-version-1",
     selectedCoverLetterDocumentId: "synthetic-cover-letter-1",

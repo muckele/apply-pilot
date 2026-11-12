@@ -39,7 +39,7 @@ const requirements = [
 
 const analysisOutput = {
   contractVersion: "3",
-  promptVersion: "3.4",
+  promptVersion: "3.5",
   factualMatches: [{
     claim: "Submitted applicant evidence matches job evidence for incident governance.",
     applicantEvidence: [{ ref: "resume.skills[0]", excerpt: "Incident governance" }],

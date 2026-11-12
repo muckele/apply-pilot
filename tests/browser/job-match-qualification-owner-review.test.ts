@@ -505,7 +505,7 @@ test("the actual synthetic command completes four owner reviews and stops at Goo
 
   await page.getByRole("heading", { name: "Review complete. Google remains blocked." }).waitFor();
   assert.equal(await page.getByText("No provider action is available on this screen.").count(), 1);
-  assert.equal(await page.getByText("gemini-3.8-flash / 3.4").count(), 1);
+  assert.equal(await page.getByText("gemini-3.8-flash / 3.5").count(), 1);
   assert.equal(await page.getByText("4 sequential; retry disabled").count(), 1);
   assert.equal(await page.getByText("290880 micros").count(), 1);
   assert.equal(await page.getByText("Disabled", { exact: true }).count(), 1);

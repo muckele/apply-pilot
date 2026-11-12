@@ -22,10 +22,10 @@ function review(options: { requirementList?: string[]; gapIndexes?: number[] } =
   return buildEvidenceCorrectionReview({
     jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
     resume: { rawText: ["SUMMARY", "Service operations leader.", RESUME_LINE].join("\n") },
-    analysisId: "analysis-1", analysisInputHash: "a".repeat(64), analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.4",
+    analysisId: "analysis-1", analysisInputHash: "a".repeat(64), analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.5",
     analysisOutput: {
       contractVersion: "3",
-      promptVersion: "3.4",
+      promptVersion: "3.5",
       factualMatches: [{
         claim: "Shows enterprise service delivery",
         applicantEvidence: [{ ref: "resume.rawText", excerpt: "Service operations leader." }],

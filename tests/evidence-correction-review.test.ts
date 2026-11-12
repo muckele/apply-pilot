@@ -52,7 +52,7 @@ const resume = {
 
 const analysis = {
   contractVersion: "3",
-  promptVersion: "3.4",
+  promptVersion: "3.5",
   requirementGaps: [{
     requirement: "Bachelor's degree in business or equivalent experience",
     jobRequirement: {
@@ -342,7 +342,7 @@ test("UI interaction blocks incomplete provenance, saves an exact bounded reques
     analysisId: "analysis-1",
     analysisInputHash: "a".repeat(64),
     analysisModel: "gemini-3.8-flash",
-    analysisPromptVersion: "3.4",
+    analysisPromptVersion: "3.5",
     analysisOutput: analysis,
     selectedResumeDocumentId: "resume-version-1",
     selectedCoverLetterDocumentId: "cover-1"
@@ -466,7 +466,7 @@ test("an in-flight reassessment cannot report success after the reviewed draft c
     analysisId: "analysis-1",
     analysisInputHash: "a".repeat(64),
     analysisModel: "gemini-3.8-flash",
-    analysisPromptVersion: "3.4",
+    analysisPromptVersion: "3.5",
     analysisOutput: analysis
   });
   const dom = new JSDOM("<!doctype html><html><body><div id='root'></div></body></html>", {

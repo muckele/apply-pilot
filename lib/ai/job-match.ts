@@ -29,13 +29,15 @@ import {
   JOB_MATCH_THINKING_LEVEL
 } from "@/lib/ai/job-match-version";
 import { PublicApiError } from "@/lib/api-errors";
+import { isRequirementLine } from "@/lib/job-sources/requirement-lines";
 import type { JobMatchReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 
-// Result contract remains v3; prompt/cache revision 3.4 adds durable reviewed
-// evidence while retaining evidence-scoped gaps and illustrative-example guards.
-// Years-of-experience gaps are computed locally during normalization (see
-// job-match-tenure.ts) from the same submitted input, so the prompt, response
-// schema, cache key and cached raw output are unchanged.
+// Result contract remains v3. Prompt/cache revision 3.4 added durable reviewed evidence; 3.5 asks
+// for a verdict on every listed requirement (match or gap), links each owner line to the
+// requirement it was written for, and lets a gap name no missing keyword. A requirement Gemini
+// still skips is reported in requirementCoverage, never a reason to refuse a paid answer.
+// Years-of-experience gaps are computed locally during normalization (see job-match-tenure.ts)
+// from the same submitted input.
 export {
   JOB_MATCH_MODEL,
   JOB_MATCH_PROMPT_VERSION,
@@ -100,9 +102,27 @@ export type JobMatchNormalizedRequirementGap = JobMatchRequirementGap & {
   tenure?: JobMatchTenureFinding;
 };
 
+// Gap keyword checks that, when they fail, set the gap aside instead of refusing the answer.
+export type JobMatchGapKeywordValidationCode =
+  | "GAP_KEYWORD_NOT_IN_REQUIREMENT"
+  | "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE"
+  | "GAP_KEYWORD_ILLUSTRATIVE_ONLY";
+
+// Which listed requirements this answer judged. Refs and codes only, never requirement text.
+export type JobMatchRequirementCoverage = {
+  // The job.requirements refs Gemini was asked to judge (see getJobMatchRequirementsToJudge).
+  askedRefs: string[];
+  // Asked refs that no factual match or kept gap cites by ref. They show as not checked.
+  unjudgedRefs: string[];
+  // Gaps not shown because a missing keyword they named is on the résumé, is only an example,
+  // or is not in the requirement.
+  setAsideGaps: Array<{ ref: string; validationCode: JobMatchGapKeywordValidationCode }>;
+};
+
 export type JobMatchOutput = Omit<JobMatchModelOutput, "factualMatches" | "requirementGaps"> & {
   factualMatches: JobMatchFactualMatch[];
   requirementGaps: JobMatchNormalizedRequirementGap[];
+  requirementCoverage: JobMatchRequirementCoverage;
   compensationAssessment: {
     score: number | null;
     reason: CompensationAssessmentReason;
@@ -243,7 +263,7 @@ export const jobMatchModelOutputSchema: z.ZodType<JobMatchModelOutput, z.ZodType
   requirementGaps: z.array(z.object({
     requirement: z.string().min(1),
     jobRequirement: citationSchema,
-    missingKeywords: z.array(z.string().min(1)).min(1)
+    missingKeywords: z.array(z.string().min(1))
   }).strict()),
   advice: z.object({
     keywordsToEmphasize: z.array(z.string().min(1)),
@@ -318,6 +338,36 @@ export function getJobMatchEvidenceReferences(input: MatchInput) {
   return { applicant, preference, job, gap };
 }
 
+// The extractors keep at most 24 requirement lines; a manually imported job can list more. Only
+// the first 24 are asked for, so a long list cannot push the answer past its output ceiling.
+export const JOB_MATCH_REQUIREMENTS_TO_JUDGE_LIMIT = 24;
+
+// The listed requirements Gemini must judge, by ref: every one that can be a requirement at all
+// (not a stored heading, pay line or blank), the first 24 of them.
+export function getJobMatchRequirementsToJudge(input: MatchInput) {
+  return (input.job.requirements ?? [])
+    .flatMap((value, index) => typeof value === "string" && value.trim() && isRequirementLine(value)
+      ? [`job.requirements[${index}]`]
+      : [])
+    .slice(0, JOB_MATCH_REQUIREMENTS_TO_JUDGE_LIMIT);
+}
+
+const OWNER_LINE_GAP_ID = /^requirement:(\d+)$/u;
+
+// An owner line saved for a requirement step 2 listed ("requirement:<n>") answers job.requirements[n].
+// Maps the line's reviewedEvidence ref to that requirement's ref. A line saved against a gap
+// ("gap:<n>") names a gap of an earlier analysis, not a requirement, so it is not linked.
+export function getJobMatchOwnerLineLinks(input: MatchInput): Record<string, string> {
+  const requirements = input.job.requirements ?? [];
+  const links: Record<string, string> = {};
+  (input.reviewedEvidence?.facts ?? []).forEach((fact, index) => {
+    const requirementIndex = Number(fact.gapId.match(OWNER_LINE_GAP_ID)?.[1] ?? Number.NaN);
+    if (!Number.isSafeInteger(requirementIndex) || !referenceValueIsPresent(requirements[requirementIndex])) return;
+    links[`reviewedEvidence.facts[${index}]`] = `job.requirements[${requirementIndex}]`;
+  });
+  return links;
+}
+
 function jsonCitation(refs: string[], emptySentinel: string) {
   return {
     type: "object",
@@ -360,7 +410,7 @@ export function buildJobMatchResponseJsonSchema(input: MatchInput) {
       properties: {
         requirement: jsonString,
         jobRequirement: gapCitation,
-        missingKeywords: { type: "array", minItems: 1, items: jsonString }
+        missingKeywords: { type: "array", items: jsonString }
       },
       required: ["requirement", "jobRequirement", "missingKeywords"]
     }
@@ -410,6 +460,8 @@ export function buildJobMatchSystemPrompt(input: MatchInput) {
     `Allowed applicant evidence references (exact strings only): ${JSON.stringify(refs.applicant)}\n` +
     `Allowed job evidence references (exact strings only): ${JSON.stringify(refs.job)}\n` +
     `Allowed requirement-gap references (exact strings only): ${JSON.stringify(refs.gap)}\n` +
+    `Requirements to judge: ${JSON.stringify(getJobMatchRequirementsToJudge(input))}\n` +
+    `Applicant lines written for one requirement: ${JSON.stringify(getJobMatchOwnerLineLinks(input))}\n` +
     "Never append child paths to any listed reference. If an allowlist is empty, return no item that requires it.";
 }
 
@@ -843,11 +895,48 @@ function withTenureGaps(
   return [...merged, ...appended];
 }
 
+// The job citations of a match that name the requirement an owner line in the same match was
+// written for. Such a line may show the requirement in other words, so a supported keyword taken
+// from these citations needs no exact copy in the line.
+function ownerLineRequirementCitations(match: JobMatchModelFactualMatch, ownerLines: Record<string, string>) {
+  const answered = new Set(match.applicantEvidence.flatMap((citation) =>
+    Object.prototype.hasOwnProperty.call(ownerLines, citation.ref) ? [ownerLines[citation.ref]] : []));
+  return match.jobEvidence.filter((citation) => answered.has(citation.ref));
+}
+
+// The first failing keyword check of a gap, or null. These checks refute only the gap's keywords,
+// not its quoted requirement, so a failure sets the gap aside instead of refusing the answer.
+function refutedGapKeyword(input: MatchInput, gap: JobMatchRequirementGap): JobMatchGapKeywordValidationCode | null {
+  for (const keyword of gap.missingKeywords) {
+    if (!includesKeyword([gap.jobRequirement], keyword)) return "GAP_KEYWORD_NOT_IN_REQUIREMENT";
+    if (containsWholeKeyword(applicantEvidenceText(input), keyword)) return "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE";
+    if (keywordIsIllustrativeOnly(gap.requirement, keyword)) return "GAP_KEYWORD_ILLUSTRATIVE_ONLY";
+  }
+  return null;
+}
+
+// By ref only, as the prompt asks. The checklist may also credit a requirement quoted through
+// job.description, so it can show fewer requirements as not checked than unjudgedRefs lists.
+function requirementCoverage(
+  input: MatchInput,
+  factualMatches: JobMatchModelFactualMatch[],
+  requirementGaps: JobMatchRequirementGap[],
+  setAsideGaps: JobMatchRequirementCoverage["setAsideGaps"]
+): JobMatchRequirementCoverage {
+  const askedRefs = getJobMatchRequirementsToJudge(input);
+  const judged = new Set([
+    ...factualMatches.flatMap((match) => match.jobEvidence.map((citation) => citation.ref)),
+    ...requirementGaps.map((gap) => gap.jobRequirement.ref)
+  ]);
+  return { askedRefs, unjudgedRefs: askedRefs.filter((ref) => !judged.has(ref)), setAsideGaps };
+}
+
 export function normalizeJobMatchOutput(
   input: MatchInput,
   output: JobMatchModelOutput,
   options: JobMatchNormalizationOptions = {}
 ): JobMatchOutput {
+  const ownerLines = getJobMatchOwnerLineLinks(input);
   for (const [matchIndex, match] of output.factualMatches.entries()) {
     if (Object.prototype.hasOwnProperty.call(match, "claim")) {
       semanticFailure(
@@ -900,8 +989,11 @@ export function normalizeJobMatchOutput(
         `factualMatches[${matchIndex}].jobEvidence[${citationIndex}]`
       );
     }
+    const answeredRequirements = ownerLineRequirementCitations(match, ownerLines);
     for (const [keywordIndex, keyword] of match.supportedKeywords.entries()) {
-      if (!includesKeyword(match.applicantEvidence, keyword) || !includesKeyword(match.jobEvidence, keyword)) {
+      const applicantShowsKeyword = includesKeyword(match.applicantEvidence, keyword) ||
+        includesKeyword(answeredRequirements, keyword);
+      if (!applicantShowsKeyword || !includesKeyword(match.jobEvidence, keyword)) {
         semanticFailure(
           "UNSUPPORTED_MATCHED_KEYWORD",
           `factualMatches[${matchIndex}].supportedKeywords[${keywordIndex}]`,
@@ -911,7 +1003,8 @@ export function normalizeJobMatchOutput(
     }
   }
 
-  for (const [gapIndex, gap] of output.requirementGaps.entries()) {
+  const setAsideGaps: JobMatchRequirementCoverage["setAsideGaps"] = [];
+  const keptGaps = output.requirementGaps.filter((gap, gapIndex) => {
     if (!/^job\.(requirements|preferredQualifications)\[\d+\]$/.test(gap.jobRequirement.ref)) {
       semanticFailure(
         "GAP_REFERENCE_NOT_STRUCTURED",
@@ -941,35 +1034,19 @@ export function normalizeJobMatchOutput(
         "JOB_MATCH gap did not preserve the exact cited job requirement."
       );
     }
-    for (const [keywordIndex, keyword] of gap.missingKeywords.entries()) {
-      const keywordPath = `requirementGaps[${gapIndex}].missingKeywords[${keywordIndex}]`;
-      if (!includesKeyword([gap.jobRequirement], keyword)) {
-        semanticFailure(
-          "GAP_KEYWORD_NOT_IN_REQUIREMENT",
-          keywordPath,
-          "JOB_MATCH returned an unsupported missing keyword."
-        );
-      }
-      if (containsWholeKeyword(applicantEvidenceText(input), keyword)) {
-        semanticFailure(
-          "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE",
-          keywordPath,
-          "JOB_MATCH marked a keyword missing although it is present in submitted applicant evidence."
-        );
-      }
-      if (keywordIsIllustrativeOnly(gap.requirement, keyword)) {
-        semanticFailure(
-          "GAP_KEYWORD_ILLUSTRATIVE_ONLY",
-          keywordPath,
-          "JOB_MATCH used an illustrative example as the sole witness for a broader evidence gap."
-        );
-      }
-    }
-  }
+    // A refused answer has already been paid for (production 2026-11-10 and 2026-11-12), and asking
+    // for every requirement means more gaps. So a gap whose missing keyword is refuted is not shown
+    // (no false "not on your résumé") and the rest of the answer is kept; its requirement counts as
+    // unjudged unless a match covers it.
+    const refuted = refutedGapKeyword(input, gap);
+    if (refuted) setAsideGaps.push({ ref: gap.jobRequirement.ref, validationCode: refuted });
+    return !refuted;
+  });
 
   const compensation = assessCompensation(input, output.compensationScore);
   const factualMatches = output.factualMatches.map((match) => {
     const supportedKeywords = uniqueStrings(match.supportedKeywords);
+    const ownerLine = ownerLineRequirementCitations(match, ownerLines).length > 0;
     return {
       ...match,
       applicantEvidence: match.applicantEvidence.map((citation) => ({
@@ -979,10 +1056,12 @@ export function normalizeJobMatchOutput(
       jobEvidence: match.jobEvidence.map((citation) =>
         citationForDisplay(citation, (ref) => resolveJobEvidence(input, ref))),
       supportedKeywords,
-      claim: `Submitted applicant evidence matches job evidence for ${supportedKeywords.join(", ")}.`
+      claim: ownerLine
+        ? `The line you gave for this requirement covers ${supportedKeywords.join(", ")}.`
+        : `Submitted applicant evidence matches job evidence for ${supportedKeywords.join(", ")}.`
     };
   });
-  const requirementGaps = withTenureGaps(input, output.requirementGaps.map((gap) => {
+  const requirementGaps = withTenureGaps(input, keptGaps.map((gap) => {
     const jobRequirement = citationForDisplay(gap.jobRequirement, (ref) => resolveJobEvidence(input, ref));
     return {
       ...gap,
@@ -994,6 +1073,7 @@ export function normalizeJobMatchOutput(
     ...output,
     factualMatches,
     requirementGaps,
+    requirementCoverage: requirementCoverage(input, output.factualMatches, requirementGaps, setAsideGaps),
     compensationScore: compensation.score,
     compensationAssessment: compensation,
     confidenceAssessment: {

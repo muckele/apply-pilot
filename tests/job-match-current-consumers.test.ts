@@ -14,7 +14,7 @@ test("current JOB_MATCH relation is pinned to the lightweight model and prompt i
   assert.deepEqual(CURRENT_JOB_MATCH_ANALYSIS_WHERE, {
     type: "JOB_MATCH",
     model: "gemini-3.8-flash",
-    promptVersion: "3.4"
+    promptVersion: "3.5"
   });
   const input = buildCurrentJobMatchInput({
     job: { title: "Operator", company: "Example", description: "Current description" },

@@ -78,7 +78,7 @@ for (const invalidation of ["source revision", "snapshot deletion"] as const) {
       } });
       const analysis = await client.aIAnalysis.create({ data: {
         userId: fixture.userId, jobPostingId: run.jobPostingId, type: "JOB_MATCH",
-        model: "gemini-3.8-flash", promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {}
+        model: "gemini-3.8-flash", promptName: "jobMatchPrompt", promptVersion: "3.5", input: {}, output: {}
       } });
       const snapshot = await client.$transaction(async (tx) => {
         const created = await tx.evidenceSnapshot.create({ data: {
@@ -126,7 +126,7 @@ test("active Fill status holds evidence authority while a concurrent source revi
     } });
     const analysis = await client.aIAnalysis.create({ data: {
       userId: fixture.userId, jobPostingId: run.jobPostingId, type: "JOB_MATCH",
-      model: "gemini-3.8-flash", promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {}
+      model: "gemini-3.8-flash", promptName: "jobMatchPrompt", promptVersion: "3.5", input: {}, output: {}
     } });
     const snapshot = await client.evidenceSnapshot.create({ data: {
       userId: fixture.userId, jobPostingId: run.jobPostingId, resumeId: resume.id,
