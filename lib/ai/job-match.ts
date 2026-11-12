@@ -610,8 +610,12 @@ function positiveCitationReversesNegation(
   const excerpt = comparable(citation.excerpt);
   return supportedKeywords.some((keyword) => {
     if (!containsWholeKeyword(citation.excerpt, keyword)) return false;
-    const matchingClauses = semanticEvidenceClauses(value).filter((clause) =>
-      comparable(clause).includes(excerpt) && containsWholeKeyword(clause, keyword));
+    // A quote inside one clause is read in that clause. A quote that covers whole clauses (such as
+    // a full reviewed fact of several sentences) is read in every clause it covers.
+    const matchingClauses = semanticEvidenceClauses(value).filter((clause) => {
+      const text = comparable(clause);
+      return (text.includes(excerpt) || excerpt.includes(text)) && containsWholeKeyword(clause, keyword);
+    });
     return matchingClauses.length > 0 && matchingClauses.every((clause) =>
       hasEvidenceNegationCue(comparable(clause)));
   });
@@ -664,6 +668,26 @@ function repairCitationPositions(input: MatchInput, output: JobMatchModelOutput)
     requirementGaps: output.requirementGaps.map((gap) => ({
       ...gap,
       jobRequirement: repairCitationPosition(gap.jobRequirement, refs.gap, job)
+    }))
+  };
+}
+
+// A reviewed fact is owner-reviewed and its ref names it exactly, so a quote that is a genuine part
+// of the cited fact stands for the whole fact. Production case 2026-11-10: Gemini quoted part of a
+// long owner line, the whole-fact check refused the output, and the re-score had already been
+// charged. Such a quote becomes the full fact here. A quote that is not in the fact is left as it
+// is and fails validation. Every later check (keywords, negation) reads the full fact.
+function completeReviewedFactCitations(input: MatchInput, output: JobMatchModelOutput): JobMatchModelOutput {
+  return {
+    ...output,
+    factualMatches: output.factualMatches.map((match) => ({
+      ...match,
+      applicantEvidence: match.applicantEvidence.map((citation) => {
+        if (!citation.ref.startsWith("reviewedEvidence.facts[")) return citation;
+        const resolved = resolveApplicantEvidence(input, citation.ref);
+        if (!resolved.found || !excerptFound(resolved, citation.excerpt)) return citation;
+        return { ...citation, excerpt: evidenceText(resolved.value) };
+      })
     }))
   };
 }
@@ -846,6 +870,8 @@ export function normalizeJobMatchOutput(
         "applicant",
         `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}]`
       );
+      // validateAndNormalizeJobMatchOutput has already completed a genuine part of a reviewed fact
+      // (completeReviewedFactCitations), so this only catches a caller that skipped that step.
       if (
         citation.ref.startsWith("reviewedEvidence.facts[") &&
         resolved.found &&
@@ -1002,7 +1028,7 @@ export function validateAndNormalizeJobMatchOutput(
     );
   }
   try {
-    const modelOutput = repairCitationPositions(input, parsed.data);
+    const modelOutput = completeReviewedFactCitations(input, repairCitationPositions(input, parsed.data));
     return { modelOutput, normalized: normalizeJobMatchOutput(input, modelOutput, options) };
   } catch (error) {
     throw new JobMatchOutputValidationError(
