@@ -160,19 +160,30 @@ export type ImportEvaluation =
   | { passed: true; relevance: JobRelevanceResult }
   | { passed: false; relevance: JobRelevanceResult | null };
 
-/** Applies the query, remote-only and relevance prefilter to one normalized posting. */
+/**
+ * Applies the query, remote-only and relevance prefilter to one normalized posting. `queries`
+ * are the user's target searches: they always join the profile's roles as the titles relevance
+ * accepts, and unless `requireQueryMatch` is false the posting must also contain one of them.
+ */
 export function evaluateForImport({
   job,
   profile,
   queries,
-  remoteOnly
+  remoteOnly,
+  requireQueryMatch = true
 }: {
   job: NormalizedJob;
   profile: UserProfile | null;
   queries: readonly string[];
   remoteOnly?: boolean;
+  requireQueryMatch?: boolean;
 }): ImportEvaluation {
-  if (!job.title || !job.sourceUrl || !queryMatchesAny(job, queries) || !matchesRemoteOnly(job, remoteOnly)) {
+  if (
+    !job.title ||
+    !job.sourceUrl ||
+    (requireQueryMatch && !queryMatchesAny(job, queries)) ||
+    !matchesRemoteOnly(job, remoteOnly)
+  ) {
     return { passed: false, relevance: null };
   }
 

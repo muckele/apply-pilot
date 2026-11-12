@@ -9,6 +9,7 @@ import {
 import {
   assertSourceCanSync,
   buildCriteriaFromSource,
+  withDiscoveryDefaults,
   type SourceRunOptions
 } from "@/lib/job-sources/source-policy";
 import { prisma } from "@/lib/prisma";
@@ -86,12 +87,17 @@ export async function runJobSourceSync({
   await claimSyncLock(source.id);
 
   try {
-    const syncProfile = profile ?? (await prisma.userProfile.findUnique({ where: { userId } }));
+    const [syncProfile, savedPreference] = await Promise.all([
+      profile ?? prisma.userProfile.findUnique({ where: { userId } }),
+      prisma.jobDiscoveryPreference.findUnique({ where: { userId } })
+    ]);
+    const run = withDiscoveryDefaults(options, { savedPreference, profile: syncProfile });
     const result = await importJobsFromSource({
       userId,
       source,
-      criteria: buildCriteriaFromSource(source, options),
-      profile: syncProfile
+      criteria: buildCriteriaFromSource(source, run.options),
+      profile: syncProfile,
+      targetSearches: run.targetSearches
     });
     const aiSettings = await getOrCreateAiSettings(userId);
     const scoring = await scoreTopImportedJobs({
