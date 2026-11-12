@@ -14,6 +14,7 @@ import {
 import { getAiFinancialPolicy, getAiRuntimeMode } from "@/lib/ai/config";
 import {
   callGeminiJsonProvider,
+  type GeminiBillingDisposition,
   GeminiProviderError,
   type GeminiUsage
 } from "@/lib/ai/gemini";
@@ -1040,6 +1041,25 @@ export function validateAndNormalizeJobMatchOutput(
   }
 }
 
+// Production 2026-11-12: a refused output reached the person as "The request could not be
+// completed." with no charge status, although Gemini had been paid. A refused output now says so in
+// plain words and carries billingStatus and actualCostMicros, which the Apply page shows. The
+// details hold only codes and structural paths, never quoted text.
+function rejectedOutputError(
+  error: JobMatchOutputValidationError,
+  billingStatus: GeminiBillingDisposition,
+  actualCostMicros: number | null
+) {
+  return new PublicApiError("Gemini's answer couldn't be checked against your résumé, so it wasn't used.", 502, {
+    code: "JOB_MATCH_OUTPUT_INVALID",
+    validationCode: error.validationCode ?? "SCHEMA",
+    fieldPath: error.fieldPath,
+    billingStatus,
+    actualCostMicros,
+    retryable: false
+  });
+}
+
 function usageCost(usage: GeminiUsage) {
   return estimateAiCostMicros({
     model: JOB_MATCH_MODEL,
@@ -1100,7 +1120,13 @@ export async function scoreJobMatch(
     requestHash: inputHash
   });
   if (cached) {
-    const { normalized } = validateAndNormalizeJobMatchOutput(input, cached.output);
+    let normalized: JobMatchOutput;
+    try {
+      ({ normalized } = validateAndNormalizeJobMatchOutput(input, cached.output));
+    } catch (error) {
+      if (error instanceof JobMatchOutputValidationError) throw rejectedOutputError(error, "not_charged", 0);
+      throw error;
+    }
     return {
       ...normalized,
       model: JOB_MATCH_MODEL,
@@ -1223,6 +1249,13 @@ export async function scoreJobMatch(
         cachedInputTokens: providerUsage?.cachedInputTokens,
         errorCode: error instanceof Error ? error.name : "UnknownError"
       }).catch(() => undefined);
+      if (error instanceof JobMatchOutputValidationError) {
+        throw rejectedOutputError(
+          error,
+          uncertain ? "uncertain" : billingDisposition,
+          uncertain ? null : reconciledCost ?? null
+        );
+      }
     }
     throw error;
   }

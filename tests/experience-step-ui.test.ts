@@ -553,6 +553,37 @@ test("a failed re-score after a save says the lines were saved and clears the dr
   }
 });
 
+// Production 2026-11-12: a re-score refused by output validation after Gemini was paid. The 502
+// carries the plain message and the recorded charge (lib/ai/job-match.ts rejectedOutputError).
+test("a paid re-score that couldn't be used says so and shows the recorded charge", async () => {
+  const calls: Call[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, confirmed: new Headers(init?.headers).get("x-ai-cost-confirmed"), body: null });
+    if (url.endsWith("/evidence-snapshots")) return savedResponse();
+    return json(502, {
+      error: "Gemini's answer couldn't be checked against your résumé, so it wasn't used.",
+      code: "JOB_MATCH_OUTPUT_INVALID",
+      validationCode: "UNSUPPORTED_APPLICANT_EXCERPT",
+      fieldPath: "factualMatches[3].applicantEvidence[0].excerpt",
+      billingStatus: "known",
+      actualCostMicros: 21_500,
+      retryable: false
+    });
+  }) as typeof fetch;
+  const { harness } = setup({ calls, fetch: fetchImpl });
+  try {
+    await harness.render(React.createElement(ExperienceStep, props()));
+    await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
+    await harness.check(tick(harness));
+    await harness.click(harness.button("Update my score · about 8¢"));
+    await harness.click(harness.button("Confirm"));
+    await harness.waitForText(/Your lines were saved, but your score wasn't updated\. Gemini's answer couldn't be checked against your résumé, so it wasn't used\. Recorded cost: \$0\.0215\./u);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("without a current match the step points back to step 1", async () => {
   const { harness } = setup();
   try {
