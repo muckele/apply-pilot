@@ -22,9 +22,12 @@ function formatUsdMicros(micros: number) {
   return `$${(micros / 1_000_000).toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
 }
 
+// May be async: the in-page question resolves when the user presses Confirm or Cancel.
+export type ConfirmFn = (message: string) => boolean | Promise<boolean>;
+
 type ApprovedAiCostDependencies = {
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-  confirm?: (message: string) => boolean;
+  confirm?: ConfirmFn;
 };
 
 // For a step the user already approved as part of one combined confirmation. The request is
@@ -47,7 +50,7 @@ export async function fetchWithApprovedAiCost(
 
   const maximum = typeof details.maximumCostMicros === "number" ? details.maximumCostMicros : null;
   if (maximum === null || maximum > approvedMaximumMicros) {
-    const confirmed = confirm(
+    const confirmed = await confirm(
       `This step could cost up to ${maximum === null ? "an unstated amount" : formatUsdMicros(maximum)}, more than the ${formatUsdMicros(approvedMaximumMicros)} you approved for it. The final charge is usually lower. Continue?`
     );
     if (!confirmed) throw new Error("AI request canceled before any provider charge was made.");
@@ -59,8 +62,14 @@ export async function fetchWithApprovedAiCost(
   return fetchImpl(input, { ...init, headers });
 }
 
-export async function fetchWithAiCostConfirmation(input: RequestInfo | URL, init?: RequestInit) {
-  const response = await fetch(input, init);
+export async function fetchWithAiCostConfirmation(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  dependencies: ApprovedAiCostDependencies = {}
+) {
+  const fetchImpl = dependencies.fetchImpl ?? ((request, options) => fetch(request, options));
+  const confirm = dependencies.confirm ?? ((message: string) => window.confirm(message));
+  const response = await fetchImpl(input, init);
   if (response.status !== 428) return response;
 
   const details = (await response.clone().json().catch(() => null)) as AiErrorPayload | null;
@@ -73,7 +82,7 @@ export async function fetchWithAiCostConfirmation(input: RequestInfo | URL, init
   const confirmsApplicationPacket = details.dataType === "application_packet";
   const sharedDataDescription = details.dataType ? AI_DATA_DESCRIPTIONS[details.dataType] : undefined;
   const provider = details.provider === "gemini" ? "Google Gemini" : "the configured AI provider";
-  const confirmed = window.confirm(
+  const confirmed = await confirm(
     confirmsResumeData
       ? `Your complete resume text will be sent to ${provider} for structured parsing. This AI request could cost up to ${maximum}; the final charge is usually lower. Your current master resume will not change unless the parsed result passes validation and is saved. Continue?`
       : confirmsApplicationPacket
@@ -91,5 +100,5 @@ export async function fetchWithAiCostConfirmation(input: RequestInfo | URL, init
   if (confirmsResumeData || confirmsApplicationPacket || sharedDataDescription) {
     headers.set("x-ai-data-confirmed", "true");
   }
-  return fetch(input, { ...init, headers });
+  return fetchImpl(input, { ...init, headers });
 }

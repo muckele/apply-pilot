@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { LogIn, LogOut, UserCircle } from "lucide-react";
+import { LogIn, UserCircle } from "lucide-react";
 
+import { SignOutButton } from "@/components/sign-out-button";
 import { auth, signOut } from "@/lib/auth";
 
 export async function AuthMenu({ tone = "light" }: { tone?: "light" | "dark" } = {}) {
@@ -27,17 +28,13 @@ export async function AuthMenu({ tone = "light" }: { tone?: "light" | "dark" } =
         <UserCircle size={17} className={tone === "dark" ? "text-brand-300" : "text-brand-600"} aria-hidden="true" />
         <span className="max-w-44 truncate">{session.user.email ?? session.user.name}</span>
       </div>
-      <form
+      <SignOutButton
+        className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${actionClass}`}
         action={async () => {
           "use server";
           await signOut({ redirectTo: "/login" });
         }}
-      >
-        <button className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-semibold ${actionClass}`}>
-          <LogOut size={15} aria-hidden="true" />
-          Sign out
-        </button>
-      </form>
+      />
     </div>
   );
 }

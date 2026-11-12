@@ -935,3 +935,69 @@ test("concurrent identical saves converge to one immutable snapshot and one curr
     await client.$disconnect();
   }
 });
+
+test("a save may answer a listed requirement the analysis never checked, and the rescore receives it", async () => {
+  const databaseUrl = await guardedDatabaseUrl();
+  const client = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+  const fixture = await createFixture(client, "evidence-unchecked-requirement");
+  const unchecked = "Write clear technical documentation for partner teams";
+  const fact = "Synthetic owner wrote the partner integration guide.";
+  const jobOnly = { reuseScope: "JOB_ONLY" as const, masterProfileOptIn: false as const };
+  try {
+    // Requirement 1 is a heading an older import stored; requirement 2 was never judged.
+    const job = await client.jobPosting.update({
+      where: { id: fixture.job.id },
+      data: { requirements: [requirement, "What You'll Do", unchecked] }
+    });
+    const input = buildCurrentJobMatchInput({ job, resume: fixture.resume, profile: null, reviewedEvidence: null });
+    const analysis = await client.aIAnalysis.create({
+      data: {
+        userId: fixture.user.id,
+        jobPostingId: fixture.job.id,
+        type: "JOB_MATCH",
+        model: JOB_MATCH_MODEL,
+        promptName: "jobMatchPrompt",
+        promptVersion: JOB_MATCH_PROMPT_VERSION,
+        inputHash: currentJobMatchInputHash(input),
+        input: { fixture: true },
+        output: analysisOutput()
+      }
+    });
+    const request = (requestId: string, gapId: string): EvidenceSnapshotSaveInput => ({
+      schema: "apply-pilot/evidence-snapshot-save/v2",
+      requestId,
+      resumeId: fixture.resume.id,
+      resumeUpdatedAt: fixture.resume.updatedAt.toISOString(),
+      reviewedAnalysis: { id: analysis.id, inputHash: analysis.inputHash!, model: JOB_MATCH_MODEL, promptVersion: JOB_MATCH_PROMPT_VERSION },
+      decisions: [
+        { gapId: "gap:0", kind: "UNRESOLVED", ...jobOnly },
+        { gapId, kind: "OWNER_ATTESTATION", attestedFact: fact, ownerAttested: true, ...jobOnly }
+      ],
+      acceptedFactActions: []
+    });
+
+    await assert.rejects(
+      saveEvidenceSnapshot(fixture.user.id, fixture.job.id, request(`unchecked-heading-${randomUUID()}`, "requirement:1")),
+      (error: unknown) => errorCode(error) === "EVIDENCE_REVIEW_INVALID"
+    );
+    assert.equal(await client.evidenceSnapshot.count({ where: { jobPostingId: fixture.job.id } }), 0);
+
+    const saved = await saveEvidenceSnapshot(fixture.user.id, fixture.job.id, request(`unchecked-${randomUUID()}`, "requirement:2"));
+    const snapshot = await client.evidenceSnapshot.findUniqueOrThrow({ where: { id: saved.snapshot.id } });
+    const reviewed = reviewedEvidenceFromSnapshot(snapshot);
+    assert.deepEqual(reviewed.facts, [{ gapId: "requirement:2", fact, provenance: "OWNER_ATTESTED", sourceRef: null }]);
+    assert.deepEqual(reviewed.unresolvedGapIds, ["gap:0"]);
+
+    const captured: MatchInput[] = [];
+    const run = createJobMatchRunner({ prismaClient: client, score: async (matchInput) => {
+      captured.push(matchInput);
+      return reassessmentResult(matchInput);
+    } });
+    await run(fixture.user.id, fixture.job.id, { force: true });
+    assert.equal(captured[0]?.reviewedEvidence?.snapshotId, saved.snapshot.id);
+    assert.deepEqual(captured[0]?.reviewedEvidence?.facts.map((item) => item.fact), [fact]);
+  } finally {
+    await client.user.delete({ where: { id: fixture.user.id } });
+    await client.$disconnect();
+  }
+});

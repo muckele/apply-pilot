@@ -103,7 +103,7 @@ test("actual owned product job route reviews full career and exports current fil
         await page.screenshot({path:`${outputDir}/${name}-${theme}-source.png`});
         // Tailoring and documents live on the Apply page (#step-2, #step-3), not the job page.
         await page.goto(`${origin}/jobs/${job.id}/apply`,{waitUntil:"networkidle"});
-        assert.match(await page.locator("#step-2").innerText(),/Lines you.ve added for this job/u);
+        assert.match(await page.locator("#step-2").innerText(),/Lines you.ve added before/u);
         await page.getByRole("button",{name:"Review cover letter",exact:true}).click();
         if(theme!=="light") {
           await page.emulateMedia({colorScheme:"dark"});
@@ -253,11 +253,11 @@ test("actual owned product job route reviews full career and exports current fil
     assert.equal(await page.locator("[data-actual-product-pdf]").count(),0,"A delayed résumé response cannot publish into a different selected document.");
     await page.unroute("**/api/documents/export");
     await page.getByRole("button",{name:"Preview actual PDF",exact:true}).click();await page.locator("[data-actual-product-pdf] iframe").waitFor();
-    // Changing a saved line is a pending fact change: previews and exports wait until new versions exist.
-    const savedLine=page.locator("[data-saved-line]").first();
+    // Changing a saved line in step 2 is a pending fact change: previews and exports wait until it's saved and new versions exist.
+    const savedLine=page.locator("#step-2 [data-saved-line]").first();
     await savedLine.getByLabel("Change",{exact:true}).check();
     await savedLine.getByLabel("New line",{exact:true}).fill(replacementOwnerFact);
-    await savedLine.getByLabel(/This is true/u).check();
+    await page.locator("#step-2").getByLabel("Everything I wrote above is true.",{exact:true}).check();
     assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
     assert.equal(await page.locator("[data-actual-product-pdf]").count(),0);
     const rescore=createJobMatchRunner({prismaClient:client,score:async matchInput=>{assert.ok(matchInput.reviewedEvidence?.facts.some(fact=>fact.fact===replacementOwnerFact));return noGapMatch(matchInput);}});
@@ -265,10 +265,21 @@ test("actual owned product job route reviews full career and exports current fil
     await page.route(`**/api/jobs/${job.id}/match`,async route=>{matchCalls++;if(matchCalls===1){await route.fulfill({status:428,contentType:"application/json",body:JSON.stringify({code:"AI_COST_CONFIRMATION_REQUIRED",maximumCostMicros:72720})});return;}assert.equal(route.request().headers()["x-ai-cost-confirmed"],"true");await rescore(user.id,job.id,{force:true});await route.fulfill({status:200,contentType:"application/json",body:"{}"});});
     for(const kind of ["tailored-resume","cover-letter"] as const)await page.route(`**/api/jobs/${job.id}/${kind}`,async route=>{documentCalls.push(`${kind}:${route.request().headers()["x-ai-cost-confirmed"]??"unconfirmed"}`);await route.fulfill(route.request().headers()["x-ai-cost-confirmed"]==="true"?{status:200,contentType:"application/json",body:"{}"}:{status:428,contentType:"application/json",body:JSON.stringify({code:"AI_COST_CONFIRMATION_REQUIRED",maximumCostMicros:1,dataType:"application_packet"})});});
     page.on("dialog",dialog=>{dialogs.push(dialog.message());void dialog.accept();});
-    await page.getByRole("button",{name:"Create new versions",exact:true}).click();
-    await page.getByText(/Your résumé and cover letter are ready/u).first().waitFor({timeout:30_000});
-    assert.equal(dialogs.length,1,"One confirmation covers the re-score and both documents.");
+    // Step 2's Update my score saves the line and re-scores; step 3 then writes both documents. Each asks its cost in the page.
+    await page.locator("#step-2").getByRole("button",{name:/^Update my score · about \d+¢$/u}).click();
+    await page.locator("#step-2").getByRole("button",{name:"Confirm",exact:true}).click();
+    await page.getByText("Your lines were saved and your score was updated.").waitFor({timeout:30_000});
+    // The refreshed page shows the changed line as saved; step 3 has remounted for the new review.
+    await page.locator("#step-2 [data-saved-line]").filter({hasText:replacementOwnerFact}).waitFor({timeout:30_000});
+    // Step 2 is done (the match is scored on the saved review), which is what lets step 3 write documents.
+    await page.locator("#step-2 [data-experience-done]").waitFor({timeout:30_000});
     assert.equal(matchCalls,2);
+    await page.locator("#step-3").getByLabel("Include a cover letter",{exact:true}).check();
+    await page.getByRole("button",{name:"Create new versions",exact:true}).click();
+    await page.locator("#step-3").getByRole("button",{name:"Confirm",exact:true}).click();
+    await page.getByText(/Your résumé and cover letter are ready/u).first().waitFor({timeout:30_000});
+    assert.deepEqual(dialogs,[],"Every cost question is asked in the page.");
+    assert.equal(matchCalls,2,"Writing documents doesn't re-score.");
     assert.deepEqual(documentCalls,["tailored-resume:unconfirmed","tailored-resume:true","cover-letter:unconfirmed","cover-letter:true"]);
     assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration+1);
     const stale=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:version.id,format:"pdf"}});assert.equal(stale.status(),409);

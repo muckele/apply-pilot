@@ -43,7 +43,8 @@ export function MatchCard({
   checklist,
   onSeeBreakdown,
   limit = 5,
-  showScoreButton = true
+  showScoreButton = true,
+  scoreButton
 }: {
   jobId: string;
   estimate: EstimateView | null;
@@ -51,6 +52,8 @@ export function MatchCard({
   onSeeBreakdown?: () => void;
   limit?: number;
   showScoreButton?: boolean;
+  // Replaces the default score button (the Apply page passes one that asks in the page).
+  scoreButton?: React.ReactNode;
 }) {
   if (!estimate) {
     return (
@@ -58,7 +61,7 @@ export function MatchCard({
         <h2 id={`match-${jobId}`} className="job-card-title">Your match</h2>
         <p className="job-match-unscored">Not scored yet</p>
         <p className="job-card-copy">See what this job asks for, line by line, next to your résumé.</p>
-        {showScoreButton ? <ScoreJobButton jobId={jobId} /> : null}
+        {showScoreButton ? scoreButton ?? <ScoreJobButton jobId={jobId} /> : null}
       </section>
     );
   }

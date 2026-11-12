@@ -23,7 +23,7 @@ import {
   buildCurrentJobMatchInput,
   currentJobMatchInputHash
 } from "@/lib/jobs/current-job-match";
-import { assertKeptOwnerFactsClean, assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
+import { assertKeptOwnerFactsClean, assertNewOwnerFactShape, assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
 import { prisma } from "@/lib/prisma";
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
@@ -96,6 +96,7 @@ function effectiveAcceptedFacts(
     if (!prior || action.factId !== prior.factId || action.action === "REMOVE") return [];
     if (action.action === "RETAIN") return [validateRetainedAcceptedFact(review, prior)];
     assertOwnerFactClean(action.attestedFact);
+    assertNewOwnerFactShape(action.attestedFact);
     const replacement = {
       factId: "",
       originGapId: prior.originGapId,
@@ -320,7 +321,9 @@ export async function saveEvidenceSnapshot(
         analysisOutput: analysis.output,
         selectedResumeDocumentId: application?.resumeVersionId ?? null,
         selectedCoverLetterDocumentId: application?.coverLetterVersionId ?? null,
-        acceptedFacts
+        acceptedFacts,
+        // Must match the job page's review, so answers to unchecked requirements validate.
+        job: { requirements: job.requirements, description: job.description }
       });
       let decisions;
       try {

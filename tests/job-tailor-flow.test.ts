@@ -449,3 +449,82 @@ test("plain language: no internal jargon, and extracted facts stay behind a disc
     await harness.close();
   }
 });
+
+test("documentsOnly shows only the Create your documents part (the Apply page's step 3)", async () => {
+  const harness = createDomHarness({ fetch: apiStub([]) });
+  try {
+    const withSavedLine = {
+      ...review(),
+      acceptedFacts: [{
+        factId: "fact:owner-1", originGapId: "gap:9", fact: "Led the 2025 vendor consolidation.",
+        provenance: { kind: "OWNER_ATTESTED" as const, ownerAttested: true as const }, reuseScope: "JOB_ONLY" as const, masterProfileOptIn: false as const
+      }]
+    };
+    await harness.render(React.createElement(TailorFlow, props({ review: withSavedLine, documentsOnly: true, readOnlyGaps: ["Working knowledge of SQL"] })));
+    assert.equal(harness.container.querySelector("fieldset[data-gap]") === null, true);
+    assert.equal(harness.container.querySelector("[data-saved-line]") === null, true);
+    assert.equal(harness.container.querySelector("[data-extracted-facts]") === null, true);
+    assert.doesNotMatch(harness.text(), /Anything missing|Lines you've added|Not shown on your résumé/u);
+    assert.match(harness.text(), /Create your documents/u);
+    assert.ok(harness.button("Create my résumé and cover letter"));
+    const unscored = review(null);
+    await harness.render(React.createElement(TailorFlow, props({ review: unscored, documentsOnly: true })));
+    assert.equal(harness.container.querySelector("[data-unscored]") === null, true, "step 1 says to check the match");
+    assert.match(harness.container.querySelector("[data-blocked-reason]")?.textContent ?? "", /Score this job first/u);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a given confirm is asked instead of window.confirm, for the plan and for a higher server maximum", async () => {
+  const calls: Call[] = [];
+  const windowConfirms: string[] = [];
+  const asked: string[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: (message) => { windowConfirms.push(message); return true; } });
+  try {
+    // A quote below the server's maximum for the résumé makes fetchWithApprovedAiCost ask again.
+    const low = { ...quote, resumeMicros: 1 };
+    await harness.render(React.createElement(TailorFlow, props({
+      quote: low, coverLetterByDefault: false, documentsOnly: true,
+      confirm: async (message) => { asked.push(message); return true; }
+    })));
+    await harness.click(harness.button("Create my résumé"));
+    await harness.waitForText(/ready to review/u);
+    assert.deepEqual(windowConfirms, []);
+    assert.equal(asked.length, 2);
+    assert.match(asked[0]!, /write your tailored résumé/u);
+    assert.match(asked[1]!, /more than the \$0\.000001 you approved/u);
+  } finally {
+    await harness.close();
+  }
+  const declined: Call[] = [];
+  const second = createDomHarness({ fetch: apiStub(declined), confirm: () => { throw new Error("window.confirm must not run"); } });
+  try {
+    await second.render(React.createElement(TailorFlow, props({ documentsOnly: true, confirm: async () => false })));
+    await second.click(second.button("Create my résumé and cover letter"));
+    await second.waitForText(/Nothing was sent/u);
+    assert.equal(declined.length, 0);
+  } finally {
+    await second.close();
+  }
+});
+
+test("a blocked reason from the page disables both Create buttons, shows the reason and sends nothing", async () => {
+  const calls: Call[] = [];
+  const harness = createDomHarness({ fetch: apiStub(calls), confirm: () => true });
+  try {
+    await harness.render(React.createElement(TailorFlow, props({
+      ...readyResume, documentsOnly: true, blockedReason: "Update your score in step 2 first, so your documents include your new lines."
+    })));
+    assert.equal(harness.button("Create new versions").disabled, true);
+    assert.equal(harness.button("Create cover letter only").disabled, true);
+    assert.equal(harness.container.querySelector("[data-blocked-reason]")?.textContent, "Update your score in step 2 first, so your documents include your new lines.");
+    await harness.click(harness.button("Create new versions"));
+    assert.equal(calls.length, 0);
+    // Without a résumé, that comes first.
+    await harness.render(React.createElement(TailorFlow, props({ review: null, documentsOnly: true, blockedReason: "Finish step 2 first." })));
+    assert.match(harness.container.querySelector("[data-blocked-reason]")?.textContent ?? "", /Add your master résumé first/u);
+  } finally {
+    await harness.close();
+  }
+});

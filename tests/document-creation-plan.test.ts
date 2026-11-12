@@ -5,6 +5,7 @@ import { fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 import {
   documentCreationConfirmation,
   documentCreationMaximumMicros,
+  formatCentsCeiling,
   formatUsdCentsCeiling,
   planCoverLetterOnly,
   planDocumentCreation,
@@ -87,6 +88,14 @@ test("the short hint rounds the maximum up to whole cents", () => {
   assert.equal(formatUsdCentsCeiling(112_125), "$0.12");
   assert.equal(formatUsdCentsCeiling(110_000), "$0.11");
   assert.equal(formatUsdCentsCeiling(1), "$0.01");
+});
+
+test("button labels show whole cents rounded up, and dollars from a dollar up", () => {
+  assert.equal(formatCentsCeiling(72_720), "8¢");
+  assert.equal(formatCentsCeiling(70_000), "7¢");
+  assert.equal(formatCentsCeiling(1), "1¢");
+  assert.equal(formatCentsCeiling(990_001), "$1.00");
+  assert.equal(formatCentsCeiling(1_234_567), "$1.24");
 });
 
 test("a résumé-only plan quotes only the résumé", () => {
