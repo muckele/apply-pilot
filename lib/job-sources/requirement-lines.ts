@@ -1,17 +1,23 @@
+import { decodeHtmlEntities, splitRequirementText } from "@/lib/job-sources/utils";
 import { uniqueStrings } from "@/lib/normalize";
 
-// Requirement lines from a posting pasted as plain text (manual import). A pasted page carries its
-// section headings, pay details and benefits as lines of their own, and splitting every line into
-// a requirement turned those into "requirements" the owner was asked about. Headings are matched
+// Requirement lines from a posting: pasted as plain text (manual import) or read from a job board
+// (Ashby, Lever, Greenhouse). A posting carries its section headings, company blurbs, pay details
+// and benefits as lines of their own, and splitting every line into a requirement turned those
+// into "requirements" the owner was asked about and the score judged. Headings are matched
 // as whole lines from short known phrases, never by a word inside a line, so a real requirement
 // such as "Experience administering employee benefits platforms" stays a requirement.
 
 type LineKind = "requirement_heading" | "closing_heading" | "context_heading" | "plain_heading" | "pay" | "tag" | "text";
 
+// A heading may name the role: "What you'll do as a Solutions Engineer at Example".
+const ROLE_SUFFIX = String.raw`(?: (?:as|at|in|on) [\p{L}\p{N} .&'/-]{1,60})?`;
+
 const REQUIREMENT_HEADINGS = [
-  /^what you(?:'ll| will)(?: be)? do(?:ing)?$/u,
+  new RegExp(String.raw`^what you(?:'ll| will)(?: be)? do(?:ing)?${ROLE_SUFFIX}$`, "u"),
   /^what you(?:'ll| will) (?:bring|need|work on|own)$/u,
-  /^what we(?:'re| are)? look(?:ing)? for(?: in you)?$/u,
+  /^(?:here's )?(?:what|who) we(?:'re| are)? look(?:ing)? for(?: in you)?$/u,
+  /^how (?:to|you(?:'ll| will)) (?:be successful|succeed|thrive)(?: in (?:this|the) role)?$/u,
   /^(?:key |core |main |primary |your |job |role )?(?:responsibilities|duties)$/u,
   /^(?:job |role |minimum |basic |required |preferred |desired |additional )?(?:requirements|qualifications)$/u,
   /^(?:requirements|qualifications|skills|experience) (?:and|&) (?:qualifications|requirements|skills|experience)$/u,
@@ -26,12 +32,15 @@ const CLOSING_HEADINGS = [
   /^(?:benefits|perks) (?:designed|built|made|tailored) for you$/u,
   /^what we offer(?: you)?$/u,
   /^what's in it for you$/u,
+  /^what you can expect(?: as an? [\p{L}\p{N} .&'-]{1,40}| from us)?$/u,
   /^(?:compensation|salary|pay|total rewards)(?: (?:and|&) benefits| range| details| transparency)?$/u,
   /^(?:equal (?:employment )?opportunity(?: employer)?|eeo statement|accommodations?|how to apply|privacy notice)$/u
 ];
 
-// Headings that introduce the company rather than the work.
+// Headings that introduce the company rather than the work, or say what the role is not.
 const CONTEXT_HEADINGS = [
+  /^(?:things|what) we (?:care about|value)$/u,
+  /^what you (?:won't|will not) (?:be )?do(?:ing)?$/u,
   /^about (?:us|[\p{L}\p{N} .&'-]{1,40})$/u,
   /^(?:who we are|our (?:culture|values|mission|story)|company overview|life at [\p{L}\p{N} .&'-]{1,40})$/u,
   /^why (?:join|work (?:at|with|for)) [\p{L}\p{N} .&'-]{1,40}$/u,
@@ -59,8 +68,8 @@ function classify(line: string): LineKind {
   if (isPayLine(line)) return "pay";
   const text = comparable(line);
   const colon = text.endsWith(":");
-  const phrase = text.replace(/\s*:$/u, "");
-  if (phrase.length <= 60 && !/[.!?;,]$/u.test(phrase)) {
+  const phrase = text.replace(/\s*(?::|\.\.\.|…)$/u, "");
+  if (phrase.length <= 80 && !/[.!?;,]$/u.test(phrase)) {
     if (REQUIREMENT_HEADINGS.some((pattern) => pattern.test(phrase))) return "requirement_heading";
     if (CLOSING_HEADINGS.some((pattern) => pattern.test(phrase))) return "closing_heading";
     if (CONTEXT_HEADINGS.some((pattern) => pattern.test(phrase))) return "context_heading";
@@ -75,26 +84,77 @@ export function isRequirementLine(line: string) {
   return classify(line.trim()) === "text";
 }
 
-function postingLines(text: string) {
+type PostingLine = { line: string; listItem: boolean };
+
+const LEADING_BULLET = /^\s*(?:[-*–·▪◦]\s+)+/u;
+
+function postingLines(text: string): PostingLine[] {
   return text
     .split(/\r?\n|•/u)
-    .map((line) => line.replace(/^\s*(?:[-*–·▪◦]\s+)+/u, "").trim())
-    .filter(Boolean);
+    .map((line) => ({ line: line.replace(LEADING_BULLET, "").trim(), listItem: false }))
+    .filter((item) => item.line);
+}
+
+const LIST_ITEM_MARK = "\uE000";
+const BLOCK_TAG = /<\/?(?:p|div|h[1-6]|ul|ol|li|br|hr|section|article|header|footer|table|tr|td|th|blockquote|dl|dt|dd)\b[^>]*>/giu;
+
+// An HTML posting as lines: every block element is a line of its own, and each `<li>` is one line
+// marked as a list item. htmlToText flattens all of it into one paragraph, which loses the headings.
+function htmlPostingLines(html: string): PostingLine[] {
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/giu, " ")
+    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/giu, (_, content: string) => `\n${LIST_ITEM_MARK}${content.replace(/<[^>]+>/gu, " ")}\n`)
+    .replace(BLOCK_TAG, "\n")
+    .replace(/<[^>]+>/gu, " ");
+  return decodeHtmlEntities(text)
+    .split("\n")
+    .map((raw) => ({
+      listItem: raw.trimStart().startsWith(LIST_ITEM_MARK),
+      line: raw.replace(LIST_ITEM_MARK, "").replace(/\s+/gu, " ").trim().replace(LEADING_BULLET, "").trim()
+    }))
+    .filter((item) => item.line);
 }
 
 // With requirement headings, only the lines under them count, until a benefits, pay or company
 // heading or a pay line. Without any, every line counts except headings, pay lines and whatever
-// follows a benefits or pay heading. Same length limits and cap as splitRequirementText.
-export function extractRequirementLines(text: string, maxLength = 220) {
-  const lines = postingLines(text).map((line) => ({ line, kind: classify(line) }));
+// follows a benefits or pay heading; `withoutHeadings: "none"` keeps nothing then. Same length
+// limits and cap as splitRequirementText. In HTML only list items count: its paragraphs are prose.
+function requirementLinesFrom(items: PostingLine[], maxLength: number, withoutHeadings: "every_line" | "none", listItemsOnly: boolean) {
+  const lines = items.map((item) => ({ ...item, kind: classify(item.line) }));
   const sectioned = lines.some((item) => item.kind === "requirement_heading");
+  if (!sectioned && withoutHeadings === "none") return [];
   let section: "before" | "requirements" | "other" = "before";
   const kept: string[] = [];
-  for (const { line, kind } of lines) {
+  for (const { line, listItem, kind } of lines) {
     if (kind === "requirement_heading") section = "requirements";
     else if (kind === "closing_heading") section = "other";
     else if ((kind === "context_heading" || kind === "pay") && sectioned) section = "other";
-    else if (kind === "text" && (sectioned ? section === "requirements" : section !== "other")) kept.push(line);
+    else if (kind === "text" && (!listItemsOnly || listItem) && (sectioned ? section === "requirements" : section !== "other")) kept.push(line);
   }
   return uniqueStrings(kept.filter((item) => item.length > 12 && item.length < maxLength)).slice(0, 24);
+}
+
+export function extractRequirementLines(text: string, maxLength = 220, options: { withoutHeadings?: "every_line" | "none" } = {}) {
+  return requirementLinesFrom(postingLines(text), maxLength, options.withoutHeadings ?? "every_line", false);
+}
+
+export function extractRequirementLinesFromHtml(html: string, maxLength = 220) {
+  return requirementLinesFrom(htmlPostingLines(html), maxLength, "every_line", true);
+}
+
+// A posting already split into titled sections (Lever's lists). Every section's items count unless
+// its title is a benefits, pay or company heading, so a title worded in a way no pattern knows
+// still keeps its items. Items are lines of their own, so maxLength is the list-item limit.
+export function extractRequirementLinesFromSections(sections: Array<{ title?: string; items: string[] }>, maxLength = 220) {
+  const kept = sections
+    .filter((section) => !["closing_heading", "context_heading", "pay"].includes(classify(section.title?.trim() ?? "")))
+    .flatMap((section) => section.items.map((item) => item.replace(LEADING_BULLET, "").trim()))
+    .filter((item) => classify(item) === "text" && item.length > 12 && item.length < maxLength);
+  return uniqueStrings(kept).slice(0, 24);
+}
+
+// Board imports. A posting with nothing to read sections from (one flattened paragraph) still
+// lists every line, as before, rather than no requirements at all.
+export function boardRequirementLines(sectionAware: string[], text: string, maxLength = 220) {
+  return sectionAware.length ? sectionAware : splitRequirementText(text, maxLength);
 }

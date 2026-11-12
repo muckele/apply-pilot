@@ -1,7 +1,8 @@
 import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
 import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { decodeHtmlEntities, detectTechStack, htmlBulletItems, htmlToText, splitRequirementText } from "@/lib/job-sources/utils";
+import { boardRequirementLines, extractRequirementLinesFromHtml } from "@/lib/job-sources/requirement-lines";
+import { decodeHtmlEntities, detectTechStack, htmlToText } from "@/lib/job-sources/utils";
 
 type GreenhouseJob = {
   id: number;
@@ -41,8 +42,6 @@ export class GreenhouseProvider implements JobSourceProvider {
     // With content=true the board API returns HTML-escaped HTML, so decode before stripping tags.
     const html = job.content ? decodeHtmlEntities(job.content) : job.html ?? "";
     const description = htmlToText(html);
-    // htmlToText flattens every line break, so take requirements from the posting's bullets.
-    const bullets = htmlBulletItems(html);
     const postedAt = job.first_published ?? job.updated_at;
     const location = job.location?.name ?? job.offices?.map((office) => office.name).join(", ");
 
@@ -56,7 +55,9 @@ export class GreenhouseProvider implements JobSourceProvider {
       sourceUrl: job.absolute_url ?? job.sourceUrl ?? "",
       applyUrl: job.absolute_url ?? job.sourceUrl,
       description,
-      requirements: bullets.length ? splitRequirementText(bullets.join("\n"), 400) : splitRequirementText(description),
+      // htmlToText flattens every line break, so requirements are read from the HTML's sections and
+      // bullets. A real list item can be a long must-have, so bullets may run to 400 characters.
+      requirements: boardRequirementLines(extractRequirementLinesFromHtml(html, 400), description),
       preferredQualifications: [],
       benefits: [],
       detectedTechStack: detectTechStack(description),
