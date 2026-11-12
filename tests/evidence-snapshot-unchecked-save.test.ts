@@ -149,3 +149,14 @@ test("the save refuses a new 201-character owner answer to a flagged gap and wri
   );
   assert.equal(created.length, 0);
 });
+
+test("the save accepts a new two-sentence owner answer and stores it as typed", async (t) => {
+  const created = installTransaction(t);
+  const input = request("requirement:2");
+  const twoSentences = "Synthetic owner wrote the partner integration guide. Synthetic owner kept it current, e.g. for U.S. partners.";
+  (input.decisions[1] as { attestedFact: string }).attestedFact = twoSentences;
+  await saveEvidenceSnapshot("user-1", job.id, input);
+  assert.equal(created.length, 1);
+  const reviewed = reviewedEvidenceFromSnapshot({ id: "snapshot-1", snapshotHash: String(created[0]!.snapshotHash), reviewPayload: created[0]!.reviewPayload });
+  assert.deepEqual(reviewed.facts.map((fact) => fact.fact), [twoSentences]);
+});

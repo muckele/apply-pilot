@@ -812,3 +812,47 @@ test("an uncited labelled skills line with an extra puts back every source skill
   assert.ok(!lines.includes("Event planning"), final.resumeText);
   validateTailoredResumeClaims(payload, final);
 });
+
+// Owner decision 2026-11-11: a step-2 line has one limit, 200 characters, and may hold several
+// sentences. Gemini may render such a line as one bullet citing each sentence, or as one bullet per
+// sentence; either way the line stays as written, nothing is restored or reverted, and the
+// unchanged truth checks pass.
+const TWO_SENTENCE_FACT = "Ran weekly demos for synthetic IT buyers. Wrote the trial checklist for each new account.";
+const TWO_SENTENCES = ["Ran weekly demos for synthetic IT buyers.", "Wrote the trial checklist for each new account."];
+
+function tailorTwoSentenceFact(lines: string[], claims: (idOf: (excerpt: string) => string) => TailoredResumeProviderOutput["resumeTextClaims"]) {
+  const payload = syntheticPayload();
+  (payload.reviewedEvidence!.facts as Array<{ fact: string }>)[0]!.fact = TWO_SENTENCE_FACT;
+  const catalog = buildApplicationDocumentFactCatalog(payload);
+  const idOf = (excerpt: string) => {
+    const id = catalog.find((fact) => fact.excerpt === excerpt)?.factId;
+    if (!id) throw new Error(`Synthetic fact is missing: ${excerpt}`);
+    return id;
+  };
+  const base = providerWire(payload, rawText);
+  const resumeText = rawText.replace(CERTIFICATION, [CERTIFICATION, ...lines].join("\n"));
+  const assembled = assembleTailoredResumeProviderOutput(payload, {
+    ...base,
+    resumeText,
+    resumeTextClaims: [...base.resumeTextClaims, ...claims(idOf)]
+  });
+  const final = finalizeTailoredResume(payload, assembled);
+  validateTailoredResumeClaims(payload, final);
+  return final;
+}
+
+test("a two-sentence owner line rendered as one bullet stays one line, as written", () => {
+  const final = tailorTwoSentenceFact([TWO_SENTENCE_FACT], (idOf) => [{ claim: TWO_SENTENCE_FACT, factIds: TWO_SENTENCES.map(idOf) }]);
+  assert.equal(final.resumeText.split("\n").filter((line) => line === TWO_SENTENCE_FACT).length, 1);
+  assert.equal(final.resumeText.includes("ADDITIONAL INFORMATION"), false);
+  assert.deepEqual(tailoredResumeRestorations(final), []);
+  assert.deepEqual(tailoredResumeReversions(final), []);
+});
+
+test("a two-sentence owner line split into one bullet per sentence is kept and not added again", () => {
+  const final = tailorTwoSentenceFact(TWO_SENTENCES, (idOf) => TWO_SENTENCES.map((claim) => ({ claim, factId: idOf(claim) })));
+  for (const sentence of TWO_SENTENCES) assert.equal(lineIndex(final.resumeText, sentence) >= 0, true, sentence);
+  assert.equal(final.resumeText.includes(TWO_SENTENCE_FACT), false);
+  assert.deepEqual(tailoredResumeRestorations(final), []);
+  assert.deepEqual(tailoredResumeReversions(final), []);
+});

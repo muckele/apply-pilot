@@ -272,9 +272,15 @@ test("unsupported factual evidence is charged as FAILED and never cached", async
   invalid.factualMatches[0].applicantEvidence[0].ref = "resume.skills[99]";
   stub(t, globalThis, "fetch", async () => providerResponse(invalid));
 
+  // The refusal reaches the person in plain words with the recorded charge
+  // (tests/job-match-paid-validation-failure.test.ts); the validation code says which check failed.
   await assert.rejects(
     scoreJobMatch(input, "user-1", { highCostConfirmed: true }),
-    /unknown applicant evidence reference/i
+    (error: unknown) => error instanceof PublicApiError &&
+      error.details?.code === "JOB_MATCH_OUTPUT_INVALID" &&
+      error.details?.validationCode === "UNKNOWN_APPLICANT_REF" &&
+      error.details?.billingStatus === "known" &&
+      error.details?.actualCostMicros === 263
   );
   assert.equal(ledger.reconciliations[0].status, "FAILED");
   assert.equal(ledger.reconciliations[0].actualCostMicros, 263);

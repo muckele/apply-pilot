@@ -95,7 +95,9 @@ function describeValidationError(error: ZodError) {
   return `${label}: ${issue.message.replace(/\.$/u, "")}.`;
 }
 
-const LOGGED_CLIENT_ERROR_DETAILS = ["code", "fieldPath", "failureClass", "relationReason", "rewordingFailure"] as const;
+const LOGGED_CLIENT_ERROR_DETAILS = [
+  "code", "fieldPath", "failureClass", "relationReason", "rewordingFailure", "validationCode", "billingStatus"
+] as const;
 
 export function apiErrorResponse(error: unknown) {
   if (error instanceof UnauthorizedError) {

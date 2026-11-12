@@ -54,7 +54,7 @@ export type ExperienceStepProps = {
   onPendingChanges?: (pending: boolean) => void;
 };
 
-const PLACEHOLDER = "If you have this, say what you did in one sentence.";
+const PLACEHOLDER = "If you have this, say what you did.";
 const TRUTH = "Everything I wrote above is true.";
 const STALE = "This job's review changed in another tab. Reload to continue; your lines are kept on this computer.";
 const STALE_NOT_KEPT = "This job's review changed in another tab. Copy your lines, then reload to continue; this browser can't keep them.";
@@ -122,8 +122,7 @@ function lineProblems(line: string): string[] {
   if (!line.trim()) return [];
   return [
     ...ownerFactProblems(line).map(cleanupMessage),
-    ...ownerFactShapeProblems(line).map((problem) =>
-      problem.kind === "too_long" ? `Keep it to ${OWNER_FACT_MAX_CHARACTERS} characters.` : "Use one sentence.")
+    ...ownerFactShapeProblems(line).map(() => `Keep it to ${OWNER_FACT_MAX_CHARACTERS} characters.`)
   ];
 }
 

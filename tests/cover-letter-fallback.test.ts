@@ -162,6 +162,37 @@ test("an owner fact written as two clauses that the letter left out goes back in
   assert.ok(final.coverLetter.includes("At Quenby Labs, I owned onboarding through go-live. At Fabrikam, I managed renewals end to end."), final.coverLetter);
 });
 
+// Owner decision 2026-11-11: a step-2 line may hold several sentences. In the letter each sentence
+// is its own catalog fact, so it reads as two first-person sentences in the owner's words, whether
+// the letter used the line or left it out.
+const TWO_SENTENCE_FACT = "Ran weekly demos for synthetic IT buyers. Wrote the trial checklist for each new account.";
+const TWO_SENTENCES_IN_LETTER = "I ran weekly demos for synthetic IT buyers. I wrote the trial checklist for each new account.";
+
+function withTwoSentenceFact() {
+  const base = syntheticCorrectionFlowDocumentPayload();
+  const local = structuredClone(base);
+  const reviewed = (local.reviewedEvidence as { facts: Array<Record<string, unknown>> }).facts;
+  reviewed.push({ ...reviewed[0]!, gapId: "gap:extra", fact: TWO_SENTENCE_FACT });
+  return { base, local };
+}
+
+test("a two-sentence owner line in the letter reads as two first-person sentences", () => {
+  const { base, local } = withTwoSentenceFact();
+  const original = syntheticCoverLetterOutput(base);
+  const letter = original.coverLetter.replace(SYNTHETIC_CORRECTION_FLOW_FACT, `${SYNTHETIC_CORRECTION_FLOW_FACT} ${TWO_SENTENCE_FACT}`);
+  const final = finalizeCoverLetter(local, assembleCoverLetterProviderOutput(local, { ...original, coverLetter: letter }));
+  validateCoverLetterClaims(local, final);
+  assert.ok(final.coverLetter.includes(TWO_SENTENCES_IN_LETTER), final.coverLetter);
+  assert.deepEqual(coverLetterRemovals(final), []);
+});
+
+test("a two-sentence owner line the letter left out goes back in as two first-person sentences", () => {
+  const { base, local } = withTwoSentenceFact();
+  const final = finalizeCoverLetter(local, assembleCoverLetterProviderOutput(local, syntheticCoverLetterOutput(base)));
+  validateCoverLetterClaims(local, final);
+  assert.ok(final.coverLetter.includes(TWO_SENTENCES_IN_LETTER), final.coverLetter);
+});
+
 // Live case 2026-11-06 (second attempt): after the repair the letter was rejected with "Do not
 // repeat an applicant fact to fill the letter" (claimsUsed[11]). Whether Gemini repeated a fact
 // or the repair bound a second sentence to a fact already used, the first use stays and a later
