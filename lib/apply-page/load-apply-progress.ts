@@ -33,6 +33,14 @@ export function applyProgressFromFacts(facts: ApplyProgressFacts): ApplyProgress
 
 /** The one server-side place that works out which Apply step a job is on (job page and Apply page). */
 export async function loadApplyProgress(userId: string, detail: JobDetail): Promise<ApplyProgress> {
+  return (await loadApplyPageState(userId, detail)).progress;
+}
+
+/**
+ * The Apply page's server state: its progress, and whether the account's policy requires a cover
+ * letter (Prepare blocks without one), which is step 3's default for "Include a cover letter".
+ */
+export async function loadApplyPageState(userId: string, detail: JobDetail): Promise<{ progress: ApplyProgress; coverLetterRequired: boolean }> {
   const application = detail.application
     ? await prisma.application.findFirst({
         where: { id: detail.application.id, userId },
@@ -43,7 +51,7 @@ export async function loadApplyProgress(userId: string, detail: JobDetail): Prom
     readAutomationPolicy(userId),
     detail.application && application ? getCurrentApplicationRun(userId, detail.application.id) : Promise.resolve(null)
   ]);
-  return applyProgressFromFacts({
+  const progress = applyProgressFromFacts({
     hasMasterResume: detail.sourceText.trim().length > 0,
     estimateBasis: detail.estimate?.basis ?? null,
     application,
@@ -51,4 +59,5 @@ export async function loadApplyProgress(userId: string, detail: JobDetail): Prom
     automationAvailable: isApplicationAutomationEnabled(),
     run
   });
+  return { progress, coverLetterRequired: policy.coverLetterRequired };
 }

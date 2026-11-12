@@ -5,7 +5,7 @@ import { ButtonLink, PageHeader } from "@/components/ui";
 import { loadApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availability";
 import { isApplicationAutomationEnabled } from "@/lib/application-runs/policy";
-import { loadApplyProgress } from "@/lib/apply-page/load-apply-progress";
+import { loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
 import { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
@@ -32,7 +32,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
     notFound();
   }
 
-  const progress = await loadApplyProgress(userId, detail);
+  const { progress, coverLetterRequired } = await loadApplyPageState(userId, detail);
 
   return (
     <>
@@ -47,6 +47,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
         kit={kit}
         automationAvailable={isApplicationAutomationEnabled()}
         progress={progress}
+        coverLetterRequired={coverLetterRequired}
         tailorServer={{ quote: buildDocumentCreationQuote(), generationAvailable: isDocumentGenerationAvailable() }}
         answeredYes={answeredYes}
       />

@@ -1,12 +1,14 @@
 import "@/tests/fixtures/dom-globals";
 import assert from "node:assert/strict";
 import test from "node:test";
-import React from "react";
+import React, { act } from "react";
 
 import { ApplyPage, matchResultLine, type ApplyPageProps } from "@/components/apply-page/apply-page";
-import { loadApplyKitView } from "@/lib/apply-kit/apply-kit-view";
+import { loadApplyKitView, type ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { deriveApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
-import { applyProgressFromFacts } from "@/lib/apply-page/load-apply-progress";
+import { applyProgressFromFacts, loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
+import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
+import { prisma } from "@/lib/prisma";
 import type { JobDetail } from "@/lib/jobs/job-detail";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
@@ -38,10 +40,17 @@ const review = () => buildEvidenceCorrectionReview({
   analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.4", analysisOutput: output
 });
 
-type PageOverrides = Partial<Omit<ApplyPageProps, "detail">> & { detail?: Record<string, unknown> };
+type PageOverrides = Partial<Omit<ApplyPageProps, "detail">> & { detail?: Record<string, unknown>; kitPatch?: Partial<ApplyKitView> };
+
+// The Apply Kit fixture's documents: resume-v2 ready, resume-v1 out of date, cover-edited needs
+// review, cover-legacy ready. An application with both ready ones attached has nothing to attach.
+const ATTACHED = { id: "application-1", statusLabel: "Saved", resumeVersionId: "resume-v2", coverLetterVersionId: "cover-legacy" };
+const BELOW_A = "Assisted Fill needs an A. You can still apply on your own with these documents.";
 
 async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps> {
-  const kit = (await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
+  const { kitPatch, detail: detailOverrides, ...rest } = overrides;
+  const loaded = (await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
+  const kit = { ...loaded, ...kitPatch };
   const built = buildRequirementChecklist(requirements, output);
   const detail = {
     draftUserKey: "0123456789abcdef",
@@ -59,14 +68,16 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
     contacts: [],
     salaryTarget: null,
     evidenceReview: review(),
-    ...overrides.detail
+    ...detailOverrides
   } as unknown as JobDetail;
   return {
     kit,
     automationAvailable: false,
     progress: deriveApplyProgress(PROGRESS_INPUT),
     tailorServer: { quote: { provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250 }, generationAvailable: true },
-    ...overrides,
+    // Most tests here exercise the résumé-only path; the policy default (true) has its own test.
+    coverLetterRequired: false,
+    ...rest,
     detail
   };
 }
@@ -136,6 +147,7 @@ test("progress facts map the way the plan says", () => {
 });
 
 const REVIEWED = {
+  application: ATTACHED,
   hasValidCurrentSnapshot: true,
   estimate: { score: 90, basis: "REVIEWED_EVIDENCE", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" }
 };
@@ -161,12 +173,12 @@ test("after a partial run the refreshed page keeps step 3's outcome message", as
   const harness = createDomHarness({ fetch: fetchStub, confirm: () => { throw new Error("window.confirm must not run"); } });
   try {
     await harness.render(React.createElement(ApplyPage, await pageProps({ detail: REVIEWED })));
-    await harness.click(harness.button("Create my résumé"));
-    await harness.waitForText(/could cost up to/u);
+    await harness.click(harness.button("Write my résumé · up to 7¢"));
+    await harness.waitForText(/Most it can cost: 7¢/u);
     await harness.click(harness.button("Confirm"));
     await harness.waitForText(/The writer is unavailable/u);
     const next = await pageProps({ detail: REVIEWED });
-    // What router.refresh() delivers: the same review, remounting step 3 under a new identity.
+    // What router.refresh() delivers: the same documents with a new review identity.
     await harness.render(React.createElement(ApplyPage, {
       ...next, detail: { ...next.detail, evidenceReview: { ...next.detail.evidenceReview!, analysisId: "analysis-2" } }
     }));
@@ -184,10 +196,10 @@ test("step 2 is Your experience: one box per requirement, and step 3 only writes
     assert.deepEqual([...step2.querySelectorAll("fieldset[data-requirement] legend")].map((node) => node.textContent),
       ["Current Quenby certification", "Working knowledge of SQL"]);
     assert.ok([...step2.querySelectorAll("button")].some((button) => button.textContent === "Nothing to add · update my score"));
-    assert.equal(harness.container.querySelector("fieldset[data-gap]") === null, true, "TailorFlow's gap list is gone from the page");
+    assert.equal(harness.container.querySelector("fieldset[data-gap]") === null, true, "the old three-way gap list is gone from the page");
     const step3 = harness.container.querySelector("#step-3")!;
-    assert.match(step3.textContent ?? "", /Create your documents/u);
-    assert.ok([...step3.querySelectorAll("button")].some((button) => button.textContent === "Create my résumé"));
+    assert.ok(step3.querySelector("[data-documents-step]"), "step 3 is Your documents");
+    assert.ok([...step3.querySelectorAll("button")].some((button) => button.textContent === "Write my résumé · up to 7¢"));
     await harness.type(step2.querySelector("textarea"), "Earned the Quenby certification in 2024.");
     assert.equal(harness.window.localStorage.getItem("apply-pilot:experience:0123456789abcdef:job-1") !== null, true, "drafts use the server's user key");
   });
@@ -196,6 +208,7 @@ test("step 2 is Your experience: one box per requirement, and step 3 only writes
   });
   await withPage({ detail: { evidenceReview: null } }, async (harness) => {
     assert.match(harness.container.querySelector("#step-2")?.textContent ?? "", /needs your master résumé/u);
+    assert.equal(harness.container.querySelector("#step-3 [data-blocked-reason]")?.textContent, "Add your master résumé first, so Apply Pilot has facts to work from.");
   });
 });
 
@@ -223,18 +236,18 @@ function recordingPage(detail: Record<string, unknown>) {
   return {
     calls,
     harness,
-    render: async () => harness.render(React.createElement(ApplyPage, await pageProps({ detail })))
+    render: async () => harness.render(React.createElement(ApplyPage, await pageProps({ detail: { application: ATTACHED, ...detail } })))
   };
 }
 
 const step3Reason = (harness: ReturnType<typeof createDomHarness>) =>
   harness.container.querySelector("#step-3 [data-blocked-reason]")?.textContent ?? null;
 
-test("step 3 waits for step 2: without a saved review its Create is blocked and sends nothing", async () => {
+test("step 3 waits for step 2: without a saved review its Write is blocked and sends nothing", async () => {
   const { harness, calls, render } = recordingPage({});
   try {
     await render();
-    const create = harness.button("Create my résumé");
+    const create = harness.button("Write my résumé · up to 7¢");
     assert.equal(create.disabled, true);
     assert.equal(step3Reason(harness), "Finish step 2 first (Update my score), so your documents use your reviewed lines.");
     await harness.click(create);
@@ -244,32 +257,32 @@ test("step 3 waits for step 2: without a saved review its Create is blocked and 
   }
 });
 
-test("step 3 waits for step 2: unsaved lines block Create until they're saved", async () => {
+test("step 3 waits for step 2: unsaved lines block Write until they're saved", async () => {
   const { harness, calls, render } = recordingPage(REVIEWED);
   try {
     await render();
-    assert.equal(harness.button("Create my résumé").disabled, false);
+    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
     await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
-    assert.equal(harness.button("Create my résumé").disabled, true);
+    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, true);
     assert.equal(step3Reason(harness), "Update your score in step 2 first, so your documents include your new lines.");
-    await harness.click(harness.button("Create my résumé"));
+    await harness.click(harness.button("Write my résumé · up to 7¢"));
     assert.equal(calls.length, 0);
     await harness.type(harness.container.querySelector("#step-2 textarea"), "");
-    assert.equal(harness.button("Create my résumé").disabled, false);
+    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
   } finally {
     await harness.close();
   }
 });
 
-test("with step 2 done, step 3's Create sends only the document requests, never a save", async () => {
+test("with step 2 done, step 3's Write sends only the document requests, never a save", async () => {
   const { harness, calls, render } = recordingPage(REVIEWED);
   try {
     await render();
     assert.equal(step3Reason(harness), null);
     const cover = [...harness.container.querySelectorAll("#step-3 label")].find((node) => node.textContent === "Include a cover letter")!.querySelector("input");
     await harness.check(cover);
-    await harness.click(harness.button("Create my résumé and cover letter"));
-    await harness.waitForText(/could cost up to/u);
+    await harness.click(harness.button("Write my résumé and cover letter · up to 12¢"));
+    await harness.waitForText(/Most it can cost: 12¢/u);
     assert.equal(calls.length, 0);
     await harness.click(harness.button("Confirm"));
     await harness.waitForText(/ready to review/u);
@@ -284,12 +297,13 @@ test("with step 2 done, step 3's Create sends only the document requests, never 
 
 test("a ready tailored résumé offers the cover letter on its own; an outdated one does not", async () => {
   await withPage({ detail: { ...REVIEWED, resumeVersions: [VERSION] } }, async (harness) => {
-    assert.equal(harness.button("Create cover letter only").disabled, false);
-    assert.equal(harness.button("Create new versions").disabled, false);
+    assert.equal(harness.button("Write my cover letter · up to 5¢").disabled, false);
+    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
   });
-  await withPage({ detail: { ...REVIEWED, resumeVersions: [{ ...VERSION, evidenceCurrent: false }] } }, async (harness) => {
-    assert.equal(harness.maybeButton("Create cover letter only"), undefined);
-    assert.ok(harness.button("Create new versions"));
+  const outdatedOnly = (await pageProps()).kit.resumes.filter((document) => !document.exportReady);
+  await withPage({ detail: { ...REVIEWED, resumeVersions: [{ ...VERSION, evidenceCurrent: false }] }, kitPatch: { resumes: outdatedOnly } }, async (harness) => {
+    assert.equal(harness.maybeButton(/^Write my cover letter/u), undefined);
+    assert.ok(harness.button("Write my résumé · up to 7¢"));
   });
 });
 
@@ -298,7 +312,7 @@ test("ready documents appear on the Apply page under step 3, ahead of Apply on m
     const documents = harness.container.querySelector("#step-3 #apply-documents")!;
     assert.match(documents.textContent ?? "", /Review and edit/u);
     assert.ok(documents.querySelector("[data-product-documents]"));
-    assert.ok(harness.button("Create new versions"));
+    assert.ok(harness.button("Write my résumé · up to 7¢"));
   });
 });
 
@@ -307,6 +321,110 @@ test("#step-3 exists even before any document does, so the Apply Kit's fix link 
     assert.equal(harness.container.querySelector("#step-3") !== null, true);
     assert.equal(harness.container.querySelector("#apply-documents") === null, true);
   });
+});
+
+function attachRecorder() {
+  const calls: Array<{ method: string; url: string; body: unknown }> = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    calls.push({ method, url: String(input), body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (String(input) === "/api/applications" && method === "POST") return new Response(JSON.stringify({ application: { id: "application-new" } }), { status: 201 });
+    return new Response(JSON.stringify({ application: {} }), { status: 200 });
+  }) as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+// Lets step 3's mount attach run to the end.
+async function settled() {
+  for (let tick = 0; tick < 10; tick += 1) await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+}
+
+test("step 3 attaches to the job's own application: what it has attached, no second save, nothing once applied", async () => {
+  // An INTERESTED application with only a résumé attached: the ready letter is added, the status is left alone.
+  const interested = attachRecorder();
+  let harness = createDomHarness({ fetch: interested.fetchImpl });
+  try {
+    await harness.render(React.createElement(ApplyPage, await pageProps({
+      detail: { application: { id: "application-1", statusLabel: "Interested", resumeVersionId: "resume-v2", coverLetterVersionId: null } }
+    })));
+    await settled();
+    assert.deepEqual(interested.calls.map((call) => [call.method, call.url, call.body]), [
+      ["PATCH", "/api/applications/application-1", { coverLetterVersionId: "cover-legacy" }]
+    ]);
+    const step3 = harness.container.querySelector("#step-3")!;
+    assert.match(step3.querySelector('[data-version="resume-v2"]')?.textContent ?? "", /Used for this application/u);
+    assert.equal(step3.querySelector("[data-below-a]")?.textContent, BELOW_A, "a C is below an A");
+  } finally {
+    await harness.close();
+  }
+  // No application yet: the job is saved once, then the ready versions are attached.
+  const none = attachRecorder();
+  harness = createDomHarness({ fetch: none.fetchImpl });
+  try {
+    await harness.render(React.createElement(ApplyPage, await pageProps({ detail: { ...REVIEWED, application: null } })));
+    await settled();
+    assert.deepEqual(none.calls.map((call) => [call.method, call.url]), [["POST", "/api/applications"], ["PATCH", "/api/applications/application-new"]]);
+    assert.equal(harness.container.querySelector("#step-3 [data-below-a]"), null, "an A doesn't get the sentence");
+  } finally {
+    await harness.close();
+  }
+  // Applied: what's attached stays as it is.
+  const applied = attachRecorder();
+  harness = createDomHarness({ fetch: applied.fetchImpl });
+  try {
+    await harness.render(React.createElement(ApplyPage, await pageProps({
+      detail: { application: { id: "application-1", statusLabel: "Applied", resumeVersionId: "resume-v1", coverLetterVersionId: null } },
+      kitPatch: { canRecordApplied: false }
+    })));
+    await settled();
+    assert.deepEqual(applied.calls, []);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("step 3 blocked while its question is open: Confirm sends nothing", async () => {
+  const { harness, calls, render } = recordingPage(REVIEWED);
+  try {
+    await render();
+    await harness.click(harness.button("Write my résumé · up to 7¢"));
+    await harness.waitForText(/Most it can cost: 7¢/u);
+    // Step 2 becomes pending while the question is still open.
+    await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
+    await harness.click(harness.button("Confirm"));
+    await settled();
+    assert.deepEqual(calls, []);
+    assert.match(harness.container.querySelector("#step-3 [data-documents-message]")?.textContent ?? "", /^Update your score in step 2 first/u);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("the cover-letter tick follows the account's rule: on when Prepare needs a cover letter", async () => {
+  await withPage({ detail: REVIEWED, coverLetterRequired: true }, async (harness) => {
+    const tick = [...harness.container.querySelectorAll("#step-3 label")].find((node) => node.textContent === "Include a cover letter")!.querySelector("input")!;
+    assert.equal(tick.checked, true);
+    assert.ok(harness.button("Write my résumé and cover letter · up to 12¢"));
+  });
+  await withPage({ detail: REVIEWED, coverLetterRequired: false }, async (harness) => {
+    assert.ok(harness.button("Write my résumé · up to 7¢"));
+  });
+});
+
+test("the Apply page's server state carries the cover-letter rule (default on)", async () => {
+  const delegate = (prisma as unknown as { applicationAutomationPolicy: { findUnique: unknown } }).applicationAutomationPolicy;
+  const original = delegate.findUnique;
+  const detail = { application: null, sourceText: "Service operations leader.", estimate: null } as unknown as JobDetail;
+  try {
+    delegate.findUnique = async () => null;
+    const defaults = await loadApplyPageState("user-synthetic-alex-rivera", detail);
+    assert.equal(defaults.coverLetterRequired, true);
+    assert.equal(defaults.progress.current, 1);
+    delegate.findUnique = async () => ({ ...automationPolicyDefaultValues(), coverLetterRequired: false });
+    assert.equal((await loadApplyPageState("user-synthetic-alex-rivera", detail)).coverLetterRequired, false);
+  } finally {
+    delegate.findUnique = original;
+  }
 });
 
 function costResponse() {

@@ -36,7 +36,7 @@ function analysisRow(confidenceScore: unknown, inputHash: string) {
   };
 }
 
-function stubPrisma(options: { job: boolean; analysis?: unknown }) {
+function stubPrisma(options: { job: boolean; analysis?: unknown; application?: unknown }) {
   const p = prisma as unknown as Record<string, Record<string, unknown>>;
   const originals: Array<[Record<string, unknown>, string, unknown]> = [];
   const stub = (model: string, method: string, value: unknown) => {
@@ -48,7 +48,8 @@ function stubPrisma(options: { job: boolean; analysis?: unknown }) {
   stub("userProfile", "findUnique", null);
   stub("resumeVersion", "findMany", []);
   stub("generatedDocument", "findMany", []);
-  stub("application", "findUnique", null);
+  stub("application", "findUnique", options.application ?? null);
+  stub("applicationEvent", "findFirst", null);
   stub("contact", "findMany", []);
   stub("aIAnalysis", "findFirst", options.analysis ?? null);
   return () => { for (const [target, method, value] of originals) target[method] = value; };
@@ -101,4 +102,17 @@ test("a current analysis with an invalid confidence yields null", async () => {
 
 test("a non-current analysis with a score yields null", async () => {
   assert.equal(await confidenceFor(analysisRow(87, "stale-hash")), null);
+});
+
+test("the application carries the documents actually attached to it", async () => {
+  const restore = stubPrisma({
+    job: true,
+    application: { id: "application-1", status: "INTERESTED", resumeVersionId: "resume-version-2", coverLetterVersionId: null }
+  });
+  try {
+    const detail = await loadJobDetail(userId, "job-1");
+    assert.deepEqual(detail?.application, {
+      id: "application-1", statusLabel: "Interested", resumeVersionId: "resume-version-2", coverLetterVersionId: null
+    });
+  } finally { restore(); }
 });
