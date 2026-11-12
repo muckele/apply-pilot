@@ -8,9 +8,9 @@ import { saveEvidenceSnapshot } from "@/lib/jobs/evidence-snapshots";
 import { buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
 import { prisma } from "@/lib/prisma";
 
-// A job that already has an accepted owner fact. New or changed lines must be one sentence of up
-// to 200 characters; a RETAINED earlier line is never re-checked. Same stubbed-transaction harness
-// as evidence-snapshot-unchecked-save.test.ts.
+// A job that already has an accepted owner fact. New or changed lines have one limit, 200
+// characters, and any number of sentences; a RETAINED earlier line is never re-checked. Same
+// stubbed-transaction harness as evidence-snapshot-unchecked-save.test.ts.
 
 function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
   const methods = owner as Record<string, unknown>;
@@ -109,12 +109,19 @@ test("RETAIN keeps an earlier 300-character owner line and an earlier two-senten
   }
 });
 
-test("REPLACE refuses a 201-character line and a two-sentence line and writes nothing", async (t) => {
-  for (const attestedFact of [`${"a".repeat(200)}.`, "Led demos for IT buyers. Ran trials."]) {
-    const { created, analysis } = install(t, "Synthetic owner ran onboarding.");
-    await assert.rejects(saveEvidenceSnapshot("user-1", "job-1", request(analysis, replace(attestedFact))), tooLong);
-    assert.equal(created.length, 0);
-  }
+test("REPLACE refuses a 201-character line and writes nothing", async (t) => {
+  const { created, analysis } = install(t, "Synthetic owner ran onboarding.");
+  await assert.rejects(saveEvidenceSnapshot("user-1", "job-1", request(analysis, replace(`${"a".repeat(200)}.`))), tooLong);
+  assert.equal(created.length, 0);
+});
+
+test("REPLACE accepts a two-sentence line and saves it as typed", async (t) => {
+  const { created, analysis } = install(t, oldFact);
+  const twoSentences = "Synthetic owner led demos for IT buyers. Synthetic owner ran the trials.";
+  await saveEvidenceSnapshot("user-1", "job-1", request(analysis, replace(twoSentences)));
+  assert.equal(created.length, 1);
+  const payload = created[0]!.reviewPayload as { facts: Array<{ fact: string }> };
+  assert.equal(payload.facts.some((fact) => fact.fact === twoSentences), true);
 });
 
 test("REPLACE accepts one short sentence", async (t) => {

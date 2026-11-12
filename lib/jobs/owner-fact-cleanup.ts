@@ -97,45 +97,24 @@ export function ownerFactProblems(fact: string): OwnerFactProblem[] {
   return [...found.values()].sort((left, right) => left.at - right.at);
 }
 
-// New or changed owner lines are quoted word for word by the JOB_MATCH scorer, so each stays one
-// short sentence. Kept (RETAIN) lines saved earlier are not re-checked. Client-safe: no server imports.
+// New or changed owner lines have one limit: 200 characters, with any number of sentences (owner
+// decision 2026-11-11). The one-sentence rule this replaces stood in for JOB_MATCH's whole-fact
+// quote check, which now completes a partial quote locally (lib/ai/job-match.ts). Kept (RETAIN)
+// lines saved earlier are not re-checked. Client-safe: no server imports.
 export const OWNER_FACT_MAX_CHARACTERS = 200;
-export type OwnerFactShapeProblem = Readonly<{ kind: "too_long" | "more_than_one_sentence"; detail: string }>;
-
-const ABBREVIATION_END = /(?:\be\.g\.|\bi\.e\.|\betc\.|\bvs\.|\bU\.S\.|\bInc\.|\bJr\.|\bSr\.|\bDr\.|\bSt\.|\b[A-Z]\.)\s*$/u;
-
-function sentenceCount(text: string) {
-  let count = 0;
-  let carry = "";
-  for (const { segment } of sentenceSegmenter.segment(text)) {
-    const joined = carry + segment;
-    if (ABBREVIATION_END.test(segment)) {
-      carry = joined;
-      continue;
-    }
-    carry = "";
-    if (/[\p{L}\p{N}]/u.test(joined)) count += 1;
-  }
-  if (carry && /[\p{L}\p{N}]/u.test(carry)) count += 1;
-  return count;
-}
+export type OwnerFactShapeProblem = Readonly<{ kind: "too_long"; detail: string }>;
 
 export function ownerFactShapeProblems(fact: string): OwnerFactShapeProblem[] {
-  const text = fact.trim();
-  const problems: OwnerFactShapeProblem[] = [];
-  if (text.length > OWNER_FACT_MAX_CHARACTERS) {
-    problems.push({ kind: "too_long", detail: `${text.length} characters; the limit is ${OWNER_FACT_MAX_CHARACTERS}.` });
-  }
-  const sentences = sentenceCount(text);
-  if (sentences > 1) problems.push({ kind: "more_than_one_sentence", detail: `${sentences} sentences; use one.` });
-  return problems;
+  const length = fact.trim().length;
+  if (length <= OWNER_FACT_MAX_CHARACTERS) return [];
+  return [{ kind: "too_long", detail: `${length} characters; the limit is ${OWNER_FACT_MAX_CHARACTERS}.` }];
 }
 
-// Saving a new or changed owner line: the cleanup check runs first, then the shape check.
+// Saving a new or changed owner line: the cleanup check runs first, then the length check.
 export function assertNewOwnerFactShape(fact: string) {
   const problems = ownerFactShapeProblems(fact);
   if (!problems.length) return;
-  throw new PublicApiError("Keep each line to one sentence of up to 200 characters.", 422, {
+  throw new PublicApiError(`Keep each line to ${OWNER_FACT_MAX_CHARACTERS} characters or fewer.`, 422, {
     code: "OWNER_FACT_TOO_LONG",
     problems: problems.map((problem) => problem.kind)
   });

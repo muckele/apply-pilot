@@ -139,7 +139,7 @@ test("every requirement gets one box: the gaps, then the requirements the match 
     const listed = [...harness.container.querySelectorAll("fieldset[data-requirement] legend")].map((node) => node.textContent);
     assert.deepEqual(listed, ["Current Quenby certification", "Working knowledge of SQL", "Experience running vendor reviews"]);
     const field = textarea(harness, "Current Quenby certification");
-    assert.equal(field.getAttribute("placeholder"), "If you have this, say what you did in one sentence.");
+    assert.equal(field.getAttribute("placeholder"), "If you have this, say what you did.");
     assert.match(box(harness, "Current Quenby certification").textContent ?? "", /0\/200/u);
     assert.match(harness.text(), /Lines you've added before/u);
     assert.match(harness.text(), new RegExp(SAVED_FACT.replace(/\./gu, "\\."), "u"));
@@ -198,9 +198,10 @@ test("a 201-character line shows the limit and blocks Update", async () => {
     assert.match(sql.textContent ?? "", /200\/200/u);
     assert.equal(sql.querySelector("[data-problem]") === null, true);
     assert.equal(harness.button("Update my score · about 8¢").disabled, false);
-    // Two sentences are one too many, whatever the length.
-    await harness.type(textarea(harness, "Working knowledge of SQL"), "I wrote SQL reports. I tuned queries.");
-    assert.match(sql.querySelector("[data-problem]")?.textContent ?? "", /one sentence/u);
+    // Only the length counts: two sentences, U.S. and e.g. are fine.
+    await harness.type(textarea(harness, "Working knowledge of SQL"), "I wrote SQL reports for U.S. teams, e.g. finance. I tuned queries.");
+    assert.equal(sql.querySelector("[data-problem]") === null, true);
+    assert.equal(harness.button("Update my score · about 8¢").disabled, false);
     assert.equal(calls.length, 0);
   } finally {
     await harness.close();
@@ -462,7 +463,7 @@ test("a 422 shows the server's message under the step and keeps the request ID f
     calls,
     fetch: apiStub(calls, {
       save: () => (++saves === 1
-        ? json(422, { error: "Keep each line to one sentence of up to 200 characters.", code: "OWNER_FACT_TOO_LONG" })
+        ? json(422, { error: "Keep each line to 200 characters or fewer.", code: "OWNER_FACT_TOO_LONG" })
         : savedResponse())
     })
   });
@@ -472,7 +473,7 @@ test("a 422 shows the server's message under the step and keeps the request ID f
     await harness.check(tick(harness));
     await harness.click(harness.button("Update my score · about 8¢"));
     await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Keep each line to one sentence of up to 200 characters\./u);
+    await harness.waitForText(/Keep each line to 200 characters or fewer\./u);
     assert.equal(calls.length, 1);
     assert.equal(storedDrafts(harness) !== null, true, "drafts are kept");
     await harness.click(harness.button("Update my score · about 8¢"));
