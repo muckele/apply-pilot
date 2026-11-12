@@ -53,6 +53,8 @@ export function JobWorkspace({
   const [tab, setTab] = useState<JobTab>("overview");
   const tabsRef = useRef<HTMLDivElement>(null);
   const applyHref = `/jobs/${job.id}/apply`;
+  // Every step done: applied (or the run was completed), so there is nothing to continue.
+  const applied = progress.steps.every((step) => step.state === "done");
 
   const seeBreakdown = useCallback(() => {
     setTab("match");
@@ -75,7 +77,13 @@ export function JobWorkspace({
         <aside className="job-rail" aria-label="Apply and match">
           <div className="job-card job-rail-actions">
             <Link href={applyHref} className="job-button job-button-primary">
-              {progress.current === 1 ? "Apply →" : `Continue: step ${progress.current}`} <ArrowRight size={16} aria-hidden="true" />
+              {applied ? (
+                <>View application <ArrowRight size={16} aria-hidden="true" /></>
+              ) : progress.current === 1 ? (
+                "Apply →"
+              ) : (
+                <>Continue: step {progress.current} <ArrowRight size={16} aria-hidden="true" /></>
+              )}
             </Link>
             {application ? (
               <Link href="/applications" className="job-button">In your tracker: {application.statusLabel}</Link>

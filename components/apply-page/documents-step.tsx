@@ -8,6 +8,7 @@ import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 import { attachDocuments, ensureApplication } from "@/lib/applications/client";
 import type { ApplyKitDocument } from "@/lib/apply-kit/apply-kit-view";
+import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import { chooseAutoAttach, chooseJustReady, isReadyDocument } from "@/lib/apply-page/auto-attach";
 import {
   documentCreationMaximumMicros,
@@ -192,7 +193,7 @@ export function DocumentsStep({
       if (quote) {
         const approved = await confirm({
           title: action === "coverOnly" ? "Write my cover letter?" : includeCover ? "Write my résumé and cover letter?" : "Write my résumé?",
-          body: `Sends your résumé facts and the lines you added to Google Gemini. Most it can cost: ${formatCentsCeiling(documentCreationMaximumMicros(runSteps, quote))}.`
+          body: `Sends ${SENT_TO_GEMINI} to Google Gemini. Most it can cost: ${formatCentsCeiling(documentCreationMaximumMicros(runSteps, quote))}.`
         });
         if (!approved) {
           setMessage({ tone: "info", text: CANCELED });
@@ -251,7 +252,16 @@ export function DocumentsStep({
         <span id={titleId} className="job-version-title">{document.title} · v{document.versionNumber}</span>
         <span className="job-hint">{document.statusLabel}</span>
         {document.id === attachedId ? (
-          <span className="job-version-used" data-attached>Used for this application</span>
+          // Prepare uses an attached version only when it's ready, so one that isn't says so.
+          document.exportReady ? (
+            <span className="job-version-used" data-attached="ready">Used for this application</span>
+          ) : (
+            <span className="job-hint job-problem" data-attached="not-ready">
+              {document.status === "NEEDS_REGENERATION"
+                ? "Attached to this application, but out of date. Write a new one above."
+                : "Attached to this application, but it needs your review before it can be used. Review it below."}
+            </span>
+          )
         ) : attachable && isReadyDocument(document) ? (
           <button type="button" className="job-link-button" aria-describedby={titleId} onClick={() => chooseVersion(kind, document.id)}>
             Use this version

@@ -20,11 +20,11 @@ export const PREPARE_BLOCKER_COPY: Record<PreparationBlockingReason, { text: str
     fix: { label: "Go to step 1", target: "step-1" }
   },
   resume_required: {
-    text: "An eligible tailored resume must be explicitly assigned to this application in the job packet.",
+    text: "This application needs a résumé that's ready to use. Write or choose one in step 3.",
     fix: { label: "Go to step 3", target: "step-3" }
   },
   cover_letter_required: {
-    text: "An eligible cover letter must be explicitly assigned to this application in the job packet.",
+    text: "This application needs a cover letter that's ready to use. Write or choose one in step 3.",
     fix: { label: "Go to step 3", target: "step-3" }
   },
   daily_application_cap_reached: {

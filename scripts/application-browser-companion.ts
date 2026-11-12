@@ -76,7 +76,7 @@ const START_MESSAGE =
   "(in the Dock it shows as \"Google Chrome for Testing\"). " +
   "If you can't see it, check behind other windows or on your other desktops.\n";
 const SIGN_IN_MESSAGE =
-  "Sign in the Apply Pilot browser with the one-time code from this job's application page " +
+  "Sign in the Apply Pilot browser with the one-time code from step 5 of this job's Apply page " +
   "in your usual browser. Google sign-in doesn't work in that window.\n";
 function connectedMessage(runId: string): string {
   return `The Apply Pilot browser is connected (run ${runId}). Continue in that window.\n`;

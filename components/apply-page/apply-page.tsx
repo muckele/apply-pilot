@@ -14,7 +14,8 @@ import { ExperienceStep } from "@/components/apply-page/experience-step";
 import { NowCard } from "@/components/apply-page/now-card";
 import { PrepareStep } from "@/components/apply-page/prepare-step";
 import type { ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
-import type { ApplyProgress } from "@/lib/apply-page/apply-progress";
+import { useRunProgress } from "@/components/apply-page/use-run-progress";
+import { deriveApplyProgress, type ApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
 import type { PrepareStepState } from "@/lib/apply-page/load-apply-progress";
 import type { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { experienceDraftKey } from "@/lib/jobs/experience-drafts";
@@ -26,6 +27,8 @@ export type ApplyPageProps = {
   kit: ApplyKitView;
   automationAvailable: boolean;
   progress: ApplyProgress;
+  /** The inputs behind `progress`; with them the page re-derives progress as the run moves on. */
+  progressInput?: ApplyProgressInput;
   /** The account's policy needs a cover letter (Prepare blocks without one): step 3 ticks it by default. */
   coverLetterRequired: boolean;
   /** Step 4's ready list, host, Fill mode and current run, from the server. */
@@ -37,8 +40,9 @@ export type ApplyPageProps = {
   answeredYes?: boolean;
 };
 
-// A run the browser can open: prepared (READY, or REVIEW_REQUIRED) and so not terminal.
-const PREPARED_RUN_STATES: ReadonlySet<string> = new Set(["READY", "REVIEW_REQUIRED"]);
+// A run the Apply Pilot browser works on: prepared and not finished. Step 5 keeps its start command
+// and sign-in code through all of these, so a closed window can always be reopened.
+const BROWSER_RUN_STATES: ReadonlySet<string> = new Set(["READY", "REVIEW_REQUIRED", "FILLING", "READY_FOR_USER_SUBMISSION"]);
 
 export function matchResultLine(fit: number, confidence: number | null): string | null {
   const letter = gradeLetter(fit);
@@ -47,8 +51,12 @@ export function matchResultLine(fit: number, confidence: number | null): string 
   return fit >= 85 && confidence !== null && confidence >= 85 ? head : `${head} Assisted Fill needs an A, with confidence of 85 or more.`;
 }
 
-export function ApplyPage({ detail, kit, automationAvailable, progress, prepare, coverLetterRequired, tailorServer, appOrigin, answeredYes = false }: ApplyPageProps) {
+export function ApplyPage({ detail, kit, automationAvailable, progress: serverProgress, progressInput, prepare, coverLetterRequired, tailorServer, appOrigin, answeredYes = false }: ApplyPageProps) {
   const [pendingFactChanges, setPendingFactChanges] = useState(false);
+  const liveRun = useRunProgress(prepare.run?.id ?? null, progressInput?.run ?? null);
+  const progress = progressInput && prepare.run ? deriveApplyProgress({ ...progressInput, run: liveRun }) : serverProgress;
+  // The run's state as last read (the tab may have been away while the run moved on).
+  const runState = liveRun?.state ?? prepare.run?.state ?? null;
   const scoreConfirm = useInPageConfirm();
   const hasDocuments = detail.resumeVersions.length > 0 || detail.coverLetters.length > 0;
   const jobId = detail.view.id;
@@ -59,9 +67,9 @@ export function ApplyPage({ detail, kit, automationAvailable, progress, prepare,
   const documentsBlockedReason = !detail.evidenceReview
     ? "Add your master résumé first, so Apply Pilot has facts to work from."
     : pendingFactChanges
-      ? "Update your score in step 2 first, so your documents include your new lines."
+      ? "Update my score in step 2 first, so your documents include your new lines."
       : !matchBoundToReview || !detail.hasValidCurrentSnapshot
-        ? "Finish step 2 first (Update my score), so your documents use your reviewed lines."
+        ? "Update my score in step 2 first, so your documents use your reviewed lines."
         : null;
 
   return (
@@ -149,7 +157,6 @@ export function ApplyPage({ detail, kit, automationAvailable, progress, prepare,
           <p className="job-note">This application is already recorded, so there&apos;s nothing to prepare.</p>
         ) : (
           <PrepareStep
-            jobId={jobId}
             applicationId={detail.application?.id ?? null}
             applyHost={prepare.applyHost}
             readyList={prepare.readyList}
@@ -161,14 +168,15 @@ export function ApplyPage({ detail, kit, automationAvailable, progress, prepare,
 
       <section id="step-5" className="job-card job-section" aria-labelledby="browser-heading">
         <h2 id="browser-heading" tabIndex={-1} className="job-section-title">Open the Apply Pilot browser</h2>
-        {prepare.run && PREPARED_RUN_STATES.has(prepare.run.state) && appOrigin ? (
+        {prepare.run && runState !== null && BROWSER_RUN_STATES.has(runState) ? (
           <BrowserStep appOrigin={appOrigin} runId={prepare.run.id} />
         ) : (
           <p className="job-note">After Prepare, start the Apply Pilot browser here.</p>
         )}
       </section>
 
-      <details className="job-card job-disclosure" open={answeredYes || undefined}>
+      {/* Open when it's the way to apply: after "Yes, I applied", or without application automation. */}
+      <details className="job-card job-disclosure" open={answeredYes || progress.applyOnYourOwn || undefined}>
         <summary>Apply on my own</summary>
         <ApplyKit view={kit} answeredYes={answeredYes} />
       </details>

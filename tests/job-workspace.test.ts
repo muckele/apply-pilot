@@ -193,6 +193,8 @@ test("job page links Apply → to /jobs/:id/apply and has no Create my résumé 
   await withPage({}, async (harness) => {
     const apply = [...harness.container.querySelectorAll("a")].find((link) => link.textContent?.includes("Apply →"));
     assert.equal(apply?.getAttribute("href"), "/jobs/job-1/apply");
+    assert.equal(apply?.textContent?.trim(), "Apply →");
+    assert.equal(apply?.querySelector("svg") === null, true, "one arrow: the text's, not an icon as well");
     assert.equal(harness.maybeButton("Create my résumé"), undefined);
     assert.equal(harness.container.querySelector("#tailor"), null);
     assert.equal(harness.container.querySelector("#documents"), null);
@@ -204,6 +206,16 @@ test("past step 1 the job page's card reads Continue: step N", async () => {
   await withPage({ progress }, async (harness) => {
     const apply = [...harness.container.querySelectorAll("a")].find((link) => link.textContent?.includes("Continue: step 3"));
     assert.equal(apply?.getAttribute("href"), "/jobs/job-1/apply");
+    assert.equal(apply?.querySelectorAll("svg").length, 1, "one arrow");
+  });
+});
+
+test("an applied job's card reads View application, not Continue: step 10", async () => {
+  const progress = deriveApplyProgress({ hasMasterResume: true, hasCurrentMatch: true, reviewSaved: true, resumeAttached: true, coverAttached: true, coverRequired: true, automationAvailable: false, run: null, applied: true });
+  await withPage({ progress, application: { id: "application-1", statusLabel: "Applied" } }, async (harness) => {
+    assert.doesNotMatch(harness.text(), /Continue: step/u);
+    const view = [...harness.container.querySelectorAll("a")].find((link) => link.textContent?.trim() === "View application");
+    assert.equal(view?.getAttribute("href"), "/jobs/job-1/apply");
   });
 });
 

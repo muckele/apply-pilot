@@ -19,7 +19,7 @@ import {
   type RunSnapshot
 } from "@/lib/application-runs/client-run";
 import type { PreparationBlockingReason, PreparationErrorCategory } from "@/lib/application-runs/preparation";
-import { ensureApplication } from "@/lib/applications/client";
+import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import type { ReadyLine } from "@/lib/apply-page/ready-list";
 
 // Step 4 of the Apply page: the ready list, then one "Allow and prepare" that asks once in the page,
@@ -31,7 +31,7 @@ import type { ReadyLine } from "@/lib/apply-page/ready-list";
 export type PrepareStepRun = { id: string; state: string; blockingReason?: string | null; errorCategory?: string | null };
 
 export type PrepareStepProps = {
-  jobId: string;
+  /** Null until the job has an application; then nothing can be prepared (no résumé is attached). */
   applicationId: string | null;
   /** The run's host once a run exists, else the host its apply link would give. Empty when there is no usable link. */
   applyHost: string;
@@ -54,7 +54,7 @@ const REPORTED_AI_BLOCKS: ReadonlySet<string> = new Set([
 const NO_LINK = "This job has no secure (https) application link, so Apply Pilot can't prepare it. You can still apply on your own.";
 
 export function prepareQuestion(host: string) {
-  return `Prepare plans this application with Google Gemini (usually under 1¢) and lets Apply Pilot work on ${host}.`;
+  return `Prepare sends ${SENT_TO_GEMINI} to Google Gemini to plan this application (usually under 1¢), and lets Apply Pilot work on ${host}.`;
 }
 
 function blockerCopy(reason: string | null | undefined): { text: string; fix: ReadyFix | null } {
@@ -152,13 +152,12 @@ async function preparedRun(response: Response | null, runId: string): Promise<Ru
   }
 }
 
-export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMode, run }: PrepareStepProps) {
+export function PrepareStep({ applicationId, applyHost, readyList, fillMode, run }: PrepareStepProps) {
   const router = useRouter();
   const { confirm, confirmFn, dialog } = useInPageConfirm();
   const inFlight = useRef(false);
   const mainButton = useRef<HTMLButtonElement>(null);
-  // What this step created, until the refreshed page brings it: retries reuse them.
-  const savedApplicationId = useRef<string | null>(null);
+  // The run this step created, until the refreshed page brings it: retries reuse it.
   const createdRunId = useRef<string | null>(null);
   const [phase, setPhase] = useState<"asking" | "working" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -179,7 +178,6 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
   }
   useEffect(() => {
     createdRunId.current = null;
-    savedApplicationId.current = null;
     // The page shows this application's run, so a kept create key has nothing left to do.
     if (propRunId && applicationId) clearRunCreateKey(applicationId);
   }, [propRunId, applicationId]);
@@ -194,11 +192,13 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
   const state = current?.state ?? null;
   // Until the run is prepared. After that the list is moot (and Fill being on is expected at step 8).
   const showButton = state === null || STARTABLE.has(state) || state === "PREPARING";
-  const canStart = !busy && !blocked && !fillOn && applyHost !== "" && (state === null || STARTABLE.has(state));
+  // The ready list already blocks without an application (nothing can be attached to it), so this
+  // step never saves the job itself.
+  const canStart = !busy && !blocked && !fillOn && applyHost !== "" && applicationId !== null && (state === null || STARTABLE.has(state));
   const status = dismissedBasis === currentKey ? null : runStatus(current);
 
   async function allowAndPrepare() {
-    if (inFlight.current || !canStart) return;
+    if (inFlight.current || !canStart || applicationId === null) return;
     inFlight.current = true;
     setPhase("asking");
     setMessage(null);
@@ -207,26 +207,18 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
     const host = applyHost;
     const basis = runKey;
     let changedServer = false;
-    let stage: "application" | "run" | "allow" | "prepare" = "application";
+    let stage: "run" | "allow" | "prepare" = "run";
     try {
       if (!(await confirm({ title: "Allow and prepare?", body: prepareQuestion(host) }))) return;
       setPhase("working");
 
-      let appId = applicationId ?? savedApplicationId.current;
-      if (!appId) {
-        appId = (await ensureApplication(jobId)).id;
-        savedApplicationId.current = appId;
-        changedServer = true;
-      }
-
-      stage = "run";
       let runId = current?.id ?? createdRunId.current;
       // How the run stood before Prepare, to tell "Prepare didn't run" from a reported outcome.
       let before: RunSnapshot | null = current
         ? { id: current.id, state: current.state, blockingReason: current.blockingReason ?? null, errorCategory: current.errorCategory ?? null }
         : null;
       if (!runId) {
-        const created = await ensureApplicationRun(appId);
+        const created = await ensureApplicationRun(applicationId);
         changedServer = true;
         createdRunId.current = created.id;
         setLearned({ basis, run: { id: created.id, state: created.state, blockingReason: null, errorCategory: null } });
@@ -272,8 +264,7 @@ export function PrepareStep({ jobId, applicationId, applyHost, readyList, fillMo
         outcome.blockingReason === before.blockingReason && outcome.errorCategory === before.errorCategory);
       if (!response?.ok && unchanged && !refusal?.reported) setMessage(didntRunText(refusal?.error ?? null));
     } catch (error) {
-      if (stage === "application") setMessage("Apply Pilot couldn't save this job, so nothing was prepared. Try again.");
-      else if (stage === "run") setMessage(runFailureText(error));
+      if (stage === "run") setMessage(runFailureText(error));
       else if (stage === "allow") setMessage(allowFailureText(error, host));
       else setMessage(UNCONFIRMED);
       // These change what the server holds (or say it holds something else): let the page catch up.

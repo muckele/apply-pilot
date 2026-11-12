@@ -128,7 +128,7 @@ test("on the way to a control page, the code form comes first and Google is a se
 
   assert.equal(html.includes("Sign in this window with a code"), true);
   assert.equal(
-    html.includes("Get a one-time code from this job&#x27;s application page in your usual browser, where you&#x27;re signed in to Apply Pilot."),
+    html.includes("Get a one-time code from step 5 of this job&#x27;s Apply page in your usual browser, where you&#x27;re signed in to Apply Pilot."),
     true
   );
   const heading = html.indexOf("Sign in this window with a code");
@@ -305,7 +305,8 @@ test("a refused code stays on the page and lists the usual causes", async () => 
     assert.equal(text.includes("replaced by a newer code"), true);
     assert.equal(text.includes("Getting a new code cancels the old one."), true);
     assert.equal(text.includes("already used"), true);
-    assert.equal(text.includes("Get a new code from this job's application page in your usual browser"), true);
+    assert.equal(text.includes("Get a new code from step 5 of this job's Apply page in your usual browser"), true);
+    assert.equal(text.includes("application page"), false, "codes come from the Apply page now");
   } finally { await ui.cleanup(); }
 });
 
@@ -318,6 +319,7 @@ test("too many tries and a lost connection say so instead of blaming the code", 
     await limited.type("input[name='code']", "ABCD-EFGH-JKMN");
     await limited.click("button[type='submit']");
     assert.equal(limited.text().includes("Too many tries"), true);
+    assert.equal(limited.text().includes("get a new code from step 5 of this job's Apply page"), true);
     assert.equal(limited.text().includes("mistyped"), false);
   } finally { await limited.cleanup(); }
 

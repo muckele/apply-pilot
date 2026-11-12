@@ -10,7 +10,7 @@ The current capability is deliberately narrow:
 
 - `PREPARE_ONLY` is the default `AutomationMode`; `FILL_AND_REVIEW` is an explicit opt-in required for Fill acquisition.
 - `APPLICATION_READ` is the only execution-token scope that can be issued.
-- The per-user policy has an authenticated API at `/api/application-automation-policy`; PR #10 added owner-facing PREPARE_ONLY pretrial setup and an explicit preparation action. It does not silently grant FILL_AND_REVIEW. The separate "Assisted Fill" switch on the application page is the explicit opt-in (see "Assisted Fill switch" below).
+- The per-user policy has an authenticated API at `/api/application-automation-policy`; PR #10 added owner-facing PREPARE_ONLY pretrial setup and an explicit preparation action, now one "Allow and prepare" at step 4 of the job's Apply page. It does not silently grant FILL_AND_REVIEW. The separate "Assisted Fill" switch, turned on at step 8 of the Apply Pilot browser's control page, is the explicit opt-in (see "Assisted Fill switch" below).
 - Preparation produces an evidence-grounded advisory plan and review state.
 - The local browser companion can open a frozen anonymous employer target, inspect its visible form on explicit request, publish or replay the correlated inspection, and support owner-scoped answer review.
 - After review resolves to `READY`, one explicit user click can invoke the guarded Fill path for reviewed `TEXT`, `EMAIL`, `TEL`, `URL`, `TEXTAREA`, and `SELECT_ONE` fields. Occupied writable values are preserved.
@@ -66,13 +66,13 @@ Terminal presentation shows aggregate counts only: filled, preserved existing, r
 
 ### Assisted Fill switch
 
-The application page's Pretrial setup panel has an owner-facing "Assisted Fill" switch that sets the account's `mode`. It is off (`PREPARE_ONLY`) by default and sends exactly `PATCH /api/application-automation-policy` with `{"mode":"FILL_AND_REVIEW"}` or `{"mode":"PREPARE_ONLY"}`. It adds no server authority: Fill acquisition still checks the global and user gates, mode, host, packet, attempt, lease, generation, target, and writer as described above.
+The owner-facing "Assisted Fill" switch sets the account's `mode`. It is off (`PREPARE_ONLY`) by default and sends exactly `PATCH /api/application-automation-policy` with `{"mode":"FILL_AND_REVIEW"}` or `{"mode":"PREPARE_ONLY"}`. It adds no server authority: Fill acquisition still checks the global and user gates, mode, host, packet, attempt, lease, generation, target, and writer as described above. It appears where it matters (D035 D-B): it is turned on at step 8 (Fill) of the Apply Pilot browser's control page, and turned off from step 4 of the job's Apply page or from Settings ▸ Answer Vault (`/settings/application-answers`). It also turns off automatically when a run is completed or cancelled.
 
-The order for one job is: create the browser run, enable PREPARE_ONLY for the run, prepare it, turn the switch on, open the browser run and start the companion, inspect, review, Fill, then personally submit.
+The order for one job is: on the job's Apply page, "Allow and prepare" (create the browser run, allow its host and prepare it); start the companion from step 5 and sign in; then, in the control page, inspect, review, turn Fill on at step 8, Fill, and personally submit.
 
-- **Turning on** is offered only for a `READY` or `REVIEW_REQUIRED` run whose policy is enabled and effective, with the run's host allowed and not blocked. It rereads the run and policy, sends nothing if either changed or can't be read, and asks for confirmation.
+- **Turning on** is offered at step 8 while the switch is off. "Turn on Fill for this form" opens one in-page question and sends nothing; only its Confirm sends `{"mode":"FILL_AND_REVIEW"}`, once. The mode shown afterwards comes from a fresh read, and a refusal shows the server's own message.
 - **Turning off** is one click in any state and doesn't read anything first, so stopping Fill doesn't depend on anything else working. An already-acquired orchestration rechecks policy through its guarded pre-field status reads and stops within the existing one-attempt semantics.
-- **Preparing another job** needs the switch off first, because pretrial setup and the Prepare control stay PREPARE_ONLY actions.
+- **Preparing another job** needs the switch off first, because "Allow and prepare" stays a PREPARE_ONLY action; step 4 offers Turn off when the switch is still on from an earlier application.
 - **Lost or refused writes** are never replayed. The page performs one policy read and shows what it finds; if that also fails, turning on stays locked until the page is refreshed and turning off stays available.
 
 A mode change is a real policy change: it is audited and revokes usable execution credentials. The answer packet's policy hash doesn't include `mode`, so reviewed answers stay current across a change. A Fill clicked while the switch is off is rejected before any attempt is created, and the control page points back to the switch. A fresh inspection is needed before Fill can be activated again.

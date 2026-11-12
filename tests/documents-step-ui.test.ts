@@ -19,7 +19,10 @@ const BOTH = "Write my résumé and cover letter · up to 12¢";
 const RESUME_ONLY = "Write my résumé · up to 7¢";
 const COVER_ONLY = "Write my cover letter · up to 5¢";
 const BELOW_A = "Assisted Fill needs an A. You can still apply on your own with these documents.";
-const question = (cents: string) => `Sends your résumé facts and the lines you added to Google Gemini. Most it can cost: ${cents}.`;
+// What the writers actually send (lib/ai/resume-tailoring-payload.ts): the job, the résumé, the
+// profile's job preferences and the lines added for this job.
+const question = (cents: string) =>
+  `Sends ${"this job, your résumé, your job preferences from your profile (such as target roles, locations and salary) and the lines you added for this job"} to Google Gemini. Most it can cost: ${cents}.`;
 
 async function kitDocuments() {
   const kit = (await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
@@ -351,6 +354,28 @@ test("versions: the attached one is Used for this application, other ready ones 
     await waitUntil(() => calls.length === 1, "the attach request");
     assert.deepEqual([calls[0]!.method, calls[0]!.url, calls[0]!.body], ["PATCH", "/api/applications/application-1", { resumeVersionId: "resume-v3" }]);
     await waitUntil(() => harness.refreshes === 1, "a refresh after attaching");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("an attached version that isn't ready to use says so instead of Used for this application", async () => {
+  const { byId } = await kitDocuments();
+  const { harness, calls } = setup();
+  try {
+    await harness.render(React.createElement(DocumentsStep, props({
+      resumes: [byId("resume-v1")],
+      coverLetters: [byId("cover-edited")],
+      attached: { resumeId: "resume-v1", coverId: "cover-edited" }
+    })));
+    await settle();
+    assert.equal(calls.length, 0, "nothing ready to attach instead");
+    const resume = row(harness, "resume-v1");
+    assert.doesNotMatch(resume.textContent ?? "", /Used for this application/u);
+    assert.match(resume.querySelector("[data-attached]")?.textContent ?? "", /^Attached to this application, but out of date\. Write a new one above\.$/u);
+    const cover = row(harness, "cover-edited");
+    assert.doesNotMatch(cover.textContent ?? "", /Used for this application/u);
+    assert.match(cover.querySelector("[data-attached]")?.textContent ?? "", /^Attached to this application, but it needs your review before it can be used\. Review it below\.$/u);
   } finally {
     await harness.close();
   }

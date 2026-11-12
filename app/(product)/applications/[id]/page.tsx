@@ -2,20 +2,15 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { ApplicationEffortEditor } from "@/components/application-effort-editor";
+import { ApplicationRunSummaryCard } from "@/components/application-run-summary-card";
 import { ApplicationStatusActions } from "@/components/application-status-actions";
-import { ApplicationRunEntry } from "@/components/application-run-entry";
-import { ApplicationRunPretrialSetup } from "@/components/application-run-pretrial-setup";
-import { CompanionSignInCode } from "@/components/companion-sign-in-code";
-import { isTerminalRunState } from "@/lib/application-runs/state-machine";
 import { ButtonLink, PageHeader, Panel, PanelHeader, ScoreBadge, StatusBadge } from "@/components/ui";
-import { isGeminiConfigured } from "@/lib/ai/config";
 import {
   describeSentDocument,
   latestSentDocumentsEvent,
   readSentDocumentsSnapshot
 } from "@/lib/apply-kit/sent-documents";
-import { getCurrentApplicationRun } from "@/lib/application-runs/service";
-import { readAutomationPolicy } from "@/lib/application-runs/service";
+import { loadApplicationSummaryProgress } from "@/lib/apply-page/application-summary-progress";
 import { formatApplicationStatus, getApplicationAttention } from "@/lib/applications/pipeline";
 import { latestSelfReportedEffort } from "@/lib/applications/self-reported-effort";
 import {
@@ -61,8 +56,8 @@ export default async function ApplicationDetailPage({ params }: Props) {
     notFound();
   }
 
-  const currentRun = await getCurrentApplicationRun(userId, application.id);
-  const automationPolicy = currentRun ? await readAutomationPolicy(userId) : null;
+  // The same server-side progress the Apply page shows, for the summary card (hidden if it fails).
+  const applyProgress = application.jobPostingId ? await loadApplicationSummaryProgress(userId, application.jobPostingId) : null;
   const attention = getApplicationAttention(application);
   // "What I sent": the frozen snapshot recorded when the application entered APPLIED.
   const sent = latestSentDocumentsEvent(application.events);
@@ -161,56 +156,7 @@ export default async function ApplicationDetailPage({ params }: Props) {
         </section>
 
         <aside className="space-y-6">
-          <Panel>
-            <PanelHeader title="Browser run" description="Create or open this application's owned browser run." />
-            <ApplicationRunEntry
-              key={currentRun?.id ?? "no-active-run"}
-              applicationId={application.id}
-              initialRun={currentRun ? { id: currentRun.id, state: currentRun.state } : null}
-            />
-            {currentRun && !isTerminalRunState(currentRun.state) ? (
-              <div className="px-5 pb-5">
-                <CompanionSignInCode key={currentRun.id} runId={currentRun.id} />
-              </div>
-            ) : null}
-          </Panel>
-
-          {currentRun && automationPolicy ? (
-            <Panel>
-              <PanelHeader title="Pretrial setup" description="Review policy capability, then prepare this owned run deliberately." />
-              <ApplicationRunPretrialSetup
-                key={JSON.stringify([
-                  currentRun.id,
-                  currentRun.stateVersion,
-                  currentRun.blockingReason,
-                  currentRun.errorCategory,
-                  automationPolicy.enabled,
-                  automationPolicy.effectiveEnabled,
-                  automationPolicy.mode,
-                  automationPolicy.allowedHosts,
-                  automationPolicy.blockedHosts
-                ])}
-                applicationId={application.id}
-                jobPostingId={application.jobPostingId}
-                initialRun={{
-                  id: currentRun.id,
-                  applicationId: currentRun.applicationId,
-                  state: currentRun.state,
-                  applyHost: currentRun.applyHost,
-                  blockingReason: currentRun.blockingReason,
-                  errorCategory: currentRun.errorCategory
-                }}
-                initialPolicy={{
-                  enabled: automationPolicy.enabled,
-                  effectiveEnabled: automationPolicy.effectiveEnabled,
-                  mode: automationPolicy.mode,
-                  allowedHosts: automationPolicy.allowedHosts,
-                  blockedHosts: automationPolicy.blockedHosts
-                }}
-                planner={isGeminiConfigured() ? "gemini" : "local"}
-              />
-            </Panel>
-          ) : null}
+          {applyProgress ? <ApplicationRunSummaryCard jobId={application.jobPostingId} progress={applyProgress} /> : null}
 
           <Panel>
             <PanelHeader title="Next action" />

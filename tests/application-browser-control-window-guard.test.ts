@@ -11,7 +11,7 @@ import { RAW_CONTROL_PAGE_CODES } from "@/lib/assisted-apply/plain-language";
 import { APPLICATION_BROWSER_BINDING_NAME, type B1Command, type B1Status } from "@/lib/application-browser/types";
 
 const RUN_ID = "cm12345678901234567890123";
-const APPLICATION_HREF = "/applications/cm00000000000000000000001";
+const APPLY_PAGE_HREF = "/jobs/cm00000000000000000000001/apply";
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -204,7 +204,7 @@ async function mount(options: {
       authenticatedOwnerPage: true,
       detectCompanionWindow: true,
       companionWindowWaitMs: options.waitMs ?? 60,
-      applicationHref: APPLICATION_HREF
+      applyPageHref: APPLY_PAGE_HREF
     }));
   });
   await settle();
@@ -260,7 +260,10 @@ test("in a browser without the companion, the page says it is the wrong window a
     assert.equal(buttons.some((name) => /^Fill your \d+ approved answers? \(runs once\)$/.test(name)), false, "Fill should not render");
     assert.equal(buttons.includes("Check again"), true);
     const back = mounted.container.querySelector<HTMLAnchorElement>('[data-testid="wrong-window"] a');
-    assert.equal(back?.getAttribute("href"), APPLICATION_HREF);
+    assert.equal(back?.getAttribute("href"), APPLY_PAGE_HREF);
+    assert.equal(back?.textContent, "Back to the Apply page");
+    assert.equal(text.includes("a one-time code from step 5 of this job's Apply page"), true);
+    assert.equal(text.includes("application page"), false);
     assert.equal(mounted.bindingCalls.length, 0);
   } finally {
     await mounted.cleanup();

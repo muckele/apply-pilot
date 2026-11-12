@@ -12,11 +12,14 @@ import { createDomHarness } from "@/tests/fixtures/dom-harness";
 const APPLICATION_ID = "clz8w7m9a0000qwer1234tyui";
 const RUN_ID = "clz8w7m9a0004qwer1234tyui";
 const HOST = "jobs.example.com";
-const QUESTION = `Prepare plans this application with Google Gemini (usually under 1¢) and lets Apply Pilot work on ${HOST}.`;
+// What Prepare's planner actually sends (lib/ai/application-plan.ts): the job, the résumé, the
+// profile's job preferences and the lines added for this job.
+const QUESTION = "Prepare sends this job, your résumé, your job preferences from your profile (such as target roles, locations and salary) and the lines you added for this job to Google Gemini to plan this application " +
+  `(usually under 1¢), and lets Apply Pilot work on ${HOST}.`;
 const KEY = `application-run-create:${APPLICATION_ID}`;
 
 const READY_INPUT: ReadyListInput = {
-  fitScore: 90, confidenceScore: 88, hasCurrentMatch: true, resumeAttached: true, coverAttached: true,
+  fitScore: 90, confidenceScore: 88, hasCurrentMatch: true, resume: "ready", cover: "ready",
   coverRequired: true, fillMode: "PREPARE_ONLY", hostBlocked: false,
   details: { confirmed: 6, total: 10, missing: [] }
 };
@@ -67,7 +70,6 @@ function recorder(overrides: Record<string, Route> = {}) {
 
 function props(overrides: Partial<PrepareStepProps> = {}): PrepareStepProps {
   return {
-    jobId: "job-1",
     applicationId: APPLICATION_ID,
     applyHost: HOST,
     readyList: buildReadyList(READY_INPUT),
@@ -147,6 +149,19 @@ test("a double click still sends each request once", async () => {
       "PATCH /api/application-automation-policy",
       `POST /api/application-runs/${RUN_ID}/prepare`
     ]);
+  });
+});
+
+test("without an application there is nothing to prepare: Allow and prepare stays off and sends nothing", async () => {
+  // The page's ready list already blocks then (no résumé can be attached without an application);
+  // the step doesn't save the job itself.
+  const recorded = recorder();
+  await withStep(props({ applicationId: null }), recorded.fetchImpl, async (harness) => {
+    assert.equal(mainButton(harness).disabled, true);
+    await harness.click(mainButton(harness));
+    await settle();
+    assert.deepEqual(recorded.calls, []);
+    assert.equal(question(harness), null);
   });
 });
 

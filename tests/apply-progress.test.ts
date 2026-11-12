@@ -68,3 +68,54 @@ test("applied marks all ten done", () => {
   assert.ok(p.steps.every((s) => s.state === "done"));
   assert.equal(p.steps.length, 10);
 });
+
+const withRun = (state: string, companionState: string | null = null) => derive({ run: { state, companionState } });
+
+test("steps 6 to 9 follow the run and companion states", () => {
+  assert.equal(withRun("READY", "CONTROL_READY").current, 6);
+  assert.equal(withRun("READY", "TARGET_OPEN").current, 6);
+  assert.equal(withRun("REVIEW_REQUIRED", "TARGET_OPEN").current, 6);
+  assert.equal(withRun("FILLING").current, 8);
+  assert.equal(withRun("READY_FOR_USER_SUBMISSION").current, 9);
+});
+
+test("HUMAN_ONLY is step 9", () => {
+  const p = withRun("READY_FOR_USER_SUBMISSION", "HUMAN_ONLY");
+  assert.equal(p.current, 9);
+  assert.equal(p.now, "Complete the rest and press the employer's Submit yourself.");
+  assert.equal(p.next, "Record it");
+  assert.equal(withRun("READY", "HUMAN_ONLY").current, 9);
+});
+
+test("COMPLETED_BY_USER marks ten done", () => {
+  const p = withRun("COMPLETED_BY_USER");
+  assert.equal(p.current, 10);
+  assert.equal(p.next, null);
+  assert.ok(p.steps.every((s) => s.state === "done"));
+});
+
+test("a cancelled run goes back to step 4 and says so", () => {
+  const p = withRun("CANCELLED");
+  assert.equal(p.current, 4);
+  assert.equal(p.now, "This application was stopped. Prepare it again to start over.");
+});
+
+test("without application automation, step 4 on points to Apply on my own instead of Prepare", () => {
+  const own = derive({ automationAvailable: false });
+  assert.equal(own.current, 4);
+  assert.equal(own.now, "Apply on your own with your documents: open Apply on my own.");
+  assert.equal(own.next, null);
+  assert.equal(own.applyOnYourOwn, true);
+  assert.equal(derive({ automationAvailable: false, run: { state: "READY", companionState: null } }).applyOnYourOwn, true, "a run left from before");
+  // Before step 4 the earlier steps still lead.
+  const writing = derive({ automationAvailable: false, resumeAttached: false });
+  assert.equal(writing.current, 3);
+  assert.equal(writing.now, "Write my résumé and cover letter, review them");
+  assert.equal(writing.applyOnYourOwn, false);
+  // With automation, step 4 is Prepare; once applied, nothing is left either way.
+  assert.equal(derive({}).applyOnYourOwn, false);
+  assert.equal(derive({}).now, "Fix anything on the ready list, then Allow and prepare");
+  const applied = derive({ automationAvailable: false, applied: true });
+  assert.equal(applied.now, "You applied. Nothing left to do.");
+  assert.equal(applied.applyOnYourOwn, false);
+});

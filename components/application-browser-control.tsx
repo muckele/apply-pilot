@@ -300,7 +300,7 @@ export function ApplicationBrowserControl({
   authenticatedOwnerPage,
   detectCompanionWindow = false,
   companionWindowWaitMs = COMPANION_WINDOW_WAIT_MS,
-  applicationHref
+  applyPageHref
 }: {
   runId: string;
   authenticatedOwnerPage: boolean;
@@ -309,7 +309,8 @@ export function ApplicationBrowserControl({
   // that can never work. Presentation only: the companion and server keep every check.
   detectCompanionWindow?: boolean;
   companionWindowWaitMs?: number;
-  applicationHref?: string;
+  // The job's Apply page, where step 5 gives the start command and sign-in code.
+  applyPageHref?: string;
 }) {
   const [companionWindow, setCompanionWindow] = useState<CompanionWindow>(
     detectCompanionWindow ? "checking" : "present"
@@ -1982,10 +1983,10 @@ export function ApplicationBrowserControl({
             <p>You&apos;re in your usual browser. Opening, checking and filling the employer&apos;s form happen in the separate window titled &ldquo;Apply Pilot browser&rdquo;.</p>
             <ul className="list-disc space-y-1 pl-5">
               <li>Can&apos;t find it? Look for &ldquo;Google Chrome for Testing&rdquo; in the Dock, or on your other desktops.</li>
-              <li>Not started yet? Start the Apply Pilot browser from Terminal, then sign it in with a one-time code from this job&apos;s application page.</li>
+              <li>Not started yet? Start the Apply Pilot browser from Terminal, then sign it in with a one-time code from step 5 of this job&apos;s Apply page.</li>
             </ul>
             <div className="flex flex-wrap gap-2">
-              {applicationHref ? <a href={applicationHref} className="inline-flex items-center rounded-lg bg-slate-950 px-4 py-2 font-semibold text-white">Back to the application</a> : null}
+              {applyPageHref ? <a href={applyPageHref} className="inline-flex items-center rounded-lg bg-slate-950 px-4 py-2 font-semibold text-white">Back to the Apply page</a> : null}
               <SecondaryButton type="button" onClick={() => setCompanionWindow("checking")}>Check again</SecondaryButton>
             </div>
           </section>
