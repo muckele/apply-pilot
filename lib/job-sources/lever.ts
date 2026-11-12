@@ -2,12 +2,12 @@ import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources
 import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import {
-  detectTechStack,
-  htmlListItems,
-  htmlToText,
-  splitRequirementText,
-  workStyleLabel
-} from "@/lib/job-sources/utils";
+  boardRequirementLines,
+  extractRequirementLines,
+  extractRequirementLinesFromSections
+} from "@/lib/job-sources/requirement-lines";
+import { detectTechStack, htmlListItems, htmlToText, workStyleLabel } from "@/lib/job-sources/utils";
+import { uniqueStrings } from "@/lib/normalize";
 
 type LeverJob = {
   id: string;
@@ -59,10 +59,17 @@ export class LeverProvider implements JobSourceProvider {
   normalizeJob(rawJob: RawJob): NormalizedJob {
     const job = rawJob as LeverJob & { sourceUrl?: string; html?: string };
     const opening = job.descriptionPlain?.trim() || htmlToText(job.description ?? job.html ?? "");
-    const lists = (job.lists ?? []).map((list) =>
-      [list.text?.trim(), ...htmlListItems(list.content ?? "")].filter(Boolean).join("\n")
-    );
+    const sections = (job.lists ?? []).map((list) => ({ title: list.text?.trim(), items: htmlListItems(list.content ?? "") }));
+    const lists = sections.map((section) => [section.title, ...section.items].filter(Boolean).join("\n"));
     const description = [opening, ...lists].filter(Boolean).join("\n");
+    // The lists are the posting's titled sections. The opening adds only lines it lists under a
+    // requirement heading of its own; without any lists, the opening is all there is.
+    const sectionAware = sections.length
+      ? uniqueStrings([
+          ...extractRequirementLines(opening, 220, { withoutHeadings: "none" }),
+          ...extractRequirementLinesFromSections(sections)
+        ]).slice(0, 24)
+      : extractRequirementLines(opening);
 
     return {
       title: job.text,
@@ -74,7 +81,7 @@ export class LeverProvider implements JobSourceProvider {
       sourceUrl: job.hostedUrl ?? job.sourceUrl ?? "",
       applyUrl: job.applyUrl ?? job.hostedUrl ?? job.sourceUrl,
       description,
-      requirements: splitRequirementText(description),
+      requirements: boardRequirementLines(sectionAware, description),
       preferredQualifications: [],
       benefits: [],
       detectedTechStack: detectTechStack(description),

@@ -1,7 +1,8 @@
 import { boardReferenceFromCriteria, fetchBoardListing } from "@/lib/job-sources/board-fetch";
 import { workStyleFromLocation } from "@/lib/job-sources/location-match";
 import type { JobSourceProvider, JobSearchCriteria, NormalizedJob, RawJob } from "@/lib/job-sources/types";
-import { detectTechStack, htmlToText, splitRequirementText, workStyleLabel } from "@/lib/job-sources/utils";
+import { boardRequirementLines, extractRequirementLines, extractRequirementLinesFromHtml } from "@/lib/job-sources/requirement-lines";
+import { detectTechStack, htmlToText, workStyleLabel } from "@/lib/job-sources/utils";
 
 type AshbyCompensationComponent = {
   compensationType?: string;
@@ -59,7 +60,12 @@ export class AshbyProvider implements JobSourceProvider {
 
   normalizeJob(rawJob: RawJob): NormalizedJob {
     const job = rawJob as AshbyJob & { sourceUrl?: string; html?: string };
-    const description = job.descriptionPlain?.trim() || htmlToText(job.descriptionHtml ?? job.html ?? "");
+    const plain = job.descriptionPlain?.trim();
+    const html = job.descriptionHtml ?? job.html ?? "";
+    const description = plain || htmlToText(html);
+    // Plain text read line by line, or the HTML's blocks when the plain text is one paragraph.
+    const fromPlain = plain?.includes("\n") ? extractRequirementLines(plain) : [];
+    const sectionAware = fromPlain.length ? fromPlain : extractRequirementLinesFromHtml(html);
     const locations = [job.location, ...(job.secondaryLocations ?? []).map((entry) => entry.location)]
       .map((value) => value?.trim())
       .filter((value): value is string => Boolean(value));
@@ -75,7 +81,7 @@ export class AshbyProvider implements JobSourceProvider {
       sourceUrl: job.jobUrl ?? job.sourceUrl ?? "",
       applyUrl: job.applyUrl ?? job.jobUrl ?? job.sourceUrl,
       description,
-      requirements: splitRequirementText(description),
+      requirements: boardRequirementLines(sectionAware, description),
       preferredQualifications: [],
       benefits: job.compensation?.compensationTierSummary
         ? [job.compensation.compensationTierSummary]

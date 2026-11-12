@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { JobPosting, JobSourceType } from "@prisma/client";
 
+import { extractRequirementLines } from "@/lib/job-sources/requirement-lines";
 import type { NormalizedJob } from "@/lib/job-sources/types";
 import { upsertNormalizedJob } from "@/lib/jobs";
 import { normalizeText, normalizeUrl } from "@/lib/normalize";
@@ -165,11 +166,24 @@ export function hasSameMatchContent(stored: NormalizedJob, incoming: NormalizedJ
 }
 
 /**
+ * A stored requirement list is kept only while every line is still read as a requirement: by the
+ * source's extractor, or by the section-aware reading of the stored description (the text a job
+ * imported by hand was read from). A list from an older extractor that also took headings, company
+ * blurbs or benefits is replaced, which makes a score of it stale: that score judged lines that are
+ * not requirements, and the owner was asked to answer them.
+ */
+function keepsStoredRequirements(stored: NormalizedJob, incoming: NormalizedJob) {
+  const read = new Set([...incoming.requirements, ...extractRequirementLines(stored.description)].map(postingText));
+  return stored.requirements.every((line) => read.has(postingText(line)));
+}
+
+/**
  * What a refresh should store. When the posting's content did not change, the stored values of
  * every field the job match reads are kept, so a paid (and possibly reviewed) match stays current;
  * provenance and the other fields still come from the source. This also covers a board taking over
  * a job the user imported by hand: the pasted text and the board's text of one unchanged posting
- * differ only in formatting. When the content changed, the source's values replace them.
+ * differ only in formatting. When the content changed, the source's values replace them. The one
+ * exception is a stored requirement list with lines that are not requirements (see above).
  */
 export function keepUnchangedMatchContent(stored: NormalizedJob, incoming: NormalizedJob): NormalizedJob {
   if (!hasSameMatchContent(stored, incoming)) {
@@ -184,7 +198,7 @@ export function keepUnchangedMatchContent(stored: NormalizedJob, incoming: Norma
     salaryMin: stored.salaryMin,
     salaryMax: stored.salaryMax,
     description: stored.description,
-    requirements: stored.requirements,
+    requirements: keepsStoredRequirements(stored, incoming) ? stored.requirements : incoming.requirements,
     preferredQualifications: stored.preferredQualifications,
     detectedTechStack: stored.detectedTechStack
   };
