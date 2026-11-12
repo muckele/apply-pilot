@@ -835,7 +835,7 @@ export function ApplicationBrowserControl({
     }
   }, [acceptAuthoritativeStatus, invalidateReviewAuthority, setControlConnection, updateReviewLoad]);
 
-  // Step 4 (D-C): one explicit click sends the existing OPEN_TARGET and, only when that command
+  // Step 6 (D-C): one explicit click sends the existing OPEN_TARGET and, only when that command
   // itself came back as an accepted TARGET_OPEN status, the existing INSPECT_FORM. Both only open
   // and read. A failed open stops here with its notice; nothing is retried automatically.
   const openAndReadForm = useCallback(async () => {
@@ -1216,7 +1216,7 @@ export function ApplicationBrowserControl({
   }, [fetchFillStatus, fetchReviewAuthority, invalidateReviewAuthority, runId, updateReviewLoad]);
 
 
-  // Step 5 (D-H): one click sends today's per-answer review for every pending proposed answer
+  // Step 7 (D-H): one click sends today's per-answer review for every pending proposed answer
   // (ticked → APPROVED, unticked → REJECTED) in screen order, then today's resolve-review. Each
   // request keeps its own shape, postcondition check and authority refresh. Before each one the
   // latest answer is re-read; if anything failed or changed, nothing more is sent.
@@ -1661,7 +1661,7 @@ export function ApplicationBrowserControl({
   }, [companionWindow, detectCompanionWindow]);
 
   // Remembers that the form was handed over on this page, so a later safe stop or ended session
-  // still leads to step 8 (Record it). Presentation only.
+  // still leads to step 10 (Record it). Presentation only.
   const [formHandedOver, setFormHandedOver] = useState(false);
   const formHandedOverNow = hasAcceptedAuthoritativeStatus &&
     (status.state === "HANDOFF_PENDING" || status.state === "HUMAN_ONLY");
@@ -1840,15 +1840,15 @@ export function ApplicationBrowserControl({
     personalSubmissionCompletionEligible &&
     recordPhase !== "confirming";
   const recordBody = (inStepper: boolean) => <RecordStepBody
-    show={showPersonalSubmissionSection || (inStepper && recordEntryIsPrimary && view.recordEntryStep === 8)}
+    show={showPersonalSubmissionSection || (inStepper && recordEntryIsPrimary && view.recordEntryStep === 10)}
     recorded={personalSubmissionRecorded}
     recordedAt={reviewLoad.run?.completedAt ?? null}
     phase={recordPhase}
     notice={personalSubmissionCompletion.notice}
     showEntry={inStepper
-      ? view.recordEntryStep === 8 && (recordEntryAvailable || recordEntryIsPrimary)
+      ? view.recordEntryStep === 10 && (recordEntryAvailable || recordEntryIsPrimary)
       : recordEntryAvailable}
-    entryPrimary={inStepper && recordEntryIsPrimary && view.recordEntryStep === 8}
+    entryPrimary={inStepper && recordEntryIsPrimary && view.recordEntryStep === 10}
     entryState={view.actions.RECORD}
     confirmPrimary={inStepper && view.primary?.action === "CONFIRM_RECORD"}
     confirmState={view.actions.CONFIRM_RECORD}
@@ -1972,16 +1972,16 @@ export function ApplicationBrowserControl({
       {view.finished === "STOPPED" && view.current === null ? <StoppedCard view={view} /> : null}
 
       <div data-testid="control-steps" className="space-y-3">
-        <StepSection step={4} view={view} summary={stepSummary(4, view.progress[4])}>
+        <StepSection step={6} view={view} summary={stepSummary(6, view.progress[6])}>
           <OpenFormStepBody
             view={view}
-            formRead={view.progress[4] === "done"}
+            formRead={view.progress[6] === "done"}
             onOpenAndRead={() => void openAndReadForm()}
             onReadForm={() => void invoke({ type: "INSPECT_FORM" })}
           />
         </StepSection>
 
-        <StepSection step={5} view={view} summary={stepSummary(5, view.progress[5])}>
+        <StepSection step={7} view={view} summary={stepSummary(7, view.progress[7])}>
           <CheckAnswersStepBody
             view={view}
             packet={reviewLoad.packet}
@@ -1999,7 +1999,7 @@ export function ApplicationBrowserControl({
           />
         </StepSection>
 
-        <StepSection step={6} view={view} summary={stepSummary(6, view.progress[6])}>
+        <StepSection step={8} view={view} summary={stepSummary(8, view.progress[8])}>
           <FillStepBody
             view={view}
             manualFields={manualFields}
@@ -2022,7 +2022,7 @@ export function ApplicationBrowserControl({
           />
         </StepSection>
 
-        <StepSection step={7} view={view} summary={stepSummary(7, view.progress[7])}>
+        <StepSection step={9} view={view} summary={stepSummary(9, view.progress[9])}>
           <FinishStepBody
             view={view}
             workflowState={status.state === "TARGET_OPEN" ? "TARGET_OPEN" : status.state === "HUMAN_ONLY" ? "HANDED_OVER" : "OTHER"}
@@ -2038,13 +2038,13 @@ export function ApplicationBrowserControl({
             }}
             onCancelUnlock={() => setHandoffConfirming(false)}
             onEndSession={() => void invoke({ type: "END_HUMAN_SESSION" })}
-            recordEntry={view.recordEntryStep === 7
+            recordEntry={view.recordEntryStep === 9
               ? <StepActionButton action="RECORD" state={view.actions.RECORD} primary={recordEntryIsPrimary} onClick={openPersonalSubmissionConfirmation} />
               : null}
           />
         </StepSection>
 
-        <StepSection step={8} view={view} summary={stepSummary(8, view.progress[8])}>
+        <StepSection step={10} view={view} summary={stepSummary(10, view.progress[10])}>
           {recordBody(true)}
         </StepSection>
       </div>

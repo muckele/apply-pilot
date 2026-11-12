@@ -42,13 +42,15 @@ export function MatchCard({
   estimate,
   checklist,
   onSeeBreakdown,
-  limit = 5
+  limit = 5,
+  showScoreButton = true
 }: {
   jobId: string;
   estimate: EstimateView | null;
   checklist: ChecklistView;
   onSeeBreakdown?: () => void;
   limit?: number;
+  showScoreButton?: boolean;
 }) {
   if (!estimate) {
     return (
@@ -56,7 +58,7 @@ export function MatchCard({
         <h2 id={`match-${jobId}`} className="job-card-title">Your match</h2>
         <p className="job-match-unscored">Not scored yet</p>
         <p className="job-card-copy">See what this job asks for, line by line, next to your résumé.</p>
-        <ScoreJobButton jobId={jobId} />
+        {showScoreButton ? <ScoreJobButton jobId={jobId} /> : null}
       </section>
     );
   }

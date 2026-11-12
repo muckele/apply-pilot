@@ -99,7 +99,7 @@ const PROGRESS_MARK: Record<StepProgress, string> = { done: "✓", now: "•", l
 const PROGRESS_WORD: Record<StepProgress, string> = { done: "done", now: "now", later: "later" };
 
 export function StepList({ progress }: { progress: ControlStepsView["progress"] }) {
-  return <ol aria-label="All eight steps" data-testid="step-list" className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-200 pt-3 text-xs text-slate-600">
+  return <ol aria-label="All ten steps" data-testid="step-list" className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-200 pt-3 text-xs text-slate-600">
     {ASSISTED_APPLY_STEP_NUMBERS.map((step) => <li
       key={step}
       aria-current={progress[step] === "now" ? "step" : undefined}
@@ -196,7 +196,7 @@ export function ManualFieldList({ fields, intro }: { fields: readonly ManualFiel
   </div>;
 }
 
-// Step 4 · Open the employer's form.
+// Step 6 · Open and read the form.
 export function OpenFormStepBody({
   view,
   formRead,
@@ -208,7 +208,7 @@ export function OpenFormStepBody({
   onOpenAndRead: () => void;
   onReadForm: () => void;
 }) {
-  const primary = view.current === 4 ? view.primary : null;
+  const primary = view.current === 6 ? view.primary : null;
   if (primary?.action === "OPEN_AND_READ") {
     return <StepActionButton action="OPEN_AND_READ" state={view.actions.OPEN_AND_READ} primary onClick={onOpenAndRead} />;
   }
@@ -331,7 +331,7 @@ function ApprovalRow({
 
 const NO_IDS: ReadonlySet<string> = new Set();
 
-// Step 5 · Check the answers: one approval screen (D-H, W6).
+// Step 7 · Check the answers: one approval screen (D-H, W6).
 export function CheckAnswersStepBody({
   view,
   packet,
@@ -349,7 +349,7 @@ export function CheckAnswersStepBody({
   isTickLocked: (answer: AnswerPacketAnswer) => boolean;
   onApproveAndContinue: (displayed: AnswerPacket, ticked: ReadonlySet<string>) => void;
 }) {
-  const isNow = view.current === 5;
+  const isNow = view.current === 7;
   const freshnessCopy = freshnessText(freshness);
   const ambiguous = packet?.summary.ambiguousQuestionCount ?? 0;
   const proposedAnswers = packet?.answers.filter((answer) => answer.disposition === "PROPOSABLE" && answer.proposal !== null) ?? [];
@@ -414,7 +414,7 @@ export function CheckAnswersStepBody({
         </details>
       </div> : null}
       {ambiguous > 0 ? <p className="text-sm text-amber-900">{ambiguous} {ambiguous === 1 ? "question" : "questions"} on the form couldn&apos;t be read clearly. You&apos;ll answer {ambiguous === 1 ? "it" : "them"} yourself; continuing doesn&apos;t answer {ambiguous === 1 ? "it" : "them"}.</p> : null}
-      {otherAnswers.length > 0 ? <p className="text-sm text-slate-700">{otherAnswers.length} {otherAnswers.length === 1 ? "field is" : "fields are"} yours to fill (listed in step 7).</p> : null}
+      {otherAnswers.length > 0 ? <p className="text-sm text-slate-700">{otherAnswers.length} {otherAnswers.length === 1 ? "field is" : "fields are"} yours to fill (listed in step 9).</p> : null}
       {packet ? <p id="review-readiness" className="text-sm text-slate-700">{pending > 0
         ? "When you continue, ticked answers are approved and unticked ones won't be filled."
         : packet.summary.readyForRunResolution
@@ -453,7 +453,7 @@ export function CheckAnswersStepBody({
   </>;
 }
 
-// Step 6 · Fill.
+// Step 8 · Fill.
 export function FillStepBody({
   view,
   manualFields,
@@ -473,7 +473,7 @@ export function FillStepBody({
   onFill: () => void;
   fillStatusBlock: ReactNode;
 }) {
-  const isNow = view.current === 6;
+  const isNow = view.current === 8;
   const showButton = fillableCount > 0 || (isNow && view.primary?.action === "FILL");
   return <>
     <ManualFieldList fields={manualFields} intro="Apply Pilot won't fill these. You'll do them yourself in the employer's window." />
@@ -535,7 +535,7 @@ export function FillStatusBlock({
   </div>;
 }
 
-// Step 7 · Finish and submit.
+// Step 9 · Finish and submit.
 export function FinishStepBody({
   view,
   workflowState,
@@ -563,7 +563,7 @@ export function FinishStepBody({
   onEndSession: () => void;
   recordEntry: ReactNode;
 }) {
-  const isNow = view.current === 7;
+  const isNow = view.current === 9;
   const unlockPrimary = isNow && view.primary?.action === "UNLOCK";
   const confirmPrimary = isNow && view.primary?.action === "CONFIRM_UNLOCK";
   return <>
@@ -600,7 +600,7 @@ export function FinishStepBody({
   </>;
 }
 
-// Step 8 · Record it. Also shown on its own in the wrong window.
+// Step 10 · Record it. Also shown on its own in the wrong window.
 export function RecordStepBody({
   show,
   recorded,
@@ -684,9 +684,9 @@ export function MoreActions({ actions }: { actions: readonly MoreAction[] }) {
 
 export function stepSummary(step: ControlStepNumber, progress: StepProgress): string {
   const done = progress === "done";
-  if (step === 4) return done ? "Apply Pilot opened and read the employer's form." : "Apply Pilot opens the employer's form and reads it.";
-  if (step === 5) return done ? "You checked the proposed answers." : "Check what Apply Pilot proposes before anything is typed.";
-  if (step === 6) return done ? "Fill is done, or there was nothing to fill." : "Fill types the answers you approved, once.";
-  if (step === 7) return done ? "You finished the form." : "Unlock the form, finish it and press Submit yourself.";
+  if (step === 6) return done ? "Apply Pilot opened and read the employer's form." : "Apply Pilot opens the employer's form and reads it.";
+  if (step === 7) return done ? "You checked the proposed answers." : "Check what Apply Pilot proposes before anything is typed.";
+  if (step === 8) return done ? "Fill is done, or there was nothing to fill." : "Fill types the answers you approved, once.";
+  if (step === 9) return done ? "You finished the form." : "Unlock the form, finish it and press Submit yourself.";
   return done ? "Recorded." : "Record that you submitted it.";
 }

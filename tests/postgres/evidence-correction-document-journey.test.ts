@@ -101,12 +101,14 @@ test("actual owned product job route reviews full career and exports current fil
         if(theme==="system"){await page.emulateMedia({colorScheme:"dark"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");await page.emulateMedia({colorScheme:"light"});await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="light");}
         await page.locator("[data-job-workspace] h1").scrollIntoViewIfNeeded();
         await page.screenshot({path:`${outputDir}/${name}-${theme}-source.png`});
-        assert.match(await page.locator("#tailor").innerText(),/Lines you.ve added for this job/u);
+        // Tailoring and documents live on the Apply page (#step-2, #step-3), not the job page.
+        await page.goto(`${origin}/jobs/${job.id}/apply`,{waitUntil:"networkidle"});
+        assert.match(await page.locator("#step-2").innerText(),/Lines you.ve added for this job/u);
         await page.getByRole("button",{name:"Review cover letter",exact:true}).click();
         if(theme!=="light") {
           await page.emulateMedia({colorScheme:"dark"});
           if(theme==="system")await page.waitForFunction(()=>document.documentElement.dataset.productTheme==="dark");
-          const contrasts=await page.locator('[data-job-workspace] h1, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
+          const contrasts=await page.locator('h1, [data-selected-document="cover"] [data-document-preview] > p:first-of-type').evaluateAll(elements=>elements.map(element=>{
             let ancestor:Element|null=element,background="";
             while(ancestor){background=getComputedStyle(ancestor).backgroundColor;if(background!=="rgba(0, 0, 0, 0)"&&background!=="transparent")break;ancestor=ancestor.parentElement;}
             const [a,b]=[getComputedStyle(element).color,background].map(value=>value.match(/[\d.]+/g)!.slice(0,3).map(Number).map(channel=>{const s=channel/255;return s<=.04045?s/12.92:((s+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i]!,0));
@@ -121,11 +123,15 @@ test("actual owned product job route reviews full career and exports current fil
         await page.screenshot({path:`${outputDir}/${name}-${theme}-letter.png`});
         const opening=await opener.boundingBox();assert.ok(opening&&opening.y>=0&&opening.y+opening.height<=viewport.height,"The actual product document opening must be visible without manual scrolling: "+JSON.stringify({name,theme,opening}));
         assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        await page.goto(`${origin}/jobs/${job.id}`,{waitUntil:"networkidle"});
       }
     }
+    // None of the Apply page's client components fetch an /api route on mount, so this still means
+    // "no API calls from the theme flow, the Apply page's first render or the document switching above".
     assert.deepEqual(api,[]);assert.deepEqual(errors,[]);
     assert.equal((await client.jobPosting.findUniqueOrThrow({where:{id:job.id}})).evidenceSnapshotGeneration,initialGeneration);
-    await page.reload({waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
+    // The rest of the journey works the tailoring flow and documents, which live on the Apply page.
+    await page.goto(`${origin}/jobs/${job.id}/apply`,{waitUntil:"networkidle"});assert.equal(await page.evaluate(()=>localStorage.getItem("apply-pilot-theme")),"system");
     await page.locator('[data-selected-document="resume"] summary').filter({hasText:/^Edit document text$/}).click();
     const draft=tailored.resumeText+"\nUnsaved synthetic owner edit";
     await page.getByLabel("Tailored résumé text").fill(draft);
@@ -268,7 +274,7 @@ test("actual owned product job route reviews full career and exports current fil
     const stale=await page.request.post(origin+"/api/documents/export",{data:{resumeVersionId:version.id,format:"pdf"}});assert.equal(stale.status(),409);
     await page.waitForFunction(()=>document.querySelector("[data-product-documents]")!==null);
     assert.equal(await page.getByRole("button",{name:"Preview actual PDF",exact:true}).isDisabled(),true);
-    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,explicitPdfFontChecks:fontChecks,docxGeorgiaPreserved:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
+    await writeFile(`${outputDir}/route-check.json`,JSON.stringify({actualRoute:`/jobs/${job.id}/apply`,sourceJobs:3,navigationApiCalls:0,navigationEvidenceMutations:0,matchCalls,delayedDifferentDocumentResponseIgnored:true,explicitPdfFontChecks:fontChecks,docxGeorgiaPreserved:true,exported:["resume.pdf","resume.docx","cover-letter.pdf","cover-letter.docx","custom-resume.pdf","custom-resume.docx"],staleExportStatus:stale.status(),consoleErrors:errors},null,2));
     await page.close();
   }finally{await browser.close();await nextServer?.stop();await client.user.delete({where:{id:user.id}});await client.$disconnect();}
 });

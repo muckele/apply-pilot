@@ -150,7 +150,7 @@ test("every product score consumer joins the current prompt version before prese
 });
 
 test("job detail mounts the preview-only evidence correction surface from the current master resume", () => {
-  const source = readFileSync("app/(product)/jobs/[id]/page.tsx", "utf8");
+  const source = readFileSync("lib/jobs/job-detail.ts", "utf8");
   assert.match(source, /EvidenceCorrectionReview/);
   assert.match(source, /buildEvidenceCorrectionReview/);
   assert.match(source, /isMaster: true/);

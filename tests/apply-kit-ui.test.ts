@@ -249,7 +249,7 @@ test("a 409 stale-evidence refusal explains what happened and links to the fix",
     await click(element(container, "[data-confirm-applied]"));
     const error = element(container, "[data-applied-error]");
     assert.match(error.textContent ?? "", /master résumé or reviewed evidence changed/u);
-    assert.equal(element<HTMLAnchorElement>(error, "a").getAttribute("href"), "#documents");
+    assert.equal(element<HTMLAnchorElement>(error, "a").getAttribute("href"), "#step-3");
     assert.equal(refreshes(), 1, "the kit reloads document states");
   });
 });

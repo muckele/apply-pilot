@@ -348,7 +348,7 @@ async function clickFill(control: MountedControl): Promise<void> {
   await flushComponentWork();
 }
 
-// UX-4a: "Inspect form" is "Read the form" (step 4) or, once the form was read, "Read the form
+// UX-4a: "Inspect form" is "Read the form" (step 6) or, once the form was read, "Read the form
 // again" under More. Both send the same INSPECT_FORM.
 function readFormButton(container: HTMLElement): HTMLButtonElement {
   const button = optionalButtonNamed(container, "Read the form") ?? optionalButtonNamed(container, "Read the form again");
@@ -1894,7 +1894,7 @@ test("mounted control harness renders the real component and completes its initi
   const control = await mountControl();
   t.after(() => control.cleanup());
 
-  assert.match(control.container.textContent ?? "", /Step 5 of 8 · Check the answers/);
+  assert.match(control.container.textContent ?? "", /Step 7 of 10 · Check the answers/);
   assert.match(control.container.textContent ?? "", /No current answer packet has been published yet/);
   assert.equal(control.fetchCalls.length, 3);
   assert.equal(control.fetchCalls.filter((call) => String(call.input) === fillAttemptPath()).length, 1);

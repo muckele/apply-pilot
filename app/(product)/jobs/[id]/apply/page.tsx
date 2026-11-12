@@ -1,9 +1,13 @@
 import { notFound } from "next/navigation";
 
-import { ApplyKit } from "@/components/apply-kit/apply-kit";
+import { ApplyPage } from "@/components/apply-page/apply-page";
 import { ButtonLink, PageHeader } from "@/components/ui";
 import { loadApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availability";
+import { isApplicationAutomationEnabled } from "@/lib/application-runs/policy";
+import { loadApplyProgress } from "@/lib/apply-page/load-apply-progress";
+import { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
+import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
@@ -12,31 +16,40 @@ type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };
 
-// Apply Kit (WP1.5): documents, ready-to-paste answers, the employer link and "I applied" for one
-// job, with no browser companion. The page is owner-scoped; another user's job is a 404.
-export default async function ApplyKitPage({ params, searchParams }: Props) {
+// One Apply page per job (D036): the match, tailoring, documents and, under "Apply on my own", the
+// Apply Kit. The page is owner-scoped; another user's job is a 404.
+export default async function ApplyJobPage({ params, searchParams }: Props) {
   const userId = await requirePageUserId();
   const { id } = await params;
   // "Yes, I applied" on the job page's "Did you apply?" card lands here with the confirmation open.
   const answeredYes = (await searchParams).didYouApply === "yes";
-  const view = await loadApplyKitView(prisma, {
-    userId,
-    jobId: id,
-    aiGenerationAvailable: isDocumentGenerationAvailable()
-  });
+  const [detail, kit] = await Promise.all([
+    loadJobDetail(userId, id),
+    loadApplyKitView(prisma, { userId, jobId: id, aiGenerationAvailable: isDocumentGenerationAvailable() })
+  ]);
 
-  if (!view) {
+  if (!detail || !kit) {
     notFound();
   }
+
+  const progress = await loadApplyProgress(userId, detail);
 
   return (
     <>
       <PageHeader
-        title={`Apply Kit: ${view.job.title}`}
-        description={`${view.job.company}${view.job.location ? ` · ${view.job.location}` : ""} · Prepare, apply on the employer's site, then record what you sent.`}
-        action={<ButtonLink href={`/jobs/${view.job.id}`} variant="secondary">Back to job</ButtonLink>}
+        tone="branded"
+        title={`Apply: ${kit.job.title}`}
+        description={`${kit.job.company}${kit.job.location ? ` · ${kit.job.location}` : ""} · Check your match, write your documents, then apply.`}
+        action={<ButtonLink href={`/jobs/${kit.job.id}`} variant="secondary" tone="branded">Back to job</ButtonLink>}
       />
-      <ApplyKit view={view} answeredYes={answeredYes} />
+      <ApplyPage
+        detail={detail}
+        kit={kit}
+        automationAvailable={isApplicationAutomationEnabled()}
+        progress={progress}
+        tailorServer={{ quote: buildDocumentCreationQuote(), generationAvailable: isDocumentGenerationAvailable() }}
+        answeredYes={answeredYes}
+      />
     </>
   );
 }

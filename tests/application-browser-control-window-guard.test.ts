@@ -306,7 +306,7 @@ test("inside the Apply Pilot browser: banner, title and one automatic status rea
     assert.equal(mounted.container.querySelector('[data-testid="apply-pilot-browser-banner"]') !== null, true);
     assert.deepEqual(mounted.bindingCalls, [{ type: "GET_STATUS" }]);
     // UX-4a: the tab title now names the current step (redesign §5.3).
-    assert.equal(mounted.window.document.title, "Apply Pilot browser: Step 4, Open the employer's form");
+    assert.equal(mounted.window.document.title, "Apply Pilot browser: Step 6, Open and read the form");
     assert.equal(
       mounted.container.querySelector('[data-testid="companion-status"]')?.textContent?.trim(),
       "Employer's form is open."

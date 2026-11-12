@@ -88,7 +88,7 @@ test("the preview pane shows the match card, tabs and one path into tailoring an
     }));
     assert.match(harness.container.querySelector("[data-match-card]")!.textContent ?? "", /Your résumé shows 1 of 2 must-haves/u);
     const links = Object.fromEntries([...harness.container.querySelectorAll("a")].map((link) => [link.textContent?.trim(), link.getAttribute("href")]));
-    assert.equal(links["Tailor your résumé for this job"], "/jobs/job-1#tailor");
+    assert.equal(links["Tailor your résumé for this job"], "/jobs/job-1/apply");
     assert.equal(links["Go to Apply Kit"], "/jobs/job-1/apply");
     assert.ok(harness.button("Save job"));
     assert.match(harness.text(), /“This is a fully remote role\.”/u);

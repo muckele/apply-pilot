@@ -9,28 +9,30 @@ import type {
 } from "@/lib/application-browser/types";
 import { safeStopLabel } from "@/lib/assisted-apply/plain-language";
 
-// The control page as the guide's steps 4–8 (redesign §5.1, §5.2, W6–W9).
+// The control page as the guide's steps 6–10 (redesign §5.1, §5.2, W6–W9).
 // Presentation only: this decides which step is "now", which one button is primary and why a
 // button is disabled. Every permission is still decided by the gates in
 // lib/application-browser/control-presentation.ts and, after that, by the companion and server.
 
 export const ASSISTED_APPLY_STEP_NAMES = {
-  1: "Check you're ready",
-  2: "Prepare",
-  3: "Open the Apply Pilot browser",
-  4: "Open the employer's form",
-  5: "Check the answers",
-  6: "Fill",
-  7: "Finish and submit",
-  8: "Record it"
+  1: "Your match",
+  2: "Your experience",
+  3: "Your documents",
+  4: "Prepare",
+  5: "Open the Apply Pilot browser",
+  6: "Open and read the form",
+  7: "Check the answers",
+  8: "Fill",
+  9: "Finish and submit",
+  10: "Record it"
 } as const;
 
 export type AssistedApplyStepNumber = keyof typeof ASSISTED_APPLY_STEP_NAMES;
-export type ControlStepNumber = 4 | 5 | 6 | 7 | 8;
+export type ControlStepNumber = 6 | 7 | 8 | 9 | 10;
 export type StepProgress = "done" | "now" | "later";
 
-export const ASSISTED_APPLY_STEP_NUMBERS: readonly AssistedApplyStepNumber[] = [1, 2, 3, 4, 5, 6, 7, 8];
-export const CONTROL_STEP_NUMBERS: readonly ControlStepNumber[] = [4, 5, 6, 7, 8];
+export const ASSISTED_APPLY_STEP_NUMBERS: readonly AssistedApplyStepNumber[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+export const CONTROL_STEP_NUMBERS: readonly ControlStepNumber[] = [6, 7, 8, 9, 10];
 
 export type ControlStepAction =
   | "OPEN_AND_READ"
@@ -134,9 +136,9 @@ export type ControlStepsView = Readonly<{
   next: string;
   primary: Readonly<{ action: ControlStepAction; step: ControlStepNumber }> | null;
   actions: Readonly<Record<ControlStepAction, ControlActionState>>;
-  // Where "I personally submitted this application" is shown: in step 7 once the form is
-  // handed over (W8), otherwise in step 8.
-  recordEntryStep: 7 | 8;
+  // Where "I personally submitted this application" is shown: in step 9 once the form is
+  // handed over (W8), otherwise in step 10.
+  recordEntryStep: 9 | 10;
 }>;
 
 const OPENABLE_RUN_STATES: ReadonlySet<ApplicationRunState> = new Set(["READY", "REVIEW_REQUIRED"]);
@@ -160,7 +162,7 @@ export function shouldWarnBeforeLeaving(input: Readonly<{ hasStatus: boolean; st
 }
 
 export function stepHeading(step: AssistedApplyStepNumber): string {
-  return `Step ${step} of 8 · ${ASSISTED_APPLY_STEP_NAMES[step]}`;
+  return `Step ${step} of 10 · ${ASSISTED_APPLY_STEP_NAMES[step]}`;
 }
 
 export function controlPageTitle(view: ControlStepsView, hasStatus: boolean): string {
@@ -310,7 +312,7 @@ function actionStates(input: ControlStepInput, facts: Facts): Record<ControlStep
       facts.handedOver && "The form has already been handed over to you.",
       !facts.runOpenable && (review.runState === "DRAFT" || review.runState === "PREPARING" ||
         review.runState === "BLOCKED" || review.runState === "FAILED") &&
-        "This application isn't prepared yet. Finish step 2 on the application page first.",
+        "This application isn't prepared yet. Finish step 4 on the Apply page.",
       !facts.runOpenable && "This application is past the point where the form can be opened again."
     )
   );
@@ -360,14 +362,14 @@ function actionStates(input: ControlStepInput, facts: Facts): Record<ControlStep
         "Apply Pilot couldn't confirm the Fill status, so it won't run Fill. Use Refresh Fill status under More.",
       facts.fillUsed && "Fill has already run. It runs only once.",
       fillCommand?.outcome === "REJECTED" &&
-        "Fill didn't start (see the note above). Read the form again under More before trying again, or go on to step 7 and finish the form yourself.",
+        "Fill didn't start (see the note above). Read the form again under More before trying again, or go on to step 9 and finish the form yourself.",
       busyReason(input),
       connectionReason(input),
       stoppedReason(input),
       facts.handedOver && "The form has been handed over to you, so Apply Pilot won't fill it.",
       !facts.formOpen && "The employer's form isn't open in this window.",
-      !facts.formRead && "Read the form first (step 4).",
-      !facts.reviewed && "Check the answers first (step 5).",
+      !facts.formRead && "Read the form first (step 6).",
+      !facts.reviewed && "Check the answers first (step 7).",
       review.phase === "loading" && "Loading the latest answers…",
       (review.phase === "error" || !review.verified) &&
         "Apply Pilot couldn't confirm the latest answers. Use Refresh review data under More.",
@@ -441,11 +443,11 @@ type Placement = Readonly<{
 }>;
 
 const NEXT_LINES: Readonly<Record<ControlStepNumber, string>> = {
-  4: "Next: check the answers Apply Pilot proposes (step 5).",
-  5: "Next: Fill types the answers you approved, once (step 6).",
-  6: "Next: unlock the form and finish it yourself (step 7).",
-  7: "Next: finish the form, press the employer's Submit button yourself, then record it (step 8).",
-  8: "This is the last step."
+  6: "Next: check the answers Apply Pilot proposes (step 7).",
+  7: "Next: Fill types the answers you approved, once (step 8).",
+  8: "Next: unlock the form and finish it yourself (step 9).",
+  9: "Next: finish the form, press the employer's Submit button yourself, then record it (step 10).",
+  10: "This is the last step."
 };
 
 function readSummary(input: ControlStepInput): string {
@@ -462,7 +464,7 @@ function place(input: ControlStepInput, facts: Facts): Placement {
 
   if (review.runState === "COMPLETED_BY_USER" || record.recorded || record.phase === "confirmed") {
     return {
-      current: 8,
+      current: 10,
       finished: "RECORDED",
       primary: null,
       sentence: "Done. Your submission is recorded. Apply Pilot didn't submit anything itself.",
@@ -470,12 +472,12 @@ function place(input: ControlStepInput, facts: Facts): Placement {
     };
   }
   if (review.runState === "CANCELLED") {
-    // The employer's form may still be live in the other window: keep step 7 (the timer, its
+    // The employer's form may still be live in the other window: keep step 9 (the timer, its
     // warnings, End the session, or Unlock) on screen, but offer nothing new.
     if (facts.handedOver || facts.formOpen) {
       const minutes = companion.humanMinutesRemaining;
       return {
-        current: 7,
+        current: 9,
         finished: "STOPPED",
         primary: null,
         sentence: `This application was stopped, so Apply Pilot won't do anything more with it. The employer's form is still open in the other window${facts.handedOver && minutes !== null ? ` (${minutes} ${plural(minutes, "minute", "minutes")} left)` : ""}: finish it there yourself if you still want to apply, or close it.`,
@@ -493,97 +495,97 @@ function place(input: ControlStepInput, facts: Facts): Placement {
 
   if (record.phase === "confirming" || record.phase === "pending") {
     return {
-      current: 8,
+      current: 10,
       finished: null,
-      primary: { action: "CONFIRM_RECORD", step: 8 },
+      primary: { action: "CONFIRM_RECORD", step: 10 },
       sentence: "Confirm only if you pressed the employer's Submit button yourself.",
-      next: NEXT_LINES[8]
+      next: NEXT_LINES[10]
     };
   }
   if (record.phase === "uncertain") {
     return {
-      current: 8,
+      current: 10,
       finished: null,
       primary: record.eligible
-        ? { action: "RECORD", step: 8 }
-        : { action: "CHECK_RECORD", step: 8 },
+        ? { action: "RECORD", step: 10 }
+        : { action: "CHECK_RECORD", step: 10 },
       sentence: "Apply Pilot couldn't confirm whether your submission was recorded. It didn't send it again.",
-      next: NEXT_LINES[8]
+      next: NEXT_LINES[10]
     };
   }
 
   if (facts.handedOver) {
     const minutes = companion.humanMinutesRemaining;
     return {
-      current: 7,
+      current: 9,
       finished: null,
-      primary: { action: "RECORD", step: 7 },
+      primary: { action: "RECORD", step: 9 },
       sentence: companion.state === "HANDOFF_PENDING"
         ? "Handing the form over to you…"
         : `The form is yours: finish it and press the employer's Submit button yourself${minutes === null ? "" : ` (${minutes} ${plural(minutes, "minute", "minutes")} left)`}.`,
-      next: "Next: once you've pressed Submit, record it (step 8)."
+      next: "Next: once you've pressed Submit, record it (step 10)."
     };
   }
 
   if (facts.fillRunning) {
     return {
-      current: 6,
+      current: 8,
       finished: null,
-      primary: { action: "FILL", step: 6 },
+      primary: { action: "FILL", step: 8 },
       sentence: input.fill.mayHaveDispatched && !input.fill.verified
         ? "Apply Pilot couldn't confirm what Fill did. It won't run Fill again. Check every field on the form yourself."
         : "Fill is running. It types your approved answers once and never presses Submit.",
-      next: NEXT_LINES[6]
+      next: NEXT_LINES[8]
     };
   }
 
   if (facts.fillUsed) {
     if (facts.formOpen || !companion.hasStatus) {
       return {
-        current: 7,
+        current: 9,
         finished: null,
-        primary: { action: handoff.confirming ? "CONFIRM_UNLOCK" : "UNLOCK", step: 7 },
+        primary: { action: handoff.confirming ? "CONFIRM_UNLOCK" : "UNLOCK", step: 9 },
         sentence: "Fill has run. Unlock the form so you can check it, finish it and submit it yourself.",
-        next: NEXT_LINES[7]
+        next: NEXT_LINES[9]
       };
     }
     return {
-      current: 8,
+      current: 10,
       finished: null,
-      primary: { action: "RECORD", step: 8 },
+      primary: { action: "RECORD", step: 10 },
       sentence: "Fill has run and the employer's form isn't open in this window any more. If you submitted it, record it here. If not, finish it in your usual browser.",
-      next: NEXT_LINES[8]
+      next: NEXT_LINES[10]
     };
   }
 
   if (facts.stopped) {
     if (companion.handedOverEarlier) {
       return {
-        current: 8,
+        current: 10,
         finished: null,
-        primary: { action: "RECORD", step: 8 },
+        primary: { action: "RECORD", step: 10 },
         sentence: "The employer's form is closed. If you pressed its Submit button, record it here.",
-        next: NEXT_LINES[8]
+        next: NEXT_LINES[10]
       };
     }
     return {
-      current: 4,
+      current: 6,
       finished: null,
-      primary: { action: "OPEN_AND_READ", step: 4 },
+      primary: { action: "OPEN_AND_READ", step: 6 },
       sentence: stoppedReason(input) ?? "Apply Pilot stopped safely.",
-      next: NEXT_LINES[4]
+      next: NEXT_LINES[6]
     };
   }
 
   if (!facts.formOpen) {
     return {
-      current: 4,
+      current: 6,
       finished: null,
-      primary: { action: "OPEN_AND_READ", step: 4 },
+      primary: { action: "OPEN_AND_READ", step: 6 },
       sentence: companion.hasStatus && companion.state === "OPENING_TARGET"
         ? "Opening the employer's form…"
         : "Apply Pilot opens the employer's form in a second window and reads its fields. It doesn't type anything yet.",
-      next: NEXT_LINES[4]
+      next: NEXT_LINES[6]
     };
   }
 
@@ -593,57 +595,57 @@ function place(input: ControlStepInput, facts: Facts): Placement {
       inspection?.outcome === "REINSPECTION_REQUIRED" ||
       (inspection?.outcome === "SUCCEEDED" && inspection.reinspectionRequired);
     return {
-      current: 4,
+      current: 6,
       finished: null,
-      primary: { action: "READ_FORM", step: 4 },
+      primary: { action: "READ_FORM", step: 6 },
       sentence: changed
         ? "The employer's form changed, so Apply Pilot needs to read it again."
         : inspection?.outcome === "FAILED"
           ? "Apply Pilot couldn't read the form (see the note above). You can try again."
           : "The employer's form is open. Apply Pilot reads it next, so it can propose answers.",
-      next: NEXT_LINES[4]
+      next: NEXT_LINES[6]
     };
   }
 
   if (!facts.answersMatchReading) {
     return {
-      current: 5,
+      current: 7,
       finished: null,
-      primary: { action: "CONTINUE_REVIEW", step: 5 },
+      primary: { action: "CONTINUE_REVIEW", step: 7 },
       sentence: review.phase === "error"
         ? "Apply Pilot read the form but couldn't load its proposed answers."
         : "Apply Pilot read the form. Loading its proposed answers…",
-      next: NEXT_LINES[5]
+      next: NEXT_LINES[7]
     };
   }
 
   if (!facts.reviewed) {
     return {
-      current: 5,
+      current: 7,
       finished: null,
-      primary: { action: "CONTINUE_REVIEW", step: 5 },
+      primary: { action: "CONTINUE_REVIEW", step: 7 },
       sentence: readSummary(input),
-      next: NEXT_LINES[5]
+      next: NEXT_LINES[7]
     };
   }
 
   const packet = review.packet;
   if (input.fill.fillableCount === 0) {
     return {
-      current: 7,
+      current: 9,
       finished: null,
-      primary: { action: handoff.confirming ? "CONFIRM_UNLOCK" : "UNLOCK", step: 7 },
+      primary: { action: handoff.confirming ? "CONFIRM_UNLOCK" : "UNLOCK", step: 9 },
       sentence: "Apply Pilot has nothing it can fill on this form. Unlock the form and fill it in yourself.",
-      next: NEXT_LINES[7]
+      next: NEXT_LINES[9]
     };
   }
   const total = packet?.fieldCount ?? input.fill.fillableCount;
   return {
-    current: 6,
+    current: 8,
     finished: null,
-    primary: { action: "FILL", step: 6 },
+    primary: { action: "FILL", step: 8 },
     sentence: `Apply Pilot can fill ${input.fill.fillableCount} of ${total} ${plural(total, "field", "fields")}. You'll do the rest.`,
-    next: NEXT_LINES[6]
+    next: NEXT_LINES[8]
   };
 }
 
@@ -652,15 +654,15 @@ export function deriveControlSteps(input: ControlStepInput): ControlStepsView {
   const placement = place(input, facts);
   const progress = {} as Record<AssistedApplyStepNumber, StepProgress>;
   for (const step of ASSISTED_APPLY_STEP_NUMBERS) {
-    if (step <= 3 || placement.finished === "RECORDED") progress[step] = "done";
+    if (step <= 5 || placement.finished === "RECORDED") progress[step] = "done";
     else if (placement.current === null) progress[step] = "later";
     else progress[step] = step < placement.current ? "done" : step === placement.current ? "now" : "later";
   }
   const heading = placement.finished === "STOPPED"
     ? placement.current === null ? "Stopped" : `${stepHeading(placement.current)}: application stopped`
     : placement.finished === "RECORDED"
-      ? `${stepHeading(8)}: done`
-      : stepHeading(placement.current ?? 4);
+      ? `${stepHeading(10)}: done`
+      : stepHeading(placement.current ?? 6);
   return {
     current: placement.current,
     finished: placement.finished,
@@ -670,7 +672,7 @@ export function deriveControlSteps(input: ControlStepInput): ControlStepsView {
     next: placement.next,
     primary: placement.primary,
     actions: actionStates(input, facts),
-    recordEntryStep: placement.primary?.action === "RECORD" && placement.primary.step === 7 ? 7 : 8
+    recordEntryStep: placement.primary?.action === "RECORD" && placement.primary.step === 9 ? 9 : 10
   };
 }
 
