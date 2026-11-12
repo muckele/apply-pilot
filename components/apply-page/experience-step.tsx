@@ -8,7 +8,7 @@ import { useInPageConfirm } from "@/components/ui/in-page-confirm";
 import { fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import { formatCentsCeiling, formatUsdMicros, type DocumentCreationQuote } from "@/lib/jobs/document-creation-plan";
-import type { EvidenceCorrectionReview, EvidenceReviewGap } from "@/lib/jobs/evidence-correction-review";
+import type { AnsweredRequirement, EvidenceCorrectionReview, EvidenceReviewGap } from "@/lib/jobs/evidence-correction-review";
 import { evidenceSnapshotSaveResponseSchema } from "@/lib/jobs/evidence-snapshot-contracts";
 import {
   clearExperienceDrafts,
@@ -59,6 +59,12 @@ const TRUTH = "Everything I wrote above is true.";
 const STALE = "This job's review changed in another tab. Reload to continue; your lines are kept on this computer.";
 const STALE_NOT_KEPT = "This job's review changed in another tab. Copy your lines, then reload to continue; this browser can't keep them.";
 const STALE_CODES = new Set(["EVIDENCE_SOURCE_STALE", "EVIDENCE_ANALYSIS_STALE"]);
+// What the latest score made of the requirement a saved line was written for.
+const LINE_VERDICT: Record<AnsweredRequirement["status"], string> = {
+  shown: "Your latest score counts this requirement as shown.",
+  not_shown: "Your latest score still doesn't count this requirement as shown.",
+  not_assessed: "Gemini didn't check this requirement in your latest score, so this line wasn't counted."
+};
 
 type Item = { key: string; gap: EvidenceReviewGap };
 type Mode = "write" | "resume";
@@ -221,7 +227,8 @@ export function ExperienceStep({
     const draft = savedLine(fact.factId);
     const replacing = draft.action === "REPLACE_OWNER_ATTESTATION";
     const problems = replacing ? (draft.line.trim() ? lineProblems(draft.line) : ["Write the new line, or choose Keep."]) : [];
-    return { fact, draft, replacing, problems };
+    const answered = review.answeredRequirements.find((item) => item.factId === fact.factId) ?? null;
+    return { fact, draft, replacing, problems, answered };
   });
 
   const pending = entries.some((entry) => entry.gapDraft.choice !== "skip") ||
@@ -476,9 +483,15 @@ export function ExperienceStep({
         {factEntries.length ? (
           <section aria-labelledby="saved-lines-heading" className="job-step">
             <h3 id="saved-lines-heading" className="job-step-title">Lines you&apos;ve added before</h3>
-            {factEntries.map(({ fact, draft, replacing, problems }, index) => (
+            {factEntries.map(({ fact, draft, replacing, problems, answered }, index) => (
               <fieldset key={fact.factId} className="job-gap" data-saved-line={fact.factId}>
                 <legend className="job-gap-requirement">{fact.fact}</legend>
+                {answered ? (
+                  <>
+                    <p className="job-hint" data-line-for>For: {answered.requirement}</p>
+                    <p className="job-hint" data-line-verdict={answered.status}>{LINE_VERDICT[answered.status]}</p>
+                  </>
+                ) : null}
                 <div className="job-gap-choices" role="radiogroup" aria-label={`Keep or change: ${fact.fact}`}>
                   {([["RETAIN", "Keep"], ["REMOVE", "Remove"], ["REPLACE_OWNER_ATTESTATION", "Change"]] as Array<[SavedLineAction, string]>).map(([value, text]) => (
                     <label key={value} className="job-choice" data-checked={draft.action === value}>

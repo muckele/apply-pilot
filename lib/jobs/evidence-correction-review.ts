@@ -3,7 +3,7 @@ import { hasEvidenceNegationCue } from "@/lib/evidence-negation";
 import { isRequirementLine } from "@/lib/job-sources/requirement-lines";
 import type { AcceptedEvidenceFact } from "@/lib/jobs/evidence-snapshot-contracts";
 import { assertNewOwnerFactShape, assertOwnerFactClean } from "@/lib/jobs/owner-fact-cleanup";
-import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
+import { buildRequirementChecklist, type ChecklistItem, type ChecklistStatus } from "@/lib/jobs/requirement-checklist";
 
 export type EvidenceFactSection =
   | "raw_source"
@@ -54,6 +54,16 @@ export type EvidenceCorrectionReview = Readonly<{
   // job.requirements>". Unlike gaps they need no decision: a save may add an answer for any of
   // them after the gap decisions, and an unanswered one is simply left out.
   uncheckedRequirements: EvidenceReviewGap[];
+  // For each saved line written for a listed requirement (originGapId "requirement:<index>"), what
+  // the current match made of that requirement, so step 2 can say whether the line counted.
+  answeredRequirements: AnsweredRequirement[];
+}>;
+
+export type AnsweredRequirement = Readonly<{
+  factId: string;
+  requirement: string;
+  jobRef: string;
+  status: ChecklistStatus;
 }>;
 
 type ReuseFields = {
@@ -188,19 +198,27 @@ function readGaps(value: unknown): EvidenceReviewGap[] {
   });
 }
 
+// The Match tab's checklist for the current analysis, or null without one.
+function currentChecklistItems(
+  analysisId: string | null,
+  output: unknown,
+  job: { requirements: readonly string[]; description?: string | null } | undefined
+): ChecklistItem[] | null {
+  if (!analysisId || !job || !isCurrentAnalysisOutput(output)) return null;
+  return buildRequirementChecklist(job.requirements, output, { description: job.description ?? null }).items;
+}
+
 // Same linking as the Match tab's checklist, so both show the same requirements as not checked.
 // Left out: lines that cannot be requirements (a heading or pay line an older import stored), and
 // requirements the owner already answered with a line, so a rescore that again leaves one
-// unchecked does not ask about it a second time.
+// unchecked does not ask about it a second time (answeredRequirements says so instead).
 function readUncheckedRequirements(
-  analysisId: string | null,
-  output: unknown,
-  job: { requirements: readonly string[]; description?: string | null } | undefined,
+  items: readonly ChecklistItem[] | null,
   acceptedFacts: readonly AcceptedEvidenceFact[]
 ): EvidenceReviewGap[] {
-  if (!analysisId || !job || !isCurrentAnalysisOutput(output)) return [];
+  if (!items) return [];
   const answered = new Set(acceptedFacts.map((fact) => fact.originGapId));
-  return buildRequirementChecklist(job.requirements, output, { description: job.description ?? null }).items
+  return items
     .flatMap((item, index) => item.status === "not_assessed" && item.requirement.trim() && isRequirementLine(item.requirement) &&
       !answered.has(`requirement:${index}`)
       ? [Object.freeze({
@@ -210,6 +228,26 @@ function readUncheckedRequirements(
           missingKeywords: []
         })]
       : []);
+}
+
+// A line saved against a gap ("gap:<n>") names a gap of an earlier analysis, not a requirement, so
+// only lines saved for a listed requirement get a verdict.
+function readAnsweredRequirements(
+  items: readonly ChecklistItem[] | null,
+  acceptedFacts: readonly AcceptedEvidenceFact[]
+): AnsweredRequirement[] {
+  if (!items) return [];
+  return acceptedFacts.flatMap((fact) => {
+    const index = Number(fact.originGapId?.match(/^requirement:(\d+)$/u)?.[1] ?? Number.NaN);
+    const item = Number.isSafeInteger(index) ? items[index] : undefined;
+    if (!item?.requirement.trim()) return [];
+    return [Object.freeze({
+      factId: fact.factId,
+      requirement: item.requirement.trim(),
+      jobRef: `job.requirements[${index}]`,
+      status: item.status
+    })];
+  });
 }
 
 export function buildEvidenceCorrectionReview(input: {
@@ -238,6 +276,8 @@ export function buildEvidenceCorrectionReview(input: {
   addIndexedFacts(facts, resume.projects, "resume.projects", "projects", "Project");
   addIndexedFacts(facts, resume.education, "resume.education", "education", "Education record");
   addIndexedFacts(facts, resume.certifications, "resume.certifications", "certifications", "Certification");
+  const checklist = currentChecklistItems(input.analysisId, input.analysisOutput, input.job);
+  const acceptedFacts = input.acceptedFacts ?? [];
   return Object.freeze({
     schema: "apply-pilot/evidence-correction-review/v1",
     persistence: "durable_job_only",
@@ -251,9 +291,10 @@ export function buildEvidenceCorrectionReview(input: {
     selectedResumeDocumentId: input.selectedResumeDocumentId ?? null,
     selectedCoverLetterDocumentId: input.selectedCoverLetterDocumentId ?? null,
     facts,
-    acceptedFacts: input.acceptedFacts ?? [],
+    acceptedFacts,
     gaps: readGaps(input.analysisOutput),
-    uncheckedRequirements: readUncheckedRequirements(input.analysisId, input.analysisOutput, input.job, input.acceptedFacts ?? [])
+    uncheckedRequirements: readUncheckedRequirements(checklist, acceptedFacts),
+    answeredRequirements: readAnsweredRequirements(checklist, acceptedFacts)
   });
 }
 
