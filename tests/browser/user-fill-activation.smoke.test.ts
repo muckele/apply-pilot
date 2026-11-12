@@ -192,6 +192,9 @@ type ProductionControlServerState = {
   failFillStatus: boolean;
   fillStatusReads: number;
   fillStatus: ReturnType<typeof noAttemptStatus> | ReturnType<typeof fillingStatus>;
+  fillMode: "PREPARE_ONLY" | "FILL_AND_REVIEW";
+  policyReads: number;
+  policyPatches: string[];
 };
 
 let productionControlBundle = "";
@@ -249,6 +252,7 @@ async function buildProductionControlBundle(): Promise<string> {
 async function openProductionControlPage(input: Readonly<{
   bindingMode: ProductionBindingMode;
   fillStatus?: ProductionControlServerState["fillStatus"];
+  fillMode?: ProductionControlServerState["fillMode"];
 }>): Promise<{
   browserDiagnostics: string[];
   context: BrowserContext;
@@ -259,7 +263,10 @@ async function openProductionControlPage(input: Readonly<{
   const serverState: ProductionControlServerState = {
     failFillStatus: false,
     fillStatusReads: 0,
-    fillStatus: input.fillStatus ?? noAttemptStatus()
+    fillStatus: input.fillStatus ?? noAttemptStatus(),
+    fillMode: input.fillMode ?? "FILL_AND_REVIEW",
+    policyReads: 0,
+    policyPatches: []
   };
   await context.addInitScript(`(() => {
     const bindingMode = ${JSON.stringify(input.bindingMode)};
@@ -320,6 +327,21 @@ async function openProductionControlPage(input: Readonly<{
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ runId: RUN_ID, current: productionAnswerPacket })
+      });
+      return;
+    }
+    // Step 8 reads the account's Assisted Fill mode (D035 D-B) and can turn it on.
+    if (requestUrl.pathname === "/api/application-automation-policy") {
+      if (route.request().method() === "PATCH") {
+        serverState.policyPatches.push(route.request().postData() ?? "");
+        serverState.fillMode = "FILL_AND_REVIEW";
+      } else {
+        serverState.policyReads += 1;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ mode: serverState.fillMode })
       });
       return;
     }
@@ -509,6 +531,36 @@ test("a production ApplicationBrowserControl remount with an existing attempt ne
     assert.equal(bindingState.fillCount, 0);
     assert.deepEqual(bindingState.commands, []);
     assert.equal(serverState.fillStatusReads, readsBeforeRemount + 1);
+    assert.deepEqual(browserDiagnostics, []);
+  } finally {
+    await context.close();
+  }
+});
+
+test("production step 8 turns Fill on after an in-page question and leaves Fill to the user", async () => {
+  const { browserDiagnostics, context, page, serverState } = await openProductionControlPage({
+    bindingMode: "PENDING",
+    fillMode: "PREPARE_ONLY"
+  });
+  try {
+    await prepareFillEligibleProductionControl(page);
+    const turnOn = page.getByRole("button", { name: "Turn on Fill for this form", exact: true });
+    await turnOn.waitFor();
+    assert.equal(serverState.policyPatches.length, 0);
+    await turnOn.click();
+    await page.getByText("Fill types only the answers you approved, once.", { exact: false }).waitFor();
+    assert.equal(serverState.policyPatches.length, 0, "nothing is sent before the answer");
+    await page.getByRole("button", { name: "Turn on Fill", exact: true }).click();
+    await page.getByText("Fill is on. Press Fill when you're ready.", { exact: true }).waitFor();
+    assert.deepEqual(serverState.policyPatches, [JSON.stringify({ mode: "FILL_AND_REVIEW" })]);
+    assert.equal(serverState.policyReads, 2, "read on reaching step 8, then again after the change");
+    assert.equal(await turnOn.count(), 0);
+    const bindingState = await page.evaluate(() => window.__productionControlBindingState!);
+    assert.equal(bindingState.fillCount, 0, "turning Fill on doesn't start it");
+    assert.equal(
+      await page.getByRole("button", { name: "Fill your 1 approved answer (runs once)", exact: true }).isEnabled(),
+      true
+    );
     assert.deepEqual(browserDiagnostics, []);
   } finally {
     await context.close();

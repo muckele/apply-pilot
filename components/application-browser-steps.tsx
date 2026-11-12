@@ -453,6 +453,47 @@ export function CheckAnswersStepBody({
   </>;
 }
 
+// The Fill switch at step 8 (D035 D-B). Assisted Fill is account-wide and turns itself off when
+// an application ends, so step 8 offers to turn it on. Turning it on is one in-page question (like
+// Unlock and Record on this page); the server decides, this only asks it.
+export type FillSwitchView = Readonly<{
+  // The account's mode, from the policy read made when step 8 became current (null: not known).
+  mode: "PREPARE_ONLY" | "FILL_AND_REVIEW" | null;
+  asking: boolean;
+  pending: boolean;
+  disabled: boolean;
+  notice: CommandNotice | null;
+  onAsk: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+}>;
+
+export const FILL_SWITCH_QUESTION = {
+  title: "Turn on Fill for this form?",
+  body: "Fill types only the answers you approved, once. It leaves anything already in the form alone, and you still press the employer's Submit button yourself. Assisted Fill is a setting for your whole account. It turns off by itself when you record or stop an application, and you can turn it off in Settings any time."
+} as const;
+
+function FillSwitch({ fillSwitch }: { fillSwitch: FillSwitchView }) {
+  const busy = fillSwitch.disabled || fillSwitch.pending;
+  return <div className="space-y-2">
+    {fillSwitch.mode === "PREPARE_ONLY" ? <div data-testid="fill-switch" className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+      {fillSwitch.asking ? <div role="group" aria-labelledby="fill-switch-question" className="space-y-2">
+        <h3 id="fill-switch-question" className="font-semibold">{FILL_SWITCH_QUESTION.title}</h3>
+        <p>{FILL_SWITCH_QUESTION.body}</p>
+        <div className="flex flex-wrap items-start gap-2">
+          {/* Secondary: Fill stays the page's one primary action. */}
+          <SecondaryButton type="button" data-testid="confirm-turn-on-fill" disabled={busy} onClick={fillSwitch.onConfirm}>Turn on Fill</SecondaryButton>
+          <SecondaryButton type="button" disabled={fillSwitch.pending} onClick={fillSwitch.onCancel}>Cancel</SecondaryButton>
+        </div>
+      </div> : <>
+        <p>Assisted Fill is off, so Apply Pilot can&apos;t fill this form yet. Turn it on, then press Fill.</p>
+        <SecondaryButton type="button" data-testid="turn-on-fill" disabled={busy} onClick={fillSwitch.onAsk}>Turn on Fill for this form</SecondaryButton>
+      </>}
+    </div> : null}
+    <Notice notice={fillSwitch.notice} />
+  </div>;
+}
+
 // Step 8 · Fill.
 export function FillStepBody({
   view,
@@ -462,7 +503,8 @@ export function FillStepBody({
   acknowledged,
   onAcknowledge,
   onFill,
-  fillStatusBlock
+  fillStatusBlock,
+  fillSwitch
 }: {
   view: ControlStepsView;
   manualFields: readonly ManualFieldPresentation[];
@@ -472,10 +514,12 @@ export function FillStepBody({
   onAcknowledge: (checked: boolean) => void;
   onFill: () => void;
   fillStatusBlock: ReactNode;
+  fillSwitch?: FillSwitchView;
 }) {
   const isNow = view.current === 8;
   const showButton = fillableCount > 0 || (isNow && view.primary?.action === "FILL");
   return <>
+    {isNow && fillSwitch ? <FillSwitch fillSwitch={fillSwitch} /> : null}
     <ManualFieldList fields={manualFields} intro="Apply Pilot won't fill these. You'll do them yourself in the employer's window." />
     <label className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
       <input

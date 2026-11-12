@@ -1,16 +1,21 @@
 import Link from "next/link";
 
 import { ApplicationAnswerVault } from "@/components/application-answer-vault";
+import { AssistedFillSettingsCard } from "@/components/assisted-fill-settings-card";
 import { PageHeader, Panel, PanelHeader, StatusBadge } from "@/components/ui";
+import { readAutomationPolicy } from "@/lib/application-runs/service";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
 
 export default async function ApplicationAnswersPage() {
   const userId = await requirePageUserId();
-  const answers = await prisma.applicationAnswer.findMany({
-    where: { userId },
-    orderBy: [{ category: "asc" }, { question: "asc" }]
-  });
+  const [answers, automationPolicy] = await Promise.all([
+    prisma.applicationAnswer.findMany({
+      where: { userId },
+      orderBy: [{ category: "asc" }, { question: "asc" }]
+    }),
+    readAutomationPolicy(userId)
+  ]);
 
   return (
     <>
@@ -26,6 +31,9 @@ export default async function ApplicationAnswersPage() {
         </Link>
         , where Fill can use them.
       </p>
+      <div className="mb-4">
+        <AssistedFillSettingsCard initialMode={automationPolicy.mode} />
+      </div>
       <Panel>
         <PanelHeader
           title="Reviewed answers"

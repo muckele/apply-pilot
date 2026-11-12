@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { z } from "zod";
 
+import { useInPageConfirm } from "@/components/ui/in-page-confirm";
+import { PREPARE_BLOCKER_COPY, PREPARE_FAILURE_COPY } from "@/lib/application-runs/blocker-copy";
+import { allowHostForRun, prepareRun } from "@/lib/application-runs/client-run";
 import {
   canonicalizePolicyHostEntry,
   isHostAllowedForExecution,
@@ -36,28 +39,11 @@ const policySchema = z.object({
 export type RunView = z.infer<typeof runSchema>;
 export type PolicyView = z.infer<typeof policySchema>;
 
-const blockingMessages: Record<string, string> = {
-  automation_disabled: "Application automation is disabled by the current policy.",
-  automation_disabled_during_preparation: "Application automation was disabled during preparation.",
-  host_blocked: "The run's target host is blocked by the current policy.",
-  fit_below_threshold: "The job's current fit score does not meet the existing policy threshold.",
-  match_confidence_below_threshold: "The job's current match confidence does not meet the existing policy threshold.",
-  resume_required: "An eligible tailored resume must be explicitly assigned to this application in the job packet.",
-  cover_letter_required: "An eligible cover letter must be explicitly assigned to this application in the job packet.",
-  daily_application_cap_reached: "The daily preparation cap has been reached.",
-  ai_budget_exceeded: "The existing AI budget does not permit preparation.",
-  ai_request_cost_limit: "This planner request exceeds the existing per-request cost limit.",
-  ai_cost_confirmation_required: "Preparation requires a separate AI cost confirmation. No additional planner request was sent.",
-  ai_duplicate_in_progress: "Another planner request is in progress. Review the run state before deciding whether to retry."
-};
+const blockingMessages: Record<string, string> = Object.fromEntries(
+  Object.entries(PREPARE_BLOCKER_COPY).map(([reason, copy]) => [reason, copy.text])
+);
 
-const failureMessages: Record<string, string> = {
-  planner_input_invalid: "Preparation failed because the bounded planner input was invalid.",
-  planner_output_invalid: "Preparation failed because the planner output was invalid.",
-  planner_confidence_invalid: "Preparation failed because the planner confidence was invalid.",
-  planner_provider_failure: "Preparation failed while building the application plan.",
-  ai_provider_usage_exceeded_reservation: "Preparation failed because provider usage exceeded its reservation."
-};
+const failureMessages: Record<string, string> = PREPARE_FAILURE_COPY;
 
 function canStartPreparation(state: RunView["state"]) {
   return state === "DRAFT" || state === "BLOCKED" || state === "FAILED";
@@ -109,6 +95,7 @@ export function ApplicationRunPretrialSetup({
   planner: "gemini" | "local";
 }) {
   const router = useRouter();
+  const { confirm, dialog } = useInPageConfirm();
   const inFlight = useRef(false);
   const [run, setRun] = useState(initialRun);
   const [policy, setPolicy] = useState(initialPolicy);
@@ -180,22 +167,20 @@ export function ApplicationRunPretrialSetup({
         setMessage("This run already has the PREPARE_ONLY capability and an allowed host. No policy change was needed.");
         return;
       }
-      if (!window.confirm(
-        `Enable PREPARE_ONLY application automation and allow ${latestRun.applyHost} for this run? This does not authorize Fill.`
-      )) return;
-      const response = await fetch("/api/application-automation-policy", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ enablePretrialForRunId: latestRun.id }),
-        cache: "no-store"
-      });
-      if (!response.ok) {
+      if (!(await confirm({
+        title: "Before this runs",
+        body: `Enable PREPARE_ONLY application automation and allow ${latestRun.applyHost} for this run? This does not authorize Fill.`
+      }))) return;
+      try {
+        await allowHostForRun(latestRun.id);
+      } catch {
         setUncertain(true);
         setMessage("Policy setup was not confirmed. Refresh the page to review the current policy before another action.");
         router.refresh();
         return;
       }
-      const updated = policySchema.parse(await response.json());
+      // The write is confirmed; the policy it left is read back rather than assumed.
+      const updated = await readPolicy();
       setPolicy(updated);
       if (updated.mode !== "PREPARE_ONLY" || !updated.enabled || !allowedForRun(latestRun, updated)) {
         setUncertain(true);
@@ -272,7 +257,7 @@ export function ApplicationRunPretrialSetup({
         setMessage("This run or its policy has changed, so assisted Fill stays off. No change was sent.");
         return;
       }
-      if (!window.confirm(ASSISTED_FILL_CONFIRMATION)) return;
+      if (!(await confirm({ title: "Turn on assisted Fill?", body: ASSISTED_FILL_CONFIRMATION }))) return;
       await writeAssistedFillMode("FILL_AND_REVIEW");
     } catch {
       setUncertain(true);
@@ -297,30 +282,26 @@ export function ApplicationRunPretrialSetup({
     }
   }
 
-  async function prepareRun() {
+  async function startPreparation() {
     if (inFlight.current || !showPrepare) return;
     inFlight.current = true;
     setBusy(true);
     setMessage(null);
-    let costConfirmationRequired = false;
+    const costQuestion = { asked: false };
     let requestSucceeded = false;
     try {
-      const response = await fetch(`/api/application-runs/${run.id}/prepare`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({}),
-        cache: "no-store"
+      // This panel keeps its rule: it never sends the cost confirmation, so a cost question from
+      // the server stops at the durable blocker. (The Apply page's step 4 asks it in the page.)
+      const response = await prepareRun(run.id, () => {
+        costQuestion.asked = true;
+        return false;
       });
       requestSucceeded = response.ok;
-      if (!response.ok) {
-        const body: unknown = await response.json().catch(() => null);
-        costConfirmationRequired = Boolean(body && typeof body === "object" &&
-          "code" in body && body.code === "AI_COST_CONFIRMATION_REQUIRED");
-        if (costConfirmationRequired) setCostConfirmationStop(true);
-      }
     } catch {
-      // A lost response never authorizes an automatic replay.
+      // A declined cost question or a lost response: neither authorizes an automatic replay.
     }
+    const costConfirmationRequired = costQuestion.asked;
+    if (costConfirmationRequired) setCostConfirmationStop(true);
 
     const latestRun = await readRun();
     if (latestRun) {
@@ -381,7 +362,7 @@ export function ApplicationRunPretrialSetup({
         </button>
       ) : null}
       {showPrepare ? (
-        <button type="button" data-testid="prepare-run" onClick={() => { void prepareRun(); }}
+        <button type="button" data-testid="prepare-run" onClick={() => { void startPreparation(); }}
           className="rounded-lg bg-brand-600 px-4 py-2 font-semibold text-white">
           {planner === "gemini" ? "Prepare with Gemini" : "Prepare with local rules"}
         </button>
@@ -416,6 +397,7 @@ export function ApplicationRunPretrialSetup({
         )}
         {!fillIsOn && turnOnBlocker ? <p data-testid="assisted-fill-blocker">{turnOnBlocker}</p> : null}
       </div>
+      {dialog}
       {uncertain && !busy ? (
         <button type="button" data-testid="refresh-run-state" onClick={() => { void refreshRunState(); }}
           className="rounded-lg border border-slate-300 px-4 py-2 font-semibold text-slate-800">

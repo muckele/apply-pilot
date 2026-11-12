@@ -77,12 +77,13 @@ async function mount(options: {
     prior.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
   }
+  // Questions are asked in the page (useInPageConfirm); a browser pop-up is only counted, never answered.
   let confirmations = 0;
+  let windowConfirms = 0;
   const confirmMessages: string[] = [];
-  Object.defineProperty(dom.window, "confirm", { configurable: true, value: (text?: string) => {
-    confirmations += 1;
-    confirmMessages.push(String(text));
-    return options.confirm ?? true;
+  Object.defineProperty(dom.window, "confirm", { configurable: true, value: () => {
+    windowConfirms += 1;
+    return false;
   } });
   const fetchCalls: Array<{ input: string; init?: RequestInit }> = [];
   const priorFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
@@ -107,14 +108,33 @@ async function mount(options: {
         planner: options.planner ?? "local"
       })));
   });
+  // Answers each in-page question the click raises (Confirm, or Cancel when `confirm: false`).
+  async function answerQuestions() {
+    for (let tick = 0; tick < 10; tick += 1) {
+      const dialog = container!.querySelector("[role='group']");
+      if (dialog) {
+        confirmations += 1;
+        confirmMessages.push(dialog.querySelector(".job-card-copy")?.textContent ?? "");
+        const label = (options.confirm ?? true) ? "Confirm" : "Cancel";
+        const answer = [...dialog.querySelectorAll("button")].find((node) => node.textContent === label);
+        assert.ok(answer, `missing ${label}`);
+        await act(async () => { answer.click(); });
+        tick = -1;
+        continue;
+      }
+      await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
+    }
+  }
   return {
     container, fetchCalls, confirmMessages,
     get confirmations() { return confirmations; },
+    get windowConfirms() { return windowConfirms; },
     get refreshes() { return refreshes; },
     async click(id: string) {
       const button = container.querySelector<HTMLButtonElement>(`button[data-testid='${id}']`);
       assert.ok(button, `missing ${id}`);
       await act(async () => { button.click(); });
+      await answerQuestions();
     },
     async cleanup() {
       await act(async () => { root.unmount(); });
@@ -147,11 +167,12 @@ test("eligible owned DRAFT displays policy and Prepare without a render-time req
 test("disabled policy requires confirmation and sends only the run ID for atomic setup", async () => {
   const current = policy({ enabled: false, effectiveEnabled: false, allowedHosts: ["other.example"] });
   const updated = policy({ enabled: true, effectiveEnabled: true, allowedHosts: ["other.example", HOST] });
+  let written = false;
   const ui = await mount({ initialPolicy: current, handler: async (input, init) => {
     const url = String(input);
     if (url === `/api/application-runs/${RUN_ID}` && init?.method === "GET") return json({ run: run() });
-    if (url === "/api/application-automation-policy" && init?.method === "GET") return json(current);
-    if (url === "/api/application-automation-policy" && init?.method === "PATCH") return json(updated);
+    if (url === "/api/application-automation-policy" && init?.method === "GET") return json(written ? updated : current);
+    if (url === "/api/application-automation-policy" && init?.method === "PATCH") { written = true; return json(updated); }
     throw new Error(`Unexpected request: ${url}`);
   } });
   try {
@@ -206,10 +227,11 @@ test("setup rereads policy and refuses a newly Fill-capable mode without PATCH",
 test("policy setup can finish while the global environment gate still denies Prepare", async () => {
   const current = policy({ enabled: false, effectiveEnabled: false, allowedHosts: [] });
   const updated = policy({ enabled: true, effectiveEnabled: false, allowedHosts: [HOST] });
+  let written = false;
   const ui = await mount({ initialPolicy: current, handler: async (input, init) => {
     if (String(input) === `/api/application-runs/${RUN_ID}` && init?.method === "GET") return json({ run: run() });
-    if (String(input) === "/api/application-automation-policy" && init?.method === "GET") return json(current);
-    if (String(input) === "/api/application-automation-policy" && init?.method === "PATCH") return json(updated);
+    if (String(input) === "/api/application-automation-policy" && init?.method === "GET") return json(written ? updated : current);
+    if (String(input) === "/api/application-automation-policy" && init?.method === "PATCH") { written = true; return json(updated); }
     throw new Error("Unexpected request");
   } });
   try {
@@ -301,7 +323,7 @@ test("lost Prepare response reads durable state without replay; failed reconcili
 
 test("durable blockers and bounded failures are explained without arbitrary error text", async () => {
   const reasons = [
-    "automation_disabled", "host_blocked", "fit_below_threshold",
+    "automation_disabled", "automation_disabled_during_preparation", "host_blocked", "fit_below_threshold",
     "match_confidence_below_threshold", "resume_required", "cover_letter_required",
     "daily_application_cap_reached", "ai_budget_exceeded", "ai_request_cost_limit",
     "ai_cost_confirmation_required", "ai_duplicate_in_progress"
@@ -717,4 +739,35 @@ test("a planner failure is described without naming local rules", async () => {
       assert.equal(failure, "Preparation failed while building the application plan.");
     } finally { await ui.cleanup(); }
   }
+});
+
+test("no window.confirm: setup and turning Fill on ask in the page", async () => {
+  const disabled = policy({ enabled: false, effectiveEnabled: false, allowedHosts: [] });
+  let written = false;
+  const setup = await mount({ initialPolicy: disabled, handler: async (input, init) => {
+    if (String(input) === RUN_URL && init?.method === "GET") return json({ run: run() });
+    if (String(input) === POLICY_URL && init?.method === "GET") return json(written ? policy() : disabled);
+    if (String(input) === POLICY_URL && init?.method === "PATCH") { written = true; return json(policy()); }
+    throw new Error("Unexpected request");
+  } });
+  try {
+    await setup.click("enable-pretrial");
+    assert.equal(setup.windowConfirms, 0);
+    assert.equal(setup.confirmations, 1);
+    assert.match(setup.confirmMessages[0], /allow jobs\.example\.com for this run\? This does not authorize Fill\./);
+    assert.deepEqual(patchBodies(setup), [{ enablePretrialForRunId: RUN_ID }]);
+    assert.equal(shows(setup, "prepare-run"), true);
+  } finally { await setup.cleanup(); }
+
+  const current = run({ state: "READY" });
+  const fill = await mount({
+    initialRun: current,
+    handler: routes({ run: () => json({ run: current }), readPolicy: () => json(policy()), writePolicy: () => json(fillOn()) })
+  });
+  try {
+    await fill.click(SWITCH);
+    assert.equal(fill.windowConfirms, 0);
+    assert.equal(fill.confirmations, 1);
+    assert.deepEqual(patchBodies(fill), [{ mode: "FILL_AND_REVIEW" }]);
+  } finally { await fill.cleanup(); }
 });

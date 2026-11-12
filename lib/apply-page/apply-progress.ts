@@ -41,6 +41,9 @@ const NOW_TEXT: Record<AssistedApplyStepNumber, string> = {
   10: "Confirm what you sent.",
 };
 
+// Prepared runs: READY, or REVIEW_REQUIRED (prepared with things to check; the form opens from it).
+const PREPARED_STATES: ReadonlySet<string> = new Set(["READY", "REVIEW_REQUIRED"]);
+
 /** Single place that maps a run to a step from READY on. Task 16 extends this. */
 function stepFromRun(run: NonNullable<ApplyProgressInput["run"]>): AssistedApplyStepNumber {
   void run;
@@ -51,7 +54,7 @@ function currentStep(input: ApplyProgressInput): AssistedApplyStepNumber {
   if (!input.hasMasterResume || !input.hasCurrentMatch) return 1;
   if (!input.reviewSaved) return 2;
   if (!(input.resumeAttached && (input.coverAttached || !input.coverRequired))) return 3;
-  if (input.run?.state !== "READY") return 4;
+  if (!input.run || !PREPARED_STATES.has(input.run.state)) return 4;
   return stepFromRun(input.run);
 }
 

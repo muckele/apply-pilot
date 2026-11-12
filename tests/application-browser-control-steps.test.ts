@@ -26,6 +26,23 @@ import {
 
 const RUN_ID = "cm12345678901234567890123";
 const ATTEMPT_ID = "550e8400-e29b-41d4-a716-446655440000";
+const POLICY_URL = "/api/application-automation-policy";
+// The policy GET body (AutomationPolicyDto) for a synthetic account set up for one host.
+const POLICY = {
+  enabled: true,
+  mode: "FILL_AND_REVIEW",
+  minimumFitScore: 85,
+  minimumConfidenceScore: 85,
+  dailyApplicationCap: 5,
+  allowedHosts: ["jobs.example.test"],
+  blockedHosts: [],
+  permittedAdapters: [],
+  coverLetterRequired: true,
+  sensitiveAnswerPolicy: "EXCLUDE",
+  finalReviewRequired: true,
+  persisted: true,
+  effectiveEnabled: true
+};
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void };
 
@@ -222,6 +239,7 @@ type Mounted = {
   window: JSDOM["window"];
   bindingCalls: B1Command["type"][];
   fetchCalls: string[];
+  requests: Array<{ url: string; method: string; body: string | null }>;
   setBinding(binding: ((command: B1Command) => Promise<B1Status>) | undefined): void;
   cleanup(): Promise<void>;
 };
@@ -237,7 +255,9 @@ async function mount(options: {
   packet?: AnswerPacket | null;
   fill?: Record<string, unknown>;
   acknowledge?: boolean;
-  onFetch?: (url: string) => Promise<Response> | undefined;
+  // The account's Assisted Fill mode, as GET /api/application-automation-policy returns it.
+  fillMode?: "PREPARE_ONLY" | "FILL_AND_REVIEW";
+  onFetch?: (url: string, init?: RequestInit) => Promise<Response> | undefined;
 }): Promise<Mounted> {
   const dom = new JSDOM("<!doctype html><html><head><title>Apply Pilot</title></head><body><div id=\"root\"></div></body></html>", {
     url: "http://localhost/application-runs/test/browser"
@@ -261,15 +281,20 @@ async function mount(options: {
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   }
   const fetchCalls: string[] = [];
+  const requests: Mounted["requests"] = [];
   const savedFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
     writable: true,
-    value: async (input: RequestInfo | URL) => {
+    value: async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       fetchCalls.push(url);
-      const overridden = options.onFetch?.(url);
+      requests.push({ url, method: init?.method ?? "GET", body: typeof init?.body === "string" ? init.body : null });
+      const overridden = options.onFetch?.(url, init);
       if (overridden) return overridden;
+      if (url === POLICY_URL && (init?.method ?? "GET") === "GET") {
+        return json({ ...POLICY, mode: options.fillMode ?? "FILL_AND_REVIEW" });
+      }
       if (url === `/api/application-runs/${RUN_ID}`) {
         return options.run === null ? json({}, 503) : json({ run: run(options.run ?? {}) });
       }
@@ -312,6 +337,7 @@ async function mount(options: {
     window: dom.window,
     bindingCalls,
     fetchCalls,
+    requests,
     setBinding,
     async cleanup() {
       await act(async () => root.unmount());
@@ -914,6 +940,140 @@ test("review fix: before the form is read, a non-primary step 6 says it opens an
     const text = mounted.container.querySelector<HTMLElement>("#step-6-body")?.textContent ?? "";
     assert.match(text, /opens the employer's form in a second window, then reads it/);
     assert.doesNotMatch(text, /Apply Pilot read the employer's form/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+
+// Task 14: the Fill switch at step 8 (D035 D-B). Fill is account-wide and turns itself off when
+// an application ends, so step 8 offers to turn it on where it's used.
+
+function nowCard(container: HTMLElement): HTMLElement | null {
+  return container.querySelector<HTMLElement>('[data-testid="now-card"]');
+}
+
+async function mountAtFill(options: Parameters<typeof mount>[0]): Promise<Mounted> {
+  const mounted = await mount({ packet: reviewedPacket(), acknowledge: true, ...options });
+  mounted.setBinding(async () => readStatus(reviewedPacket()));
+  await refreshStatus(mounted);
+  await flush();
+  return mounted;
+}
+
+test("step 8 shows Turn on Fill for this form when the mode is PREPARE_ONLY", async () => {
+  const mounted = await mountAtFill({ fillMode: "PREPARE_ONLY" });
+  try {
+    assert.equal(nowCard(mounted.container)?.getAttribute("data-step"), "8");
+    const turnOn = button(mounted.container, "Turn on Fill for this form");
+    assert.ok(turnOn, "the switch is offered in step 8");
+    assert.equal(nowCard(mounted.container)?.contains(turnOn), true, "inside the Now card");
+    assert.equal(turnOn.hasAttribute("data-primary-action"), false, "Fill keeps the one primary action");
+    assert.equal(primarySnapshot(mounted.container).action, "FILL");
+    assert.match(nowCard(mounted.container)?.textContent ?? "", /Assisted Fill is off/);
+    assert.equal(mounted.fetchCalls.filter((url) => url === POLICY_URL).length, 1, "read once on reaching step 8");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("step 8 doesn't offer the switch when Fill is already on, or when the mode can't be read", async () => {
+  const on = await mountAtFill({ fillMode: "FILL_AND_REVIEW" });
+  try {
+    assert.equal(nowCard(on.container)?.getAttribute("data-step"), "8");
+    assert.equal(button(on.container, "Turn on Fill for this form"), null);
+  } finally {
+    await on.cleanup();
+  }
+  const unreadable = await mountAtFill({
+    onFetch: (url) => url === POLICY_URL ? Promise.resolve(json({ error: "Unavailable" }, 503)) : undefined
+  });
+  try {
+    assert.equal(nowCard(unreadable.container)?.getAttribute("data-step"), "8");
+    assert.equal(button(unreadable.container, "Turn on Fill for this form"), null);
+  } finally {
+    await unreadable.cleanup();
+  }
+});
+
+test("the policy is read only when step 8 is current, and the switch is never shown elsewhere", async () => {
+  const mounted = await mount({
+    run: { state: "REVIEW_REQUIRED" },
+    packet: pendingPacket(),
+    fill: noAttempt({ state: "REVIEW_REQUIRED" }),
+    fillMode: "PREPARE_ONLY"
+  });
+  try {
+    mounted.setBinding(async () => readStatus(pendingPacket()));
+    await refreshStatus(mounted);
+    assert.equal(nowCard(mounted.container)?.getAttribute("data-step"), "7");
+    assert.equal(mounted.fetchCalls.includes(POLICY_URL), false);
+    assert.equal(button(mounted.container, "Turn on Fill for this form"), null);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("Turn on Fill for this form asks in the page; Cancel sends nothing", async () => {
+  const mounted = await mountAtFill({ fillMode: "PREPARE_ONLY" });
+  mounted.window.confirm = () => {
+    throw new Error("window.confirm must not be used");
+  };
+  try {
+    await click(button(mounted.container, "Turn on Fill for this form"), "Turn on Fill for this form");
+    const text = nowCard(mounted.container)?.textContent ?? "";
+    assert.match(text, /Turn on Fill for this form\?/);
+    assert.match(text, /Fill types only the answers you approved, once\./);
+    assert.equal(mounted.requests.some((request) => request.method === "PATCH"), false, "nothing sent before the answer");
+    await click(button(mounted.container, "Cancel"), "Cancel");
+    assert.equal(mounted.requests.some((request) => request.method === "PATCH"), false, "Cancel sends nothing");
+    assert.ok(button(mounted.container, "Turn on Fill for this form"), "still offered");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("confirming sends PATCH FILL_AND_REVIEW, then rereads the policy and hides the switch", async () => {
+  let mode: "PREPARE_ONLY" | "FILL_AND_REVIEW" = "PREPARE_ONLY";
+  const mounted = await mountAtFill({
+    onFetch: (url, init) => {
+      if (url !== POLICY_URL) return undefined;
+      if (init?.method === "PATCH") {
+        mode = "FILL_AND_REVIEW";
+        return Promise.resolve(json({ ...POLICY, mode, changed: true, revokedExecutionTokenCount: 0 }));
+      }
+      return Promise.resolve(json({ ...POLICY, mode }));
+    }
+  });
+  try {
+    await click(button(mounted.container, "Turn on Fill for this form"), "Turn on Fill for this form");
+    await click(button(mounted.container, "Turn on Fill"), "Turn on Fill");
+    await flush();
+    const patches = mounted.requests.filter((request) => request.method === "PATCH");
+    assert.deepEqual(patches, [{ url: POLICY_URL, method: "PATCH", body: JSON.stringify({ mode: "FILL_AND_REVIEW" }) }]);
+    const policyCalls = mounted.requests.filter((request) => request.url === POLICY_URL).map((request) => request.method);
+    assert.deepEqual(policyCalls, ["GET", "PATCH", "GET"], "the mode shown comes from a fresh read");
+    assert.equal(button(mounted.container, "Turn on Fill for this form"), null);
+    assert.match(nowCard(mounted.container)?.textContent ?? "", /Fill is on/);
+    assert.equal(mounted.bindingCalls.includes("FILL_APPROVED_FIELDS"), false, "turning Fill on doesn't start it");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("a refused turn-on shows the server's message and keeps the switch", async () => {
+  const mounted = await mountAtFill({
+    fillMode: "PREPARE_ONLY",
+    onFetch: (url, init) => url === POLICY_URL && init?.method === "PATCH"
+      ? Promise.resolve(json({ error: "Synthetic refusal from the server.", code: "AUTOMATION_POLICY_INVALID" }, 422))
+      : undefined
+  });
+  try {
+    await click(button(mounted.container, "Turn on Fill for this form"), "Turn on Fill for this form");
+    await click(button(mounted.container, "Turn on Fill"), "Turn on Fill");
+    await flush();
+    assert.match(nowCard(mounted.container)?.textContent ?? "", /Synthetic refusal from the server\./);
+    assert.ok(button(mounted.container, "Turn on Fill for this form"), "still offered after a refusal");
   } finally {
     await mounted.cleanup();
   }

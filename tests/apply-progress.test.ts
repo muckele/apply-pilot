@@ -54,6 +54,12 @@ test("ready run is step 5", () => {
   assert.deepEqual(p.steps.map((s) => s.state), ["done", "done", "done", "done", "now", "later", "later", "later", "later", "later"]);
 });
 
+test("a run prepared with things to check is step 5 too", () => {
+  // Prepare commits REVIEW_REQUIRED whenever the plan has evidence gaps; the form opens from it.
+  assert.equal(derive({ run: { state: "REVIEW_REQUIRED", companionState: null } }).current, 5);
+  for (const state of ["DRAFT", "BLOCKED", "FAILED"]) assert.equal(derive({ run: { state, companionState: null } }).current, 4, state);
+});
+
 test("applied marks all ten done", () => {
   const p = derive({ applied: true });
   assert.equal(p.current, 10);

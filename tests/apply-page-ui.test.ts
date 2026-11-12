@@ -6,7 +6,7 @@ import React, { act } from "react";
 import { ApplyPage, matchResultLine, type ApplyPageProps } from "@/components/apply-page/apply-page";
 import { loadApplyKitView, type ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { deriveApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
-import { applyProgressFromFacts, loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
+import { applyProgressFromFacts, loadApplyPageState, prepareStateFromFacts, type PrepareStepFacts } from "@/lib/apply-page/load-apply-progress";
 import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
 import { prisma } from "@/lib/prisma";
 import type { JobDetail } from "@/lib/jobs/job-detail";
@@ -27,6 +27,16 @@ const output = {
   requirementGaps: [0, 2].map((index) => ({
     requirement: requirements[index], jobRequirement: { ref: `job.requirements[${index}]`, excerpt: requirements[index] }, missingKeywords: []
   }))
+};
+
+const PREPARE_FACTS: PrepareStepFacts = {
+  jobApplyHost: "jobs.example.com",
+  estimate: { score: 90, basis: "REVIEWED_EVIDENCE" },
+  confidenceScore: 88,
+  application: { resumeVersionId: "resume-v2", coverLetterVersionId: "cover-legacy" },
+  policy: { ...automationPolicyDefaultValues(), mode: "PREPARE_ONLY" },
+  run: null,
+  details: { fields: Array.from({ length: 10 }, () => ({}) as never), confirmedCount: 6, missingRequired: [] }
 };
 
 const PROGRESS_INPUT: ApplyProgressInput = {
@@ -74,9 +84,11 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
     kit,
     automationAvailable: false,
     progress: deriveApplyProgress(PROGRESS_INPUT),
+    prepare: prepareStateFromFacts(PREPARE_FACTS),
     tailorServer: { quote: { provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250 }, generationAvailable: true },
     // Most tests here exercise the résumé-only path; the policy default (true) has its own test.
     coverLetterRequired: false,
+    appOrigin: "https://app.example.com",
     ...rest,
     detail
   };
@@ -125,13 +137,63 @@ test("a scored job shows the result line, and Apply on my own holds the Apply Ki
     const own = [...harness.container.querySelectorAll("details")].find((node) => node.querySelector(":scope > summary")?.textContent === "Apply on my own")!;
     assert.equal(own.querySelector("summary")?.textContent, "Apply on my own");
     assert.ok(own.textContent && own.textContent.length > "Apply on my own".length);
-    assert.equal(harness.container.querySelector("#step-4")?.textContent, "", "no Prepare line without an application");
+    const step4 = harness.container.querySelector("#step-4")!;
+    assert.equal(step4.querySelector("h2")?.textContent, "Prepare");
+    assert.match(step4.textContent ?? "", /Assisted apply isn't switched on for this server/u, "no automation, no Prepare");
+    assert.equal(harness.maybeButton("Allow and prepare") === undefined, true);
   });
-  await withPage({ detail: { application: { id: "application-1", statusLabel: "Saved" } } }, async (harness) => {
-    const link = harness.container.querySelector("#step-4 a");
-    assert.equal(link?.getAttribute("href"), "/applications/application-1");
-    assert.match(harness.container.querySelector("#step-4")?.textContent ?? "", /Prepare this application on its application page for now\./u);
+});
+
+test("step 4 is Prepare: the server's ready list and one Allow and prepare", async () => {
+  await withPage({ automationAvailable: true, detail: { application: ATTACHED } }, async (harness) => {
+    const step4 = harness.container.querySelector("#step-4")!;
+    assert.ok(step4.querySelector("[data-prepare-step]"));
+    assert.deepEqual([...step4.querySelectorAll("[data-ready-line]")].map((line) => [line.getAttribute("data-ready-line"), line.getAttribute("data-ok")]), [
+      ["fit_below_threshold", "true"], ["match_confidence_below_threshold", "true"], ["resume_required", "true"],
+      ["cover_letter_required", "true"], ["host_blocked", "true"], ["application_details", "true"]
+    ]);
+    assert.equal(harness.button("Allow and prepare").disabled, false);
+    assert.equal(step4.querySelector('a[href^="/applications/"]') === null, true, "Prepare happens here now, not on the application page");
   });
+  const fillOn = prepareStateFromFacts({ ...PREPARE_FACTS, policy: { ...PREPARE_FACTS.policy, mode: "FILL_AND_REVIEW" } });
+  await withPage({ automationAvailable: true, detail: { application: ATTACHED }, prepare: fillOn }, async (harness) => {
+    assert.equal(harness.button("Allow and prepare").disabled, true);
+    assert.ok(harness.button("Turn off"));
+  });
+  await withPage({ automationAvailable: true, detail: { application: ATTACHED }, kitPatch: { canRecordApplied: false } }, async (harness) => {
+    assert.equal(harness.maybeButton("Allow and prepare") === undefined, true, "nothing to prepare once applied");
+  });
+});
+
+test("step 4's state mirrors Prepare's gates: the reviewed match, documents, policy and host", () => {
+  const ready = prepareStateFromFacts(PREPARE_FACTS);
+  assert.equal(ready.applyHost, "jobs.example.com");
+  assert.equal(ready.fillMode, "PREPARE_ONLY");
+  assert.equal(ready.run, null);
+  assert.ok(ready.readyList.every((line) => line.ok));
+
+  // A match not bound to the saved review doesn't count, whatever its score.
+  const unreviewed = prepareStateFromFacts({ ...PREPARE_FACTS, estimate: { score: 95, basis: "MASTER_RESUME" } });
+  assert.equal(unreviewed.readyList.find((line) => line.key === "fit_below_threshold")?.ok, false);
+  // The policy's own thresholds, cover rule and block list.
+  const strict = prepareStateFromFacts({ ...PREPARE_FACTS, policy: { ...PREPARE_FACTS.policy, minimumFitScore: 95, coverLetterRequired: false, blockedHosts: ["example.com"] } });
+  assert.equal(strict.readyList.find((line) => line.key === "fit_below_threshold")?.ok, false);
+  assert.equal(strict.readyList.some((line) => line.key === "cover_letter_required"), false);
+  assert.equal(strict.readyList.find((line) => line.key === "host_blocked")?.ok, false);
+  // Missing details name what's missing and never block.
+  const missing = prepareStateFromFacts({ ...PREPARE_FACTS, details: { ...PREPARE_FACTS.details, missingRequired: ["Phone number"] } });
+  const details = missing.readyList.find((line) => line.key === "application_details");
+  assert.equal(details?.blocking, false);
+  assert.match(details?.text ?? "", /Phone number/u);
+
+  // Once a run exists, its own host is the one asked about; no usable link gives no host.
+  const withRun = prepareStateFromFacts({
+    ...PREPARE_FACTS,
+    run: { id: "run-1", state: "BLOCKED", applyHost: "apply.example.org", blockingReason: "fit_below_threshold", errorCategory: null }
+  });
+  assert.equal(withRun.applyHost, "apply.example.org");
+  assert.deepEqual(withRun.run, { id: "run-1", state: "BLOCKED", blockingReason: "fit_below_threshold", errorCategory: null });
+  assert.equal(prepareStateFromFacts({ ...PREPARE_FACTS, jobApplyHost: null }).applyHost, "");
 });
 
 test("progress facts map the way the plan says", () => {
@@ -411,19 +473,31 @@ test("the cover-letter tick follows the account's rule: on when Prepare needs a 
   });
 });
 
-test("the Apply page's server state carries the cover-letter rule (default on)", async () => {
-  const delegate = (prisma as unknown as { applicationAutomationPolicy: { findUnique: unknown } }).applicationAutomationPolicy;
-  const original = delegate.findUnique;
-  const detail = { application: null, sourceText: "Service operations leader.", estimate: null } as unknown as JobDetail;
+test("the Apply page's server state carries the cover-letter rule (default on) and step 4's state", async () => {
+  type Delegates = {
+    applicationAutomationPolicy: { findUnique: unknown };
+    applicationAnswer: { findMany: unknown };
+    resume: { findMany: unknown };
+  };
+  const delegates = prisma as unknown as Delegates;
+  const originals = [delegates.applicationAutomationPolicy.findUnique, delegates.applicationAnswer.findMany, delegates.resume.findMany] as const;
+  const detail = {
+    application: null, sourceText: "Service operations leader.", estimate: null, currentConfidenceScore: null, applyHost: "jobs.example.com"
+  } as unknown as JobDetail;
   try {
-    delegate.findUnique = async () => null;
+    delegates.applicationAutomationPolicy.findUnique = async () => null;
+    delegates.applicationAnswer.findMany = async () => [];
+    delegates.resume.findMany = async () => [];
     const defaults = await loadApplyPageState("user-synthetic-alex-rivera", detail);
     assert.equal(defaults.coverLetterRequired, true);
     assert.equal(defaults.progress.current, 1);
-    delegate.findUnique = async () => ({ ...automationPolicyDefaultValues(), coverLetterRequired: false });
+    assert.equal(defaults.prepare.applyHost, "jobs.example.com");
+    assert.equal(defaults.prepare.run, null);
+    assert.equal(defaults.prepare.readyList.find((line) => line.key === "application_details")?.ok, false, "no details saved yet");
+    delegates.applicationAutomationPolicy.findUnique = async () => ({ ...automationPolicyDefaultValues(), coverLetterRequired: false });
     assert.equal((await loadApplyPageState("user-synthetic-alex-rivera", detail)).coverLetterRequired, false);
   } finally {
-    delegate.findUnique = original;
+    [delegates.applicationAutomationPolicy.findUnique, delegates.applicationAnswer.findMany, delegates.resume.findMany] = originals;
   }
 });
 
@@ -459,4 +533,16 @@ test("step 1 asks in the page, not with window.confirm", async () => {
   } finally {
     await harness.close();
   }
+});
+
+test("step 5 waits for Prepare, then shows the start command for the prepared run", async () => {
+  await withPage({}, async (harness) => {
+    assert.match(harness.container.querySelector("#step-5")?.textContent ?? "", /After Prepare, start the Apply Pilot browser here\./u);
+    assert.equal(harness.container.querySelector("[data-browser-step]"), null);
+  });
+  const prepared = prepareStateFromFacts({ ...PREPARE_FACTS, run: { id: "clz8w7m9a0004qwer1234tyui", applyHost: "jobs.example.com", state: "READY", blockingReason: null, errorCategory: null } } as never);
+  await withPage({ prepare: prepared }, async (harness) => {
+    const command = harness.container.querySelector("#step-5 [data-browser-start-command]");
+    assert.equal(command?.textContent, "npm run application-browser -- --app-origin https://app.example.com --run-id clz8w7m9a0004qwer1234tyui");
+  });
 });

@@ -39,9 +39,9 @@ Chromium always runs headed in the production companion. The terminal prints pla
 
 The companion asks Chromium to bring the control window to the front after the control page first loads and again once the bridge is installed. This is best-effort: macOS may still leave the window on another desktop or behind other windows, and a failure never delays or changes the workflow. It acts only on the Apply Pilot control window. It doesn't move or resize windows, and it does nothing to the employer page.
 
-If the control route redirects to sign-in, sign in that headed Apply Pilot window with the one-time code from the job's application page in your usual browser. Google sign-in doesn't work in that window. The page-scoped bridge is installed only after the exact authenticated route `/application-runs/<run-id>/browser` loads for the owned run.
+If the control route redirects to sign-in, sign in that headed Apply Pilot window with the one-time code from step 5 of the job's Apply page in your usual browser. Google sign-in doesn't work in that window. The page-scoped bridge is installed only after the exact authenticated route `/application-runs/<run-id>/browser` loads for the owned run.
 
-Fill also needs the "Assisted Fill" switch on, on the job's application page. Turn it on after preparing the job. See [Assisted Fill switch](CONTROLLED_APPLICATION_AUTOMATION.md#assisted-fill-switch).
+Fill also needs the "Assisted Fill" switch on. Turn it on at step 8 in the Apply Pilot browser (Turn on Fill) after preparing the job. See [Assisted Fill switch](CONTROLLED_APPLICATION_AUTOMATION.md#assisted-fill-switch).
 
 The first MVP supports anonymous employer targets only. Employer login, MFA, SSO, email codes, password entry, account creation, and CAPTCHA handling are unsupported. If the frozen target cannot be reached exactly without employer authentication, the workflow stops safely for manual handling.
 

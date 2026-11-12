@@ -354,7 +354,9 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     return prismaClient.$transaction(async (tx) => {
       // The stable owning row serializes simultaneous first PATCH requests while
       // allowing Prisma to remain the source of CUID and timestamp generation.
-      // All policy writers take this lock before the policy lock.
+      // Policy writers that can create the policy row take this lock before the policy lock. The one
+      // exception is the run-end auto-off: it locks the policy without the User lock, which is safe
+      // because it only updates an existing policy row's mode; the User lock guards row creation.
       const lockedUsers = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id" FROM "User" WHERE "id" = ${userId} FOR NO KEY UPDATE
       `;
@@ -679,12 +681,65 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     return run;
   }
 
+  // D035 D-B: finishing or cancelling an application turns Assisted Fill off. Called before the
+  // run is locked. When Fill is on, the policy row is locked here, ahead of the run, in the order
+  // Fill acquisition and token issuance use (policy, then run), and re-read under the lock. When
+  // Fill is off (or there's no policy row, whose defaults have it off) nothing is locked, so
+  // cancelling and completing keep their usual locks. A switch turned on after this read stays on.
+  async function lockPolicyForAutoOff(
+    tx: Prisma.TransactionClient,
+    userId: string
+  ): Promise<{ id: string; mode: AutomationPolicyValues["mode"] } | null> {
+    const unlocked = await tx.applicationAutomationPolicy.findUnique({
+      where: { userId },
+      select: { id: true, mode: true }
+    });
+    if (unlocked?.mode !== "FILL_AND_REVIEW") return null;
+    const lockedPolicies = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "ApplicationAutomationPolicy" WHERE "userId" = ${userId} FOR UPDATE
+    `;
+    if (lockedPolicies.length !== 1) return null;
+    const policy = await tx.applicationAutomationPolicy.findUnique({
+      where: { userId },
+      select: { id: true, mode: true }
+    });
+    return policy && policy.id === lockedPolicies[0].id ? policy : null;
+  }
+
+  // Only the mode changes, and only when Fill is on; an already-off policy gets no write and no audit.
+  async function turnFillOffAfterRunEnded(
+    tx: Prisma.TransactionClient,
+    input: {
+      userId: string;
+      policy: { id: string; mode: AutomationPolicyValues["mode"] } | null;
+      runId: string;
+      reason: "run_completed" | "run_cancelled";
+    }
+  ): Promise<void> {
+    if (input.policy?.mode !== "FILL_AND_REVIEW") return;
+    await tx.applicationAutomationPolicy.update({
+      where: { userId: input.userId },
+      data: { mode: "PREPARE_ONLY" },
+      select: { id: true }
+    });
+    await tx.auditLog.create({
+      data: {
+        userId: input.userId,
+        action: "automation-policy.auto-off",
+        resource: "ApplicationAutomationPolicy",
+        resourceId: input.policy.id,
+        metadata: { runId: input.runId, reason: input.reason }
+      }
+    });
+  }
+
   async function cancelApplicationRun(input: { userId: unknown; runId: unknown }) {
     validateUserId(input?.userId);
     const userId = input.userId;
     const { id: runId } = applicationRunPathSchema.parse({ id: input?.runId });
 
     return prismaClient.$transaction(async (tx) => {
+      const policy = await lockPolicyForAutoOff(tx, userId);
       const run = await lockOwnedApplicationRun(tx, userId, runId);
       assertRunTransition(run.state, "CANCELLED");
       const now = resolveNow(clock);
@@ -739,6 +794,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           }
         }
       });
+      await turnFillOffAfterRunEnded(tx, { userId, policy, runId: run.id, reason: "run_cancelled" });
       const cancelled = await tx.applicationRun.findFirst({
         where: { id: run.id, userId },
         select: APPLICATION_RUN_OPERATIONAL_SELECT
@@ -761,6 +817,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
     });
 
     return prismaClient.$transaction(async (tx) => {
+      const policy = await lockPolicyForAutoOff(tx, userId);
       const run = await lockOwnedApplicationRun(tx, userId, runId);
       assertTransition(run.state, "COMPLETED_BY_USER");
 
@@ -846,6 +903,7 @@ export function createApplicationRunService(dependencies: ApplicationRunServiceD
           }
         }
       });
+      await turnFillOffAfterRunEnded(tx, { userId, policy, runId: run.id, reason: "run_completed" });
 
       const completed = await tx.applicationRun.findFirst({
         where: { id: run.id, userId },

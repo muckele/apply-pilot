@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
 import { ApplyPage } from "@/components/apply-page/apply-page";
@@ -5,11 +6,16 @@ import { ButtonLink, PageHeader } from "@/components/ui";
 import { loadApplyKitView } from "@/lib/apply-kit/apply-kit-view";
 import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availability";
 import { isApplicationAutomationEnabled } from "@/lib/application-runs/policy";
+import { resolveAppOrigin } from "@/lib/apply-page/app-origin";
 import { loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
 import { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
+
+async function companionAppOrigin(): Promise<string | null> {
+  return resolveAppOrigin({ env: process.env, headers: await headers() });
+}
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -32,7 +38,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
     notFound();
   }
 
-  const { progress, coverLetterRequired } = await loadApplyPageState(userId, detail);
+  const { progress, coverLetterRequired, prepare } = await loadApplyPageState(userId, detail);
 
   return (
     <>
@@ -47,8 +53,10 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
         kit={kit}
         automationAvailable={isApplicationAutomationEnabled()}
         progress={progress}
+        prepare={prepare}
         coverLetterRequired={coverLetterRequired}
         tailorServer={{ quote: buildDocumentCreationQuote(), generationAvailable: isDocumentGenerationAvailable() }}
+        appOrigin={await companionAppOrigin()}
         answeredYes={answeredYes}
       />
     </>

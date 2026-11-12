@@ -3,37 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { z } from "zod";
+
+import { clearRunCreateKey, ensureApplicationRun, RunRequestError } from "@/lib/application-runs/client-run";
 
 type RunDisplay = { id: string; state: string };
 
-const RUN_STATES = [
-  "DRAFT", "PREPARING", "READY", "FILLING", "REVIEW_REQUIRED",
-  "READY_FOR_USER_SUBMISSION", "COMPLETED_BY_USER", "BLOCKED", "FAILED", "CANCELLED"
-] as const;
-
-const createResponseSchema = z.object({
-  run: z.object({
-    id: z.string().cuid(),
-    applicationId: z.string().cuid(),
-    state: z.enum(RUN_STATES)
-  })
-});
-
-function storageKey(applicationId: string) {
-  return `application-run-create:${applicationId}`;
-}
-
-function requestKey(applicationId: string): string {
-  const key = storageKey(applicationId);
-  const retained = window.sessionStorage.getItem(key);
-  if (retained) {
-    if (!/^[a-f0-9-]{36}$/.test(retained)) throw new Error("The saved creation request is invalid.");
-    return retained;
-  }
-  const generated = crypto.randomUUID();
-  window.sessionStorage.setItem(key, generated);
-  return generated;
+function failureMessage(error: unknown): string {
+  const kind = error instanceof RunRequestError ? error.kind : "uncertain";
+  if (kind === "storage") return "Browser session storage is unavailable. No creation request was sent.";
+  if (kind === "conflict") return "An active run may already exist. The page is refreshing; any retry uses the same creation request.";
+  if (kind === "unauthorized") return "Sign in as the application owner to create a browser run.";
+  if (kind === "ended") return "That creation request belonged to a browser run that has already ended. Try again to create a new one.";
+  if (kind === "refused") return "The run was not confirmed. Refresh the page before retrying; a retry uses the same creation request.";
+  return "The creation response is uncertain. The page is refreshing; a retry uses the same request.";
 }
 
 export function ApplicationRunEntry({
@@ -51,52 +33,22 @@ export function ApplicationRunEntry({
   const run = initialRun ?? createdRun;
 
   useEffect(() => {
-    if (initialRun) {
-      try { window.sessionStorage.removeItem(storageKey(applicationId)); } catch { /* Read-only display remains valid. */ }
-    }
+    if (initialRun) clearRunCreateKey(applicationId);
   }, [applicationId, initialRun]);
 
   async function createRun() {
     if (inFlight.current || run) return;
-    let idempotencyKey: string;
-    try {
-      idempotencyKey = requestKey(applicationId);
-    } catch {
-      setMessage("Browser session storage is unavailable. No creation request was sent.");
-      return;
-    }
     inFlight.current = true;
     setBusy(true);
     setMessage(null);
     try {
-      const response = await fetch("/api/application-runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ applicationId, idempotencyKey }),
-        cache: "no-store"
-      });
-      const body: unknown = await response.json().catch(() => null);
-      if (!response.ok) {
-        setMessage(response.status === 409
-          ? "An active run may already exist. The page is refreshing; any retry uses the same creation request."
-          : response.status === 401 || response.status === 403
-            ? "Sign in as the application owner to create a browser run."
-            : "The run was not confirmed. Refresh the page before retrying; a retry uses the same creation request.");
-        router.refresh();
-        return;
-      }
-      const parsed = createResponseSchema.safeParse(body);
-      if (!parsed.success || parsed.data.run.applicationId !== applicationId) {
-        setMessage("The creation response is uncertain. The page is refreshing; a retry uses the same request.");
-        router.refresh();
-        return;
-      }
-      setCreatedRun({ id: parsed.data.run.id, state: parsed.data.run.state });
-      try { window.sessionStorage.removeItem(storageKey(applicationId)); } catch { /* The run is already confirmed. */ }
+      const created = await ensureApplicationRun(applicationId);
+      setCreatedRun({ id: created.id, state: created.state });
       router.refresh();
-    } catch {
-      setMessage("The creation response is uncertain. The page is refreshing; a retry uses the same request.");
-      router.refresh();
+    } catch (error) {
+      setMessage(failureMessage(error));
+      // Nothing was sent without session storage; otherwise the server may hold a run now.
+      if (!(error instanceof RunRequestError && error.kind === "storage")) router.refresh();
     } finally {
       inFlight.current = false;
       setBusy(false);
