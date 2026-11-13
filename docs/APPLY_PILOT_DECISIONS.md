@@ -185,6 +185,46 @@ For D-I and D-J, this approves building and testing against a synthetic page onl
 6. **Unchanged:** Prepare's 85 fit and confidence rule on a current reviewed match, owner-attested facts, Fill and completion rules, server-side cost control.
    - One additive enum value (`JOB_GRADE`), migrated in production only with the owner's explicit authorization.
 
+### D037 — Fewer touchpoints now; plans sold as credits after the self-beta
+**Status:** owner-approved 2026-11-13, during the first Ashby trial. That trial's re-score needed a second confirmation box, the old score disappeared once lines were saved, and the paid answer was then refused. The owner said: "If users have to do a lot of different work and you have to teach them how to use the app, then it's more difficult to sell the value of this application. There should be less touch points." They also said: "I think we should use the same window everywhere."
+
+1. **Step 2 is one button.** It records the "these are true" attestation, saves the lines and re-scores. This replaces D036's separate truth tick and Update my score.
+2. **One large result window after every score.**
+   - **A:** "Create my résumé and cover letter" or "Not now".
+   - **B:** what's still missing, plus Create or "Find better-fit jobs".
+   - **C or D:** "This may not be a good fit. Let's look at other jobs.", which goes to Jobs. Nothing is created.
+   - A job that's already an A on the master résumé skips step 2.
+3. **No prices in the product.** This replaces D036 item 3's in-page cost and item 5's testing-only cost questions on the Apply page.
+   - The hard monthly AI cap and per-request maximum stay as hidden server guards.
+   - The user is told once that their data goes to Google Gemini.
+4. **"Did you apply?" is one click.** On return from the employer's application, the same window asks. "Yes, I applied" records Applied with the attached documents, and the job appears in the Applications list.
+5. **A repairable paid answer is kept.** If one matched keyword in a paid score isn't backed by both quotes, that keyword is dropped, and a match is dropped only when it has no keyword left. The score is left as Gemini gave it, with no confidence cap: the owner judged a cap "really convoluted for users". Anything that can't be repaired honestly is still refused.
+6. **Plans, later.**
+   - Apply Pilot will be a flat-fee subscription with plan tiers.
+   - One credit is the tailored résumé and cover letter for one job, used when the user says yes in the result window. Re-scores and recording an application never use a credit.
+   - Running out of credits sends the user to upgrade, while the tracker and documents already made keep working.
+   - Plans come only after the product works fully for the owner ("until we have a fully functioning product that works and works for me, then I'm not going to try to sell it").
+7. **Unchanged:**
+   - Prepare's 85 fit and confidence rule.
+   - Owner-attested facts, which are never invented.
+   - Fill, its review, and the user's Submit (D027).
+   - The budget ledger.
+
+### D038 — Claude keeps the MVP order and timing
+**Status:** owner-granted 2026-11-13. The owner said: "I'll allow you to manage when we should introduce different features. And any single time that we do add any additional goals or features to the MVP list, you can reorder the kind of roadmap based on what you think is going to be the best way to reach those MVP goals."
+
+1. Claude keeps the Bible's §7 "Current order to MVP".
+2. When the owner adds a goal or feature, Claude places it, gives it a start trigger, and reorders the list to reach the Definition of done fastest, without asking first.
+3. Each change is recorded in the Bible's §12 and reaches the owner as a draft PR.
+4. **Not covered by this grant:**
+   - merging, which stays with the owner (D030);
+   - new scope or goals;
+   - pricing;
+   - spending;
+   - schema or production changes;
+   - live employer steps;
+   - the non-negotiables.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
