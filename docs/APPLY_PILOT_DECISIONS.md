@@ -167,6 +167,24 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 
 For D-I and D-J, this approves building and testing against a synthetic page only. Each still needs one live trial with the owner present, because the owner does every step on the employer's page. Agents never open employer pages.
 
+### D036 — Get ready to apply: one Apply page and an A–D grade on every job
+**Status:** owner-approved 2026-11-11, after the third live trial stalled in tailoring ("It shouldn't be this difficult … we need to keep this very simple for our users"). Full design: `docs/superpowers/specs/2026-11-11-get-ready-redesign-design.md`. Builds on D035 (PR #69).
+
+1. **One Apply page per job** (`/jobs/[id]/apply`) with one ten-step list: match, your experience, documents, Prepare, then D035's Apply Pilot browser steps. It folds in draft PR #66 and D035's unbuilt UX-5a, 5b, 5c, 6 and 8.
+2. **Your experience:**
+   - One sentence per requirement, kept in this browser as you type.
+   - Checked in the page before anything is sent, with one sentence of at most 200 characters.
+   - One "Everything I wrote above is true" tick.
+   - **Update my score** only saves the lines and re-scores.
+3. **Documents** take one click with the cost shown in the page. A document that's ready to use is attached to the application without changing its status.
+4. **Grades A–D on one scale:** A = 85–100, B = 70–84, C = 55–69, D = below 55.
+   - A light AI grade (`JOB_GRADE`) covers new jobs that fit the user's preferences, in batches, within daily and monthly limits, after a one-time opt-in.
+   - The detailed match replaces the quick grade when you apply.
+   - Never called an ATS score. No algorithm grade.
+5. **Cost questions only while testing, asked in the page.** `AI_COST_QUESTIONS=OFF` for launch waits for a one-time consent at sign-up.
+6. **Unchanged:** Prepare's 85 fit and confidence rule on a current reviewed match, owner-attested facts, Fill and completion rules, server-side cost control.
+   - One additive enum value (`JOB_GRADE`), migrated in production only with the owner's explicit authorization.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
