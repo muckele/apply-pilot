@@ -6,7 +6,8 @@ import { uniqueStrings } from "@/lib/normalize";
 // and benefits as lines of their own, and splitting every line into a requirement turned those
 // into "requirements" the owner was asked about and the score judged. Headings are matched
 // as whole lines from short known phrases, never by a word inside a line, so a real requirement
-// such as "Experience administering employee benefits platforms" stays a requirement.
+// such as "Experience administering employee benefits platforms" stays a requirement. A line in
+// capitals is a heading by its shape (see isCapitalsHeading), whatever words it uses.
 
 type LineKind = "requirement_heading" | "closing_heading" | "context_heading" | "plain_heading" | "pay" | "tag" | "text";
 
@@ -15,7 +16,7 @@ const ROLE_SUFFIX = String.raw`(?: (?:as|at|in|on) [\p{L}\p{N} .&'/-]{1,60})?`;
 
 const REQUIREMENT_HEADINGS = [
   new RegExp(String.raw`^what you(?:'ll| will)(?: be)? do(?:ing)?${ROLE_SUFFIX}$`, "u"),
-  /^what you(?:'ll| will) (?:bring|need|work on|own)$/u,
+  /^what you(?:'ll| will)? (?:bring|need|work on|own)$/u,
   /^(?:here's )?(?:what|who) we(?:'re| are)? look(?:ing)? for(?: in you)?$/u,
   /^how (?:to|you(?:'ll| will)) (?:be successful|succeed|thrive)(?: in (?:this|the) role)?$/u,
   /^(?:key |core |main |primary |your |job |role )?(?:responsibilities|duties)$/u,
@@ -33,6 +34,7 @@ const CLOSING_HEADINGS = [
   /^what we offer(?: you)?$/u,
   /^what's in it for you$/u,
   /^what you can expect(?: as an? [\p{L}\p{N} .&'-]{1,40}| from us)?$/u,
+  /^(?:benefits|perks) (?:available|offered|provided|for)\b[\p{L}\p{N} .&'()\/-]{0,60}$/u,
   /^(?:compensation|salary|pay|total rewards)(?: (?:and|&) benefits| range| details| transparency)?$/u,
   /^(?:equal (?:employment )?opportunity(?: employer)?|eeo statement|accommodations?|how to apply|privacy notice)$/u
 ];
@@ -45,6 +47,12 @@ const CONTEXT_HEADINGS = [
   /^(?:who we are|our (?:culture|values|mission|story)|company overview|life at [\p{L}\p{N} .&'-]{1,40})$/u,
   /^why (?:join|work (?:at|with|for)) [\p{L}\p{N} .&'-]{1,40}$/u,
   /^remote[- ]first(?: [\p{L} ]{1,40})?$/u
+];
+
+// Headings that change nothing about the lines under them: "Timezones & logistics" lists working
+// hours and locations, which are requirements, but the heading is not one.
+const PLAIN_HEADINGS = [
+  /^(?:time ?zones?|logistics|location)(?: (?:and|&) (?:time ?zones?|logistics|location))*$/u
 ];
 
 const CURRENCY_AMOUNT = String.raw`[$£€]\s?\d[\d,.]*\s?[kKmM]?`;
@@ -63,6 +71,14 @@ function isPayLine(line: string) {
   return PAY_RANGE.test(text) || (PAY_AMOUNT.test(text) && PAY_CONTEXT.test(text));
 }
 
+// A line in capitals ("WHAT YOU NEED", "PERFORMANCE: OWN HOW WELL IT WORKS") is a heading when it is
+// short, a title and a subtitle, or ends with a colon. Two commas make it a list of names ("SOC 2,
+// ISO 27001, HIPAA") and a longer line without a colon a sentence; both stay requirement lines.
+function isCapitalsHeading(line: string, phrase: string, colon: boolean) {
+  if (/\p{Ll}/u.test(line) || !/\p{Lu}.*\p{Lu}/u.test(line) || /,.*,/u.test(line)) return false;
+  return colon || phrase.includes(": ") || phrase.split(" ").length <= 8;
+}
+
 function classify(line: string): LineKind {
   if (/^#[\p{L}][\p{L}\p{N}_-]*$/u.test(line)) return "tag";
   if (isPayLine(line)) return "pay";
@@ -73,7 +89,11 @@ function classify(line: string): LineKind {
     if (REQUIREMENT_HEADINGS.some((pattern) => pattern.test(phrase))) return "requirement_heading";
     if (CLOSING_HEADINGS.some((pattern) => pattern.test(phrase))) return "closing_heading";
     if (CONTEXT_HEADINGS.some((pattern) => pattern.test(phrase))) return "context_heading";
-    if (colon && phrase.split(" ").length <= 8) return "plain_heading";
+    if (PLAIN_HEADINGS.some((pattern) => pattern.test(phrase))) return "plain_heading";
+    if ((colon && phrase.split(" ").length <= 8) || isCapitalsHeading(line, phrase, colon)) {
+      // "BENEFITS AVAILABLE TO ALL FULL-TIME EMPLOYEES (GLOBAL)" opens the benefits list.
+      return /^(?:benefits|perks)\b/u.test(phrase) ? "closing_heading" : "plain_heading";
+    }
   }
   return "text";
 }
@@ -154,7 +174,7 @@ export function extractRequirementLinesFromSections(sections: Array<{ title?: st
 }
 
 // Board imports. A posting with nothing to read sections from (one flattened paragraph) still
-// lists every line, as before, rather than no requirements at all.
+// lists every line, as before, rather than no requirements at all, but never a heading or pay line.
 export function boardRequirementLines(sectionAware: string[], text: string, maxLength = 220) {
-  return sectionAware.length ? sectionAware : splitRequirementText(text, maxLength);
+  return sectionAware.length ? sectionAware : splitRequirementText(text, maxLength).filter(isRequirementLine);
 }
