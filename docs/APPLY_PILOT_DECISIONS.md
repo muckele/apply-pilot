@@ -135,6 +135,38 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 3. **Missing details are flagged, never guessed.** With no confirmed value, a contact field stays manual with reason `UNCONFIRMED_APPLICANT_CONTACT`, and the screen lists what's missing.
 4. **Nothing else changes.** Each proposed answer is still reviewed. Fill is still one permanent attempt that fills only empty fields. The applicant still clicks Submit. Uploads, dropdown widgets, sponsorship and demographic answers still need their own decisions.
 
+### D035 — Assisted-apply redesign: the twelve decisions in `ASSISTED_APPLY_UX_REDESIGN.md`
+**Status:** owner-approved 2026-11-10 ("Lets implement the 12 decision"), as recommended in PR #69. The owner's answer was relayed by the main session.
+
+1. **D-A: where the guide lives.** On the job's Apply Kit page. The application page keeps a small summary card.
+2. **D-B: the Assisted Fill switch.**
+   - It stays account-wide, and is managed from the guide and from Settings.
+   - Fill also turns off automatically when an application is finished or stopped. That is a small server change, audited like any policy change.
+3. **D-C: one click to open the form.** "Open and read the form" sends the existing Open, then Read, commands. Nothing new crosses the bridge.
+4. **D-D: companion sign-in.** Keep the typed one-time code, with clearer guidance.
+5. **D-E: starting the companion.** Keep the terminal command, shown filled in with a Copy button. A one-click launcher waits for the M3 delivery decision.
+6. **D-F: recording after an assisted application.** The Kit's "I applied" may add the documents sent and the minutes to an application that a run already marked Applied. It does not change the status, and the protected run-completion transaction stays untouched.
+7. **D-G: "sensitive" in the Answer Vault.** Relabel only, with no database change.
+8. **D-H: approving answers.** One screen and one click.
+   - Every proposed answer shows in full, with its source.
+   - "Approve these N and continue" approves the ticked answers, rejects the unticked ones, and then confirms the review.
+   - If anything changed after it was shown, nothing is approved.
+9. **D-I: Greenhouse dropdowns (Phase B1).** Allowed with the redesign's §6.2 guard rails:
+   - values come only from confirmed details, and confirmed country and state are added to "Your application details" as part of B1;
+   - exactly one option must match, or the field stays manual;
+   - sensitive questions are never filled;
+   - Fill checks the chosen value afterwards;
+   - Fill is still one attempt.
+10. **D-J: approved document uploads (Phase B2).** Allowed with the §6.2 guard rails:
+    - only the two approved, attached versions, named on the approval screen;
+    - fields that take several files, or that ask for anything else, stay manual;
+    - the uploaded versions are recorded as "what I sent";
+    - the acknowledgement covers uploads.
+11. **D-K: Phase C sign-up.** The one-question-per-screen sign-up (G-1 / WP2.6) stays in M2. It is not built now.
+12. **D-L: saved work-authorization and sponsorship answers.** Fill never uses them in the MVP. Bible non-negotiable 3 is unchanged.
+
+For D-I and D-J, this approves building and testing against a synthetic page only. Each still needs one live trial with the owner present, because the owner does every step on the employer's page. Agents never open employer pages.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
@@ -142,7 +174,7 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 - Exact human navigation handoff and whether/how automation can resume after manual interaction.
 - User-directed hosted file transfer; this is distinct from automatic file upload.
 - User-directed hosted login/passkey/MFA flow or persistent employer identity.
-- Additional writable families beyond confirmed contact details and links (contact-profile values were decided in D034).
+- Additional writable families beyond confirmed contact details and links (D034), Greenhouse dropdowns from confirmed details (D035 D-I) and approved document uploads (D035 D-J).
 - Acceptable mobile/accessibility limitations and release support scope.
 - Two-provider narrower beta versus three-provider priority target.
 - Any automated submission, legal-answer automation, or unattended operation.
