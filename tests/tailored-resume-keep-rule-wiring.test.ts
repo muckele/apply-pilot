@@ -10,6 +10,7 @@ import { AI_FEATURE_POLICIES } from "@/lib/ai/policy";
 import { buildTailoredResumeSystemPrompt } from "@/lib/ai/resume";
 import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
 import { readApplicationDocumentEvidence } from "@/lib/jobs/application-document-evidence";
+import { buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
 
 test("tailoring and cover-letter limits match the owner-approved live numbers and stay under ten cents", () => {
   assert.equal(AI_FEATURE_POLICIES.RESUME_TAILOR.maxOutputTokens, 12_000);
@@ -120,6 +121,47 @@ test("tailoring reads protected résumé citations from the latest job match for
     orderBy: { createdAt: "desc" },
     select: { output: true }
   }]);
+});
+
+// "Nothing to add": no answer is bound to the snapshot, because the snapshot reviewed exactly this
+// master-résumé answer and added no lines. The shared current-score rule lets its citations protect.
+function nothingToAddClient(reviewedAnalysisId: string) {
+  const job = {
+    id: "job-1", userId: "user-1", title: "Account Executive", company: "Example Buyer Co", location: "Remote",
+    remoteStatus: "REMOTE", salaryMin: null, salaryMax: null, description: "Sell software.", requirements: ["Salesforce"],
+    preferredQualifications: [], detectedTechStack: [], currentEvidenceSnapshotId: "snapshot-1", evidenceSnapshotGeneration: 1,
+    currentEvidenceSnapshot: {
+      id: "snapshot-1", resumeId: "resume-1", sourceResumeUpdatedAt: reviewedAt, snapshotHash: "a".repeat(64),
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v2", facts: [], unresolvedGapIds: [] }, reviewedAnalysisId
+    }
+  };
+  const resume = {
+    id: "resume-1", updatedAt: reviewedAt, summary: null, rawText: "Jordan Sample", skills: ["Salesforce", "Gong"],
+    achievements: [], workHistory: [], projects: [], education: [], certifications: []
+  };
+  const masterHash = currentJobMatchInputHash(buildCurrentJobMatchInput({
+    job, resume, profile: null, reviewedEvidence: null, evidenceSnapshotGeneration: 0
+  }));
+  const master = {
+    id: "analysis-master", inputHash: masterHash, evidenceSnapshotId: null,
+    output: { factualMatches: [{ applicantEvidence: [{ ref: "resume.skills[0]", excerpt: "Salesforce" }] }] }
+  };
+  return {
+    jobPosting: { findFirstOrThrow: async () => job },
+    resume: { findFirst: async () => resume },
+    userProfile: { findUnique: async () => null },
+    aIAnalysis: {
+      // Nothing is bound to the snapshot; the latest answer is the reviewed master-résumé one.
+      findFirst: async (query: { where: { evidenceSnapshotId?: unknown } }) => ("evidenceSnapshotId" in query.where ? null : master)
+    }
+  };
+}
+
+test("tailoring protects a 'nothing to add' answer's citations, and only that exact answer's", async () => {
+  const kept = await readApplicationDocumentEvidence(nothingToAddClient("analysis-master") as never, "user-1", "job-1", { protectMatchEvidence: true });
+  assert.deepEqual(kept.payload.protectedEvidence, { citations: [{ ref: "resume.skills[0]", excerpt: "Salesforce" }] });
+  const other = await readApplicationDocumentEvidence(nothingToAddClient("analysis-other") as never, "user-1", "job-1", { protectMatchEvidence: true });
+  assert.deepEqual(other.payload.protectedEvidence, { citations: [] });
 });
 
 test("cover letters and jobs without a current match keep an unprotected payload", async () => {

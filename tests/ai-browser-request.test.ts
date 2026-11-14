@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
-import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
+import { fetchWithAiConsent, fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
 
 function stub(t: TestContext, owner: object, name: string, replacement: unknown) {
   const methods = owner as Record<string, unknown>;
@@ -172,12 +172,18 @@ test("an async confirm that resolves true resends with the cost confirmation hea
   assert.match(messages[0], /could cost up to \$0\.07272/);
 });
 
-test("fetchWithApprovedAiCost awaits an async confirm", async () => {
-  let requests = 0;
-  const fetchImpl = async () => { requests += 1; return costResponse(); };
-  await assert.rejects(
-    fetchWithApprovedAiCost("/api/x", { method: "POST" }, 1_000, { fetchImpl, confirm: async () => false }),
-    /canceled/
-  );
-  assert.equal(requests, 1);
+test("an AI step the user already agreed to sends both consent headers on its one request", async () => {
+  const requests: RequestInit[] = [];
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push(init ?? {});
+    return new Response("{}", { status: 200 });
+  };
+  const response = await fetchWithAiConsent("/api/jobs/job-1/match", { method: "POST", headers: { "x-synthetic": "kept" } }, fetchImpl);
+  assert.equal(response.status, 200);
+  assert.equal(requests.length, 1, "no first unconfirmed request, no second confirmed one");
+  const headers = new Headers(requests[0].headers);
+  assert.equal(headers.get("x-ai-cost-confirmed"), "true");
+  assert.equal(headers.get("x-ai-data-confirmed"), "true");
+  assert.equal(headers.get("x-synthetic"), "kept");
+  assert.equal(requests[0].method, "POST");
 });
