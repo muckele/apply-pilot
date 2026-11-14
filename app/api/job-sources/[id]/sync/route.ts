@@ -25,12 +25,18 @@ export async function POST(request: NextRequest, { params }: Params) {
       action: "job.source.sync",
       resource: "JobSource",
       resourceId: source.id,
-      metadata: { imported: result.imported.length, skipped: result.skipped, scoring: result.scoring }
+      metadata: {
+        imported: result.imported.length,
+        skipped: result.skipped,
+        refreshedOutsideFilter: result.refreshedOutsideFilter ?? 0,
+        scoring: result.scoring
+      }
     });
 
     return NextResponse.json({
       imported: result.imported.length,
       skipped: result.skipped,
+      refreshedOutsideFilter: result.refreshedOutsideFilter ?? 0,
       bestRelevanceScore: result.bestRelevanceScore,
       jobs: result.imported,
       scoring: result.scoring

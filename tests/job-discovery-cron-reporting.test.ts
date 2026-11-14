@@ -110,6 +110,7 @@ test("cron reports five source scoring summaries and propagates a systemic stop 
   stub(t, provider, "searchJobs", async () => [rawJob]);
   stubNoStoredPostings(t);
   stub(t, prisma.jobDiscoveryPreference, "findMany", async () => []);
+  stub(t, prisma.jobDiscoveryPreference, "findUnique", async () => null);
   stub(t, prisma.jobSource, "findMany", async () => sources);
   stub(t, prisma.jobSource, "updateMany", async () => ({ count: 1 }));
   stub(t, prisma.jobSource, "update", async () => sources[0]);

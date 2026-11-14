@@ -59,6 +59,8 @@ type ProviderSearchResult = {
   duplicates: number;
   closed?: number;
   bestRelevanceScore: number;
+  /** Board syncs only: stored postings refreshed although they fail the current filter. */
+  refreshedOutsideFilter?: number;
 };
 
 const defaultMaxJobsToScore = 8;
@@ -346,16 +348,21 @@ export async function importJobsFromSource({
   source,
   criteria,
   profile,
+  targetSearches = [],
   index = createRunDedupeIndex()
 }: {
   userId: string;
   source: JobSource;
   criteria: JobSearchCriteria;
   profile: Awaited<ReturnType<typeof prisma.userProfile.findUnique>>;
+  /** The user's discovery target searches; a board sync without its own query filters as a followed board. */
+  targetSearches?: readonly string[];
   index?: RunDedupeIndex;
 }): Promise<ProviderSearchResult> {
   if (isBoardAts(source.type) && criteria.boardToken) {
     // A board sync reads the whole public listing so postings that left the board can be closed.
+    // A query given with the request is a keyword search of the board; without one the board
+    // is filtered the way scheduled discovery filters a board the user follows.
     const result = await syncBoard({
       userId,
       target: {
@@ -366,7 +373,8 @@ export async function importJobsFromSource({
         jobSourceId: source.id,
         closureScopes: [{ jobSourceId: source.id }]
       },
-      queries: criteria.query ? [criteria.query] : [],
+      queries: criteria.query ? [criteria.query] : targetSearches,
+      requireQueryMatch: Boolean(criteria.query),
       remoteOnly: criteria.remote,
       profile,
       maxImports: criteria.limit ?? 25,
@@ -379,7 +387,8 @@ export async function importJobsFromSource({
       skipped: result.skipped,
       duplicates: result.duplicates,
       closed: result.closed,
-      bestRelevanceScore: result.bestRelevanceScore
+      bestRelevanceScore: result.bestRelevanceScore,
+      refreshedOutsideFilter: result.refreshedOutsideFilter
     };
   }
 
