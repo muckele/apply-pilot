@@ -184,9 +184,13 @@ test("duplicating an unambiguous rendered record header cannot skip its priority
   assert.throws(() => validateTailoredResumeQuality(payload, output), needsRevision);
 });
 
-test("another employer's bullet cannot acquire ownership by being copied into a prioritized record", () => {
+// Live case 2026-11-09: bullets read under the wrong employer. A copy of another employer's bullet
+// in a prioritized record is dropped there (its own record already shows it), so it is never
+// attributed to that employer, and the paid résumé is kept.
+test("another employer's bullet copied into a prioritized record is dropped there, never attributed to it", () => {
   const header = "Fabrikam Customer Platforms | Service Delivery Manager | Seattle, WA | 2017–2021";
   const foreign = "Directed service delivery across support, engineering, and customer success for 42 enterprise accounts.";
+  const clean = validateTailoredResumeQuality(payload, assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput()));
   for (const before of [true, false]) {
     const wire = syntheticTailoredResumeOutput();
     const reporting = "Improved monthly service-level reporting accuracy by 18% through documented SQL validation checks.";
@@ -194,7 +198,11 @@ test("another employer's bullet cannot acquire ownership by being copied into a 
       : wire.resumeText.replace(`• ${reporting}`, `• ${reporting}\n• ${foreign}`);
     const output = assembleTailoredResumeProviderOutput(payload, wire);
     assert.doesNotThrow(() => validateTailoredResumeClaims(payload, output));
-    assert.throws(() => validateTailoredResumeQuality(payload, output), needsRevision);
+    const checked = validateTailoredResumeQuality(payload, output);
+    assert.equal(checked.resumeText, clean.resumeText);
+    const lines = checked.resumeText.split("\n");
+    assert.equal(lines.filter(line => line === `• ${foreign}`).length, 1);
+    assert.ok(lines.indexOf(`• ${foreign}`) < lines.indexOf(header));
   }
 });
 
@@ -215,17 +223,27 @@ test("the model sees the same conditional fact-ID ordering opportunities that th
   for (const item of opportunities) for (const factId of item.leadingFactIds) assert.ok(prompt.includes(factId));
 });
 
-test("a priority claim in a summary or another employer cannot satisfy within-record ordering", () => {
+test("a priority claim in a summary cannot satisfy within-record ordering", () => {
   const reporting = "Improved monthly service-level reporting accuracy by 18% through documented SQL validation checks.";
   const onboarding = "Managed onboarding and support programs for enterprise customers across three product teams.";
-  for (const elsewhere of ["SUMMARY", "EXPERIENCE"]) {
-    const wire = syntheticTailoredResumeOutput();
-    wire.resumeText = wire.resumeText.replace(`• ${reporting}\n• ${onboarding}`, `• ${onboarding}\n• ${reporting}`);
-    if (elsewhere === "SUMMARY") wire.resumeText = wire.resumeText.replace("SUMMARY\n", `SUMMARY\n${reporting}\n`);
-    else wire.resumeText = wire.resumeText.replace(`• ${reporting}\n`, "").replace("• Directed service delivery", `• ${reporting}\n• Directed service delivery`);
-    const output = assembleTailoredResumeProviderOutput(payload, wire);
-    assert.throws(() => validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, output)), needsRevision);
-  }
+  const wire = syntheticTailoredResumeOutput();
+  wire.resumeText = wire.resumeText.replace(`• ${reporting}\n• ${onboarding}`, `• ${onboarding}\n• ${reporting}`)
+    .replace("SUMMARY\n", `SUMMARY\n${reporting}\n`);
+  const output = assembleTailoredResumeProviderOutput(payload, wire);
+  assert.throws(() => validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, output)), needsRevision);
+});
+
+// Live case 2026-11-09: a priority bullet Gemini moved under another employer goes back to lead its
+// own record instead of being credited to that employer (or costing the paid résumé).
+test("a priority bullet rendered under another employer moves back to lead its own record", () => {
+  const reporting = "Improved monthly service-level reporting accuracy by 18% through documented SQL validation checks.";
+  const onboarding = "Managed onboarding and support programs for enterprise customers across three product teams.";
+  const clean = validateTailoredResumeQuality(payload, assembleTailoredResumeProviderOutput(payload, syntheticTailoredResumeOutput()));
+  const wire = syntheticTailoredResumeOutput();
+  wire.resumeText = wire.resumeText.replace(`• ${reporting}\n• ${onboarding}`, `• ${onboarding}\n• ${reporting}`)
+    .replace(`• ${reporting}\n`, "").replace("• Directed service delivery", `• ${reporting}\n• Directed service delivery`);
+  const output = assembleTailoredResumeProviderOutput(payload, wire);
+  assert.equal(validateTailoredResumeQuality(payload, validateTailoredResumeClaims(payload, output)).resumeText, clean.resumeText);
 });
 
 test("already-prioritized, tied, low-overlap and unrelated source records need no cosmetic alteration", () => {

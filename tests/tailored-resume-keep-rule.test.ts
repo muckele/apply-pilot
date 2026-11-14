@@ -577,16 +577,16 @@ test("with glued glyphs, a failed line still reverts once, in place, without dup
 // Live case 2026-11-06: owner-attested facts are often several sentences. Restored when Gemini
 // left one out, the fact rendered as one line, but its evidence named each sentence separately,
 // so the whole line was "missing source evidence" and the paid résumé was rejected.
-test("an omitted multi-sentence owner-attested fact is restored verbatim as one accepted line", () => {
+// Live case 2026-11-09: restored owner lines read in résumé voice, not the first person.
+test("an omitted multi-sentence owner-attested fact is restored as one accepted line, in résumé voice", () => {
   const payload = syntheticPayload();
   const fact = "I managed a book of 60 merchants. I ran quarterly reviews with each owner.";
+  const voiced = "Managed a book of 60 merchants. Ran quarterly reviews with each owner.";
   (payload.reviewedEvidence!.facts as Array<{ fact: string }>)[0]!.fact = fact;
   const { final } = finalize(payload, withoutLines(completeText, OWNER_FACT));
-  assert.ok(final.resumeText.endsWith(`\n\nADDITIONAL INFORMATION\n${fact}`));
-  for (const sentence of ["I managed a book of 60 merchants.", "I ran quarterly reviews with each owner."]) {
-    assert.ok(final.claimEvidence.some((entry) => entry.claim === sentence &&
-      entry.citations.every((citation) => citation.ref === "reviewedEvidence.facts[0].fact")), sentence);
-  }
+  assert.ok(final.resumeText.endsWith(`\n\nADDITIONAL INFORMATION\n${voiced}`), final.resumeText);
+  assert.ok(final.claimEvidence.some((entry) => entry.claim === voiced &&
+    entry.citations.length === 2 && entry.citations.every((citation) => citation.ref === "reviewedEvidence.facts[0].fact")));
   validateTailoredResumeClaims(payload, final);
 });
 
@@ -595,7 +595,9 @@ test("a line is accepted as an owner fact only when it is exactly that fact", ()
   const fact = "I managed a book of 60 merchants. I ran quarterly reviews with each owner.";
   (payload.reviewedEvidence!.facts as Array<{ fact: string }>)[0]!.fact = fact;
   const { final } = finalize(payload, withoutLines(completeText, OWNER_FACT));
-  const altered = final.resumeText.replace(fact, "I managed a book of 90 merchants. I ran quarterly reviews with each owner.");
+  const voiced = "Managed a book of 60 merchants. Ran quarterly reviews with each owner.";
+  assert.ok(final.resumeText.includes(voiced));
+  const altered = final.resumeText.replace(voiced, "I managed a book of 90 merchants. I ran quarterly reviews with each owner.");
   assert.throws(
     () => validateTailoredResumeClaims(payload, { ...final, resumeText: altered }),
     (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_EVIDENCE_REQUIRED"

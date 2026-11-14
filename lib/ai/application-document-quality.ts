@@ -6,6 +6,7 @@ import {
 } from "@/lib/ai/application-document-facts";
 import {
   assertTailoredResumeKeepRule,
+  assertTailoredResumeRecordPlacement,
   carryTailoredResumeReversions,
   completeSplitFactParts,
   completeTailoredResume,
@@ -117,6 +118,11 @@ export function validateTailoredResumeQuality<T extends ResumeQualityOutput>(
   const completed = completeTailoredResume(payload, output);
   assertTailoredResumeKeepRule(payload, completed);
   validateResumePriorityOrder(payload, completed.resumeText, completed.claimEvidence);
+  // Live case 2026-11-09: nothing checked that each line reads under its own record. Completion
+  // now moves misplaced lines home; this rejects anything left (a job twice, a job after
+  // Education, a bullet or owner sentence under another employer) as an internal defect, and the
+  // correction-flow document diagnostic reports it through this same check.
+  assertTailoredResumeRecordPlacement(payload, completed);
   return completed;
 }
 

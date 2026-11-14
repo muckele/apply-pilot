@@ -112,12 +112,16 @@ const typedSection: Record<keyof typeof resumeSectionHeadings, ApplicationDocume
   achievements: "ACHIEVEMENTS"
 };
 
-// One heading vocabulary for application documents. The standard headings are recognized in any
-// case; the parser's other typed headings (LICENSES, PROFESSIONAL EXPERIENCE, CORE COMPETENCIES...)
-// are recognized when written as an all-caps heading line, so a tailored résumé can keep the
-// source's own heading instead of renaming it.
+// One heading vocabulary for application documents: the parser's typed headings (LICENSES,
+// PROFESSIONAL EXPERIENCE, CORE COMPETENCIES...), in any case and with an optional closing colon,
+// exactly as the parser recognizes them when it cuts the master résumé into sections. A tailored
+// résumé can then keep the source's own heading instead of renaming it.
+// Live case 2026-11-09: these headings counted here only in capitals, so a master résumé headed
+// "Professional Experience" and "Selected Technical Projects" left every job looking like part of
+// the skills section. The keep rule then restored the jobs a second time after Education under a
+// new EXPERIENCE heading, or under the projects heading.
 export function applicationDocumentSectionOf(value: string): ApplicationDocumentSection | null {
-  const line = value.trim();
+  const line = value.trim().replace(/:$/u, "").trim();
   if (!line) return null;
   if (standardHeading.test(line)) {
     const upper = line.toLocaleUpperCase();
@@ -126,8 +130,7 @@ export function applicationDocumentSectionOf(value: string): ApplicationDocument
     if (upper === "ADDITIONAL") return "ADDITIONAL INFORMATION";
     return upper as ApplicationDocumentSection;
   }
-  if (line !== line.toLocaleUpperCase() || !/\p{Lu}/u.test(line)) return null;
-  if (/^ADDITIONAL\s+INFORMATION$/u.test(line)) return "ADDITIONAL INFORMATION";
+  if (/^ADDITIONAL\s+INFORMATION$/iu.test(line)) return "ADDITIONAL INFORMATION";
   for (const [section, pattern] of Object.entries(resumeSectionHeadings) as Array<[keyof typeof resumeSectionHeadings, RegExp]>) {
     if (pattern.test(line)) return typedSection[section];
   }
