@@ -749,7 +749,8 @@ test("an uncited line built from a source item plus an invented one puts the sou
 // Live case 2026-11-06: an owner fact written as two clauses ("At A, …; at B, …") was split by
 // Gemini into one bullet per job. Each part was a valid cited part of the fact, but the second
 // started lowercase and the first lost its closing period. Parts placed as their own lines read
-// as whole sentences.
+// as whole sentences. Live case 2026-11-14: each part reads under the job it names, so it does not
+// name that job again.
 test("parts of a split fact placed as their own lines start with a capital and end like the fact", () => {
   const payload = syntheticPayload();
   const fact = "At Northwind Software, owned onboarding through go-live; at Fabrikam Analytics, managed renewals end to end.";
@@ -766,11 +767,13 @@ test("parts of a split fact placed as their own lines start with a capital and e
     bulletRewrites: [first, second].map((part) => ({ factId: factIdOf(part), rewrite: part, reason: "Placed under the matching job." }))
   });
   const lines = final.resumeText.split("\n");
-  assert.ok(lines.includes("• At Northwind Software, owned onboarding through go-live."), final.resumeText);
-  assert.ok(lines.includes("• At Fabrikam Analytics, managed renewals end to end."), final.resumeText);
-  assert.ok(final.claimEvidence.some((entry) => entry.claim === "At Fabrikam Analytics, managed renewals end to end."));
+  assert.ok(lines.includes("• Owned onboarding through go-live."), final.resumeText);
+  assert.ok(lines.includes("• Managed renewals end to end."), final.resumeText);
+  assert.ok(lines.indexOf("• Owned onboarding through go-live.") > lines.findIndex((line) => line.startsWith("Northwind Software |")));
+  assert.ok(lines.indexOf("• Managed renewals end to end.") > lines.findIndex((line) => line.startsWith("Fabrikam Analytics |")));
+  assert.ok(final.claimEvidence.some((entry) => entry.claim === "Managed renewals end to end."));
   assert.deepEqual(final.bulletRewrites.map((rewrite) => rewrite.rewrite),
-    ["At Northwind Software, owned onboarding through go-live.", "At Fabrikam Analytics, managed renewals end to end."]);
+    ["Owned onboarding through go-live.", "Managed renewals end to end."]);
   validateTailoredResumeClaims(payload, final);
   const replay = finalizeTailoredResume(payload, structuredClone(final));
   assert.equal(replay.resumeText, final.resumeText);
