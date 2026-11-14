@@ -135,6 +135,96 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 3. **Missing details are flagged, never guessed.** With no confirmed value, a contact field stays manual with reason `UNCONFIRMED_APPLICANT_CONTACT`, and the screen lists what's missing.
 4. **Nothing else changes.** Each proposed answer is still reviewed. Fill is still one permanent attempt that fills only empty fields. The applicant still clicks Submit. Uploads, dropdown widgets, sponsorship and demographic answers still need their own decisions.
 
+### D035 — Assisted-apply redesign: the twelve decisions in `ASSISTED_APPLY_UX_REDESIGN.md`
+**Status:** owner-approved 2026-11-10 ("Lets implement the 12 decision"), as recommended in PR #69. The owner's answer was relayed by the main session.
+
+1. **D-A: where the guide lives.** On the job's Apply Kit page. The application page keeps a small summary card.
+2. **D-B: the Assisted Fill switch.**
+   - It stays account-wide, and is managed from the guide and from Settings.
+   - Fill also turns off automatically when an application is finished or stopped. That is a small server change, audited like any policy change.
+3. **D-C: one click to open the form.** "Open and read the form" sends the existing Open, then Read, commands. Nothing new crosses the bridge.
+4. **D-D: companion sign-in.** Keep the typed one-time code, with clearer guidance.
+5. **D-E: starting the companion.** Keep the terminal command, shown filled in with a Copy button. A one-click launcher waits for the M3 delivery decision.
+6. **D-F: recording after an assisted application.** The Kit's "I applied" may add the documents sent and the minutes to an application that a run already marked Applied. It does not change the status, and the protected run-completion transaction stays untouched.
+7. **D-G: "sensitive" in the Answer Vault.** Relabel only, with no database change.
+8. **D-H: approving answers.** One screen and one click.
+   - Every proposed answer shows in full, with its source.
+   - "Approve these N and continue" approves the ticked answers, rejects the unticked ones, and then confirms the review.
+   - If anything changed after it was shown, nothing is approved.
+9. **D-I: Greenhouse dropdowns (Phase B1).** Allowed with the redesign's §6.2 guard rails:
+   - values come only from confirmed details, and confirmed country and state are added to "Your application details" as part of B1;
+   - exactly one option must match, or the field stays manual;
+   - sensitive questions are never filled;
+   - Fill checks the chosen value afterwards;
+   - Fill is still one attempt.
+10. **D-J: approved document uploads (Phase B2).** Allowed with the §6.2 guard rails:
+    - only the two approved, attached versions, named on the approval screen;
+    - fields that take several files, or that ask for anything else, stay manual;
+    - the uploaded versions are recorded as "what I sent";
+    - the acknowledgement covers uploads.
+11. **D-K: Phase C sign-up.** The one-question-per-screen sign-up (G-1 / WP2.6) stays in M2. It is not built now.
+12. **D-L: saved work-authorization and sponsorship answers.** Fill never uses them in the MVP. Bible non-negotiable 3 is unchanged.
+
+For D-I and D-J, this approves building and testing against a synthetic page only. Each still needs one live trial with the owner present, because the owner does every step on the employer's page. Agents never open employer pages.
+
+### D036 — Get ready to apply: one Apply page and an A–D grade on every job
+**Status:** owner-approved 2026-11-11, after the third live trial stalled in tailoring ("It shouldn't be this difficult … we need to keep this very simple for our users"). Full design: `docs/superpowers/specs/2026-11-11-get-ready-redesign-design.md`. Builds on D035 (PR #69).
+
+1. **One Apply page per job** (`/jobs/[id]/apply`) with one ten-step list: match, your experience, documents, Prepare, then D035's Apply Pilot browser steps. It folds in draft PR #66 and D035's unbuilt UX-5a, 5b, 5c, 6 and 8.
+2. **Your experience:**
+   - One sentence per requirement, kept in this browser as you type.
+   - Checked in the page before anything is sent, with one sentence of at most 200 characters.
+   - One "Everything I wrote above is true" tick.
+   - **Update my score** only saves the lines and re-scores.
+3. **Documents** take one click with the cost shown in the page. A document that's ready to use is attached to the application without changing its status.
+4. **Grades A–D on one scale:** A = 85–100, B = 70–84, C = 55–69, D = below 55.
+   - A light AI grade (`JOB_GRADE`) covers new jobs that fit the user's preferences, in batches, within daily and monthly limits, after a one-time opt-in.
+   - The detailed match replaces the quick grade when you apply.
+   - Never called an ATS score. No algorithm grade.
+5. **Cost questions only while testing, asked in the page.** `AI_COST_QUESTIONS=OFF` for launch waits for a one-time consent at sign-up.
+6. **Unchanged:** Prepare's 85 fit and confidence rule on a current reviewed match, owner-attested facts, Fill and completion rules, server-side cost control.
+   - One additive enum value (`JOB_GRADE`), migrated in production only with the owner's explicit authorization.
+
+### D037 — Fewer touchpoints now; plans sold as credits after the self-beta
+**Status:** owner-approved 2026-11-13, during the first Ashby trial. That trial's re-score needed a second confirmation box, the old score disappeared once lines were saved, and the paid answer was then refused. The owner said: "If users have to do a lot of different work and you have to teach them how to use the app, then it's more difficult to sell the value of this application. There should be less touch points." They also said: "I think we should use the same window everywhere."
+
+1. **Step 2 is one button.** It records the "these are true" attestation, saves the lines and re-scores. This replaces D036's separate truth tick and Update my score.
+2. **One large result window after every score.**
+   - **A:** "Create my résumé and cover letter" or "Not now".
+   - **B:** what's still missing, plus Create or "Find better-fit jobs".
+   - **C or D:** "This may not be a good fit. Let's look at other jobs.", which goes to Jobs. Nothing is created.
+   - A job that's already an A on the master résumé skips step 2.
+3. **No prices in the product.** This replaces D036 item 3's in-page cost and item 5's testing-only cost questions on the Apply page.
+   - The hard monthly AI cap and per-request maximum stay as hidden server guards.
+   - The user is told once that their data goes to Google Gemini.
+4. **"Did you apply?" is one click.** On return from the employer's application, the same window asks. "Yes, I applied" records Applied with the attached documents, and the job appears in the Applications list.
+5. **A repairable paid answer is kept.** If one matched keyword in a paid score isn't backed by both quotes, that keyword is dropped, and a match is dropped only when it has no keyword left. The score is left as Gemini gave it, with no confidence cap: the owner judged a cap "really convoluted for users". Anything that can't be repaired honestly is still refused.
+6. **Plans, later.**
+   - Apply Pilot will be a flat-fee subscription with plan tiers.
+   - One credit is the tailored résumé and cover letter for one job, used when the user says yes in the result window. Re-scores and recording an application never use a credit.
+   - Running out of credits sends the user to upgrade, while the tracker and documents already made keep working.
+   - Plans come only after the product works fully for the owner ("until we have a fully functioning product that works and works for me, then I'm not going to try to sell it").
+7. **Unchanged:**
+   - Prepare's 85 fit and confidence rule.
+   - Owner-attested facts, which are never invented.
+   - Fill, its review, and the user's Submit (D027).
+   - The budget ledger.
+
+### D038 — Claude keeps the MVP order and timing
+**Status:** owner-granted 2026-11-13. The owner said: "I'll allow you to manage when we should introduce different features. And any single time that we do add any additional goals or features to the MVP list, you can reorder the kind of roadmap based on what you think is going to be the best way to reach those MVP goals."
+
+1. Claude keeps the Bible's §7 "Current order to MVP".
+2. When the owner adds a goal or feature, Claude places it, gives it a start trigger, and reorders the list to reach the Definition of done fastest, without asking first.
+3. Each change is recorded in the Bible's §12 and reaches the owner as a draft PR.
+4. **Not covered by this grant:**
+   - merging, which stays with the owner (D030);
+   - new scope or goals;
+   - pricing;
+   - spending;
+   - schema or production changes;
+   - live employer steps;
+   - the non-negotiables.
+
 ## 3. Still requires an explicit decision
 
 - Provider/region/account plan, DPA/retention terms, funded experiment budget, and credentials.
@@ -142,7 +232,7 @@ Cover letters only; the tailored-résumé grammar is unchanged.
 - Exact human navigation handoff and whether/how automation can resume after manual interaction.
 - User-directed hosted file transfer; this is distinct from automatic file upload.
 - User-directed hosted login/passkey/MFA flow or persistent employer identity.
-- Additional writable families beyond confirmed contact details and links (contact-profile values were decided in D034).
+- Additional writable families beyond confirmed contact details and links (D034), Greenhouse dropdowns from confirmed details (D035 D-I) and approved document uploads (D035 D-J).
 - Acceptable mobile/accessibility limitations and release support scope.
 - Two-provider narrower beta versus three-provider priority target.
 - Any automated submission, legal-answer automation, or unattended operation.

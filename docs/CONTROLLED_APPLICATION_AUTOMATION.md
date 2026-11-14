@@ -93,7 +93,7 @@ These controls are independent and must not be conflated:
 | --- | --- | --- |
 | `APPLICATION_AUTOMATION_ENABLED` | Global controlled-application emergency stop | Only exact lowercase `true` permits capability-increasing automation. |
 | `ApplicationAutomationPolicy.enabled` | Per-user capability gate | The global switch cannot override a disabled user policy. Both must permit capability. |
-| `AI_ENABLED` | Paid/provider execution switch | Controls configured paid AI features. Application planning remains deterministic and local regardless of this setting. |
+| `AI_ENABLED` | Paid/provider execution switch | Controls configured paid AI features, including the Gemini application planner (see "Application planning" below). Without a configured provider, planning uses the deterministic local planner. |
 | Compile-time/internal constants | Fixed safety invariants | READ-token TTL, preparation lease duration, and daily-cap window are code-defined rather than environment knobs. |
 
 ## Global automation emergency stop
@@ -247,7 +247,7 @@ The stable sequence is:
 
 1. Ensure a missing policy if necessary.
 2. Run TX1.
-3. Execute deterministic local planning outside an interactive database transaction.
+3. Run application planning (Gemini when configured, otherwise the deterministic local planner) outside an interactive database transaction.
 4. Run TX2.
 
 TX1 locks policy then run, rereads both authoritatively, classifies lease/acquisition state, evaluates current enablement and preparation gates, checks the rolling cap for a first acquisition, and records attempt/lease ownership. Preparation checks configured/static blocks but does not require the execution allowlist.
@@ -290,15 +290,15 @@ Real PostgreSQL 16 tests at `READ COMMITTED` protect policy first-persistence be
 
 The source action names and event titles are authoritative; this document intentionally does not duplicate a complete catalog.
 
-## Evidence-bound local planning
+## Application planning (evidence-bound)
 
 External job titles, company data, description digests, and requirements are untrusted data, never instructions. Job content may contain embedded instructions, but those instructions must never be followed or override the application-planning contract.
 
-Application planning builds bounded job-requirement and candidate-evidence catalogs and applies deterministic local rules. Human-readable requirement and evidence text is hydrated from those catalogs. Unknown IDs are discarded, do-not-exaggerate controls are enforced, and unsupported requirements become explicit gaps.
+Application planning builds bounded job-requirement and candidate-evidence catalogs. When Gemini is configured, the planner sends that bounded payload to Gemini through the guarded budget ledger (feature `APPLICATION_PLAN`, cost confirmation as for other paid features); otherwise it applies deterministic local rules and costs nothing. Either way, the result is checked against the catalogs locally, and human-readable requirement and evidence text is hydrated from those catalogs. Unknown IDs are discarded, do-not-exaggerate controls are enforced, and unsupported requirements become explicit gaps.
 
-The planning projection excludes contact details, raw resume text, file data or paths, Answer Vault content, cookies, browser/session state, hidden page content, and sensitive demographic, disability, veteran, criminal-history, or work-authorization data. Plans remain advisory: local planning cannot invoke tools, execute code, fill forms, send messages, or submit applications.
+The planning projection excludes contact details, raw resume text, file data or paths, Answer Vault content, cookies, browser/session state, hidden page content, and sensitive demographic, disability, veteran, criminal-history, or work-authorization data. Plans remain advisory: planning cannot invoke tools, execute code, fill forms, send messages, or submit applications.
 
-Provider configuration and stored provider credentials cannot activate paid application planning. The production planner always returns the validated deterministic local projection with provider metadata `local` and model metadata `heuristic-local`.
+Since PR #67, a configured Gemini provider is used for application planning (`planApplication` in `lib/ai/application-plan.ts`), and the application page says so before Prepare. Without it, the planner returns the validated deterministic local projection with provider metadata `local` and model metadata `heuristic-local`.
 
 The generic evaluation tooling does not override this runtime boundary or grant authority for a live planning call.
 

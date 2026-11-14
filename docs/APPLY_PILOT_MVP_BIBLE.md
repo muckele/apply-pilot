@@ -1,7 +1,9 @@
 # Apply Pilot — MVP Bible
 
-Version 1.4 | 2026-11-09, America/Los_Angeles | Owner: Mathew
-Baseline: `origin/main` at `d603542` (PR #30, 2026-10-05) plus the open draft stack PR #31–#35 (`origin/codex/job-match-gap-evidence-v33` at `3fa3b93`)
+Version 1.6 | 2026-11-13, America/Los_Angeles | Owner: Mathew
+Baseline: production runs `main` at `30bb21e` (PR #86, 2026-11-12). The original survey baseline was `origin/main` at `d603542` (PR #30, 2026-10-05) plus the draft stack PR #31–#35.
+
+**What to build next is §7, "Current order to MVP".** Claude keeps that list in order under D038.
 
 **This is the working source of truth for what the Apply Pilot MVP is, where it stands, and what to build next.** Every agent working on Apply Pilot reads this file first, then `AGENTS.md`. When this file and an older roadmap disagree about *MVP scope or order*, this file wins (see §10, decision D026). It does not override the mandatory database rules in `AGENTS.md`, and it does not erase history: older roadmap, decision, and acceptance documents stay as dated records.
 
@@ -62,6 +64,23 @@ The owner added these to the MVP goals on 2026-11-04 and said they may not be to
 | G-4 | **7-day free trial, card up front, auto-renewal** | Before the card is asked for, sign-up shows the price after the trial, the date of the first charge, how often it renews and how to cancel, with a separate unticked box to agree to automatic renewal. The card is typed only into the payment processor's hosted page. A confirmation with the same terms and a cancel link follows, and a reminder goes out before the trial converts. Cancelling during the trial means no charge. Tested end to end in test mode. | WP2.4: test mode in M2, live in M3 |
 | G-5 | **Cancellation from Settings** | Settings has a Cancel button that ends the trial or stops renewal at once, with no email, call or wait for staff. It shows when access ends and sends a confirmation. Contacting the owner stays as an extra route, never the only one. | Ships with G-4, in the same PR |
 
+### Owner direction 2026-11-13: fewer touchpoints now, plans after the self-beta
+
+During the first Ashby trial, the owner set the test every screen has to pass: "If users have to do a lot of different work and you have to teach them how to use the app, then it's more difficult to sell the value of this application. There should be less touch points. And more ease of access." G-6 and G-7 are MVP goals and approved build scope (D037). The "Start when" column is set and kept current by Claude under D038.
+
+| # | Goal | Done when | Start when |
+|---|---|---|---|
+| G-6 | **One button after the gaps, one result window everywhere, no prices.** | Step 2 of the Apply page has one button that records the "these are true" attestation, saves the lines and re-scores. After every score, one large, accessible window shows the grade. For an A it offers "Create my résumé and cover letter". For a B it shows what's still missing, with Create and "Find better-fit jobs". For a C or D it says the job may not be a good fit and goes back to Jobs, and nothing is created. A job that's already an A on the master résumé skips step 2. The Apply page shows no prices and asks no cost questions; the hard monthly AI cap stays as a hidden guard, and the user is told once that their data goes to Google Gemini. Browser tests cover the A, B and C/D windows. | Now (M1). Order item 4 |
+| G-7 | **"Did you apply?" in one click.** | When the user returns from the employer's application, the same window asks. "Yes, I applied" records the application as Applied, with its attached documents, in one click. The job then shows in the user's Applications list. | Now (M1). Order item 5 |
+
+**Plans and credits (G-3 to G-5) are amended by D037:**
+- **Pricing.** Apply Pilot is sold as a flat-fee monthly subscription with plan tiers. No cents ever show in the product.
+- **Credits.**
+  - The allowance counts **credits**. One credit is the tailored résumé and cover letter for one job.
+  - A credit is used only when the user says yes in the result window. Re-scores never use one.
+  - A user with no credits left is sent to upgrade their plan. The tracker, documents already made and recording an application keep working.
+- **Timing.** Plans wait until the product fully works for the owner ("until we have a fully functioning product that works and works for me, then I'm not going to try to sell it"). The design of tiers, prices, rollover and processor starts once the owner has finished **10 genuine applications end to end** with G-6 and G-7 live. That gives real cost and usage per application to size the allowances. Building stays WP2.4/WP2.7 in M2, after M1 exit, and live charges stay in M3. The design session opened on 2026-11-13 is paused until then.
+
 ## 3. Where we are today
 
 Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a summary of the PR #31–#35 stack. "Working" means the code path exists end to end on `main`; it does not mean it was re-run in production in this survey.
@@ -69,6 +88,10 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 **Update 2026-11-06:** #45 landed the M1 stack on `main` and it is deployed (see "Landed and deployed" below). Several items this table lists as missing now exist on `main`. The table itself has not been re-surveyed.
 
 **Update 2026-11-09:** the P-4 row's "no UI toggle" is addressed by the assisted Fill switch (see "Since the M1 deploy" below), merged as #65 and deployed on 2026-11-08.
+
+**Update 2026-11-10:** the P-4 row's "the genuine P0.4 trial" has its first result. The first assisted Fill on Greenhouse was completed on production (see "Third attempt" below). Lever and Ashby are still to run.
+
+**Update 2026-11-13:** see "Since 2026-11-10" below. The D036 Apply page is live, the Ashby trial is waiting on #89, and the owner set the fewer-touchpoints direction (D037).
 
 | Pillar | Status on `main` | What is missing for MVP |
 |---|---|---|
@@ -91,9 +114,37 @@ Source: read-only code survey of `origin/main` `d603542` on 2026-11-03, plus a s
 
 **Repository hygiene:** `/Users/Matt/Projects/apply-pilot` is checked out on the stale `feature/form-inspection-answer-packet` (`2e697b0`, 93 commits behind `main`), with older copies of the roadmap docs uncommitted. All new work branches from `origin/main`. Nineteen old worktrees exist; almost all of their branches are already merged.
 
-### Since the M1 deploy (through 2026-11-09)
+### Since 2026-11-10 (through 2026-11-13)
 
-Production is `main` at `4284bf2` (`/api/health` version `4284bf2ea36f`). The owner asked for each of these merges in chat; the rule that the owner merges by default (D030) is unchanged. None of them changed the database.
+Production runs `main` at `30bb21e`; `/api/health` reports `30bb21e998b2`. None of the merges below changed the database.
+
+- **D035 redesign, wave 1:**
+  - #73: a reviewed match stays current when a board sync takes over an unchanged job (UX-9).
+  - #74: the Apply Pilot browser window is easy to find (UX-3).
+  - #75: browser Fill smoke tests fixed after D034.
+  - #76: the control page shows steps 4 to 8 with one Next button (UX-4a).
+  - #77: all proposed answers are approved on one screen with one click (UX-4b).
+- **D036, one Apply page per job:**
+  - #79 to #83 built it as B1 to B5.
+  - #84 limits owner lines to 200 characters only. When Gemini quotes part of a reviewed line, it completes the quote instead of refusing the answer. A refused paid score now says so, and shows its charge.
+  - #86 reads the requirement sections of board postings.
+- **First Ashby trial:**
+  - **The first job couldn't be used.** Its employer turned off the hosted application page after it was prepared. That run is still open, in REVIEW_REQUIRED.
+  - **A second Ashby job** was imported by hand from Ashby's public posting API, because board syncs skip postings older than 30 days (`JOB_SOURCE_MAX_POSTED_AGE_DAYS`). It scored B · 82 on the master résumé.
+  - **The re-score was refused.** The owner added seven lines and re-scored. Gemini was paid ($0.027), and the answer was then refused, because one matched keyword wasn't a whole word in both quotes (`UNSUPPORTED_MATCHED_KEYWORD`). Draft #89 keeps such an answer, drops the keyword and leaves the score unchanged. The trial waits on #89.
+  - **The friction it showed** (a second confirmation box after "Update my score", the score vanishing once lines were saved, a paid answer thrown away) led to D037.
+- **Open drafts:**
+  - #85: a verdict on every listed requirement.
+  - #87: a followed board's sync is filtered by the saved searches.
+  - #88: all-caps headings and benefits lists are no longer saved as requirements.
+  - #89, described above.
+  - #66 was folded into D036 and can be closed.
+  - #69 and #78 are folded into this version.
+- **AI spend:** about $0.69 of the $5 monthly cap so far this month.
+
+### Since the M1 deploy (through 2026-11-10)
+
+Production is `main` at `f6865e0`; `/api/health` reports `f6865e086e1f`, as relayed by the main session on 2026-11-10. It was `158dc25` earlier that day, and `4284bf2` on 2026-11-09. The owner asked in chat for the merges from #60 to #65; #67, #68 and #70 were merged on 2026-11-10. The rule that the owner merges by default (D030) is unchanged. None of these merges changed the database.
 
 - #61: this Bible's v1.2 status update.
 - #62: the "Did you apply?" prompt.
@@ -101,8 +152,11 @@ Production is `main` at `4284bf2` (`/api/health` version `4284bf2ea36f`). The ow
 - #63: the requirement checklist links more requirements to the match. A synthetic 24-requirement job went from 2 linked to 13.
 - #64: simultaneous first page loads for a new user no longer collide.
 - #65: the assisted Fill switch (WP1.6, below).
+- #67 (merged 2026-11-10): Prepare's Gemini planner request fix (see "First trial attempt" below).
+- #68 (merged 2026-11-10): the companion sign-in code (see "Second attempt" below). It stores codes in the existing `VerificationToken` table, with no migration.
+- #70 (merged 2026-11-10 as `f6865e0`): D034, confirmed application details as a Fill source (Phase A, below).
 
-Rollback: Vercel Instant Rollback to `20ea2af` (before #65; turn the switch off first, because the older version has no switch), `bf4f1ea` (before #63 and #64), `1b7ee10` (before #60) or `6735595` (before all of these).
+Rollback: Vercel Instant Rollback to `158dc25` (before #70; Fill stops using confirmed details), `4284bf2` (before #67 and #68; the companion can't sign in on that version), `20ea2af` (before #65; turn the switch off first, because the older version has no switch), `bf4f1ea` (before #63 and #64), `1b7ee10` (before #60) or `6735595` (before all of these).
 
 **Not yet verified on production:** the signed-in "Did you apply?" tab-return flow, a live cover letter under the new rules, #63 on a real job page, and Vercel's error logs.
 
@@ -112,12 +166,12 @@ Rollback: Vercel Instant Rollback to `20ea2af` (before #65; turn the switch off 
 - To set up or prepare another job, turn it off first, then back on.
 - Approved answers stay current across a change, because the answer packet's policy hash doesn't include the mode.
 
-WP1.6 is not done until the genuine trials on Greenhouse, Lever and Ashby are recorded. None has been run.
+WP1.6 is not done until the genuine trials on Greenhouse, Lever and Ashby are recorded. **Greenhouse is done** (2026-11-10, "Third attempt" below). Lever and Ashby have not been run.
 
 **Before the first Fill trial on production:**
 - Done 2026-11-09: `APPLICATION_AUTOMATION_ENABLED=true` is set for Vercel Production (it had never existed) and production was redeployed at `4284bf2`. Redeploying asks for an emailed identity code that the owner types.
 - Done 2026-11-09: `npm run browser:install` (owner-approved) installed Chromium build 1234 on the owner's Mac.
-- Still untested: the companion's window starts signed out, and the owner signs in there by hand. Google sign-in in that window hasn't been tried against production.
+- Resolved 2026-11-10: the companion's window starts signed out. Google refuses to sign in there (second attempt below), so the companion signs in with a one-time code (#68). That worked in the third attempt.
 
 **First trial attempt (2026-11-09, Greenhouse), stopped at Prepare.** The three Greenhouse jobs saved in the owner's feed had closed. A replacement found on public Greenhouse boards scored 84% on the master résumé and 88% after the owner reviewed the evidence (Prepare needs 85 on a *reviewed* score; a first score is only a baseline). Documents were created and attached, then Prepare failed. What blocked or slowed it:
 1. **Prepare failed:** Gemini rejected the `APPLICATION_PLAN` request with HTTP 400 `INVALID_ARGUMENT`, before any generation and without charge. It was the planner's first real Gemini call. Most likely cause: the response schema nests catalog-ID enums inside length-limited arrays and bounds an integer, which Gemini rejects as too many states. The fix keeps the ID enums, moves the limits into local validation and labels such rejections in the logs. Prepare has to be retried once the fix is deployed.
@@ -136,6 +190,52 @@ Then Google refused sign-in in the companion's automated window ("This browser o
 - The owner types the code into the companion window, which gets an ordinary Auth.js session and lands on that run's control page.
 - The exchange accepts only same-origin requests, is rate-limited by address and by run, re-checks the email allowlist and is audited.
 - Google's automation check is not bypassed.
+
+**Third attempt (2026-11-10): the first assisted Fill is done, on Greenhouse.** It ran on production with #67 and #68 deployed.
+- The owner signed the companion in with a sign-in code, opened the employer's form and had Apply Pilot read it.
+- Apply Pilot proposed two answers, and the owner approved both and pressed Fill once.
+- **Two of the form's 19 fields were filled:** the LinkedIn and GitHub links. At first none of the 19 could be filled. The two links were proposed only after the owner typed them into the Answer Vault and unticked "Mask" on them. The owner did everything else on the form by hand, pressed the employer's Submit, and recorded the personal submission. The run ended `COMPLETED_BY_USER`.
+
+This is the Greenhouse part of WP1.6 and Definition of done item 3. It proves the guarded path works end to end on a real form. It doesn't prove that a new user could do it, or that Fill saves much time on a standard Greenhouse form.
+
+**The owner's verdict:** it worked, but only with step-by-step prompts from outside the product. "If we keep it the way that it is, no one's going to understand what to do." What got in the way:
+1. **Two look-alike windows.** The run's control page works only in the companion's own first tab. The same page in the owner's usual browser looks identical but shows "UNKNOWN / UNAVAILABLE", and the owner repeatedly worked there by mistake.
+2. **Hard-to-find companion window.** It opened behind other windows or on another macOS desktop, and nothing labels it as Apply Pilot's.
+3. **Google first.** The companion's login page still leads with Google, which always refuses automated browsers. The owner clicked it three times before using the smaller sign-in-code link.
+4. **Too many steps to get a sign-in code.** The code comes from the application page in the other browser and is typed into the companion. Two codes were refused, and the message doesn't say why. Getting a new code also cancels the previous one, without saying so.
+5. **Unclear control-page steps.** About six actions must happen in order, and nothing says which comes next. "Inspect form" doesn't work, without saying why, unless the form is open in the current companion session. The labels are engineering words (frozen target, answer packet, TARGET_OPEN, REVIEW_REQUIRED). The "Read-only" answer list holds the Approve buttons.
+6. **The Answer Vault blocks Fill silently.**
+   - Links must be saved there; links on the profile or résumé aren't used.
+   - "Mask this answer by default" marks an answer sensitive, which quietly leaves it out of Fill.
+   - The answer review has no way to add a missing answer.
+7. **An awkward Assisted Fill switch.** It covers the whole account but sits on one application's panel. It must be off to Prepare and on to Fill, and the panel disappears once the run is completed, leaving no screen to turn Fill off.
+8. **Hidden Prepare conditions.** Prepare needs a current *reviewed* match of 85 or more, match confidence of 85 or more, and an attached résumé and cover letter.
+   - No production screen attaches documents without also marking the application Applied, and the "assign the required document" link goes to a page that can't.
+   - A nightly job-source sync quietly made the reviewed score stale.
+9. **Confusing tailoring and cost prompts.**
+   - The "Score this job" and "Create new versions" cost lines are easy to mix up.
+   - Cost confirmations are browser pop-ups.
+   - The Apply Kit lists résumé v1–v4 with little guidance on which to use.
+10. **Fill does little on a standard Greenhouse form** whatever the screens look like. Contact fields are manual by policy, Greenhouse's dropdowns aren't supported, and uploads are out of scope. Widening any of these is a separate owner scope decision. The owner has since approved contact details and links (D034; below).
+
+The audit behind the redesign found three more:
+- No screen shows the terminal command that starts the companion.
+- Recording the submission from the control page marks the application Applied without the "what I sent" documents or minutes, and the Apply Kit then can't add them.
+- Reloading or closing the control page ends the employer session, which is explained only in small print.
+
+**Owner direction (2026-11-10): profile-first.** "The process should be completely streamlined." Apply Pilot should take the details forms ask for from the résumé, store them, fill forms from them and flag what's missing. Fixing the apply flow comes before a new sign-up. It comes in three phases:
+- **A. Confirmed application details as a Fill source.** The owner approved it as **D034**. It is merged (#70) and live, with the decision recorded in §10 and in the decision log. The owner has saved their details, and 8 of 10 show "Fill uses this".
+- **B. Greenhouse dropdowns and approved document uploads.** Each needs its own owner decision.
+- **C. One-question-per-screen sign-up.** This is G-1 / WP2.6, still planned for M2.
+
+**Next:** `docs/ASSISTED_APPLY_UX_REDESIGN.md` covers the rest:
+- the guided eight-step flow, with one approval screen;
+- how it uses Phase A;
+- Phases B and C;
+- build pieces with acceptance criteria;
+- twelve owner decisions.
+
+**The owner approved all twelve decisions as recommended (D035, 2026-11-10).** Building started with wave 1 (UX-1, UX-2, UX-3, UX-9), then UX-4, each as its own draft PR. The next real trial, on Lever or Ashby, waits for UX-1 to UX-4.
 
 ### Landed and deployed (2026-11-06)
 
@@ -290,6 +390,55 @@ Research retrieved 2026-11-03 from vendor pages, Trustpilot and press. Many pric
 
 Milestones run in order; work packages inside a milestone can run in parallel when their files don't overlap. Each work package is one branch and one PR unless noted.
 
+### Current order to MVP (2026-11-13, kept by Claude under D038)
+
+**This list is what to build next.** The milestone tables below keep the original work packages as a record.
+
+**The rule for ordering:** first make Apply Pilot work end to end for the owner, with fewer touchpoints, because M1's exit is the owner using it for real (Definition of done items 2–5). Second, prepare it for other people. Selling it comes last. Whenever a goal is added, Claude places it here, gives it a start trigger and records the change in §12.
+
+**M1, in order:**
+
+1. **Stop losing paid scores.**
+   - Land #89, which keeps a paid score when one keyword is unsupported.
+   - Then land #88, which keeps headings and benefits out of requirement lists.
+   - *Why first:* a refused paid answer blocks every later step, and the waiting Ashby trial needs a clean re-score.
+2. **Finish the Ashby trial** (WP1.6, Definition of done item 3).
+   - Re-score with the owner's saved lines, then write the documents, Prepare, Fill, and the owner submits.
+   - The tailored résumé is checked by hand before use, because of item 3.
+   - *Why now:* it's ready apart from #89, and every real run so far has surfaced the next fix.
+3. **Fix tailored-résumé misattribution** (Definition of done item 4).
+   - The problem, found 2026-11-09: true bullets land under the wrong employer, and owner lines get pasted in as first-person sentences.
+   - *Why before more applications:* a résumé that moves facts between employers is untruthful even when every fact is real, and it has to be fixed before the volume in item 7.
+4. **G-6: one button, one result window, no prices** (D037, PR a).
+   - *Why here:* this is the owner's main usability complaint, and every later application goes through it.
+5. **G-7: "Did you apply?" in one click** (D037, PR b).
+   - *Why here:* it's how the tracker gets the 20 recorded applications that item 7 needs.
+6. **Phase B: approved document uploads (D035 D-J), then Greenhouse dropdowns (D-I).**
+   - Each is built on a synthetic page first, then gets one live trial with the owner present.
+   - *Why here:* on a standard form, Fill fills only contact details and links until it can upload the résumé and answer dropdowns. Uploads come first because they save the most time.
+7. **Lever trial (WP1.6), and the owner's real search to 20 applications** (Definition of done items 2 and 3).
+   - Applications start at item 4 and run alongside items 5 and 6.
+   - Each run's friction is fixed before the next. Insights (WP1.9) gives weekly numbers.
+8. **Open drafts #85 and #87:**
+   - Review them after item 2.
+   - #85 changes the match prompt, so measure its cost on a real job first.
+   - #87 improves what a followed board brings in.
+
+**M1 exit:** Definition of done items 2–5 are met for the owner, then M2 starts.
+
+**M2, in order:**
+1. Guided sign-up (G-1 / WP2.6).
+2. Email sign-in and invites (WP2.1).
+3. Rate limits (WP2.2).
+4. Legal pages (WP2.3).
+5. The feedback loop (WP2.5).
+6. Last, the billing slice (G-3 to G-5 as amended by D037, WP2.4 and WP2.7).
+
+**Billing start triggers:**
+- **Design** (tiers, prices, credit rollover, free tier, processor) starts once the owner has done 10 genuine applications end to end with G-6 and G-7 live.
+- **Building** starts in M2.
+- **Live charges** start in M3, after legal review.
+
 ### M0 — One source of truth (this week)
 
 | WP | Work | Done when |
@@ -367,7 +516,7 @@ The goals are G-1 to G-5 in §2. This is their recommended order, the conflicts 
 2. **Price**, billing period and refund policy. §5 promises plain pricing and easy refunds; the field charges about $20–$50 a month.
 3. **Payment processor.** Recommended: Stripe, which WP2.4 already assumes. Its hosted Checkout and customer portal cover the trial, renewal and cancellation flows.
 4. **Whether AI apply is ever in MVP scope.** Recommended: no. Keep D027 and revisit after M3 with evidence.
-5. **What counts as one application** against the allowance. Recommended: a job counts once, when its first tailored resume or cover letter is generated, because that is where the AI cost is. Regenerating for the same job does not count again, and marking "I applied" never uses allowance, so honest tracking is never discouraged.
+5. **What counts as one application** against the allowance. **Decided by D037 (2026-11-13):** one credit is the tailored résumé and cover letter for one job. It's used when the user says yes in the result window. Re-scores never use a credit, and neither does recording "I applied". The original recommendation said a job counts once, when its first tailored document is generated, and that regenerating for the same job doesn't count again. D037 doesn't change that.
 
 ### After MVP
 
@@ -395,6 +544,7 @@ These carry over from `AGENTS.md`, `PRODUCT_ROADMAP.md` §5 and the decision log
 - **TDD and evidence:** write the failing test first; finish with `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`. Run `npm run test:postgres` only when the change touches concurrency or migrations, and only through the guarded runner. A "done" report names the commit, the files, the commands and their results.
 - **Git authority:** as set in D030. Agents never merge to `main`, deploy, spend money, contact employers, or submit applications.
 - **When to ask the owner:** product scope or pricing, spending, real applications or real employer pages, new third-party accounts or keys, merges, anything irreversible. Everything else inside an approved work package: decide, document the choice in the PR, and keep moving.
+- **Order and timing (D038):** Claude keeps §7's "Current order to MVP". When the owner adds a goal or feature, Claude places it, sets when it starts and reorders the list to reach the Definition of done fastest, without asking. Each change goes in §12 and reaches the owner through a draft PR.
 - **Avoid loops:** a work package gets at most two review-and-fix rounds before the remaining findings go to the owner as a list. No new "diagnostic packet" or contract version without a user-visible reason.
 - **Prompt header:** start agent task prompts with Model / Reasoning / Window, per `AGENTS.md`.
 
@@ -409,9 +559,13 @@ These carry over from `AGENTS.md`, `PRODUCT_ROADMAP.md` §5 and the decision log
 | D031 | **Edited documents: allow edits, mark them.** Users may edit tailored resumes and cover letters and download them. AI-written lines stay fact-checked against the master resume; the user's own edits are marked as theirs; edits that change a factual claim (employer, title, date, degree, credential, metric) are flagged for the user's review before export. | Owner-approved 2026-11-03 |
 | D030 | **Agent git authority: push branches and open draft PRs.** Agents commit to feature branches, push them and open draft PRs. Only the owner merges to `main`, which deploys to production. No deploys, spending, live employer interaction or real submissions by agents. | Owner-approved 2026-11-03 |
 | D034 | **Fill may use the applicant's own confirmed contact details and links.** The owner confirms name, email, phone and links once ("Your application details", prefilled from the parsed résumé). Fill then proposes them for matching fields, and anything unconfirmed stays manual and is flagged. Review, one permanent Fill and the user's Submit are unchanged. See `APPLY_PILOT_DECISIONS.md`. | Owner-approved 2026-11-10 |
+| D035 | **Assisted-apply redesign: twelve decisions (D-A to D-L), approved as recommended.** The guide lives on the Apply Kit. Fill turns off automatically when an application finishes or is stopped. "Open and read the form" is one click. The sign-in code and the terminal command stay. "I applied" can add documents and minutes to an assisted application. Answers are approved on one screen. Greenhouse dropdowns and approved uploads are allowed with guard rails, built against synthetic pages only until a trial with the owner present. Phase C sign-up stays in M2. Fill never uses saved work-authorization or sponsorship answers. See `APPLY_PILOT_DECISIONS.md` and `ASSISTED_APPLY_UX_REDESIGN.md`. | Owner-approved 2026-11-10 |
+| D036 | **Get ready to apply: one Apply page and an A–D grade on every job.** One ten-step Apply page per job; your-experience lines kept in this browser as you type, checked in the page, one truth tick, and a separate Update my score; documents attached when ready; A–D grades (A = 85+) from a light background AI grade after a one-time opt-in, replaced by the detailed match when applying; cost questions in the page while testing only. Prepare's rules unchanged. Spec: `docs/superpowers/specs/2026-11-11-get-ready-redesign-design.md`. | Owner-approved 2026-11-11 |
 | D032 | **Stay on Gemini 3.8 Flash through its 2027-01-01 price increase.** Google's Standard price doubles that day ($0.75/$3.75 to $1.50/$7.50 per million input/output tokens); the registry records both prices. After the increase, the owner revisits the model and whether to stay on Gemini or move to another AI platform. Until then, no model or provider switch. The compiled per-request maximum rises from 10¢ to 15¢ so every feature still fits at the new price; the other caps are unchanged. | Owner-approved 2026-11-04 |
+| D037 | **Fewer touchpoints, and plans sold as credits later.** Step 2 is one button: the truth attestation, save and re-score. One large result window after every score: an A offers documents, a B offers documents or better-fit jobs, a C or D goes back to Jobs. A first-score A skips step 2. No prices in the product: the hard monthly cap stays hidden, and Gemini data sharing is told once. "Did you apply?" records Applied in one click. A paid score with one unsupported keyword is repaired and kept with the score unchanged (no confidence cap). Later, flat-fee subscription tiers where one credit is a résumé and cover letter for one job, used on the user's yes; re-scores never use a credit; running out sends the user to upgrade. Plans only after the product fully works for the owner. Amends D036 items 2, 3 and 5. See `APPLY_PILOT_DECISIONS.md`. | Owner-approved 2026-11-13 |
+| D038 | **Claude keeps the MVP order and timing.** When the owner adds a goal or feature, Claude places it, sets when it starts and reorders §7's "Current order to MVP" to reach the Definition of done fastest, recording each change in §12 through a draft PR. The owner still merges (D030). New scope, pricing, spending, schema changes, live employer steps and the non-negotiables stay owner decisions. | Owner-granted 2026-11-13 |
 
-Open, not yet needed: plan tiers, price, payment processor, the monthly application allowance and what counts as one application (before M2 billing; see §7, "Plans, trial and guided sign-up"); whether AI apply ever enters MVP scope (needs a D027 amendment); paid job-data sources (after M1 evidence); hosted workspace vs optional extension (M3); invited-beta size and who.
+Open, not yet needed: plan tiers, price, payment processor, credit rollover and whether a free tier stays (design starts after the owner's first 10 end-to-end applications with G-6 and G-7 live; see §7, "Current order to MVP"). What counts as one credit is decided (D037); whether AI apply ever enters MVP scope (needs a D027 amendment); paid job-data sources (after M1 evidence); hosted workspace vs optional extension (M3); invited-beta size and who.
 
 ## 11. MVP metrics
 
@@ -419,6 +573,20 @@ Primary: **interviews per applicant-hour.** Supporting: minutes of active effort
 
 ## 12. Change log
 
+- 2026-11-13 — v1.6.
+  - Brought in v1.5 (D035, PR #69) and D036 (PR #78), which had never reached `main`.
+  - Recorded #73–#86 and the first Ashby trial.
+  - Added the owner's fewer-touchpoints direction:
+    - G-6 and G-7;
+    - G-3 to G-5 amended to plans sold as credits, after the self-beta;
+    - D037.
+  - Added the owner's grant that Claude keeps the MVP order and timing (D038).
+  - Added §7's "Current order to MVP" with start triggers, including billing design after 10 end-to-end applications.
+- 2026-11-10 — v1.5. Recorded:
+  - #67, #68 and #70 merged (production `f6865e0`);
+  - the first assisted Fill done on Greenhouse (2 of 19 fields filled; the owner submitted) and the friction it showed;
+  - the owner's profile-first direction (Phase A, D034, now live);
+  - the assisted-apply redesign and its twelve owner-approved decisions (D035).
 - 2026-11-09 — v1.4. Recorded #65 merged and deployed (production `4284bf2`), the automation env var and companion browser in place, and the first Fill-trial attempt with the five problems it surfaced, including the Prepare failure this version's PR fixes.
 - 2026-11-08 — v1.3. Recorded #60–#64 landing with production at `20ea2af`, the assisted Fill switch's status, and what the first Fill trial on production needs.
 - 2026-11-06 — v1.2. Recorded M1 landing and deployment: #45 merged as `6735595` and deployed, migrations A–C applied first, superseded drafts closed. Added what was and wasn't verified on production, and what's still open.
