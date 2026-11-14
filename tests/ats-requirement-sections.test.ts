@@ -5,6 +5,7 @@ import { AshbyProvider } from "@/lib/job-sources/ashby";
 import { GreenhouseProvider } from "@/lib/job-sources/greenhouse";
 import { keepUnchangedMatchContent } from "@/lib/job-sources/ingestion";
 import { LeverProvider } from "@/lib/job-sources/lever";
+import { ManualJobImportProvider } from "@/lib/job-sources/manual";
 import { isRequirementLine } from "@/lib/job-sources/requirement-lines";
 import type { NormalizedJob } from "@/lib/job-sources/types";
 
@@ -220,4 +221,176 @@ test("a stored list the board's extractor still keeps in full is left alone, so 
   const incoming = storedAshbyJob();
   const stored = storedAshbyJob({ requirements: incoming.requirements.slice(0, 2) });
   assert.deepEqual(keepUnchangedMatchContent(stored, incoming).requirements, stored.requirements);
+});
+
+// Headings in capitals. Some boards write every heading in capitals, some as a title and a
+// subtitle, and name their benefits list "BENEFITS AVAILABLE TO ALL …". None of those matched
+// a known heading, so each heading, and every benefit under it, was stored as a requirement.
+
+function plainPosting(lines: string[]) {
+  // Ashby's plain text: a blank line between blocks, list items as " - item".
+  return lines.join("\n\n");
+}
+
+test("'what you need' opens the requirements, so the company blurb before it is not one", () => {
+  const job = new AshbyProvider().normalizeJob(ashbyJob({
+    descriptionPlain: plainPosting([
+      "ABOUT NORTHWIND",
+      "Northwind builds the answer engine that support teams rely on every day.",
+      "WHAT YOU NEED",
+      " - 4+ years running support operations at a software company",
+      " - Comfort reading data and running experiments on live traffic"
+    ])
+  }));
+  assert.deepEqual(job.requirements, [
+    "4+ years running support operations at a software company",
+    "Comfort reading data and running experiments on live traffic"
+  ]);
+});
+
+test("a heading that starts with benefits ends the requirements, with every benefit under it", () => {
+  for (const heading of [
+    "BENEFITS AVAILABLE TO ALL FULL-TIME NORTHWIND EMPLOYEES (GLOBAL)",
+    "Benefits available to all full-time employees (global)",
+    "Benefits for full-time employees:"
+  ]) {
+    const job = new AshbyProvider().normalizeJob(ashbyJob({
+      descriptionPlain: plainPosting([
+        "WHAT YOU'LL DO",
+        " - Own the technical relationship with our customers",
+        heading,
+        " - A home-office budget for every new hire",
+        " - A monthly stipend for gym classes",
+        "UNITED STATES",
+        " - Medical, dental and vision coverage for you and your dependents",
+        "REFERRAL INSTRUCTIONS",
+        "Referred by someone on the team? Ask them to send in your application."
+      ])
+    }));
+    assert.deepEqual(job.requirements, ["Own the technical relationship with our customers"], heading);
+  }
+});
+
+test("headings in capitals, alone or as a title and subtitle, are not requirements", () => {
+  const job = new AshbyProvider().normalizeJob(ashbyJob({
+    descriptionPlain: plainPosting([
+      "WHAT YOU'LL DO",
+      "PERFORMANCE: OWN HOW WELL BEACON WORKS",
+      " - Audit a sample of Beacon's answers every week",
+      "KNOWLEDGE: OWN WHAT BEACON KNOWS",
+      " - Maintain the help articles Beacon answers from",
+      "CUSTOMER EXPERIENCE: OWN HOW BEACON FEELS TO CUSTOMERS",
+      "LAUNCH READINESS: OWN BEACON'S READINESS FOR EVERY LAUNCH",
+      "QUALITY, SAFETY AND LAUNCH READINESS",
+      "WORKING STYLE",
+      " - Write things down so the whole team can follow your decisions"
+    ])
+  }));
+  assert.deepEqual(job.requirements, [
+    "Audit a sample of Beacon's answers every week",
+    "Maintain the help articles Beacon answers from",
+    "Write things down so the whole team can follow your decisions"
+  ]);
+});
+
+test("a logistics or timezone heading is not a requirement, but the line under it is", () => {
+  for (const heading of ["TIMEZONES & LOGISTICS", "Timezones & logistics", "Time zone and location"]) {
+    const job = new AshbyProvider().normalizeJob(ashbyJob({
+      descriptionPlain: plainPosting([
+        "What you'll need",
+        " - 4+ years running support operations at a software company",
+        heading,
+        " - Work at least four hours a day in US Eastern time"
+      ])
+    }));
+    assert.deepEqual(job.requirements, [
+      "4+ years running support operations at a software company",
+      "Work at least four hours a day in US Eastern time"
+    ], heading);
+  }
+});
+
+test("lines in capitals that read as a sentence or a list, and lines that only mention benefits, stay requirements", () => {
+  for (const line of [
+    "MUST BE ABLE TO TRAVEL TO CUSTOMER SITES UP TO 25% OF THE TIME.",
+    "SOC 2, ISO 27001, HIPAA AND PCI AUDIT EXPERIENCE",
+    "FIVE OR MORE YEARS OF EXPERIENCE SELLING SOFTWARE TO MID-MARKET FINANCE TEAMS",
+    "Benefits administration experience at a growing company"
+  ]) {
+    assert.equal(isRequirementLine(line), true, line);
+  }
+  const job = new AshbyProvider().normalizeJob(ashbyJob({
+    descriptionPlain: plainPosting([
+      "What you'll need",
+      " - Benefits administration experience at a growing company",
+      " - Comfort with payroll systems and their audits"
+    ])
+  }));
+  assert.deepEqual(job.requirements, [
+    "Benefits administration experience at a growing company",
+    "Comfort with payroll systems and their audits"
+  ]);
+});
+
+const capitalsPosting = plainPosting([
+  "ABOUT NORTHWIND",
+  "Northwind builds the answer engine that support teams rely on every day.",
+  "WHAT YOU NEED",
+  " - 4+ years running support operations at a software company",
+  "TIMEZONES & LOGISTICS",
+  " - Work at least four hours a day in US Eastern time",
+  "BENEFITS AVAILABLE TO ALL FULL-TIME NORTHWIND EMPLOYEES (GLOBAL)",
+  " - A home-office budget for every new hire",
+  " - A monthly stipend for gym classes",
+  "UNITED STATES",
+  " - Medical, dental and vision coverage for you and your dependents"
+]);
+
+const capitalsRequirements = [
+  "4+ years running support operations at a software company",
+  "Work at least four hours a day in US Eastern time"
+];
+
+test("a posting imported by hand drops capitals headings and benefits the same way", () => {
+  const job = new ManualJobImportProvider().normalizeJob({ title: "Support Operations Lead", company: "Northwind", description: capitalsPosting });
+  assert.deepEqual(job.requirements, capitalsRequirements);
+});
+
+test("an Ashby posting read from HTML drops capitals headings and benefits the same way", () => {
+  const descriptionHtml = [
+    "<p><strong>WHAT YOU NEED</strong></p>",
+    "<ul><li><p>4+ years running support operations at a software company</p></li></ul>",
+    "<p><strong>BENEFITS AVAILABLE TO ALL FULL-TIME NORTHWIND EMPLOYEES (GLOBAL)</strong></p>",
+    "<ul><li><p>A monthly stipend for gym classes</p></li></ul>"
+  ].join("");
+  const job = new AshbyProvider().normalizeJob(ashbyJob({ descriptionHtml }));
+  assert.deepEqual(job.requirements, ["4+ years running support operations at a software company"]);
+});
+
+test("a posting read as one paragraph never lists a capitals heading as a requirement", () => {
+  const job = new AshbyProvider().normalizeJob(ashbyJob({
+    descriptionPlain: "WHAT YOU NEED - 4+ years running support operations at a software company - REFERRAL INSTRUCTIONS"
+  }));
+  assert.deepEqual(job.requirements, ["4+ years running support operations at a software company"]);
+});
+
+test("a stored list with capitals headings and benefits is replaced on the next sync", () => {
+  const incoming: NormalizedJob = { ...new AshbyProvider().normalizeJob(ashbyJob({ descriptionPlain: capitalsPosting })), company: "Northwind" };
+  // What the extractor before this change stored for the same posting.
+  const stored: NormalizedJob = {
+    ...incoming,
+    requirements: [
+      "Northwind builds the answer engine that support teams rely on every day.",
+      "WHAT YOU NEED",
+      "4+ years running support operations at a software company",
+      "TIMEZONES & LOGISTICS",
+      "Work at least four hours a day in US Eastern time",
+      "BENEFITS AVAILABLE TO ALL FULL-TIME NORTHWIND EMPLOYEES (GLOBAL)",
+      "A home-office budget for every new hire",
+      "A monthly stipend for gym classes",
+      "UNITED STATES",
+      "Medical, dental and vision coverage for you and your dependents"
+    ]
+  };
+  assert.deepEqual(keepUnchangedMatchContent(stored, incoming).requirements, capitalsRequirements);
 });
