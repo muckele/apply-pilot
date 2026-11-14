@@ -8,7 +8,7 @@ export type ApplyProgressInput = {
   hasMasterResume: boolean;
   /** The job has a shown fit estimate (any basis). */
   hasCurrentMatch: boolean;
-  /** That estimate is bound to the user's saved review (basis REVIEWED_EVIDENCE). */
+  /** That estimate is current for the user's saved review (bound to it, or reviewed with nothing to add). */
   reviewSaved: boolean;
   resumeAttached: boolean;
   coverAttached: boolean;

@@ -110,7 +110,7 @@ test("an analysis bound to the current reviewed evidence is the current estimate
     { score: 74, basis: "REVIEWED_EVIDENCE", isCurrent: true, reviewable: true });
 });
 
-test("a review that added no facts keeps the estimate it reviewed, labelled and not reviewable", () => {
+test("a review that added no facts keeps the estimate it reviewed: current, labelled and not reviewable", () => {
   const before = baseJob();
   const job = baseJob({ currentEvidenceSnapshotId: "snapshot-1", evidenceSnapshotGeneration: 1, currentEvidenceSnapshot: snapshot([]) });
   const estimate = resolveFitEstimate({
@@ -118,7 +118,7 @@ test("a review that added no facts keeps the estimate it reviewed, labelled and 
     latestAnalysis: { id: "analysis-1", inputHash: plainHash(before, 0), evidenceSnapshotId: null, output: output(68), createdAt: new Date() }
   });
   assert.deepEqual(estimate && { score: estimate.score, basis: estimate.basis, isCurrent: estimate.isCurrent, reviewable: estimate.reviewable },
-    { score: 68, basis: "MASTER_RESUME_NO_NEW_FACTS", isCurrent: false, reviewable: false });
+    { score: 68, basis: "MASTER_RESUME_NO_NEW_FACTS", isCurrent: true, reviewable: false });
 });
 
 test("a review that added facts never carries the older estimate forward", () => {

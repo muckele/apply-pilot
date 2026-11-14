@@ -16,8 +16,8 @@ import {
   CURRENT_JOB_MATCH_ANALYSIS_WHERE,
   JOB_MATCH_PROFILE_SELECT,
   buildCurrentJobMatchContext,
-  currentJobMatchInputHash,
-  hasCurrentJobMatchAnalysis
+  currentJobMatchBasis,
+  currentJobMatchInputHash
 } from "@/lib/jobs/current-job-match";
 import { resolveFitEstimate } from "@/lib/jobs/fit-estimate";
 import { buildEstimateView, buildJobDetailView } from "@/lib/jobs/job-page-view";
@@ -101,15 +101,12 @@ export async function loadJobDetail(userId: string, id: string) {
 
   const context = buildCurrentJobMatchContext({ job, resume: masterResume, profile });
   const matchInput = context.matchInput;
-  // Unchanged review rules: a gap review may be saved only against the current analysis, or
-  // against the unreviewed baseline analysis when no reviewed evidence is in force.
-  const currentAnalysis = hasCurrentJobMatchAnalysis({
-    currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
-    currentEvidenceSourceValid: context.currentEvidenceSourceValid,
-    aiAnalyses: matchAnalysis ? [matchAnalysis] : []
-  }, matchInput)
-    ? matchAnalysis
-    : null;
+  // The shared current-score rule (lib/jobs/current-job-match.ts#currentJobMatchBasis).
+  const currentBasis = currentJobMatchBasis({ job, resume: masterResume, profile, analysis: matchAnalysis, context });
+  // Unchanged review rules: a gap review may be saved only against the analysis bound to the current
+  // review, or against the unreviewed baseline analysis when no reviewed evidence is in force. A
+  // "nothing to add" answer is current but can't back a new review (the server refuses it as stale).
+  const currentAnalysis = currentBasis === "REVIEWED_EVIDENCE" ? matchAnalysis : null;
   const baselineReviewAnalysis = matchAnalysis?.evidenceSnapshotId === context.effectiveEvidenceSnapshotId &&
     matchAnalysis.inputHash === currentJobMatchInputHash(matchInput)
     ? matchAnalysis
@@ -127,7 +124,7 @@ export async function loadJobDetail(userId: string, id: string) {
 
   return {
     draftUserKey: createHash("sha256").update(userId).digest("hex").slice(0, 16),
-    currentConfidenceScore: readConfidenceScore(currentAnalysis?.output),
+    currentConfidenceScore: readConfidenceScore(currentBasis ? matchAnalysis?.output : undefined),
     view: buildJobDetailView(job),
     // The host a browser run for this job would target (the same parse run creation uses), or null
     // when the job has no safe HTTPS application link. Shown in the Prepare question; never a URL.

@@ -175,6 +175,9 @@ test("step 4's state mirrors Prepare's gates: the reviewed match, documents, pol
   // A match not bound to the saved review doesn't count, whatever its score.
   const unreviewed = prepareStateFromFacts({ ...PREPARE_FACTS, estimate: { score: 95, basis: "MASTER_RESUME" } });
   assert.equal(unreviewed.readyList.find((line) => line.key === "fit_below_threshold")?.ok, false);
+  // A "nothing to add" review of exactly that match counts, as Prepare's own gate counts it.
+  const nothingToAdd = prepareStateFromFacts({ ...PREPARE_FACTS, estimate: { score: 95, basis: "MASTER_RESUME_NO_NEW_FACTS" } });
+  assert.equal(nothingToAdd.readyList.find((line) => line.key === "fit_below_threshold")?.ok, true);
   // The policy's own thresholds, cover rule and block list.
   const strict = prepareStateFromFacts({ ...PREPARE_FACTS, policy: { ...PREPARE_FACTS.policy, minimumFitScore: 95, coverLetterRequired: false, blockedHosts: ["example.com"] } });
   assert.equal(strict.readyList.find((line) => line.key === "fit_below_threshold")?.ok, false);
@@ -211,6 +214,7 @@ test("progress facts map the way the plan says", () => {
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: null }).current, 1);
   assert.equal(applyProgressFromFacts(base).current, 2);
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE" }).current, 3);
+  assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "MASTER_RESUME_NO_NEW_FACTS" }).current, 3, "nothing to add: step 2 is done");
   const attached = { status: "INTERESTED", resumeVersionId: "r", coverLetterVersionId: null };
   const resumeReady = { resume: "ready", cover: "none" } as const;
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached, documents: resumeReady }).current, 3);
