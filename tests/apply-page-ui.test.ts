@@ -19,7 +19,7 @@ import { createDomHarness } from "@/tests/fixtures/dom-harness";
 const requirements = ["Current Quenby certification", "Enterprise service delivery", "Working knowledge of SQL"];
 const output = {
   contractVersion: "3",
-  promptVersion: "3.4",
+  promptVersion: "3.5",
   factualMatches: [{
     claim: "Shows enterprise service delivery",
     applicantEvidence: [{ ref: "resume.rawText", excerpt: "Résumé line." }],
@@ -48,7 +48,7 @@ const PROGRESS_INPUT: ApplyProgressInput = {
 const review = () => buildEvidenceCorrectionReview({
   jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
   resume: { rawText: "Service operations leader." }, analysisId: "analysis-1", analysisInputHash: "a".repeat(64),
-  analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.4", analysisOutput: output
+  analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.5", analysisOutput: output
 });
 
 type PageOverrides = Partial<Omit<ApplyPageProps, "detail">> & { detail?: Record<string, unknown>; kitPatch?: Partial<ApplyKitView> };

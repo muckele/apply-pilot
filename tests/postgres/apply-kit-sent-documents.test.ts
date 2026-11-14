@@ -83,7 +83,7 @@ test("Apply Kit 'I applied' freezes what was sent through the real route and dat
     } });
     const analysis = await client.aIAnalysis.create({ data: {
       userId: owner.id, jobPostingId: job.id, type: "JOB_MATCH", model: "gemini-3.8-flash",
-      promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {}
+      promptName: "jobMatchPrompt", promptVersion: "3.5", input: {}, output: {}
     } });
     const snapshot = await client.evidenceSnapshot.create({ data: {
       userId: owner.id, jobPostingId: job.id, resumeId: master.id, reviewedAnalysisId: analysis.id,

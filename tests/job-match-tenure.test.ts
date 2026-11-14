@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  JobMatchOutputValidationError,
   normalizeJobMatchOutput,
   validateAndNormalizeJobMatchOutput,
   type JobMatchModelOutput,
@@ -397,9 +396,15 @@ test("root cause stays pinned: the keyword gap rules cannot express the tenure r
     ["years", "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE"],
     ["technical", "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE"]
   ] as const) {
-    assert.throws(
-      () => validateAndNormalizeJobMatchOutput(input, modelOutput(input, [apiGap(input, 0, [keyword])])),
-      (error: unknown) => error instanceof JobMatchOutputValidationError && error.validationCode === code,
+    // Since prompt 3.5 such a gap is set aside rather than refusing the paid answer; the locally
+    // computed tenure gap still covers the requirement.
+    const { normalized } = validateAndNormalizeJobMatchOutput(input, modelOutput(input, [apiGap(input, 0, [keyword])]), {
+      asOf: AS_OF
+    });
+    assert.deepEqual(normalized.requirementCoverage.setAsideGaps, [{ ref: "job.requirements[0]", validationCode: code }], keyword);
+    assert.deepEqual(
+      normalized.requirementGaps.map((gap) => [gap.jobRequirement.ref, gap.missingKeywords, Boolean(gap.tenure)]),
+      [["job.requirements[0]", [], true]],
       keyword
     );
   }

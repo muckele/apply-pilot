@@ -94,7 +94,7 @@ test("v3 fit presentation labels confidence as uncalibrated and explains unknown
     },
     {
       contractVersion: "3",
-      promptVersion: "3.4",
+      promptVersion: "3.5",
       compensationAssessment: { score: null, reason: "missing_applicant_salary_target" },
       confidenceAssessment: {
         score: 79,
@@ -255,7 +255,7 @@ const TENURE_SUMMARY = "Your résumé shows about 4 months in a customer-facing 
 function tenureAnalysis(tenure: unknown) {
   return {
     contractVersion: "3",
-    promptVersion: "3.4",
+    promptVersion: "3.5",
     requirementGaps: [
       {
         requirement: "Kubernetes",

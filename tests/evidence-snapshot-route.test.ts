@@ -15,7 +15,7 @@ const requestBody = {
     id: "analysis-1",
     inputHash: "a".repeat(64),
     model: "gemini-3.8-flash",
-    promptVersion: "3.4"
+    promptVersion: "3.5"
   },
   decisions: [{
     gapId: "gap:0",

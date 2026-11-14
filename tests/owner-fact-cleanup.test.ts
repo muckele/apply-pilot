@@ -119,7 +119,7 @@ test("the review save refuses a new owner fact with pasted text, and accepts a c
     analysisId: "analysis-1",
     analysisOutput: {
       contractVersion: "3",
-      promptVersion: "3.4",
+      promptVersion: "3.5",
       requirementGaps: [{
         requirement: "Merchant onboarding ownership",
         jobRequirement: { ref: "job.requirements[0]", excerpt: "Merchant onboarding ownership" },

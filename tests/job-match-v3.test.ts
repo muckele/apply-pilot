@@ -4,7 +4,6 @@ import { test } from "node:test";
 import {
   buildJobMatchResponseJsonSchema,
   buildJobMatchSystemPrompt,
-  JOB_MATCH_PROMPT_VERSION,
   JobMatchOutputValidationError,
   jobMatchModelOutputSchema,
   normalizeJobMatchOutput,
@@ -105,10 +104,6 @@ const baseModelOutput: JobMatchModelOutput = {
 function cloneOutput() {
   return structuredClone(baseModelOutput);
 }
-
-test("JOB_MATCH uses prompt/cache revision 3.4 for durable reviewed evidence", () => {
-  assert.equal(JOB_MATCH_PROMPT_VERSION, "3.4");
-});
 
 test("compensation keeps null distinct from a genuine numeric zero", () => {
   const explicitNull = cloneOutput();
@@ -378,20 +373,34 @@ test("gaps must cite exact structured job requirements", () => {
   };
   assert.throws(() => normalizeJobMatchOutput(detailedInput, fragment), /full structured job requirement/i);
 
+  // A keyword that is not a whole term of the requirement sets the gap aside (prompt 3.5).
   const partialKeyword = cloneOutput();
   partialKeyword.requirementGaps[0].missingKeywords = ["C"];
-  assert.throws(() => normalizeJobMatchOutput(baseInput, partialKeyword), /unsupported missing keyword/i);
+  const partial = normalizeJobMatchOutput(baseInput, partialKeyword);
+  assert.deepEqual(partial.requirementGaps, []);
+  assert.deepEqual(partial.requirementCoverage.setAsideGaps, [
+    { ref: "job.preferredQualifications[0]", validationCode: "GAP_KEYWORD_NOT_IN_REQUIREMENT" }
+  ]);
 });
 
 test("a gap cannot label a keyword missing when submitted applicant evidence contains it", () => {
   const falseGap = cloneOutput();
+  falseGap.factualMatches = [];
   falseGap.requirementGaps[0] = {
     requirement: "TypeScript",
     jobRequirement: { ref: "job.requirements[0]", excerpt: "TypeScript" },
     missingKeywords: ["TypeScript"]
   };
 
-  assert.throws(() => normalizeJobMatchOutput(baseInput, falseGap), /present in submitted applicant evidence/i);
+  // Not shown and not refused (prompt 3.5): the requirement is left unjudged instead.
+  const normalized = normalizeJobMatchOutput(baseInput, falseGap);
+  assert.deepEqual(normalized.requirementGaps, []);
+  assert.deepEqual(normalized.missingKeywords, []);
+  assert.deepEqual(normalized.requirementCoverage, {
+    askedRefs: ["job.requirements[0]"],
+    unjudgedRefs: ["job.requirements[0]"],
+    setAsideGaps: [{ ref: "job.requirements[0]", validationCode: "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE" }]
+  });
 });
 
 test("illustrative examples cannot by themselves prove a broader requirement is not evidenced", () => {
@@ -415,17 +424,13 @@ test("illustrative examples cannot by themselves prove a broader requirement is 
       missingKeywords: [illustrativeKeyword]
     }];
 
-    assert.throws(
-      () => validateAndNormalizeJobMatchOutput(input, output),
-      (error: unknown) => {
-        assert.ok(error instanceof JobMatchOutputValidationError);
-        assert.equal(error.validationStage, "semantic");
-        assert.equal(error.validationCode, "GAP_KEYWORD_ILLUSTRATIVE_ONLY");
-        assert.equal(error.fieldPath, "requirementGaps[0].missingKeywords[0]");
-        assert.doesNotMatch(error.message, new RegExp(illustrativeKeyword, "iu"));
-        return true;
-      }
-    );
+    // Set aside, not shown and not refused (prompt 3.5).
+    const normalized = validateAndNormalizeJobMatchOutput(input, output).normalized;
+    assert.deepEqual(normalized.requirementGaps, [], requirement);
+    assert.deepEqual(normalized.requirementCoverage.setAsideGaps, [
+      { ref: "job.requirements[0]", validationCode: "GAP_KEYWORD_ILLUSTRATIVE_ONLY" }
+    ], requirement);
+    assert.doesNotMatch(JSON.stringify(normalized.requirementCoverage), new RegExp(illustrativeKeyword, "iu"));
   }
 });
 
@@ -465,22 +470,21 @@ test("a term used both as an explicit requirement and as an example is not illus
 test("semantic failures expose only stable codes and structural paths", () => {
   const privateKeyword = "PRIVATE-KUBERNETES-TERM";
   const input = structuredClone(baseInput);
-  input.resume!.rawText = `Built systems with ${privateKeyword}.`;
   input.job.requirements = [privateKeyword];
   const output = cloneOutput();
-  output.factualMatches = [];
-  output.requirementGaps = [{
-    requirement: privateKeyword,
-    jobRequirement: { ref: "job.requirements[0]", excerpt: privateKeyword },
-    missingKeywords: [privateKeyword]
+  output.factualMatches = [{
+    applicantEvidence: [{ ref: "resume.skills[0]", excerpt: "TypeScript" }],
+    jobEvidence: [{ ref: "job.requirements[0]", excerpt: privateKeyword }],
+    supportedKeywords: [privateKeyword]
   }];
+  output.requirementGaps = [];
 
   assert.throws(
     () => validateAndNormalizeJobMatchOutput(input, output),
     (error: unknown) => {
       assert.ok(error instanceof JobMatchOutputValidationError);
-      assert.equal(error.validationCode, "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE");
-      assert.equal(error.fieldPath, "requirementGaps[0].missingKeywords[0]");
+      assert.equal(error.validationCode, "UNSUPPORTED_MATCHED_KEYWORD");
+      assert.equal(error.fieldPath, "factualMatches[0].supportedKeywords[0]");
       assert.doesNotMatch(JSON.stringify(error), /PRIVATE-KUBERNETES-TERM/u);
       return true;
     }
@@ -525,11 +529,13 @@ test("reviewed job-only facts are citable with explicit provenance and cannot al
     jobRequirement: { ref: "job.requirements[0]", excerpt: "Business administration training" },
     missingKeywords: ["business administration"]
   }];
-  assert.throws(
-    () => validateAndNormalizeJobMatchOutput(input, contradictory),
-    (error: unknown) => error instanceof JobMatchOutputValidationError &&
-      error.validationCode === "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE"
-  );
+  // Set aside, not shown and not refused (prompt 3.5): the reviewed fact refutes the keyword.
+  const contradicted = validateAndNormalizeJobMatchOutput(input, contradictory).normalized;
+  assert.deepEqual(contradicted.requirementGaps, []);
+  assert.deepEqual(contradicted.missingKeywords, []);
+  assert.deepEqual(contradicted.requirementCoverage.setAsideGaps, [
+    { ref: "job.requirements[0]", validationCode: "GAP_KEYWORD_PRESENT_IN_APPLICANT_EVIDENCE" }
+  ]);
 });
 
 test("the provider schema enumerates only submitted evidence refs at work-history item granularity", () => {
@@ -554,7 +560,7 @@ test("the provider schema enumerates only submitted evidence refs at work-histor
   assert.ok(jobRefs.includes("job.requirements[0]"));
   assert.ok(!jobRefs.includes("job.requirements[1]"));
   assert.deepEqual(gapRefs, ["job.requirements[0]", "job.preferredQualifications[0]"]);
-  assert.equal(schema.properties.requirementGaps.items.properties.missingKeywords.minItems, 1);
+  assert.equal(schema.properties.requirementGaps.items.properties.missingKeywords.minItems, undefined);
 
   const opaqueWorkHistory = structuredClone(baseInput);
   opaqueWorkHistory.resume!.workHistory = { role: "Engineer" };
@@ -575,7 +581,7 @@ test("the input-specific prompt publishes exact refs and forbids work-history ch
   assert.match(prompt, /Search every submitted applicant evidence field .*before returning a missing keyword/);
   assert.match(prompt, /not evidence that the applicant lacks the capability/i);
   assert.match(prompt, /such as.*including.*for example.*e\.g\./i);
-  assert.match(prompt, /exact-term absence is necessary but not sufficient/i);
+  assert.match(prompt, /exact-term absence is not sufficient on its own/i);
   assert.doesNotMatch(prompt, /resume\.workHistory\[0\]\.bullets\[0\]/);
 });
 
@@ -650,7 +656,7 @@ test("work-history evidence accepts one submitted item but rejects invented chil
   assert.throws(() => normalizeJobMatchOutput(input, childPath), /unknown applicant evidence reference/i);
 });
 
-test("missing-keyword validation ignores profile preferences and requires a keyword", () => {
+test("missing-keyword validation ignores profile preferences and allows a gap with no keyword", () => {
   const input = structuredClone(baseInput);
   input.profile!.preferredRoles = ["Software Engineering"];
   input.job.requirements = ["TypeScript", "Software Engineering"];
@@ -663,7 +669,8 @@ test("missing-keyword validation ignores profile preferences and requires a keyw
 
   assert.doesNotThrow(() => normalizeJobMatchOutput(input, falseGap));
 
+  // Prompt 3.5: a gap may name no missing keyword when every term of the requirement is on the résumé.
   const noKeyword = cloneOutput();
   noKeyword.requirementGaps[0].missingKeywords = [];
-  assert.equal(jobMatchModelOutputSchema.safeParse(noKeyword).success, false);
+  assert.equal(jobMatchModelOutputSchema.safeParse(noKeyword).success, true);
 });

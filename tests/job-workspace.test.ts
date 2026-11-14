@@ -20,7 +20,7 @@ const requirements = [
 
 const output = {
   contractVersion: "3",
-  promptVersion: "3.4",
+  promptVersion: "3.5",
   factualMatches: [1, 2, 3, 4].map((index) => ({
     claim: `Shows ${requirements[index]}`,
     applicantEvidence: [{ ref: "resume.rawText", excerpt: `Résumé line for ${requirements[index]}` }],

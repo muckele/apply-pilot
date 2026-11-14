@@ -39,7 +39,7 @@ const requirements = [
 
 const analysisOutput = {
   contractVersion: "3",
-  promptVersion: "3.4",
+  promptVersion: "3.5",
   factualMatches: [{
     claim: "Submitted applicant evidence matches job evidence for incident governance.",
     applicantEvidence: [{ ref: "resume.skills[0]", excerpt: "Incident governance" }],
@@ -167,4 +167,44 @@ test("a requirement already answered with a line is not asked again when a resco
   assert.throws(() => normalizeEvidenceCorrectionDecisions(answered, [
     unresolved("gap:0"), unresolved("gap:1"), attest("requirement:7", "Bachelor of Science, 2014.")
   ]), /Unknown disputed gap/u);
+});
+
+// Production 2026-11-12: after a paid re-score the owner could not tell whether the lines they wrote
+// for requirements counted. Each saved line written for a listed requirement now carries what the
+// current match made of that requirement, including "not checked" when Gemini skipped it.
+test("each saved line for a listed requirement carries what the current match made of it", () => {
+  const line = (factId: string, originGapId: string, fact: string) => ({
+    factId,
+    originGapId,
+    fact,
+    provenance: { kind: "OWNER_ATTESTED" as const, ownerAttested: true as const },
+    ...JOB_ONLY
+  });
+  const built = review({
+    acceptedFacts: [
+      line("fact:matched", "requirement:2", "Ran the synthetic incident reviews every week."),
+      line("fact:gapped", "requirement:5", "Wrote synthetic reports for the finance team."),
+      line("fact:skipped", "requirement:3", "Wrote the synthetic runbook library."),
+      line("fact:earlier-gap", "gap:1", "An answer to a gap of an earlier match."),
+      line("fact:gone", "requirement:40", "A line for a requirement this job no longer lists.")
+    ]
+  });
+
+  assert.deepEqual(built.answeredRequirements, [
+    { factId: "fact:matched", requirement: "Experience with incident governance", jobRef: "job.requirements[2]", status: "shown" },
+    { factId: "fact:gapped", requirement: "Working knowledge of SQL", jobRef: "job.requirements[5]", status: "not_shown" },
+    { factId: "fact:skipped", requirement: "Write clear technical documentation", jobRef: "job.requirements[3]", status: "not_assessed" }
+  ]);
+});
+
+test("without a current match no saved line gets a verdict", () => {
+  const acceptedFacts = [{
+    factId: "fact:skipped",
+    originGapId: "requirement:3",
+    fact: "Wrote the synthetic runbook library.",
+    provenance: { kind: "OWNER_ATTESTED" as const, ownerAttested: true as const },
+    ...JOB_ONLY
+  }];
+  assert.deepEqual(review({ analysisId: null, analysisOutput: null, acceptedFacts }).answeredRequirements, []);
+  assert.deepEqual(review({ analysisOutput: { ...analysisOutput, promptVersion: "3.4" }, acceptedFacts }).answeredRequirements, []);
 });

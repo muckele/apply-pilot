@@ -16,16 +16,18 @@ const SAVED_FACT = "Led the 2025 vendor consolidation for Example Corp.";
 const STALE_TEXT = "This job's review changed in another tab. Reload to continue; your lines are kept on this computer.";
 const DRAFT_KEY = experienceDraftKey("0123456789abcdef", "job-1");
 
-function review(options: { requirementList?: string[]; gapIndexes?: number[] } = {}) {
+type SavedLine = { factId: string; originGapId: string; fact: string };
+
+function review(options: { requirementList?: string[]; gapIndexes?: number[]; savedLines?: SavedLine[] } = {}) {
   const list = options.requirementList ?? requirements;
   const gapIndexes = options.gapIndexes ?? [0, 2];
   return buildEvidenceCorrectionReview({
     jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
     resume: { rawText: ["SUMMARY", "Service operations leader.", RESUME_LINE].join("\n") },
-    analysisId: "analysis-1", analysisInputHash: "a".repeat(64), analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.4",
+    analysisId: "analysis-1", analysisInputHash: "a".repeat(64), analysisModel: "gemini-3.8-flash", analysisPromptVersion: "3.5",
     analysisOutput: {
       contractVersion: "3",
-      promptVersion: "3.4",
+      promptVersion: "3.5",
       factualMatches: [{
         claim: "Shows enterprise service delivery",
         applicantEvidence: [{ ref: "resume.rawText", excerpt: "Service operations leader." }],
@@ -36,10 +38,9 @@ function review(options: { requirementList?: string[]; gapIndexes?: number[] } =
       }))
     },
     job: { requirements: list, description: null },
-    acceptedFacts: [{
-      factId: "fact:owner-1", originGapId: "gap:9", fact: SAVED_FACT,
-      provenance: { kind: "OWNER_ATTESTED", ownerAttested: true }, reuseScope: "JOB_ONLY", masterProfileOptIn: false
-    }]
+    acceptedFacts: (options.savedLines ?? [{ factId: "fact:owner-1", originGapId: "gap:9", fact: SAVED_FACT }]).map((line) => ({
+      ...line, provenance: { kind: "OWNER_ATTESTED" as const, ownerAttested: true as const }, reuseScope: "JOB_ONLY" as const, masterProfileOptIn: false as const
+    }))
   });
 }
 
@@ -708,6 +709,52 @@ test("plain language: no internal jargon", async () => {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
     assert.doesNotMatch(harness.text(), /immutable|snapshot|Correction-first|reassess|Build packet|provenance|ATS score/iu);
+  } finally {
+    await harness.close();
+  }
+});
+
+// Production 2026-11-12: after a paid re-score the owner couldn't tell whether their lines counted.
+// A saved line written for a listed requirement now names that requirement and says what the latest
+// score made of it, including when Gemini skipped it.
+test("each saved line for a requirement names it and says whether the latest score counted it", async () => {
+  const { harness } = setup();
+  try {
+    await harness.render(React.createElement(ExperienceStep, props({
+      review: review({
+        gapIndexes: [0, 2],
+        savedLines: [
+          { factId: "fact:shown", originGapId: "requirement:1", fact: "Ran enterprise service desks for three regions." },
+          { factId: "fact:gap", originGapId: "requirement:2", fact: "Pulled synthetic weekly reports." },
+          { factId: "fact:skipped", originGapId: "requirement:3", fact: "Ran the yearly supplier check-ins." },
+          { factId: "fact:earlier", originGapId: "gap:9", fact: SAVED_FACT }
+        ]
+      })
+    })));
+    const saved = (factId: string) => {
+      const node = harness.container.querySelector(`fieldset[data-saved-line="${factId}"]`);
+      assert.ok(node, `saved line ${factId}`);
+      return node;
+    };
+    const verdict = (factId: string) => saved(factId).querySelector("[data-line-verdict]");
+
+    assert.equal(saved("fact:shown").querySelector("[data-line-for]")?.textContent, "For: Enterprise service delivery");
+    assert.equal(verdict("fact:shown")?.getAttribute("data-line-verdict"), "shown");
+    assert.equal(verdict("fact:shown")?.textContent, "Your latest score counts this requirement as shown.");
+
+    assert.equal(saved("fact:gap").querySelector("[data-line-for]")?.textContent, "For: Working knowledge of SQL");
+    assert.equal(verdict("fact:gap")?.textContent, "Your latest score still doesn't count this requirement as shown.");
+
+    assert.equal(saved("fact:skipped").querySelector("[data-line-for]")?.textContent, "For: Experience running vendor reviews");
+    assert.equal(verdict("fact:skipped")?.getAttribute("data-line-verdict"), "not_assessed");
+    assert.equal(
+      verdict("fact:skipped")?.textContent,
+      "Gemini didn't check this requirement in your latest score, so this line wasn't counted."
+    );
+
+    // A line written against a gap of an earlier match isn't tied to one requirement.
+    assert.equal(saved("fact:earlier").querySelector("[data-line-for]"), null);
+    assert.equal(verdict("fact:earlier"), null);
   } finally {
     await harness.close();
   }

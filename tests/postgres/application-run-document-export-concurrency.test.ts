@@ -53,7 +53,7 @@ test("PR35 independent reproduction: prepared-run export must reject a document 
       achievements: [] } });
     const analysis = await client.aIAnalysis.create({ data: { userId: fixture.userId,
       jobPostingId: fixture.jobPostingId, type: "JOB_MATCH", model: "gemini-3.8-flash",
-      promptName: "jobMatchPrompt", promptVersion: "3.4", input: {}, output: {} } });
+      promptName: "jobMatchPrompt", promptVersion: "3.5", input: {}, output: {} } });
     async function installSnapshot() {
       return client.$transaction(async (tx) => {
         const snapshot = await tx.evidenceSnapshot.create({ data: { userId: fixture.userId,
@@ -589,7 +589,7 @@ async function installEvidenceSnapshot(
     type: "JOB_MATCH",
     model: "gemini-3.8-flash",
     promptName: "jobMatchPrompt",
-    promptVersion: "3.4",
+    promptVersion: "3.5",
     input: {},
     output: {}
   } });

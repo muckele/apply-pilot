@@ -620,6 +620,7 @@ function noGapMatch(input: MatchInput) {
     confidenceScore: 90,
     confidenceBasis: "Synthetic reviewed evidence is explicit.",
     factualMatches: [], requirementGaps: [],
+    requirementCoverage: { askedRefs: [], unjudgedRefs: [], setAsideGaps: [] },
     advice: { keywordsToEmphasize: [], resumeAngle: "Use reviewed evidence.", coverLetterAngle: "Use reviewed evidence." },
     recommendation: "apply now" as const,
     compensationAssessment: { score: null, reason: "missing_both" as const },
