@@ -145,6 +145,12 @@ test("a paid re-score with one unsupported keyword is kept, and the log names on
   const answer = outputQuoting(FACT);
   answer.factualMatches[0]!.supportedKeywords = ["Zookeeper", "Kubernetes"];
   geminiReturns(t, answer);
+  // Production logs at info (CI sets warn), so read the repair line at the level it ships at.
+  const previousLogLevel = process.env.LOG_LEVEL;
+  process.env.LOG_LEVEL = "info";
+  t.after(() => {
+    if (previousLogLevel === undefined) delete process.env.LOG_LEVEL; else process.env.LOG_LEVEL = previousLogLevel;
+  });
   const lines: string[] = [];
   const original = console.log;
   console.log = (line: string) => { lines.push(String(line)); };
