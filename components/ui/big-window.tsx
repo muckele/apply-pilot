@@ -49,7 +49,7 @@ export function BigWindow({
         onClose();
       }}
     >
-      <div className="big-window-body">{children}</div>
+      <div className="job-card big-window-body">{children}</div>
     </dialog>
   );
 }

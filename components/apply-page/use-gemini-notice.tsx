@@ -48,16 +48,14 @@ export function useGeminiNotice(accountKey: string): { ensure: () => Promise<boo
 
   const window = asking ? (
     <BigWindow labelledBy={titleId} onClose={() => settle(false)} dataAttribute="data-gemini-notice">
-      <h2 id={titleId} tabIndex={-1} className="big-window-title">{GEMINI_NOTICE_TITLE}</h2>
-      <p className="big-window-copy">
+      <h2 id={titleId} tabIndex={-1} className="job-section-title">{GEMINI_NOTICE_TITLE}</h2>
+      <p className="job-card-copy">
         Apply Pilot uses Google Gemini to check your match and write your documents. It sends {SENT_TO_GEMINI}. It never
         sends your contact details or your saved answers.
       </p>
       <p className="job-hint">You&apos;ll see this once.</p>
-      <div className="big-window-actions">
-        <button type="button" className="job-button job-button-primary job-button-large" onClick={() => settle(true)}>Continue</button>
-        <button type="button" className="job-link-button" onClick={() => settle(false)}>Not now</button>
-      </div>
+      <button type="button" className="job-button job-button-primary job-button-large" onClick={() => settle(true)}>Continue</button>
+      <button type="button" className="job-link-button" onClick={() => settle(false)}>Not now</button>
     </BigWindow>
   ) : null;
 

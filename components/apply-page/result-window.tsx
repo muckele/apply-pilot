@@ -3,6 +3,7 @@
 import { useId } from "react";
 import { Loader2, Sparkles } from "lucide-react";
 
+import { fitTier } from "@/components/job-workspace/match-card";
 import { BigWindow } from "@/components/ui/big-window";
 import type { ResultWindowView } from "@/lib/apply-page/result-window";
 import { GRADE_EXPLANATION } from "@/lib/jobs/grade";
@@ -66,14 +67,14 @@ export function ResultWindow({
 
   return (
     <BigWindow labelledBy={titleId} onClose={creating ? () => undefined : onClose} dataAttribute="data-result-window">
-      <h2 id={titleId} tabIndex={-1} className="big-window-title" data-grade={view.letter}>
-        <span className="big-window-grade">{view.letter}</span> · {view.score}
+      <h2 id={titleId} tabIndex={-1} className="job-section-title" data-grade={view.letter}>
+        <span className={`job-match-score job-fit-${fitTier(view.score)}`}>{view.letter}</span> · {view.score}
       </h2>
       {view.kind === "strong" ? (
-        <p className="big-window-copy">Strong match. {view.why}</p>
+        <p className="job-card-copy">Strong match. {view.why}</p>
       ) : view.kind === "close" ? (
         <>
-          <p className="big-window-copy">Close match. {view.why}</p>
+          <p className="job-card-copy">Close match. {view.why}</p>
           {view.missing.length ? (
             <div data-missing>
               <p className="job-card-copy">Still missing:</p>
@@ -82,7 +83,7 @@ export function ResultWindow({
           ) : null}
         </>
       ) : (
-        <p className="big-window-copy">This may not be a good fit. Let&apos;s look at other jobs.</p>
+        <p className="job-card-copy">This may not be a good fit. Let&apos;s look at other jobs.</p>
       )}
       <p className="job-hint">{GRADE_EXPLANATION}</p>
 
@@ -91,28 +92,26 @@ export function ResultWindow({
         <p role={status.tone === "error" ? "alert" : "status"} className={`job-message job-message-${status.tone}`}>{status.text}</p>
       ) : null}
 
-      <div className="big-window-actions">
-        {view.kind === "weak" ? (
-          <>
-            <a className="job-button job-button-primary job-button-large" href={JOBS_HREF}>Find other jobs</a>
-            <button type="button" className="job-link-button" onClick={onApplyOnMyOwn}>Apply on my own</button>
-          </>
-        ) : (
-          <>
-            {create}
-            {createBlockedReason ? (
-              <button type="button" className="job-button" onClick={onAddExperience}>Go to step 2</button>
-            ) : view.kind === "close" ? (
-              <button type="button" className="job-button" onClick={onAddExperience} disabled={creating}>Add my experience first</button>
-            ) : null}
-            {view.kind === "close" ? (
-              <a className="job-link-button" href={JOBS_HREF}>Find better-fit jobs</a>
-            ) : (
-              <button type="button" className="job-link-button" onClick={onClose} disabled={creating}>Not now</button>
-            )}
-          </>
-        )}
-      </div>
+      {view.kind === "weak" ? (
+        <>
+          <a className="job-button job-button-primary job-button-large" href={JOBS_HREF}>Find other jobs</a>
+          <button type="button" className="job-link-button" onClick={onApplyOnMyOwn}>Apply on my own</button>
+        </>
+      ) : (
+        <>
+          {create}
+          {createBlockedReason ? (
+            <button type="button" className="job-button" onClick={onAddExperience}>Go to step 2</button>
+          ) : view.kind === "close" ? (
+            <button type="button" className="job-button" onClick={onAddExperience} disabled={creating}>Add my experience first</button>
+          ) : null}
+          {view.kind === "close" ? (
+            <a className="job-link-button" href={JOBS_HREF}>Find better-fit jobs</a>
+          ) : (
+            <button type="button" className="job-link-button" onClick={onClose} disabled={creating}>Not now</button>
+          )}
+        </>
+      )}
     </BigWindow>
   );
 }
