@@ -23,8 +23,8 @@ import {
 import { CopyButton } from "@/components/apply-kit/copy-button";
 import { DocumentReviewPanel } from "@/components/document-review-panel";
 import { Panel, PanelHeader, PrimaryButton, SecondaryButton } from "@/components/ui";
-import { useInPageConfirm } from "@/components/ui/in-page-confirm";
-import { fetchWithAiCostConfirmation } from "@/lib/ai/browser-request";
+import { fetchWithAiConsent } from "@/lib/ai/browser-request";
+import { aiErrorText } from "@/lib/apply-page/ai-error-text";
 import { prefillEffortMinutes } from "@/lib/applications/apply-return";
 import { MAX_EFFORT_MINUTES, parseEffortMinutesInput } from "@/lib/applications/self-reported-effort";
 import type { ApplyKitDocument, ApplyKitView } from "@/lib/apply-kit/apply-kit-view";
@@ -237,14 +237,22 @@ function DocumentSlot({
 
 type ReturnMoment = { openedAt: number; returnedAt: number };
 
-export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; answeredYes?: boolean }) {
+export function ApplyKit({
+  view,
+  answeredYes = false,
+  beforeAiRun
+}: {
+  view: ApplyKitView;
+  answeredYes?: boolean;
+  // The Apply page's one-time Gemini notice; false means the user declined, and nothing is sent.
+  beforeAiRun: () => Promise<boolean>;
+}) {
   const router = useRouter();
   const [resumeId, setResumeId] = useState(view.selectedResumeId);
   const [coverId, setCoverId] = useState(view.selectedCoverLetterId ?? view.coverLetters[0]?.id ?? null);
   const [includeCover, setIncludeCover] = useState(view.selectedCoverLetterId !== null);
   const [busy, setBusy] = useState<Busy>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const generateConfirm = useInPageConfirm();
   const [confirming, setConfirming] = useState(false);
   const [attested, setAttested] = useState(false);
   const [appliedError, setAppliedError] = useState<{ text: string; fixHref: string | null } | null>(null);
@@ -389,14 +397,18 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
     setBusy({ action: "generate", key: kind });
     setMessage(null);
     try {
-      const response = await fetchWithAiCostConfirmation(
+      if (!(await beforeAiRun())) {
+        setMessage("Nothing was sent.");
+        return;
+      }
+      // One click, no price or cost question (D037): the user agreed once to what goes to Gemini.
+      const response = await fetchWithAiConsent(
         `/api/jobs/${view.job.id}/${kind === "RESUME" ? "tailored-resume" : "cover-letter"}`,
-        { method: "POST" },
-        { confirm: generateConfirm.confirmFn }
+        { method: "POST" }
       );
       if (!response.ok) {
         const json = await readJson(response);
-        throw new Error(json?.error ?? "Generation failed. Nothing was saved.");
+        throw new Error(aiErrorText(json, "Generation failed. Nothing was saved."));
       }
       setMessage(kind === "RESUME" ? "Tailored résumé saved. Review it before you use it." : "Cover letter saved. Review it before you use it.");
       router.refresh();
@@ -474,7 +486,6 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
 
       <Panel>
         <PanelHeader title="1. Documents" description="Download the exact files you will upload. Edited documents are used only after you confirm their changed facts." />
-        {generateConfirm.dialog ? <div className="px-5 pt-5">{generateConfirm.dialog}</div> : null}
         <div id="documents" className="grid gap-4 p-5 lg:grid-cols-2">
           <DocumentSlot
             kind="RESUME"

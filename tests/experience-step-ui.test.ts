@@ -4,7 +4,6 @@ import test from "node:test";
 import React from "react";
 
 import { ExperienceStep, type ExperienceStepProps } from "@/components/apply-page/experience-step";
-import type { DocumentCreationQuote } from "@/lib/jobs/document-creation-plan";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { experienceDraftKey } from "@/lib/jobs/experience-drafts";
 import { createDomHarness } from "@/tests/fixtures/dom-harness";
@@ -43,9 +42,10 @@ function review(options: { requirementList?: string[]; gapIndexes?: number[] } =
   });
 }
 
-const quote: DocumentCreationQuote = {
-  provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250
-};
+const ATTEST = "These are true · update my match";
+const UPDATE = "Update my match";
+// Every successful step tells the page, which refreshes and shows the result window.
+let scoredCount = 0;
 
 function props(overrides: Partial<ExperienceStepProps> = {}): ExperienceStepProps {
   return {
@@ -53,9 +53,10 @@ function props(overrides: Partial<ExperienceStepProps> = {}): ExperienceStepProp
     review: review(),
     hasValidCurrentSnapshot: false,
     matchBoundToReview: false,
-    quote,
     draftKey: DRAFT_KEY,
     generationAvailable: true,
+    beforeRun: async () => true,
+    onScored: () => { scoredCount += 1; },
     ...overrides
   };
 }
@@ -75,15 +76,17 @@ function savedResponse(isCurrent = true) {
   });
 }
 
-// The real match route answers an unconfirmed request with 428 and its maximum; nothing runs until
-// the request comes back with x-ai-cost-confirmed.
-function apiStub(calls: Call[], options: { save?: () => Response | Promise<Response>; matchMaximum?: number } = {}) {
+// The real match route refuses (428) a request without the consent headers; the Apply page sends
+// them on its one request, because the user agreed once to what goes to Gemini (D037).
+function apiStub(calls: Call[], options: { save?: () => Response | Promise<Response> } = {}) {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const call = { url, confirmed: new Headers(init?.headers).get("x-ai-cost-confirmed"), body: init?.body ? JSON.parse(String(init.body)) : null };
     calls.push(call);
     if (url.endsWith("/evidence-snapshots")) return options.save ? options.save() : savedResponse();
-    if (!call.confirmed) return json(428, { code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: options.matchMaximum ?? 72_720 });
+    if (!call.confirmed || new Headers(init?.headers).get("x-ai-data-confirmed") !== "true") {
+      return json(428, { code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 72_720 });
+    }
     return json(200, { cached: false });
   }) as typeof fetch;
 }
@@ -115,10 +118,8 @@ function textarea(harness: Harness, requirement: string) {
   return field;
 }
 
-function tick(harness: Harness) {
-  const label = [...harness.container.querySelectorAll("label")].find((node) => node.textContent === "Everything I wrote above is true.");
-  assert.ok(label, "the truth tick");
-  return label.querySelector("input")!;
+function attestHint(harness: Harness) {
+  return harness.container.querySelector("[data-attest]")?.textContent ?? null;
 }
 
 function blockedReason(harness: Harness) {
@@ -143,7 +144,8 @@ test("every requirement gets one box: the gaps, then the requirements the match 
     assert.match(box(harness, "Current Quenby certification").textContent ?? "", /0\/200/u);
     assert.match(harness.text(), /Lines you've added before/u);
     assert.match(harness.text(), new RegExp(SAVED_FACT.replace(/\./gu, "\\."), "u"));
-    assert.ok(harness.button("Nothing to add · update my score"));
+    assert.ok(harness.button("Nothing to add"));
+    assert.doesNotMatch(harness.text(), /¢|\$|cost|charged/u, "no prices on the Apply page");
   } finally {
     await harness.close();
   }
@@ -173,7 +175,7 @@ test("a placeholder is flagged under its box before any request", async () => {
     const describedBy = (textarea(harness, "Current Quenby certification").getAttribute("aria-describedby") ?? "").split(" ");
     assert.equal(describedBy.some((id) => id && harness.window.document.getElementById(id)?.contains(problems[0]!)), true, "the box names its problem");
     assert.equal(box(harness, "Working knowledge of SQL").querySelector("[data-problem]") === null, true, "only the box with the problem");
-    assert.equal(harness.button("Update my score · about 8¢").disabled, true);
+    assert.equal(harness.button(ATTEST).disabled, true);
     assert.equal(blockedReason(harness), 'Fix the line for "Current Quenby certification" first.');
     assert.equal(calls.length, 0);
   } finally {
@@ -191,66 +193,60 @@ test("a 201-character line shows the limit and blocks Update", async () => {
     const sql = box(harness, "Working knowledge of SQL");
     assert.match(sql.textContent ?? "", /201\/200/u);
     assert.match(sql.querySelector("[data-problem]")?.textContent ?? "", /200 characters/u);
-    await harness.check(tick(harness));
-    assert.equal(harness.button("Update my score · about 8¢").disabled, true);
+    assert.equal(harness.button(ATTEST).disabled, true);
     assert.equal(blockedReason(harness), 'Fix the line for "Working knowledge of SQL" first.');
     await harness.type(textarea(harness, "Working knowledge of SQL"), line);
     assert.match(sql.textContent ?? "", /200\/200/u);
     assert.equal(sql.querySelector("[data-problem]") === null, true);
-    assert.equal(harness.button("Update my score · about 8¢").disabled, false);
+    assert.equal(harness.button(ATTEST).disabled, false);
     // Only the length counts: two sentences, U.S. and e.g. are fine.
     await harness.type(textarea(harness, "Working knowledge of SQL"), "I wrote SQL reports for U.S. teams, e.g. finance. I tuned queries.");
     assert.equal(sql.querySelector("[data-problem]") === null, true);
-    assert.equal(harness.button("Update my score · about 8¢").disabled, false);
+    assert.equal(harness.button(ATTEST).disabled, false);
     assert.equal(calls.length, 0);
   } finally {
     await harness.close();
   }
 });
 
-test("the truth tick is required for a new line and a changed saved line", async () => {
+test("a new line or a changed saved line turns the one button into the truth attestation", async () => {
   const { harness } = setup();
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
+    assert.equal(harness.container.querySelector('input[type="checkbox"]'), null, "no separate truth tick");
+    assert.equal(attestHint(harness), null);
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    assert.equal(blockedReason(harness), 'Tick "Everything I wrote above is true." first.');
-    await harness.check(tick(harness));
+    assert.equal(harness.button(ATTEST).disabled, false);
+    assert.equal(attestHint(harness), "Clicking confirms that everything you wrote above is true.");
     assert.equal(blockedReason(harness), null);
     await harness.type(textarea(harness, "Current Quenby certification"), "");
-    await harness.check(tick(harness), false);
     const saved = harness.container.querySelector("fieldset[data-saved-line]")!;
     await harness.click([...saved.querySelectorAll("label")].find((node) => node.textContent === "Change")?.querySelector("input"));
-    assert.equal(harness.button("Update my score · about 8¢").disabled, true);
+    assert.equal(harness.button(ATTEST).disabled, true);
     assert.equal(blockedReason(harness), `Fix the line for "${SAVED_FACT}" first.`);
     await harness.type(saved.querySelector("textarea"), "Led the 2025 vendor consolidation for three regions.");
-    assert.equal(blockedReason(harness), 'Tick "Everything I wrote above is true." first.');
+    assert.equal(harness.button(ATTEST).disabled, false);
     await harness.click([...saved.querySelectorAll("label")].find((node) => node.textContent === "Remove")?.querySelector("input"));
-    assert.equal(blockedReason(harness), null, "Remove needs no tick");
-    assert.equal(harness.button("Update my score · about 8¢").disabled, false);
+    assert.equal(harness.maybeButton(ATTEST), undefined, "Remove needs no attestation");
+    assert.equal(harness.button(UPDATE).disabled, false);
+    assert.equal(attestHint(harness), null);
   } finally {
     await harness.close();
   }
 });
 
-test("Update my score sends exactly save then match", async () => {
+test("These are true · update my match sends exactly one save then one consented match, and tells the page", async () => {
   const { harness, calls, windowConfirms } = setup();
+  const before = scoredCount;
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
     const vendor = box(harness, "Experience running vendor reviews");
     await harness.click([...vendor.querySelectorAll("button")].find((node) => node.textContent === "It's on my résumé"));
     await harness.type(vendor.querySelector("select"), RESUME_LINE);
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.waitForText(/could cost up to \$0\.07272/u);
-    // What the re-score actually sends (lib/ai/job-match.ts), so the question can stand for consent.
-    assert.match(harness.text(), /Sends this job, your résumé, your job preferences from your profile \(such as target roles, locations and salary\) and the lines you added for this job to Google Gemini to update your score\./u);
-    assert.equal(calls.length, 0, "nothing is sent before the in-page Confirm");
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your lines were saved and your score was updated\./u);
-    // The first match request is the server's cost check (428, nothing runs); the one that scores
-    // carries the header.
-    assert.deepEqual(significant(calls), [["evidence-snapshots", null], ["match", null], ["match", "true"]]);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/Your lines were saved and your match was updated\./u);
+    assert.deepEqual(significant(calls), [["evidence-snapshots", null], ["match", "true"]], "no second confirmation request");
     const body = calls[0]!.body as { requestId: string; decisions: Array<Record<string, unknown>>; acceptedFactActions: unknown[] };
     assert.deepEqual(body.decisions, [
       { gapId: "gap:0", kind: "OWNER_ATTESTATION", attestedFact: "Earned the Quenby certification in 2024.", ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false },
@@ -261,8 +257,10 @@ test("Update my score sends exactly save then match", async () => {
       }
     ]);
     assert.deepEqual(body.acceptedFactActions, [{ factId: "fact:owner-1", action: "RETAIN" }]);
-    assert.equal(harness.refreshes, 1);
+    assert.equal(scoredCount, before + 1, "the page refreshes and shows the result window");
+    assert.equal(harness.refreshes, 0);
     assert.equal(windowConfirms.length, 0);
+    assert.equal(harness.container.querySelector('[role="group"]'), null, "no in-page cost question");
   } finally {
     await harness.close();
   }
@@ -275,10 +273,8 @@ test("a changed saved line is sent as an attested replacement", async () => {
     const saved = harness.container.querySelector("fieldset[data-saved-line]")!;
     await harness.click([...saved.querySelectorAll("label")].find((node) => node.textContent === "Change")?.querySelector("input"));
     await harness.type(saved.querySelector("textarea"), "Led the 2025 vendor consolidation for three regions.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/score was updated/u);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/match was updated/u);
     const body = calls[0]!.body as { acceptedFactActions: unknown[] };
     assert.deepEqual(body.acceptedFactActions, [{
       factId: "fact:owner-1", action: "REPLACE_OWNER_ATTESTATION", attestedFact: "Led the 2025 vendor consolidation for three regions.",
@@ -289,16 +285,17 @@ test("a changed saved line is sent as an attested replacement", async () => {
   }
 });
 
-test("with nothing to add the button re-scores, saving the review only when none is saved yet", async () => {
+test("Nothing to add on a master-résumé match saves the review with no second score; with a saved review it re-scores", async () => {
   {
     const { harness, calls } = setup();
+    const before = scoredCount;
     try {
       await harness.render(React.createElement(ExperienceStep, props()));
       assert.equal(blockedReason(harness), null);
-      await harness.click(harness.button("Nothing to add · update my score"));
-      await harness.click(harness.button("Confirm"));
-      await harness.waitForText(/Your score was updated\./u);
-      assert.deepEqual(significant(calls), [["evidence-snapshots", null], ["match", null], ["match", "true"]]);
+      await harness.click(harness.button("Nothing to add"));
+      await harness.waitForText(/Your review is saved\./u);
+      assert.deepEqual(significant(calls), [["evidence-snapshots", null]], "the match it reviewed still stands");
+      assert.equal(scoredCount, before + 1, "the page shows the result window");
     } finally {
       await harness.close();
     }
@@ -307,10 +304,9 @@ test("with nothing to add the button re-scores, saving the review only when none
     const { harness, calls } = setup();
     try {
       await harness.render(React.createElement(ExperienceStep, props({ hasValidCurrentSnapshot: true })));
-      await harness.click(harness.button("Nothing to add · update my score"));
-      await harness.click(harness.button("Confirm"));
-      await harness.waitForText(/Your score was updated\./u);
-      assert.deepEqual(significant(calls), [["match", null], ["match", "true"]], "the saved review is already in force");
+      await harness.click(harness.button(UPDATE));
+      await harness.waitForText(/Your match was updated\./u);
+      assert.deepEqual(significant(calls), [["match", "true"]], "the saved review is already in force");
     } finally {
       await harness.close();
     }
@@ -322,27 +318,42 @@ test("a match already tied to the saved review shows Done until something change
   try {
     await harness.render(React.createElement(ExperienceStep, props({ hasValidCurrentSnapshot: true, matchBoundToReview: true })));
     assert.equal(harness.container.querySelector("[data-experience-done]")?.textContent, "Done");
-    assert.equal(harness.maybeButton(/update my score/iu) === undefined, true);
+    assert.equal(harness.maybeButton(/update my match/iu) === undefined, true);
     await harness.type(textarea(harness, "Working knowledge of SQL"), "Wrote SQL reports for the service desk.");
     assert.equal(harness.container.querySelector("[data-experience-done]") === null, true);
-    assert.ok(harness.button("Update my score · about 8¢"));
+    assert.ok(harness.button(ATTEST));
   } finally {
     await harness.close();
   }
 });
 
-test("Cancel sends no match request", async () => {
+test("a 'nothing to add' review that still stands is done, with nothing to re-score", async () => {
   const { harness, calls } = setup();
   try {
-    await harness.render(React.createElement(ExperienceStep, props()));
-    await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.waitForText(/could cost up to/u);
-    await harness.click(harness.button("Cancel"));
-    await harness.waitForText(/Canceled\. Nothing was sent and nothing was charged\./u);
+    const standing = buildEvidenceCorrectionReview({
+      jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
+      resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
+    });
+    await harness.render(React.createElement(ExperienceStep, props({ review: standing, hasValidCurrentSnapshot: true, matchBoundToReview: true })));
+    assert.match(harness.container.querySelector("[data-experience-done]")?.textContent ?? "", /Done\. You didn't add any lines for this job\./u);
+    assert.equal(harness.maybeButton(/update my match/iu), undefined);
     assert.equal(calls.length, 0);
-    assert.equal(harness.button("Update my score · about 8¢").disabled, false);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("declining the Gemini notice sends nothing and keeps the lines", async () => {
+  const { harness, calls } = setup();
+  const before = scoredCount;
+  try {
+    await harness.render(React.createElement(ExperienceStep, props({ beforeRun: async () => false })));
+    await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/Nothing was sent\./u);
+    assert.equal(calls.length, 0);
+    assert.equal(scoredCount, before);
+    assert.equal(harness.button(ATTEST).disabled, false);
     assert.equal(textarea(harness, "Current Quenby certification").value, "Earned the Quenby certification in 2024.");
   } finally {
     await harness.close();
@@ -358,7 +369,6 @@ test("drafts survive a remount and are cleared after success", async () => {
     await harness.click([...vendor.querySelectorAll("button")].find((node) => node.textContent === "It's on my résumé"));
     await harness.type(vendor.querySelector("select"), RESUME_LINE);
     assert.match(box(harness, "Current Quenby certification").textContent ?? "", /Saved on this computer/u);
-    await harness.check(tick(harness));
     assert.deepEqual(storedDrafts(harness), {
       "Current Quenby certification": { line: "Earned the Quenby certification in 2024.", resumeLine: "" },
       "Experience running vendor reviews": { line: "", resumeLine: RESUME_LINE }
@@ -368,12 +378,9 @@ test("drafts survive a remount and are cleared after success", async () => {
     await harness.render(React.createElement(ExperienceStep, props()));
     assert.equal(textarea(harness, "Current Quenby certification").value, "Earned the Quenby certification in 2024.");
     assert.equal(box(harness, "Experience running vendor reviews").querySelector("select")?.value, RESUME_LINE);
-    assert.equal(tick(harness).checked, false, "the truth tick is never kept");
 
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/score was updated/u);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/match was updated/u);
     assert.equal(storedDrafts(harness), null);
     assert.equal(textarea(harness, "Current Quenby certification").value, "");
   } finally {
@@ -392,11 +399,9 @@ test("a throwing storage still lets you update", async () => {
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
     assert.match(box(harness, "Current Quenby certification").textContent ?? "", /Not kept between visits on this browser/u);
     assert.doesNotMatch(harness.text(), /Saved on this computer/u);
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your lines were saved and your score was updated\./u);
-    assert.deepEqual(significant(calls), [["evidence-snapshots", null], ["match", null], ["match", "true"]]);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/Your lines were saved and your match was updated\./u);
+    assert.deepEqual(significant(calls), [["evidence-snapshots", null], ["match", "true"]]);
   } finally {
     await harness.close();
   }
@@ -410,19 +415,15 @@ test("a double click sends one save and one match", async () => {
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    const button = harness.button("Update my score · about 8¢");
+    const button = harness.button(ATTEST);
     await harness.click(button);
     await harness.click(button);
-    await harness.waitForText(/could cost up to/u);
-    assert.equal(harness.container.querySelectorAll('[role="group"]').length, 1, "one question");
-    await harness.click(harness.button("Confirm"));
     // A slow network: the save is still in flight.
     await harness.click(button);
     await harness.click(button);
     assert.equal(button.disabled, true);
     releaseSave();
-    await harness.waitForText(/score was updated/u);
+    await harness.waitForText(/match was updated/u);
     assert.equal(calls.filter((call) => call.url.endsWith("/evidence-snapshots")).length, 1);
     assert.equal(calls.filter((call) => call.url.endsWith("/match") && call.confirmed === "true").length, 1);
   } finally {
@@ -441,9 +442,7 @@ test("a stale review keeps drafts and asks to reload", async () => {
     try {
       await harness.render(React.createElement(ExperienceStep, props()));
       await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-      await harness.check(tick(harness));
-      await harness.click(harness.button("Update my score · about 8¢"));
-      await harness.click(harness.button("Confirm"));
+      await harness.click(harness.button(ATTEST));
       await harness.waitForText(/changed in another tab/u);
       assert.match(harness.text(), new RegExp(STALE_TEXT.replace(/[.']/gu, "."), "u"));
       assert.deepEqual(significant(calls), [["evidence-snapshots", null]], "no re-score");
@@ -470,15 +469,12 @@ test("a 422 shows the server's message under the step and keeps the request ID f
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
+    await harness.click(harness.button(ATTEST));
     await harness.waitForText(/Keep each line to 200 characters or fewer\./u);
     assert.equal(calls.length, 1);
     assert.equal(storedDrafts(harness) !== null, true, "drafts are kept");
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/score was updated/u);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/match was updated/u);
     const [first, second] = calls.filter((call) => call.url.endsWith("/evidence-snapshots")).map((call) => (call.body as { requestId: string }).requestId);
     assert.equal(first, second, "the same answers reuse the same request ID");
   } finally {
@@ -510,26 +506,6 @@ test("a draft whose requirement disappeared is dropped with a notice", async () 
   }
 });
 
-test("window.confirm is never called", async () => {
-  // The server's maximum is above the quote, so the match asks again: in the page as well.
-  const calls: Call[] = [];
-  const { harness, windowConfirms } = setup({ calls, fetch: apiStub(calls, { matchMaximum: 100_000 }) });
-  try {
-    await harness.render(React.createElement(ExperienceStep, props()));
-    await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/more than the \$0\.07272 you approved/u);
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/score was updated/u);
-    assert.deepEqual(windowConfirms, []);
-    assert.deepEqual(significant(calls), [["evidence-snapshots", null], ["match", null], ["match", "true"]]);
-  } finally {
-    await harness.close();
-  }
-});
-
 test("a failed re-score after a save says the lines were saved and clears the drafts", async () => {
   const calls: Call[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -542,10 +518,8 @@ test("a failed re-score after a save says the lines were saved and clears the dr
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your lines were saved, but your score wasn't updated\. Gemini is busy\. You weren't charged for this step\./u);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/Your lines were saved, but your match wasn't updated\. Gemini is busy\./u);
     assert.equal(storedDrafts(harness), null);
     assert.equal(harness.refreshes, 1);
   } finally {
@@ -555,7 +529,7 @@ test("a failed re-score after a save says the lines were saved and clears the dr
 
 // Production 2026-11-12: a re-score refused by output validation after Gemini was paid. The 502
 // carries the plain message and the recorded charge (lib/ai/job-match.ts rejectedOutputError).
-test("a paid re-score that couldn't be used says so and shows the recorded charge", async () => {
+test("a paid re-score that couldn't be used says so, with no money in it", async () => {
   const calls: Call[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -575,10 +549,9 @@ test("a paid re-score that couldn't be used says so and shows the recorded charg
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your lines were saved, but your score wasn't updated\. Gemini's answer couldn't be checked against your résumé, so it wasn't used\. Recorded cost: \$0\.0215\./u);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/Your lines were saved, but your match wasn't updated\. Gemini's answer couldn't be checked against your résumé, so it wasn't used\./u);
+    assert.doesNotMatch(harness.text(), /\$|¢|cost|charged/u);
   } finally {
     await harness.close();
   }
@@ -594,7 +567,7 @@ test("without a current match the step points back to step 1", async () => {
     await harness.render(React.createElement(ExperienceStep, props({ review: unscored })));
     assert.match(harness.text(), /Check your match in step 1 first/u);
     assert.equal(harness.container.querySelector("fieldset[data-requirement]") === null, true);
-    assert.equal(harness.maybeButton(/update my score/iu) === undefined, true);
+    assert.equal(harness.maybeButton(/update my match/iu) === undefined, true);
   } finally {
     await harness.close();
   }
@@ -612,10 +585,8 @@ test("after a save whose re-score failed, the refreshed step keeps the outcome a
   try {
     await harness.render(React.createElement(ExperienceStep, props()));
     await harness.type(textarea(harness, "Current Quenby certification"), "Earned the Quenby certification in 2024.");
-    await harness.check(tick(harness));
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/score wasn't updated/u);
+    await harness.click(harness.button(ATTEST));
+    await harness.waitForText(/match wasn't updated/u);
     // What router.refresh() delivers: the save invalidated the match, so nothing is reviewable yet.
     const refreshed = buildEvidenceCorrectionReview({
       jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
@@ -626,35 +597,35 @@ test("after a save whose re-score failed, the refreshed step keeps the outcome a
       }]
     });
     await harness.render(React.createElement(ExperienceStep, props({ review: refreshed, hasValidCurrentSnapshot: true })));
-    assert.match(harness.text(), /Your lines were saved, but your score wasn't updated\. Gemini is busy\. You weren't charged for this step\./u);
-    assert.match(harness.text(), /Your lines are saved\. Update my score to use them\./u);
+    assert.match(harness.text(), /Your lines were saved, but your match wasn't updated\. Gemini is busy\./u);
+    assert.match(harness.text(), /Your lines are saved\. Update my match to use them\./u);
     assert.match(harness.text(), /Earned the Quenby certification in 2024\./u);
     assert.doesNotMatch(harness.text(), /before adding lines/u);
-    assert.ok(harness.button("Update my score · about 8¢"), "the step offers the re-score itself");
+    assert.ok(harness.button(UPDATE), "the step offers the re-score itself");
   } finally {
     await harness.close();
   }
 });
 
-test("a saved review with nothing to review re-scores only, and Cancel sends nothing", async () => {
+test("a saved review with nothing to review re-scores only, and declining the notice sends nothing", async () => {
   const { harness, calls } = setup();
   try {
     const saved = buildEvidenceCorrectionReview({
       jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
       resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
     });
-    await harness.render(React.createElement(ExperienceStep, props({ review: saved, hasValidCurrentSnapshot: true })));
-    assert.match(harness.text(), /Your review is saved\. Update my score to continue\./u);
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.waitForText(/could cost up to/u);
-    await harness.click(harness.button("Cancel"));
-    await harness.waitForText(/Canceled\. Nothing was sent and nothing was charged\./u);
+    let agree = false;
+    await harness.render(React.createElement(ExperienceStep, props({ review: saved, hasValidCurrentSnapshot: true, beforeRun: async () => agree })));
+    assert.match(harness.text(), /Your review is saved\. Update my match to continue\./u);
+    await harness.click(harness.button(UPDATE));
+    await harness.waitForText(/Nothing was sent\./u);
     assert.equal(calls.length, 0);
-    await harness.click(harness.button("Update my score · about 8¢"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your score was updated\./u);
-    assert.deepEqual(significant(calls), [["match", null], ["match", "true"]], "never a save");
-    assert.equal(harness.refreshes, 1);
+    agree = true;
+    const before = scoredCount;
+    await harness.click(harness.button(UPDATE));
+    await harness.waitForText(/Your match was updated\./u);
+    assert.deepEqual(significant(calls), [["match", "true"]], "never a save");
+    assert.equal(scoredCount, before + 1);
   } finally {
     await harness.close();
   }
@@ -665,7 +636,7 @@ test("a saved review with nothing to review re-scores only, and Cancel sends not
       resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
     });
     await off.harness.render(React.createElement(ExperienceStep, props({ review: saved, hasValidCurrentSnapshot: true, generationAvailable: false })));
-    assert.equal(off.harness.button("Update my score · about 8¢").disabled, true);
+    assert.equal(off.harness.button(UPDATE).disabled, true);
     assert.match(blockedReason(off.harness) ?? "", /Scoring is switched off/u);
   } finally {
     await off.harness.close();
@@ -679,9 +650,8 @@ test("Nothing to add keeps a line typed before switching to the résumé picker"
     await harness.type(textarea(harness, "Working knowledge of SQL"), "Wrote SQL reports for the service desk.");
     const sql = box(harness, "Working knowledge of SQL");
     await harness.click([...sql.querySelectorAll("button")].find((node) => node.textContent === "It's on my résumé"));
-    await harness.click(harness.button("Nothing to add · update my score"));
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your score was updated\./u);
+    await harness.click(harness.button("Nothing to add"));
+    await harness.waitForText(/Your review is saved\./u);
     assert.deepEqual(storedDrafts(harness), { "Working knowledge of SQL": { line: "Wrote SQL reports for the service desk.", resumeLine: "" } });
     assert.equal(textarea(harness, "Working knowledge of SQL").value, "Wrote SQL reports for the service desk.");
   } finally {

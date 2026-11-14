@@ -32,7 +32,7 @@ const BROWSER_NOW = "Continue in the Apply Pilot browser window.";
 
 const NOW_TEXT: Record<AssistedApplyStepNumber, string> = {
   1: "Check my match",
-  2: "Write a line for anything your résumé doesn't show, then Update my score",
+  2: "Write a line for anything your résumé doesn't show, then update your match",
   3: "Write my résumé and cover letter, review them",
   4: "Fix anything on the ready list, then Allow and prepare",
   5: BROWSER_NOW,
