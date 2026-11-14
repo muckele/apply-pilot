@@ -136,6 +136,43 @@ test("a paid re-score quoting part of an owner line is kept, and the cache holds
   assert.equal(cachedOutput.factualMatches[0]!.applicantEvidence[0]!.excerpt, FACT);
 });
 
+// Production 2026-11-13: a paid re-score was refused because one matched keyword was not in both of
+// its quotes. That keyword is now dropped, the paid answer is kept and cached, and the log keeps
+// only the code, the field path and counts, never the keyword.
+test("a paid re-score with one unsupported keyword is kept, and the log names only codes and counts", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t);
+  const answer = outputQuoting(FACT);
+  answer.factualMatches[0]!.supportedKeywords = ["Zookeeper", "Kubernetes"];
+  geminiReturns(t, answer);
+  // Production logs at info (CI sets warn), so read the repair line at the level it ships at.
+  const previousLogLevel = process.env.LOG_LEVEL;
+  process.env.LOG_LEVEL = "info";
+  t.after(() => {
+    if (previousLogLevel === undefined) delete process.env.LOG_LEVEL; else process.env.LOG_LEVEL = previousLogLevel;
+  });
+  const lines: string[] = [];
+  const original = console.log;
+  console.log = (line: string) => { lines.push(String(line)); };
+  t.after(() => { console.log = original; });
+
+  const result = await scoreJobMatch(input, "user-1", { highCostConfirmed: true });
+  console.log = original;
+  assert.deepEqual(result.supportedKeywords, ["Kubernetes"]);
+  assert.equal(ledger.reservation.status, "SUCCEEDED");
+  const cachedOutput = ledger.cacheWrites[0]!.output as JobMatchModelOutput;
+  assert.deepEqual(cachedOutput.factualMatches[0]!.supportedKeywords, ["Kubernetes"]);
+
+  const repaired = lines.filter((line) => line.includes("ai.job_match.output_repaired"));
+  assert.equal(repaired.length, 1);
+  const entry = JSON.parse(repaired[0]!);
+  assert.equal(entry.validationCode, "UNSUPPORTED_MATCHED_KEYWORD");
+  assert.equal(entry.droppedKeywords, 1);
+  assert.equal(entry.droppedFactualMatches, 0);
+  assert.deepEqual(entry.fieldPaths, ["factualMatches[0].supportedKeywords[0]"]);
+  assert.doesNotMatch(repaired[0]!, /Zookeeper/u);
+});
+
 test("a paid output that fails validation says so plainly and reports the recorded charge", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);

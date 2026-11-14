@@ -29,6 +29,7 @@ import {
   JOB_MATCH_THINKING_LEVEL
 } from "@/lib/ai/job-match-version";
 import { PublicApiError } from "@/lib/api-errors";
+import { logger } from "@/lib/monitoring/logger";
 import type { JobMatchReviewedEvidence } from "@/lib/jobs/evidence-snapshot-contracts";
 
 // Result contract remains v3; prompt/cache revision 3.4 adds durable reviewed
@@ -843,65 +844,121 @@ function withTenureGaps(
   return [...merged, ...appended];
 }
 
+// Every check on a factual match except whether each keyword is in both of its quotes.
+function validateFactualMatchEvidence(input: MatchInput, match: JobMatchModelFactualMatch, matchIndex: number) {
+  if (Object.prototype.hasOwnProperty.call(match, "claim")) {
+    semanticFailure(
+      "FREE_TEXT_CLAIM",
+      `factualMatches[${matchIndex}].claim`,
+      "JOB_MATCH returned a free-text factual claim; factual claims are derived locally from validated evidence."
+    );
+  }
+  if (!uniqueStrings(match.supportedKeywords).length) {
+    semanticFailure(
+      "EMPTY_SUPPORTED_KEYWORDS",
+      `factualMatches[${matchIndex}].supportedKeywords`,
+      "JOB_MATCH returned a factual match without a supported keyword."
+    );
+  }
+  for (const [citationIndex, citation] of match.applicantEvidence.entries()) {
+    const resolved = resolveApplicantEvidence(input, citation.ref);
+    validateCitation(
+      citation,
+      () => resolved,
+      "applicant",
+      `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}]`
+    );
+    // validateAndNormalizeJobMatchOutput has already completed a genuine part of a reviewed fact
+    // (completeReviewedFactCitations), so this only catches a caller that skipped that step.
+    if (
+      citation.ref.startsWith("reviewedEvidence.facts[") &&
+      resolved.found &&
+      comparable(evidenceText(resolved.value)) !== comparable(citation.excerpt)
+    ) {
+      semanticFailure(
+        "REVIEWED_EVIDENCE_EXCERPT_NOT_FULL",
+        `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}].excerpt`,
+        "JOB_MATCH did not preserve the complete reviewed evidence fact."
+      );
+    }
+    if (resolved.found && positiveCitationReversesNegation(resolved.value, citation, match.supportedKeywords)) {
+      semanticFailure(
+        "APPLICANT_EVIDENCE_NEGATION_REVERSAL",
+        `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}].excerpt`,
+        "JOB_MATCH used negated applicant evidence as a positive factual match."
+      );
+    }
+  }
+  for (const [citationIndex, citation] of match.jobEvidence.entries()) {
+    validateCitation(
+      citation,
+      (ref) => resolveJobEvidence(input, ref),
+      "job",
+      `factualMatches[${matchIndex}].jobEvidence[${citationIndex}]`
+    );
+  }
+}
+
+function keywordIsInBothQuotes(match: JobMatchModelFactualMatch, keyword: string) {
+  return includesKeyword(match.applicantEvidence, keyword) && includesKeyword(match.jobEvidence, keyword);
+}
+
+export type JobMatchOutputRepair = {
+  action: "DROPPED_KEYWORD" | "DROPPED_FACTUAL_MATCH";
+  validationCode: "UNSUPPORTED_MATCHED_KEYWORD";
+  fieldPath: string;
+};
+
+// Production case 2026-11-13: one keyword of one factual match was not a whole word in both of
+// the match's quotes, UNSUPPORTED_MATCHED_KEYWORD refused the output, and the re-score had already
+// been charged. Such a keyword is dropped here, and a factual match is dropped only when no keyword
+// is left, so the answer only ever claims less. Every other check on the matches (an unknown ref, a
+// quote that isn't in the source, a negation reversal read with the original keywords) runs first
+// on the answer as Gemini sent it, so a fault that can't be repaired is refused with its own code
+// and Gemini's field path. An answer that would have no factual match left is refused as before.
+// The scores are Gemini's judgement of the whole answer, not computed from these keywords, so
+// they stay.
+function dropUnsupportedMatchedKeywords(
+  input: MatchInput,
+  output: JobMatchModelOutput
+): { output: JobMatchModelOutput; repairs: JobMatchOutputRepair[] } {
+  output.factualMatches.forEach((match, matchIndex) => validateFactualMatchEvidence(input, match, matchIndex));
+  const unchanged = { output, repairs: [] };
+  const repairs: JobMatchOutputRepair[] = [];
+  const factualMatches = output.factualMatches.flatMap((match, matchIndex) => {
+    const supportedKeywords = match.supportedKeywords.filter((keyword, keywordIndex) => {
+      if (keywordIsInBothQuotes(match, keyword)) return true;
+      repairs.push({
+        action: "DROPPED_KEYWORD",
+        validationCode: "UNSUPPORTED_MATCHED_KEYWORD",
+        fieldPath: `factualMatches[${matchIndex}].supportedKeywords[${keywordIndex}]`
+      });
+      return false;
+    });
+    if (supportedKeywords.length === match.supportedKeywords.length) return [match];
+    if (!uniqueStrings(supportedKeywords).length) {
+      repairs.push({
+        action: "DROPPED_FACTUAL_MATCH",
+        validationCode: "UNSUPPORTED_MATCHED_KEYWORD",
+        fieldPath: `factualMatches[${matchIndex}]`
+      });
+      return [];
+    }
+    return [{ ...match, supportedKeywords }];
+  });
+  if (!repairs.length || !factualMatches.length) return unchanged;
+  return { output: { ...output, factualMatches }, repairs };
+}
+
 export function normalizeJobMatchOutput(
   input: MatchInput,
   output: JobMatchModelOutput,
   options: JobMatchNormalizationOptions = {}
 ): JobMatchOutput {
   for (const [matchIndex, match] of output.factualMatches.entries()) {
-    if (Object.prototype.hasOwnProperty.call(match, "claim")) {
-      semanticFailure(
-        "FREE_TEXT_CLAIM",
-        `factualMatches[${matchIndex}].claim`,
-        "JOB_MATCH returned a free-text factual claim; factual claims are derived locally from validated evidence."
-      );
-    }
-    if (!uniqueStrings(match.supportedKeywords).length) {
-      semanticFailure(
-        "EMPTY_SUPPORTED_KEYWORDS",
-        `factualMatches[${matchIndex}].supportedKeywords`,
-        "JOB_MATCH returned a factual match without a supported keyword."
-      );
-    }
-    for (const [citationIndex, citation] of match.applicantEvidence.entries()) {
-      const resolved = resolveApplicantEvidence(input, citation.ref);
-      validateCitation(
-        citation,
-        () => resolved,
-        "applicant",
-        `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}]`
-      );
-      // validateAndNormalizeJobMatchOutput has already completed a genuine part of a reviewed fact
-      // (completeReviewedFactCitations), so this only catches a caller that skipped that step.
-      if (
-        citation.ref.startsWith("reviewedEvidence.facts[") &&
-        resolved.found &&
-        comparable(evidenceText(resolved.value)) !== comparable(citation.excerpt)
-      ) {
-        semanticFailure(
-          "REVIEWED_EVIDENCE_EXCERPT_NOT_FULL",
-          `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}].excerpt`,
-          "JOB_MATCH did not preserve the complete reviewed evidence fact."
-        );
-      }
-      if (resolved.found && positiveCitationReversesNegation(resolved.value, citation, match.supportedKeywords)) {
-        semanticFailure(
-          "APPLICANT_EVIDENCE_NEGATION_REVERSAL",
-          `factualMatches[${matchIndex}].applicantEvidence[${citationIndex}].excerpt`,
-          "JOB_MATCH used negated applicant evidence as a positive factual match."
-        );
-      }
-    }
-    for (const [citationIndex, citation] of match.jobEvidence.entries()) {
-      validateCitation(
-        citation,
-        (ref) => resolveJobEvidence(input, ref),
-        "job",
-        `factualMatches[${matchIndex}].jobEvidence[${citationIndex}]`
-      );
-    }
+    validateFactualMatchEvidence(input, match, matchIndex);
     for (const [keywordIndex, keyword] of match.supportedKeywords.entries()) {
-      if (!includesKeyword(match.applicantEvidence, keyword) || !includesKeyword(match.jobEvidence, keyword)) {
+      if (!keywordIsInBothQuotes(match, keyword)) {
         semanticFailure(
           "UNSUPPORTED_MATCHED_KEYWORD",
           `factualMatches[${matchIndex}].supportedKeywords[${keywordIndex}]`,
@@ -1029,8 +1086,11 @@ export function validateAndNormalizeJobMatchOutput(
     );
   }
   try {
-    const modelOutput = completeReviewedFactCitations(input, repairCitationPositions(input, parsed.data));
-    return { modelOutput, normalized: normalizeJobMatchOutput(input, modelOutput, options) };
+    const { output: modelOutput, repairs } = dropUnsupportedMatchedKeywords(
+      input,
+      completeReviewedFactCitations(input, repairCitationPositions(input, parsed.data))
+    );
+    return { modelOutput, normalized: normalizeJobMatchOutput(input, modelOutput, options), repairs };
   } catch (error) {
     throw new JobMatchOutputValidationError(
       "semantic",
@@ -1057,6 +1117,18 @@ function rejectedOutputError(
     billingStatus,
     actualCostMicros,
     retryable: false
+  });
+}
+
+// A kept paid answer that needed keywords dropped is logged with the code, the structural field
+// paths and counts only, never a keyword or quoted text.
+function logOutputRepairs(repairs: JobMatchOutputRepair[]) {
+  if (!repairs.length) return;
+  logger.info("ai.job_match.output_repaired", {
+    validationCode: "UNSUPPORTED_MATCHED_KEYWORD",
+    droppedKeywords: repairs.filter((repair) => repair.action === "DROPPED_KEYWORD").length,
+    droppedFactualMatches: repairs.filter((repair) => repair.action === "DROPPED_FACTUAL_MATCH").length,
+    fieldPaths: repairs.filter((repair) => repair.action === "DROPPED_KEYWORD").map((repair) => repair.fieldPath)
   });
 }
 
@@ -1198,7 +1270,8 @@ export async function scoreJobMatch(
     }
     // Both structural and evidence validation complete before this paid result is
     // cached or marked successful.
-    const { modelOutput, normalized } = validateAndNormalizeJobMatchOutput(input, response.value);
+    const { modelOutput, normalized, repairs } = validateAndNormalizeJobMatchOutput(input, response.value);
+    logOutputRepairs(repairs);
     await reconcileAiReservation({
       reservationId: reservation.id,
       status: "SUCCEEDED",
