@@ -15,8 +15,10 @@ import {
 } from "lucide-react";
 
 import {
-  ApplyReturnCard,
+  ApplyRecordedNotice,
   ApplyReturnDeclinedNotice,
+  ApplyReturnWindow,
+  appliedErrorMessage,
   recordApplicationOpened,
   useApplyReturnAnswer
 } from "@/components/apply-kit/apply-return-card";
@@ -80,19 +82,6 @@ async function downloadDocument(document: ApplyKitDocument, format: ExportFormat
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
-}
-
-function appliedErrorMessage(code: string | undefined, fallback: string) {
-  switch (code) {
-    case "APPLICATION_DOCUMENT_EVIDENCE_STALE":
-      return "Apply Pilot could not record this application: your master résumé or reviewed evidence changed after a selected document was written. Generate a new version or pick a current one, then record it again.";
-    case "APPLICATION_DOCUMENT_REVIEW_REQUIRED":
-      return "Apply Pilot could not record this application: a selected document needs your review first. Review it below, then record it again.";
-    case "APPLICATION_SENT_DOCUMENT_CHANGED":
-      return "A document changed after this page loaded. The kit now shows the latest version; check it is the one you sent, then confirm again.";
-    default:
-      return fallback;
-  }
 }
 
 function ReadableLines({ document }: { document: ApplyKitDocument }) {
@@ -254,6 +243,7 @@ export function ApplyKit({
   const [busy, setBusy] = useState<Busy>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [recorded, setRecorded] = useState(false);
   const [attested, setAttested] = useState(false);
   const [appliedError, setAppliedError] = useState<{ text: string; fixHref: string | null } | null>(null);
   const [effortInput, setEffortInput] = useState("");
@@ -261,7 +251,7 @@ export function ApplyKit({
   // "Did you apply?": an unanswered opened moment from the server (after a reload, the next day or
   // another device), or a live return to this tab after the user opened the application here.
   const pending = view.canRecordApplied ? view.applyReturn.pending : null;
-  // Arriving with "Yes" already given on the job page, the card is skipped for the confirmation.
+  // Arriving from the job page's "Choose what I sent", the window is skipped for the confirmation.
   const [dismissedOpenedEventId, setDismissedOpenedEventId] = useState<string | null>(answeredYes && pending ? pending.openedEventId : null);
   const [awaitingReturn, setAwaitingReturn] = useState(false);
   const [liveReturn, setLiveReturn] = useState<ReturnMoment | null>(null);
@@ -308,7 +298,8 @@ export function ApplyKit({
     if (resumedPrompt && shownAtRef.current === null) shownAtRef.current = Date.now();
   }, [resumedPrompt]);
 
-  // Arriving from the job page's "Yes, I applied": go straight to the confirmation.
+  // Arriving from the job page's "Choose what I sent" (its one-click Yes was refused): go straight
+  // to the full confirmation.
   const answeredYesHandled = useRef(false);
   useEffect(() => {
     if (!answeredYes || answeredYesHandled.current || !pending) return;
@@ -360,7 +351,16 @@ export function ApplyKit({
     applyReturn.clearError();
   }
 
-  function answerYes() {
+  // One click: "Yes, I applied" records Applied with the documents attached to the application.
+  async function answerYes() {
+    if (await applyReturn.recordApplied()) {
+      closeReturnCard();
+      setRecorded(true);
+    }
+  }
+
+  // After a refused "Yes": the full confirmation, to choose the documents (and minutes) by hand.
+  function chooseWhatISent() {
     const moment = returnMoment();
     closeReturnCard();
     startConfirming(moment ? prefillEffortMinutes(new Date(moment.openedAt), new Date(moment.returnedAt)) : null);
@@ -459,16 +459,17 @@ export function ApplyKit({
   return (
     <div className="space-y-6" data-apply-kit>
       {showReturnCard ? (
-        <ApplyReturnCard
+        <ApplyReturnWindow
           company={view.job.company}
-          variant="kit"
-          yes={{ onClick: answerYes }}
+          onYes={() => { void answerYes(); }}
           onNotYet={closeReturnCard}
           onNotApplying={answerNotApplying}
-          busy={applyReturn.busy !== null}
+          busy={applyReturn.busy}
           error={applyReturn.error}
+          choose={applyReturn.yesRefused ? { onClick: chooseWhatISent } : null}
         />
       ) : null}
+      {recorded ? <ApplyRecordedNotice variant="kit" /> : null}
       {view.applyReturn.declined ? (
         <ApplyReturnDeclinedNotice variant="kit" onUndo={undoNotApplying} busy={applyReturn.busy !== null} error={applyReturn.error} />
       ) : null}

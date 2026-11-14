@@ -234,7 +234,8 @@ test("an unanswered opened application asks 'Did you apply?' on the job page, an
     const card = harness.container.querySelector("[data-apply-return]");
     assert.ok(card, "the question is shown");
     assert.match(card.textContent ?? "", /Did you submit your application to /u);
-    const yes = card.querySelector<HTMLAnchorElement>("[data-apply-return-yes]");
-    assert.match(yes?.getAttribute("href") ?? "", /\/apply\?didYouApply=yes$/u);
+    assert.equal(card.tagName, "DIALOG", "the same large window as the Apply page");
+    // "Yes, I applied" records in one click (tests/apply-return-ui.test.ts); it isn't a link away.
+    assert.equal(card.querySelector("[data-apply-return-yes]")?.tagName, "BUTTON");
   });
 });

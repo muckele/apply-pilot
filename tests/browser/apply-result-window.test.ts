@@ -6,9 +6,9 @@ import { fileURLToPath } from "node:url";
 import { build, type Plugin } from "esbuild";
 import { chromium, type Browser, type Page } from "playwright";
 
-// G-6 in a real browser: the Apply page's one-time Gemini notice, the one-click score and the large
-// result window, built from the production components and served from a synthetic origin. The match
-// API is mocked; nothing leaves the test. All data is synthetic.
+// G-6 and G-7 in a real browser: the Apply page's one-time Gemini notice, the one-click score, the
+// large result window and the "Did you apply?" window, built from the production components and
+// served from a synthetic origin. The APIs are mocked; nothing leaves the test. All data is synthetic.
 
 const ORIGIN = "https://apply-pilot.test";
 const REPOSITORY_ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -56,6 +56,7 @@ before(async () => {
         import { ScoreJobButton } from "@/components/job-workspace/score-job-button";
         import { ResultWindow } from "@/components/apply-page/result-window";
         import { useGeminiNotice } from "@/components/apply-page/use-gemini-notice";
+        import { JobApplyReturnPrompt } from "@/components/job-workspace/job-apply-return-prompt";
         import { resultWindowView } from "@/lib/apply-page/result-window";
 
         const item = (requirement, status) => ({ requirement, jobRef: null, status, claim: null, resumeLines: [], tenure: null });
@@ -91,7 +92,16 @@ before(async () => {
           );
         }
 
-        createRoot(document.getElementById("root")).render(<Harness />);
+        const returning = new URLSearchParams(location.search).get("mode") === "return";
+        const pending = { openedEventId: "event-opened", openedAt: "2026-11-13T10:00:00.000Z" };
+        createRoot(document.getElementById("root")).render(returning ? (
+          <div className="product-shell">
+            <main className="product-page-themed">
+              <button type="button">Somewhere on the job page</button>
+              <JobApplyReturnPrompt jobId="job-1" company="Example Co" pending={pending} declined={null} />
+            </main>
+          </div>
+        ) : <Harness />);
       `
     }
   });
@@ -105,11 +115,13 @@ after(async () => {
 });
 
 type MatchRequest = { costConfirmed: string | null; dataConfirmed: string | null };
+type AppliedRequest = { method: string; body: unknown };
 
-async function openHarness(options: { score?: number; viewport?: { width: number; height: number }; noticeSeen?: boolean } = {}) {
+async function openHarness(options: { score?: number; viewport?: { width: number; height: number }; noticeSeen?: boolean; mode?: "return" } = {}) {
   const context = await browser.newContext({ viewport: options.viewport ?? { width: 1280, height: 900 } });
   const page = await context.newPage();
   const matchRequests: MatchRequest[] = [];
+  const appliedRequests: AppliedRequest[] = [];
   const outside: string[] = [];
   await context.route("**/*", async (route) => {
     const url = new URL(route.request().url());
@@ -130,14 +142,18 @@ async function openHarness(options: { score?: number; viewport?: { width: number
       matchRequests.push({ costConfirmed: headers["x-ai-cost-confirmed"] ?? null, dataConfirmed: headers["x-ai-data-confirmed"] ?? null });
       return route.fulfill({ contentType: "application/json", body: "{}" });
     }
+    if (url.pathname === "/api/applications") {
+      appliedRequests.push({ method: route.request().method(), body: route.request().postDataJSON() });
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify({ application: { id: "application-1", status: "APPLIED" } }) });
+    }
     return route.fulfill({ status: 404, body: "" });
   });
   if (options.noticeSeen) {
     await context.addInitScript(([key]) => { window.localStorage.setItem(key, "seen"); }, [NOTICE_KEY]);
   }
-  await page.goto(`${ORIGIN}/?score=${options.score ?? 91}`);
-  await page.getByRole("button", { name: "Check my match" }).waitFor();
-  return { page, context, matchRequests, outside };
+  await page.goto(`${ORIGIN}/?score=${options.score ?? 91}${options.mode ? `&mode=${options.mode}` : ""}`);
+  if (!options.mode) await page.getByRole("button", { name: "Check my match" }).waitFor();
+  return { page, context, matchRequests, appliedRequests, outside };
 }
 
 // Set APPLY_WINDOW_SCREENSHOT_DIR to look at the windows.
@@ -262,5 +278,37 @@ test("on a phone the result window fills the screen, with no sideways scroll", a
     assert.ok(create && create.height >= 44, "a thumb-sized Create button");
   } finally {
     await context.close();
+  }
+});
+
+test("'Did you apply?' is the same large window: Esc is Not yet, and Yes records Applied in one click", async () => {
+  {
+    const { page, context, appliedRequests } = await openHarness({ mode: "return" });
+    try {
+      const question = page.locator("dialog[data-apply-return]");
+      await question.waitFor();
+      assert.equal(await isModal(page, "dialog[data-apply-return]"), true);
+      assert.equal(await focusIsInside(page, "dialog[data-apply-return]"), true);
+      assert.match(await question.innerText(), /Did you submit your application to Example Co\?/u);
+      await screenshot(page, "did-you-apply-desktop.png");
+      await page.keyboard.press("Escape");
+      await question.waitFor({ state: "detached" });
+      assert.deepEqual(appliedRequests, [], "Esc records nothing");
+    } finally {
+      await context.close();
+    }
+  }
+  {
+    const { page, context, appliedRequests } = await openHarness({ mode: "return" });
+    try {
+      await page.locator("dialog[data-apply-return]").getByRole("button", { name: "Yes, I applied" }).click();
+      const recorded = page.locator("[data-applied-recorded]");
+      await recorded.waitFor();
+      assert.deepEqual(appliedRequests, [{ method: "POST", body: { jobPostingId: "job-1", status: "APPLIED" } }]);
+      assert.equal(await recorded.getByRole("link").getAttribute("href"), "/applications?status=APPLIED");
+      assert.equal(await page.locator("dialog[data-apply-return]").count(), 0);
+    } finally {
+      await context.close();
+    }
   }
 });
