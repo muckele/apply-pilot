@@ -66,7 +66,7 @@ export function ResultWindow({
 
   return (
     <BigWindow labelledBy={titleId} onClose={creating ? () => undefined : onClose} dataAttribute="data-result-window">
-      <h2 id={titleId} className="big-window-title" data-grade={view.letter}>
+      <h2 id={titleId} tabIndex={-1} className="big-window-title" data-grade={view.letter}>
         <span className="big-window-grade">{view.letter}</span> · {view.score}
       </h2>
       {view.kind === "strong" ? (

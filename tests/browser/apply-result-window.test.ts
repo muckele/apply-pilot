@@ -150,8 +150,10 @@ async function isModal(page: Page, selector: string) {
   return page.locator(selector).evaluate((element) => element.matches(":modal"));
 }
 
+// Focus starts inside the window, on its heading: never on a button a stray Enter would press.
 async function focusIsInside(page: Page, selector: string) {
-  return page.locator(selector).evaluate((element) => element.contains(document.activeElement));
+  return page.locator(selector).evaluate((element) =>
+    element.contains(document.activeElement) && document.activeElement?.tagName === "H2");
 }
 
 test("the first paid click shows the Gemini notice once; Esc sends nothing; Continue scores in one click and opens the result window", async () => {

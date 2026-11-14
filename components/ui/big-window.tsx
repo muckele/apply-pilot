@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 
-// The one large window (G-6): a native modal dialog, so focus moves into it, the page behind is
-// inert, and Esc closes it. Mounted only while open. On close, focus goes back to where it was.
+// The one large window (G-6): a native modal dialog, so the page behind is inert and Esc closes it.
+// Focus starts on the heading (labelledBy, which callers give tabIndex -1), never on a button, so a
+// stray Enter can't create documents or record an application. Mounted only while open. On close,
+// focus goes back to where it was.
 export function BigWindow({
   labelledBy,
   onClose,
@@ -26,11 +28,13 @@ export function BigWindow({
       if (typeof element.showModal === "function") element.showModal();
       else element.setAttribute("open", "");
     }
+    element.ownerDocument.getElementById(labelledBy)?.focus();
     return () => {
       if (typeof element.close === "function" && element.open) element.close();
       if (previous && previous.isConnected && typeof previous.focus === "function") previous.focus();
     };
-  }, []);
+    // The heading id comes from useId, so this runs once per mount.
+  }, [labelledBy]);
 
   return (
     <dialog
