@@ -26,7 +26,8 @@ type Props = {
 export default async function ApplyJobPage({ params, searchParams }: Props) {
   const userId = await requirePageUserId();
   const { id } = await params;
-  // "Yes, I applied" on the job page's "Did you apply?" card lands here with the confirmation open.
+  // "Choose what I sent" on the job page's "Did you apply?" window (after a refused one-click Yes)
+  // lands here with the full confirmation open.
   const answeredYes = (await searchParams).didYouApply === "yes";
   const [detail, kit] = await Promise.all([
     loadJobDetail(userId, id),

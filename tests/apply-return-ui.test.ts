@@ -12,7 +12,9 @@ import { loadApplyKitView, type ApplyKitView } from "@/lib/apply-kit/apply-kit-v
 import { JOB, OWNER, fakeDb, fixtures } from "@/tests/fixtures/apply-kit-db";
 import { typeInto } from "@/tests/fixtures/react-input";
 
-// "Did you apply?" in the browser: the return trigger, the in-page card and its three answers.
+// "Did you apply?" in the browser: the return trigger, the one large window (G-7) and its three
+// answers. "Yes, I applied" records Applied in one click with the documents attached to the
+// application; the full confirmation stays for choosing documents or minutes by hand.
 
 type Request = { url: string; init: RequestInit };
 type Harness = {
@@ -47,7 +49,7 @@ async function mounted(
   let refreshCount = 0;
   let visibility: DocumentVisibilityState = "visible";
   Object.defineProperty(dom.window.document, "visibilityState", { configurable: true, get: () => visibility });
-  // A modal browser dialog would be the wrong tool: the question is an in-page card.
+  // window.alert/confirm would be the wrong tool: the question is the page's own large window.
   dom.window.alert = () => { throw new Error("alert() must not be used"); };
   dom.window.confirm = () => { throw new Error("confirm() must not be used"); };
   // JSDOM cannot open tabs; stop the link's default action after React has handled the click.
@@ -146,6 +148,7 @@ test("opening the application records the opened moment and asks only once the u
     absent(container, "[data-apply-return]");
     await comeBack();
     const card = element(container, "[data-apply-return]");
+    assert.equal(card.tagName, "DIALOG", "the same large window as the result window");
     assert.match(card.textContent ?? "", /Did you submit your application to Example Co\?/u);
     for (const answer of ["yes", "not-yet", "not-applying"]) element(card, `[data-apply-return-${answer}]`);
     assert.equal(requests.length, 1, "coming back records nothing by itself");
@@ -164,48 +167,34 @@ test("the return is also noticed when the window regains focus after losing it",
   });
 });
 
-test("'Yes, I applied' opens the existing confirmation with the minutes away pre-filled, and records through the same request", async (t) => {
+test("'Yes, I applied' records Applied in one click, with the documents attached to the application", async (t) => {
   const time = clock(t);
   const view = await kitView();
-  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), (request) => (request.url === "/api/applications" ? json({ application: { id: "application-1" } }) : openedOk()), async ({ container, requests, refreshes, leave, comeBack }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), (request) => (request.url === "/api/applications" ? json({ application: { id: "application-1", status: "APPLIED" } }) : openedOk()), async ({ container, requests, refreshes, leave, comeBack }) => {
     await click(element(container, "[data-apply-link]"));
     await leave();
     time.advanceMinutes(23);
     await comeBack();
     await click(element(container, "[data-apply-return-yes]"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    absent(container, "[data-apply-return]");
-    element(container, "[data-applied-confirmation]");
-    const minutes = element<HTMLInputElement>(container, "[data-effort-minutes]");
-    assert.equal(minutes.value, "23");
-    assert.match(element(container, "[data-effort-prefilled]").textContent ?? "", /23 minutes.*Change it or clear it/u);
-    const record = element<HTMLButtonElement>(container, "[data-confirm-applied]");
-    assert.equal(record.disabled, true, "the attestation is still required");
-    assert.equal(requests.filter((request) => request.url === "/api/applications").length, 0, "nothing is recorded before the confirmation");
-
-    await click(element(container, "[data-attest]"));
-    await click(record);
     const applied = requests.filter((request) => request.url === "/api/applications");
-    assert.equal(applied.length, 1);
-    const resume = view.resumes.find((document) => document.id === "resume-v2")!;
-    const cover = view.coverLetters.find((document) => document.id === "cover-legacy")!;
-    assert.deepEqual(JSON.parse(String(applied[0]!.init.body)), {
-      jobPostingId: JOB,
-      status: "APPLIED",
-      resumeVersionId: "resume-v2",
-      expectedResumeContentHash: resume.contentHash,
-      coverLetterVersionId: "cover-legacy",
-      expectedCoverLetterContentHash: cover.contentHash,
-      effortMinutes: 23
-    });
+    assert.equal(applied.length, 1, "one click, one request");
+    assert.equal(applied[0]!.init.method, "POST");
+    // No document ids: the server records the documents attached to this application.
+    assert.deepEqual(JSON.parse(String(applied[0]!.init.body)), { jobPostingId: JOB, status: "APPLIED" });
     assert.equal(refreshes(), 1);
+    absent(container, "[data-apply-return]");
+    absent(container, "[data-applied-confirmation]", "no second confirmation");
+    const recorded = element(container, "[data-applied-recorded]");
+    assert.match(recorded.textContent ?? "", /Recorded as applied\./u);
+    assert.equal(element<HTMLAnchorElement>(recorded, "a").getAttribute("href"), "/applications?status=APPLIED");
   });
 });
 
-test("the pre-filled minutes can be cleared, and then no minutes are sent", async (t) => {
+test("the full confirmation (from the job page's fallback) still pre-fills the minutes, which can be cleared", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 40 * 60_000).toISOString())), beforeAiRun: async () => true }), () => json({ application: { id: "application-1" } }), async ({ container, requests }) => {
-    await click(element(container, "[data-apply-return-yes]"));
+  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 40 * 60_000).toISOString())), answeredYes: true, beforeAiRun: async () => true }), () => json({ application: { id: "application-1" } }), async ({ container, requests }) => {
     const minutes = element<HTMLInputElement>(container, "[data-effort-minutes]");
     assert.equal(minutes.value, "40", "after a reload the gap since the recorded opened moment is used");
     await typeInto(minutes, "");
@@ -216,24 +205,26 @@ test("the pre-filled minutes can be cleared, and then no minutes are sent", asyn
   });
 });
 
-test("coming back the next day asks again but leaves the minutes for the user to estimate", async (t) => {
+test("coming back the next day, the full confirmation leaves the minutes for the user to estimate", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 26 * 60 * 60_000).toISOString())), beforeAiRun: async () => true }), openedOk, async ({ container }) => {
-    await click(element(container, "[data-apply-return-yes]"));
+  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 26 * 60 * 60_000).toISOString())), answeredYes: true, beforeAiRun: async () => true }), openedOk, async ({ container }) => {
     assert.equal(element<HTMLInputElement>(container, "[data-effort-minutes]").value, "");
     absent(container, "[data-effort-prefilled]");
   });
 });
 
-test("a 409 after 'Yes' keeps the existing explanation and refresh", async (t) => {
+test("if one-click 'Yes' is refused, the window says why and offers the full confirmation", async (t) => {
   clock(t);
   const stale = () => json({ error: "Regenerate documents.", code: "APPLICATION_DOCUMENT_EVIDENCE_STALE" }, 409);
   await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 10 * 60_000).toISOString())), beforeAiRun: async () => true }), stale, async ({ container, refreshes }) => {
     await click(element(container, "[data-apply-return-yes]"));
-    await click(element(container, "[data-attest]"));
-    await click(element(container, "[data-confirm-applied]"));
-    assert.match(element(container, "[data-applied-error]").textContent ?? "", /master résumé or reviewed evidence changed/u);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.match(element(container, "[data-apply-return-error]").textContent ?? "", /master résumé or reviewed evidence changed/u);
     assert.equal(refreshes(), 1);
+    absent(container, "[data-applied-recorded]");
+    await click(element(container, "[data-apply-return-choose]"));
+    absent(container, "[data-apply-return]");
+    element(container, "[data-applied-confirmation]");
   });
 });
 
@@ -319,20 +310,37 @@ test("arriving from the job page's 'Yes, I applied' opens the confirmation strai
   });
 });
 
-test("the job page asks the same question; 'Yes' goes to the Apply Kit confirmation and 'Not applying' is sent", async (t) => {
+test("the job page asks in the same window; 'Yes' records Applied in one click and 'Not applying' is sent", async (t) => {
   clock(t);
   const pending = { openedEventId: "event-opened", openedAt: new Date(NOW - 30 * 60_000).toISOString() };
   const prompt = createElement(JobApplyReturnPrompt, { jobId: JOB, company: "Example Co", pending, declined: null });
-  await mounted(prompt, () => json({ application: { id: "application-1", status: "ARCHIVED" } }), async ({ container, requests, refreshes }) => {
+  await mounted(prompt, () => json({ application: { id: "application-1", status: "APPLIED" } }), async ({ container, requests, refreshes }) => {
     const card = element(container, "[data-apply-return]");
+    assert.equal(card.tagName, "DIALOG");
     assert.match(card.textContent ?? "", /Did you submit your application to Example Co\?/u);
-    assert.equal(element<HTMLAnchorElement>(card, "[data-apply-return-yes]").getAttribute("href"), `/jobs/${JOB}/apply?didYouApply=yes`);
-    await click(element(card, "[data-apply-return-not-applying]"));
+    await click(element(card, "[data-apply-return-yes]"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.deepEqual(requests.map((request) => [request.url, JSON.parse(String(request.init.body))]), [
+      ["/api/applications", { jobPostingId: JOB, status: "APPLIED" }]
+    ]);
+    assert.equal(refreshes(), 1);
+    absent(container, "[data-apply-return]");
+    const recorded = element(container, "[data-applied-recorded]");
+    assert.equal(element<HTMLAnchorElement>(recorded, "a").getAttribute("href"), "/applications?status=APPLIED");
+  });
+  await mounted(prompt, () => json({ application: { id: "application-1", status: "ARCHIVED" } }), async ({ container, requests, refreshes }) => {
+    await click(element(container, "[data-apply-return-not-applying]"));
     assert.deepEqual(JSON.parse(String(requests[0]!.init.body)), { action: "NOT_APPLYING" });
     assert.equal(refreshes(), 1);
   });
   await mounted(prompt, () => json({}), async ({ container, requests }) => {
     await click(element(container, "[data-apply-return-not-yet]"));
+    absent(container, "[data-apply-return]");
+    assert.equal(requests.length, 0);
+  });
+  // Esc is "Not yet": nothing is recorded and the question comes back on the next visit.
+  await mounted(prompt, () => json({}), async ({ container, requests, dom }) => {
+    await act(async () => { element(container, "[data-apply-return]").dispatchEvent(new dom.window.Event("cancel", { cancelable: true })); });
     absent(container, "[data-apply-return]");
     assert.equal(requests.length, 0);
   });
@@ -345,6 +353,20 @@ test("the job page asks the same question; 'Yes' goes to the Apply Kit confirmat
   await mounted(declined, () => json({ application: { id: "application-1", status: "SAVED" } }), async ({ container, requests }) => {
     await click(element(container, "[data-apply-return-undo]"));
     assert.deepEqual(JSON.parse(String(requests[0]!.init.body)), { action: "UNDO_NOT_APPLYING" });
+  });
+});
+
+test("on the job page, a refused one-click 'Yes' links to the Apply page's full confirmation", async (t) => {
+  clock(t);
+  const pending = { openedEventId: "event-opened", openedAt: new Date(NOW - 30 * 60_000).toISOString() };
+  const prompt = createElement(JobApplyReturnPrompt, { jobId: JOB, company: "Example Co", pending, declined: null });
+  const stale = () => json({ error: "Regenerate documents.", code: "APPLICATION_DOCUMENT_REVIEW_REQUIRED" }, 409);
+  await mounted(prompt, stale, async ({ container }) => {
+    await click(element(container, "[data-apply-return-yes]"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    assert.match(element(container, "[data-apply-return-error]").textContent ?? "", /needs your review/u);
+    assert.equal(element<HTMLAnchorElement>(container, "[data-apply-return-choose]").getAttribute("href"), `/jobs/${JOB}/apply?didYouApply=yes`);
+    absent(container, "[data-applied-recorded]");
   });
 });
 
@@ -383,4 +405,9 @@ test("while 'Not applying' is in effect its notice replaces the generic archived
     element(container, "[data-apply-return-declined]");
     absent(container, "[data-job-notice]", "the generic archived notice is hidden");
   });
+});
+
+test("the recorded link opens the Applications page filtered to applied jobs", async () => {
+  const { parseApplicationFilters } = await import("@/lib/applications/list-view");
+  assert.equal(parseApplicationFilters({ status: "APPLIED" }).status, "APPLIED");
 });
