@@ -22,13 +22,8 @@ export type ApplicationDocumentClaimOrigin = Readonly<{ factId: string; originFi
 
 // Ephemeral sidecar: neither persisted evidence nor its JSON serialization gains provider metadata.
 const claimOrigins = new WeakMap<readonly ApplicationDocumentClaimEvidence[], readonly ApplicationDocumentClaimOrigin[]>();
-const assemblyFailureOrigins = new WeakMap<PublicApiError, ApplicationDocumentClaimOrigin>();
 export function getApplicationDocumentClaimOrigins(evidence: readonly ApplicationDocumentClaimEvidence[]) {
   return claimOrigins.get(evidence) ?? [];
-}
-
-export function getApplicationDocumentAssemblyFailureOrigin(error: unknown) {
-  return error instanceof PublicApiError ? assemblyFailureOrigins.get(error) : undefined;
 }
 
 export type TailoredResumeProviderOutput = {
@@ -422,25 +417,20 @@ export function assembleTailoredResumeProviderOutput(
       ? `resumeTextClaims[${index}].factIds[${idIndex}]`
       : `resumeTextClaims[${index}].factId`));
     if (!facts.length) resolve("", `resumeTextClaims[${index}].factIds`);
-    const fact = facts[0]!;
-    const origin = Object.freeze({ factId: fact.factId, originFieldPath: `resumeTextClaims[${index}].claim` });
     // The prompt permits the exact rendered bullet line. Both sides use the same
     // existing single-marker normalization; factual words and resumeText stay intact.
     let claim = normalizeApplicationDocumentSourceLine(item.claim);
     const formattingMatches = new Set(renderedByFormattingFreeKey.get(formattingFreeKey(claim)) ?? []);
     if (!resumeLines.has(comparable(claim)) && formattingMatches.size === 1) claim = [...formattingMatches][0]!;
-    if (!resumeLines.has(comparable(claim))) {
-      const error = new PublicApiError("Resume-text evidence describes text absent from the generated resume.", 422, {
-        code: "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
-        fieldPath: origin.originFieldPath,
-        retryable: false
-      });
-      assemblyFailureOrigins.set(error, origin);
-      throw error;
-    }
+    // Live case 2026-11-14: a citation naming text that is on no rendered line (changed words, a
+    // fragment, a joined pair) rejected the whole paid résumé, twice in a row. It is evidence for
+    // nothing on the page, so it is set aside, as the cover letter drops a claim absent from its
+    // letter. It binds to no line; every rendered line still needs its own evidence, and one left
+    // without any is removed and its source wording restored (revertUnverifiedResumeLines).
+    if (!resumeLines.has(comparable(claim))) return;
     evidence.push({
       claim,
-      originFieldPath: origin.originFieldPath,
+      originFieldPath: `resumeTextClaims[${index}].claim`,
       facts
     });
   });

@@ -4,7 +4,6 @@ import test from "node:test";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   getApplicationDocumentClaimOrigins,
-  getApplicationDocumentAssemblyFailureOrigin,
   assembleCoverLetterProviderOutput,
   assembleTailoredResumeProviderOutput,
   buildApplicationDocumentFactCatalog,
@@ -286,17 +285,11 @@ test("provider schemas reject legacy, unused, and redundant evidence metadata", 
     angle: "Truthful",
     claimsUsed: [{ claim: "unused", factId: factIdFor(quotedFact), citations: [] }]
   }).success === false);
-  assert.throws(
-    () => assembleTailoredResumeProviderOutput(payload, {
-      ...base,
-      resumeTextClaims: [{ claim: quotedFact, factId: factIdFor(quotedFact) }]
-    }),
-    (error) => publicError(
-      error,
-      "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
-      "resumeTextClaims[0].claim"
-    )
-  );
+  // A citation of text that is on no rendered line is set aside: it never becomes evidence.
+  assert.deepEqual(assembleTailoredResumeProviderOutput(payload, {
+    ...base,
+    resumeTextClaims: [{ claim: quotedFact, factId: factIdFor(quotedFact) }]
+  }).claimEvidence, []);
 });
 
 test("resume line associations accept the exact generated bullet line as well as its text", () => {
@@ -325,12 +318,16 @@ test("bullet association equivalence cannot hide an absent, partial, joined or c
     `• ${quotedFact} Invented achievement.`, `• ${quotedFact}\n${negatedFact}`,
     "• Built", "• -- " + quotedFact
   ]) {
-    assert.throws(() => assembleTailoredResumeProviderOutput(payload, {
+    // The citation is set aside: no evidence describes it or binds it to the rendered line.
+    const assembled = assembleTailoredResumeProviderOutput(payload, {
       professionalSummary: "", professionalSummaryFactId: "__NO_APPLICANT_FACT__",
       skillsSection: [], bulletRewrites: [], rolesOrProjectsToEmphasize: [],
       resumeTextClaims: [{ claim, factId: factIdFor(quotedFact) }],
       unsupportedKeywords: [], formattingWarnings: [], resumeText: `EXPERIENCE\n• ${quotedFact}`
-    }), (error) => publicError(error, "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT", "resumeTextClaims[0].claim"));
+    });
+    assert.ok(assembled.claimEvidence.every((entry) => entry.claim === quotedFact), claim);
+    assert.ok(getApplicationDocumentClaimOrigins(assembled.claimEvidence)
+      .every((origin) => origin.originFieldPath !== "resumeTextClaims[0].claim"), claim);
   }
 });
 
@@ -350,25 +347,6 @@ test("matching decorated evidence still rejects invented facts, lost negation an
       error instanceof PublicApiError &&
       ["APPLICATION_DOCUMENT_UNSUPPORTED_CLAIM", "APPLICATION_DOCUMENT_NEGATION_REVERSAL"].includes(String(error.details?.code)));
   }
-});
-
-test("assembly provenance exists only for the original server-created error", () => {
-  let failure: unknown;
-  try {
-    assembleTailoredResumeProviderOutput(payload, {
-      professionalSummary: "", professionalSummaryFactId: "__NO_APPLICANT_FACT__",
-      skillsSection: [], bulletRewrites: [], rolesOrProjectsToEmphasize: [],
-      resumeTextClaims: [{ claim: "Absent generated wording.", factId: factIdFor(quotedFact) }],
-      unsupportedKeywords: [], formattingWarnings: [], resumeText: ""
-    });
-  } catch (error) { failure = error; }
-  assert.ok(failure instanceof PublicApiError);
-  const origin = getApplicationDocumentAssemblyFailureOrigin(failure);
-  assert.deepEqual(origin, { factId: factIdFor(quotedFact), originFieldPath: "resumeTextClaims[0].claim" });
-  assert.ok(Object.isFrozen(origin));
-  assert.equal(getApplicationDocumentAssemblyFailureOrigin(new PublicApiError(failure.message, failure.status, failure.details)), undefined);
-  assert.equal(getApplicationDocumentAssemblyFailureOrigin(JSON.parse(JSON.stringify(failure))), undefined);
-  assert.doesNotMatch(JSON.stringify(failure), /Absent generated wording|fact:|originFieldPath|excerpt/u);
 });
 
 test("cover assembler resolves facts server-side and preserves negation and qualifiers", () => {
