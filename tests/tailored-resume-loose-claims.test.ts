@@ -1,14 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PublicApiError } from "@/lib/api-errors";
 import type { ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
-import { assembleTailoredResumeProviderOutput, buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
+import {
+  assembleTailoredResumeProviderOutput,
+  buildApplicationDocumentFactCatalog,
+  getApplicationDocumentClaimOrigins
+} from "@/lib/ai/application-document-facts";
 import { tailoredResumeProviderSchema } from "@/lib/ai/resume";
 
 // Live: reworded résumés failed 422 when a claim and its rendered line differed only in
 // formatting. A claim now binds to the rendered line whose formatting-free form it equals,
-// and the evidence describes the rendered text; any change of words or numbers still fails.
+// and the evidence describes the rendered text; a claim that changes words or numbers binds
+// to nothing and is set aside.
 const bullet = "Closed ~30 deals a month at a 40–50% demo-to-close rate.";
 const payload: ApplicationDocumentPayload = {
   job: { title: "Account Executive", company: "Example" },
@@ -45,16 +49,15 @@ test("a claim that differs from its line only in dash, quote or end punctuation 
   }
 });
 
-test("a claim that changes words or numbers is still rejected", () => {
+test("a claim that changes words or numbers never binds to the rendered line", () => {
   for (const claim of [
     "Closed ~30 deals a month at a 40–60% demo-to-close rate.",
     "Closed 30 deals a month at a 40–50% demo-to-close rate.",
     "Closed ~30 deals a week at a 40–50% demo-to-close rate."
   ]) {
-    assert.throws(
-      () => assemble(claim),
-      (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
-      claim
-    );
+    const assembled = assemble(claim);
+    assert.ok(assembled.claimEvidence.every((entry) => entry.claim === bullet), claim);
+    assert.ok(getApplicationDocumentClaimOrigins(assembled.claimEvidence)
+      .every((origin) => origin.originFieldPath !== "resumeTextClaims[0].claim"), claim);
   }
 });

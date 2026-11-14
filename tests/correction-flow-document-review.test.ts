@@ -440,7 +440,7 @@ test("exact generated bullet evidence traverses transport, validation and export
   }
 });
 
-test("absent resume evidence stops once with a known fact and original provider path before assembly completes", async () => {
+test("absent resume evidence is set aside and the run continues without exposing it", async () => {
   const value = manifest();
   const wire = structuredClone(fixedResumeOutput);
   const item = wire.resumeTextClaims.pop()!;
@@ -449,20 +449,15 @@ test("absent resume evidence stops once with a known fact and original provider 
   let calls = 0;
   const runner = createCorrectionFlowDocumentReviewRunner({
     manifest: value, consent: consentFor(value), payload: syntheticCorrectionFlowDocumentPayload(),
-    credentials: { geminiApiKey: credential }, fetchImpl: async () => { calls += 1; return providerResponse(wire); },
-    startReview: async () => { throw new Error("Absent evidence must never start review."); }
+    credentials: { geminiApiKey: credential },
+    fetchImpl: async () => providerResponse([wire, fixedCoverLetterOutput][calls++]),
+    startReview: async () => { throw new Error("Synthetic review startup probe; no listening socket."); }
   });
   const receipt = await runner.run(new AbortController().signal);
-  assert.equal(calls, 1);
-  assert.equal(receipt.failureCode, "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT");
-  assert.equal(receipt.failureFieldPath, "output.resumeTextClaims[3].claim");
-  assert.deepEqual(receipt.failureClaimSource, {
-    factId: item.factId, originFieldPath: "resumeTextClaims[3].claim", reason: "not_in_output"
-  });
-  assert.equal(receipt.providerCallsCompleted, 1);
-  assert.equal(receipt.unknownBillingCallCount, 0);
-  assert.equal(receipt.envelopeHash, null);
-  assert.equal(receipt.reviewAttestation, null);
+  assert.equal(calls, 2, JSON.stringify(receipt));
+  assert.equal(receipt.failureStage, "owner_review");
+  assert.equal(receipt.failureCode, "OWNER_REVIEW_INCOMPLETE");
+  assert.equal(receipt.failureClaimSource, null);
   assert.doesNotMatch(JSON.stringify(receipt), /Invented provider-only|"claim":|"excerpt":|"resumeText":/u);
 });
 

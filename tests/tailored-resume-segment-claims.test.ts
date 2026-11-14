@@ -3,7 +3,11 @@ import { test } from "node:test";
 
 import { PublicApiError } from "@/lib/api-errors";
 import { validateTailoredResumeClaims, type ApplicationDocumentPayload } from "@/lib/ai/application-document-claims";
-import { assembleTailoredResumeProviderOutput, buildApplicationDocumentFactCatalog } from "@/lib/ai/application-document-facts";
+import {
+  assembleTailoredResumeProviderOutput,
+  buildApplicationDocumentFactCatalog,
+  getApplicationDocumentClaimOrigins
+} from "@/lib/ai/application-document-facts";
 import { tailoredResumeProviderSchema } from "@/lib/ai/resume";
 
 // Live case: the résumé rendered the full source skills line
@@ -36,13 +40,12 @@ test("a claim may be one semicolon part of a rendered line", () => {
   assert.ok(assembled.claimEvidence.some((entry) => entry.claim === "Technical: TypeScript, SQL"));
 });
 
-test("a claim that is only part of a semicolon part is still rejected", () => {
+test("a claim that is only part of a semicolon part binds to nothing", () => {
   for (const claim of ["Technical: TypeScript", "TypeScript, SQL", "Technical: TypeScript, SQL; AI tools"]) {
-    assert.throws(
-      () => assembleTailoredResumeProviderOutput(payload, wire(claim)),
-      (error: unknown) => error instanceof PublicApiError && error.details?.code === "APPLICATION_DOCUMENT_CLAIM_NOT_IN_OUTPUT",
-      claim
-    );
+    const assembled = assembleTailoredResumeProviderOutput(payload, wire(claim));
+    assert.ok(assembled.claimEvidence.every((entry) => entry.claim !== claim), claim);
+    assert.ok(getApplicationDocumentClaimOrigins(assembled.claimEvidence)
+      .every((origin) => origin.originFieldPath !== "resumeTextClaims[0].claim"), claim);
   }
 });
 

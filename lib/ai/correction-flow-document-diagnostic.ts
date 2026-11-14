@@ -6,7 +6,6 @@ import { PublicApiError } from "@/lib/api-errors";
 import { PRODUCT_DOCUMENT_REVIEW_RENDERING } from "@/lib/documents/product-document-review";
 import {
   getApplicationDocumentClaimOrigins,
-  getApplicationDocumentAssemblyFailureOrigin,
   type ApplicationDocumentClaimOrigin,
   assembleCoverLetterProviderOutput,
   assembleTailoredResumeProviderOutput,
@@ -526,9 +525,7 @@ function safeClaimFailureSource(error: unknown, origins: readonly ApplicationDoc
   if (!absentFromOutput && error.details?.failureClass !== "source_relation_mismatch") return null;
   const path = typeof error.details?.fieldPath === "string"
     ? error.details.fieldPath.match(/^(?:claimEvidence|claimsUsed)\[(\d+)\]\.claim$/u) : null;
-  const origin = absentFromOutput
-    ? getApplicationDocumentAssemblyFailureOrigin(error) ?? (path ? origins[Number(path[1])] : undefined)
-    : path ? origins[Number(path[1])] : undefined;
+  const origin = path ? origins[Number(path[1])] : undefined;
   const reason = absentFromOutput ? "not_in_output" : error.details?.relationReason;
   if (!origin || !/^fact:\d{4,6}$/u.test(origin.factId) || origin.originFieldPath.length > 160 ||
     !/^(?:professionalSummary|(?:skillsSection|rolesOrProjectsToEmphasize)\[\d+\]\.text|bulletRewrites\[\d+\]\.rewrite|(?:resumeTextClaims|claimsUsed)\[\d+\]\.claim)$/u.test(origin.originFieldPath) ||
