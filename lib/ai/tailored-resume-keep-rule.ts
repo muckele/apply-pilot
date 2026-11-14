@@ -78,10 +78,13 @@ type SourceRecord = {
   ref: string;
   field: RecordField;
   order: number;
+  // The employer (jobs) or project name an owner-attested sentence can name.
+  name: string | null;
   headers: Unit[];
   bullets: Unit[];
   leading: Unit[];
 };
+type OwnerFactHome = Readonly<{ names: readonly string[]; cited: SourceRecord | null }>;
 // loose: a labelled source line that is not a clean category (see buildSourceModel); it only
 // labels skills of it that are kept on their own and never switches regrouping on.
 type SkillCategory = Readonly<{ label: string | null; fact: ApplicationDocumentFact | undefined; skills: readonly Unit[]; loose: boolean }>;
@@ -97,6 +100,17 @@ type SourceModel = {
   bulletedSourceLines: ReadonlySet<string>;
   ownerKeys: ReadonlyMap<string, readonly Unit[]>;
   skillCategories: readonly SkillCategory[];
+  // Per owner-attested fact (clause): the employer or project names it reads under, and the record
+  // its correction cites (sourceRef). One name places it under that employer; none or several, under
+  // no job.
+  ownerFactHomes: ReadonlyMap<string, OwnerFactHome>;
+  // The typed owner line (fact index and line) each owner-attested sentence comes from.
+  ownerLineOf: ReadonlyMap<Unit, string>;
+  // A whole multi-sentence owner line, copied as typed, expresses each of its sentences.
+  ownerLineFacts: ReadonlyMap<string, readonly ApplicationDocumentFact[]>;
+  sourceHeadingCounts: ReadonlyMap<Section, number>;
+  // An owner-attested line in résumé voice, when the unchanged truth check accepts that wording.
+  inResumeVoice: (text: string, citations: ApplicationDocumentClaimEvidence["citations"]) => string;
 };
 
 const RECORD_FIELDS: readonly RecordField[] = ["workHistory", "projects", "education", "certifications"];
@@ -245,7 +259,9 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
     values.forEach((value, index) => {
       if (!isRecord(value)) return;
       const ref = `resume.${field}[${index}]`;
-      const record: SourceRecord = { ref, field, order: index, headers: [], bullets: [], leading: [] };
+      const nameValue = field === "workHistory" ? value.company : field === "projects" ? value.name : null;
+      const name = typeof nameValue === "string" && nameValue.trim() ? nameValue.trim() : null;
+      const record: SourceRecord = { ref, field, order: index, name, headers: [], bullets: [], leading: [] };
       const detailKey = field === "education" || field === "certifications" ? "details" : "bullets";
       const seenBullets = new Set<string>();
       const bulletLines = (Array.isArray(value[detailKey]) ? value[detailKey] as unknown[] : [])
@@ -302,6 +318,7 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
   const sourceLineKeys = new Set<string>();
   const bulletedSourceLines = new Set<string>();
   const sourceHeadings: Section[] = [];
+  const sourceHeadingCounts = new Map<Section, number>();
   const headingTexts = new Map<Section, Set<string>>();
   const skillCategories: SkillCategory[] = [];
   if (typeof payload.resume?.rawText === "string") {
@@ -313,6 +330,7 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
       if (heading) {
         placement = heading;
         if (!sourceHeadings.includes(heading)) sourceHeadings.push(heading);
+        sourceHeadingCounts.set(heading, (sourceHeadingCounts.get(heading) ?? 0) + 1);
         headingTexts.set(heading, (headingTexts.get(heading) ?? new Set()).add(raw.trim()));
         continue;
       }
@@ -341,19 +359,40 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
   }
 
   const applicantCovered = new Set(units.flatMap((unit) => unit.facts.map((fact) => fact.factId)));
+  const ownerFactHomes = new Map<string, OwnerFactHome>();
+  const ownerLineOf = new Map<Unit, string>();
+  const ownerLineFacts = new Map<string, readonly ApplicationDocumentFact[]>();
   const reviewedFacts = payload.reviewedEvidence?.facts;
   if (Array.isArray(reviewedFacts)) {
     reviewedFacts.forEach((value, index) => {
       if (!isRecord(value) || typeof value.fact !== "string") return;
-      const lines = nonblankLines(value.fact).map(sourceLine);
-      if (lines.flatMap((line) => line.facts).every((fact) => applicantCovered.has(fact.factId))) return;
-      const attachRef = typeof value.sourceRef === "string" &&
-        records.some((record) => record.ref === value.sourceRef) ? value.sourceRef : null;
-      const unit = add({
-        ref: `reviewedEvidence.facts[${index}].fact`, kind: "owner_attested_fact", placement: "ADDITIONAL INFORMATION",
-        record: null, order: index, lines, attachRef
+      const cited = typeof value.sourceRef === "string" ? records.find((record) => record.ref === value.sourceRef) ?? null : null;
+      // Live case 2026-11-09: one owner line naming several employers was a single item, so a line
+      // that kept part of it was replaced by the whole first-person paragraph under one job. Each
+      // sentence is now its own item, and each of its facts reads under the employer it names.
+      nonblankLines(value.fact).forEach((typed, lineIndex) => {
+        const typedKey = `${index}:${lineIndex}`;
+        const sentences = [...ownerSentenceSegmenter.segment(typed)].map(({ segment }) => segment.trim()).filter(Boolean);
+        if (sentences.length > 1) ownerLineFacts.set(factKey(normalizeApplicationDocumentSourceLine(typed)), factsOf(typed));
+        sentences.forEach((sentence, part) => {
+          const line = sourceLine(sentence);
+          if (line.facts.every((fact) => applicantCovered.has(fact.factId))) return;
+          const sentenceNames = namesIn(records, sentence);
+          for (const fact of line.facts) {
+            // A clause naming no employer belongs where its sentence does ("At A I did X and did Y").
+            const own = namesIn(records, fact.excerpt);
+            ownerFactHomes.set(fact.factId, { names: own.length ? own : sentenceNames, cited });
+          }
+          const unit = add({
+            ref: `reviewedEvidence.facts[${index}].fact`, kind: "owner_attested_fact", placement: "ADDITIONAL INFORMATION",
+            record: null, order: index + (lineIndex * 100 + part) / 10_000, lines: [line],
+            attachRef: cited?.ref ?? (sentenceNames.length === 1 ? recordsNamed(records, sentenceNames)[0]!.ref : null)
+          });
+          if (!unit) return;
+          unit.facts.forEach((fact) => applicantCovered.add(fact.factId));
+          ownerLineOf.set(unit, typedKey);
+        });
       });
-      unit?.facts.forEach((fact) => applicantCovered.add(fact.factId));
     });
   }
   const profileSkills = payload.profile?.skillsToEmphasize;
@@ -396,8 +435,35 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
     sourceLineKeys,
     bulletedSourceLines,
     ownerKeys,
-    skillCategories
+    skillCategories,
+    ownerFactHomes,
+    ownerLineOf,
+    ownerLineFacts,
+    sourceHeadingCounts,
+    inResumeVoice: (text, citations) => {
+      const voiced = ownerLineInResumeVoice(text);
+      if (voiced === text) return text;
+      try {
+        // The check restored lines face; any refusal keeps the owner's own wording.
+        validateRestoredResumeClaimEvidence(payload, [{ claim: voiced, citations: [...citations] }]);
+        return voiced;
+      } catch {
+        return text;
+      }
+    }
   };
+}
+
+const ownerSentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+
+// The employer and project names a text names (whole words, any case), one entry per distinct name.
+function namesIn(records: readonly SourceRecord[], text: string) {
+  return [...new Set(records.flatMap((record) =>
+    record.name && containsComparableText(text, record.name) ? [comparable(record.name)] : []))];
+}
+// Every record with one of these names (two roles at one employer share it).
+function recordsNamed(records: readonly SourceRecord[], names: readonly string[]) {
+  return records.filter((record) => record.name && names.includes(comparable(record.name)));
 }
 
 // A fact is in the document when its exact excerpt appears (whole words) or when a claim that
@@ -547,6 +613,7 @@ class ResumeDraft {
           const ids = new Set(this.claimFacts.get(key) ?? []);
           const direct = this.model.factByKey.get(key);
           if (direct) ids.add(direct.factId);
+          for (const fact of this.model.ownerLineFacts.get(key) ?? []) ids.add(fact.factId);
           return ids;
         }),
         sections: this.lines.map((line) => {
@@ -684,6 +751,22 @@ class ResumeDraft {
     this.cache = null;
   }
 
+  // Rewords one line in place (keeping its list marker); the claims that named it name the new text.
+  reword(index: number, text: string, entry: ApplicationDocumentClaimEvidence) {
+    const line = this.lines[index]!;
+    const before = lineKey(line);
+    this.lines[index] = `${line.match(/^\s*(?:[-*•▪◦–—]\s+)?/u)![0]}${text}`;
+    let named = false;
+    this.evidence.forEach((value, at) => {
+      if (lineKey(value.claim) !== before) return;
+      this.evidence[at] = { ...value, claim: text };
+      this.note(this.evidence[at]!);
+      named = true;
+    });
+    if (!named) this.addEvidence(entry);
+    this.cache = null;
+  }
+
   invalidate() {
     this.cache = null;
   }
@@ -739,7 +822,66 @@ class ResumeDraft {
 
 function renderUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, range: { start: number; end: number }, bulleted = sourceBulleted(model, unit)): RenderedLine[] {
   const prefix = bulleted ? `${draft.marker(range.start, range.end)} ` : "";
-  return unit.lines.map((line, index) => ({ text: `${index === 0 ? prefix : ""}${line.text}`, facts: line.facts }));
+  return unit.lines.map((line, index) => {
+    if (unit.kind !== "owner_attested_fact") return { text: `${index === 0 ? prefix : ""}${line.text}`, facts: line.facts };
+    // An owner-attested sentence is one sentence of a longer typed line, in résumé voice, so no
+    // source line equals it: it carries one claim citing every fact it is made of.
+    const citations = line.facts.map((fact) => ({ ref: fact.ref, excerpt: fact.excerpt }));
+    const text = model.inResumeVoice(line.text, citations);
+    return {
+      text: `${index === 0 ? prefix : ""}${text}`,
+      facts: line.facts,
+      ...(line.facts.length > 1 || text !== line.text ? { claim: { claim: text, citations } } : {})
+    };
+  });
+}
+
+// Live case 2026-11-09: owner-added lines were pasted in the first person ("I'm a full-stack
+// developer…"). In résumé voice a leading "I", "I'm a", "I am an", "I have" or "I've" before a
+// past-tense verb or role is dropped, and "At X I raised…" reads "At X, raised…". Words are only
+// removed (and a comma added), never added; a rewrite the unchanged truth check refuses is not used.
+const PAST_TENSE = /^(?:\p{L}+ed|led|built|ran|grew|won|made|held|taught|wrote|drove|cut|set|met|sold|kept|spent|took|gave|found|did|got|put|oversaw|began|brought|shipped)\b/iu;
+function sentenceInResumeVoice(sentence: string) {
+  const capital = (value: string) => `${value.charAt(0).toLocaleUpperCase()}${value.slice(1)}`;
+  const role = sentence.match(/^I(?:'m|’m|\s+am)\s+(?:(?:a|an)\s+)?(?=\S)/u);
+  if (role) return capital(sentence.slice(role[0].length));
+  const subject = sentence.match(/^I(?:(?:'ve|’ve|\s+have)\s+|\s+)(?=\S)/u);
+  if (subject && PAST_TENSE.test(sentence.slice(subject[0].length)) && !/^been\b/iu.test(sentence.slice(subject[0].length))) {
+    return capital(sentence.slice(subject[0].length));
+  }
+  const place = sentence.match(/^((?:At|With|For|In|On)\s+[^,.;]{1,60}?),?\s+I\s+(?=\S)/u);
+  if (place && PAST_TENSE.test(sentence.slice(place[0].length))) return `${place[1]}, ${sentence.slice(place[0].length)}`;
+  return sentence;
+}
+export function ownerLineInResumeVoice(text: string) {
+  return [...ownerSentenceSegmenter.segment(text)].map(({ segment }) => segment.trim()).filter(Boolean)
+    .map(sentenceInResumeVoice).join(" ");
+}
+
+// Model-written owner-attested lines in the first person are put in résumé voice in place, with the
+// claim that names them. Returns the changed claims (old comparable text to new text).
+function ownerLinesInResumeVoice(model: SourceModel, draft: ResumeDraft) {
+  const changes = new Map<string, string>();
+  draft.lines.forEach((line, index) => {
+    if (!line.trim() || sectionOf(line)) return;
+    if (model.units.some((unit) => unit.kind !== "owner_attested_fact" && draft.renders(index, unit))) return;
+    const owned = model.units.filter((unit) => unit.kind === "owner_attested_fact" && draft.renders(index, unit));
+    if (!owned.length) return;
+    const text = normalizeApplicationDocumentSourceLine(line);
+    const claimed = draft.evidence.filter((entry) => lineKey(entry.claim) === lineKey(text));
+    const citations = claimed.length ? uniqueCitations(claimed.flatMap((entry) => entry.citations))
+      : uniqueFacts(owned.flatMap((unit) => unit.facts)).map((fact) => ({ ref: fact.ref, excerpt: fact.excerpt }));
+    const voiced = model.inResumeVoice(text, citations);
+    if (voiced === text) return;
+    draft.reword(index, voiced, { claim: voiced, citations });
+    changes.set(comparable(text), voiced);
+  });
+  return changes;
+}
+
+function uniqueCitations(citations: readonly ApplicationDocumentClaimEvidence["citations"][number][]) {
+  return citations.filter((citation, index) => citations.findIndex((other) =>
+    other.ref === citation.ref && other.excerpt === citation.excerpt) === index);
 }
 
 // Puts back the source's own section headings (LICENSES stays LICENSES) and adds a missing
@@ -871,9 +1013,13 @@ function insertRecordUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, le
   const block = draft.recordBlock(record);
   if (unit.kind === "record_header") {
     if (!block) {
-      // Bullets kept without their header: the header returns directly above them.
+      // Bullets kept without their header: the header returns directly above them, when they are
+      // in the record's own section. Otherwise (a project bullet under a job) it returns at the
+      // end of that section, and placeInOwnRecords then moves the bullets under it.
       const first = draft.firstRecordLine(record);
-      const section = first >= 0 ? null : draft.ensureSection(RECORD_SECTION[record.field]);
+      const own = first >= 0 && (draft.sectionAt(first) === RECORD_SECTION[record.field] ||
+        draft.headingIndex(RECORD_SECTION[record.field]) < 0);
+      const section = own ? null : draft.ensureSection(RECORD_SECTION[record.field]);
       const at = section ? draft.contentEnd(section.start, section.end) : first;
       draft.insert(at, renderUnit(model, draft, unit, { start: at, end: at }));
       return;
@@ -994,6 +1140,145 @@ function orderDatedRecords(model: SourceModel, draft: ResumeDraft) {
   }
 }
 
+// Live case 2026-11-09: true bullets read under the wrong employer (a sales result under an
+// operations job, e-commerce results under a lending job, a job bullet under a project), and an
+// owner line naming one employer sat under another. Each line is attributed by where it reads:
+// under the record header above it, up to the next record header or section heading.
+// - A line that renders a record's bullet belongs under that record.
+// - A line that renders an owner-attested sentence may read under the record it names (or the
+//   record its correction cites), or outside every record. A sentence naming no employer, or
+//   several, never reads under a job, because that would say where it happened.
+type Misplacement = { index: number; unit: Unit; target: SourceRecord | null };
+
+// The record each line reads under: null outside every record, undefined when a header line could
+// open more than one record (identical header lines), where nothing is checked.
+function readUnder(model: SourceModel, draft: ResumeDraft) {
+  let current: SourceRecord | null | undefined = null;
+  return draft.lines.map((line, index) => {
+    if (sectionOf(line)) return (current = null);
+    const opened = model.records.filter((record) => record.headers.some((unit) => draft.renders(index, unit)));
+    if (opened.length === 1 || (opened.length > 1 && current && opened.includes(current))) {
+      current = opened.length === 1 ? opened[0]! : current;
+    } else if (opened.length > 1) {
+      current = undefined;
+    }
+    return current;
+  });
+}
+
+function misplacedLines(model: SourceModel, draft: ResumeDraft): Misplacement[] {
+  const under = readUnder(model, draft);
+  const out: Misplacement[] = [];
+  draft.lines.forEach((line, index) => {
+    const here = under[index];
+    if (here === undefined || !line.trim() || sectionOf(line)) return;
+    if (model.records.some((record) => record.headers.some((unit) => draft.renders(index, unit)))) return;
+    const bullets = model.units.filter((unit) => unit.kind === "bullet" && unit.record?.headers.length && draft.renders(index, unit));
+    if (bullets.length) {
+      if (!bullets.some((unit) => unit.record === here)) out.push({ index, unit: bullets[0]!, target: bullets[0]!.record });
+      return;
+    }
+    // Owner lines are attributed only by jobs and projects; a line in EDUCATION or CERTIFICATIONS
+    // reads as an item of that list (an owner-attested certificate under a licence, say).
+    if (!here || (here.field !== "workHistory" && here.field !== "projects")) return;
+    const owned = model.units.filter((unit) => unit.kind === "owner_attested_fact" && draft.renders(index, unit));
+    if (!owned.length) return;
+    const ids = draft.factIds(index);
+    const key = lineKey(line);
+    const facts = owned.flatMap((unit) => unit.lines.some((source) => source.key === key) ? unit.facts
+      : unit.facts.filter((fact) => ids.has(fact.factId) || containsComparableText(line, fact.excerpt)));
+    const homes = ownerFactHomes(model, facts);
+    if (!homes.includes(here)) out.push({ index, unit: owned[0]!, target: homes[0] ?? null });
+  });
+  return out;
+}
+
+// Where a line made of these owner-attested facts may read: under the employer every one of them
+// names (each naming that one employer), or under the record their correction cites.
+function ownerFactHomes(model: SourceModel, facts: readonly ApplicationDocumentFact[]) {
+  const homes = facts.flatMap((fact) => model.ownerFactHomes.get(fact.factId) ?? []);
+  if (!homes.length) return [];
+  const [name] = homes[0]!.names;
+  const named = homes.every((home) => home.names.length === 1 && home.names[0] === name) ? recordsNamed(model.records, [name!]) : [];
+  const cited = homes.every((home) => home.cited && home.cited === homes[0]!.cited) ? [homes[0]!.cited!] : [];
+  return [...new Set([...named, ...cited])];
+}
+
+// Record blocks that read in another section than their own (a job under PROJECTS or EDUCATION).
+function misplacedRecords(model: SourceModel, draft: ResumeDraft) {
+  return model.records.filter((record) => {
+    const section = RECORD_SECTION[record.field];
+    const block = draft.recordBlock(record);
+    return block !== null && draft.headingIndex(section) >= 0 && draft.sectionAt(block.anchor) !== section;
+  });
+}
+
+function moveRecordBlock(model: SourceModel, draft: ResumeDraft, record: SourceRecord) {
+  const block = draft.recordBlock(record)!;
+  const content = draft.lines.slice(block.anchor, draft.contentEnd(block.anchor, block.end));
+  draft.remove(Array.from({ length: block.end - block.anchor }, (_, offset) => block.anchor + offset));
+  const range = draft.ensureSection(RECORD_SECTION[record.field]);
+  const siblings = model.records.filter((candidate) => candidate.field === record.field && candidate !== record)
+    .map((candidate) => ({ candidate, at: draft.recordBlock(candidate)?.anchor ?? -1 }))
+    .filter(({ at }) => at >= range.start && at < range.end);
+  const separated = siblings.some(({ at }) => at > range.start && !draft.lines[at - 1]!.trim());
+  const next = siblings.filter(({ candidate }) => candidate.order > record.order).sort((a, b) => a.at - b.at)[0];
+  const lines = content.map((text) => ({ text, facts: [] }));
+  if (next) {
+    draft.insert(next.at, separated ? [...lines, ""] : lines);
+  } else {
+    const at = draft.contentEnd(range.start, range.end);
+    draft.insert(at, separated && at > range.start ? ["", ...lines] : lines);
+  }
+}
+
+// Moves a misplaced line, wording unchanged, under its own record (in source bullet order, as a
+// restored bullet would go), or into the owner-attested section when it names no single record.
+// Returns false when its record has no block to receive it (nothing is moved).
+function moveLine(model: SourceModel, draft: ResumeDraft, { index, unit, target }: Misplacement) {
+  const text = draft.lines[index]!.trim();
+  if (target) {
+    const home = draft.recordBlock(target);
+    if (!home) return false;
+    // A copy of a bullet its own record already shows whole is dropped, not moved.
+    const shown = draft.renderedLines(unit).filter((at) => at !== index && at >= home.anchor && at < home.end);
+    draft.remove([index]);
+    if (shown.length && draft.wholeAt(unit, shown.map((at) => at > index ? at - 1 : at))) return true;
+    const block = draft.recordBlock(target)!;
+    const range = { start: block.headerEnd, end: block.end };
+    let at = draft.contentEnd(range.start, range.end);
+    if (unit.kind === "bullet" && target.leading.includes(unit)) {
+      at = block.headerEnd;
+    } else if (unit.kind === "bullet" && !target.leading.length) {
+      const later = target.bullets.filter((candidate) => candidate.order > unit.order)
+        .map((candidate) => draft.find(candidate, range.start, range.end)).filter((found) => found >= 0);
+      if (later.length) at = Math.min(...later);
+    }
+    const bulleted = markerPattern.test(text) ? text : `${draft.marker(range.start, range.end)} ${text}`;
+    draft.insert(at, [{ text: bulleted, facts: [] }]);
+    return true;
+  }
+  draft.remove([index]);
+  const range = draft.ensureSection(unit.placement === "HEADER" || !unit.placement ? "ADDITIONAL INFORMATION" : unit.placement);
+  draft.insert(draft.contentEnd(range.start, range.end), [{ text: normalizeApplicationDocumentSourceLine(text), facts: [] }]);
+  return true;
+}
+
+function placeInOwnRecords(model: SourceModel, draft: ResumeDraft) {
+  const stuck = new Set<string>();
+  for (let guard = 0; guard <= draft.lines.length * 2; guard += 1) {
+    const record = misplacedRecords(model, draft).find((candidate) => !stuck.has(candidate.ref));
+    if (record) {
+      moveRecordBlock(model, draft, record);
+      if (misplacedRecords(model, draft).includes(record)) stuck.add(record.ref);
+      continue;
+    }
+    const next = misplacedLines(model, draft).find((candidate) => !stuck.has(lineKey(draft.lines[candidate.index]!)));
+    if (!next) return;
+    if (!moveLine(model, draft, next)) stuck.add(lineKey(draft.lines[next.index]!));
+  }
+}
+
 const restorations = new WeakMap<object, readonly TailoredResumeItem[]>();
 
 // Items the server restored verbatim into this exact output (empty when nothing was restored,
@@ -1004,6 +1289,24 @@ export function tailoredResumeRestorations(output: object): readonly TailoredRes
 
 // Deterministically completes the tailored résumé under the keep rule, verbatim from the master
 // résumé, with exact claim evidence. Returns the same object when nothing needs changing.
+// The typed fields that repeat a reworded line (summary, skills, bullet rewrites, emphasis) change
+// with it, or the claims check would no longer find their evidence.
+function withTypedFieldsReworded<T extends object>(output: T, changed: ReadonlyMap<string, string>): T {
+  if (!changed.size) return output;
+  const swap = (value: unknown) => typeof value === "string" ? changed.get(comparable(value)) ?? value : value;
+  const result = { ...output } as Record<string, unknown>;
+  if (typeof result.professionalSummary === "string") result.professionalSummary = swap(result.professionalSummary);
+  for (const field of ["skillsSection", "rolesOrProjectsToEmphasize"] as const) {
+    const values = result[field];
+    if (Array.isArray(values)) result[field] = values.map(swap);
+  }
+  if (Array.isArray(result.bulletRewrites)) {
+    result.bulletRewrites = result.bulletRewrites.map((item: unknown) =>
+      isRecord(item) && typeof item.rewrite === "string" ? { ...item, rewrite: swap(item.rewrite) } : item);
+  }
+  return result as T;
+}
+
 export function completeTailoredResume<T extends ResumeOutput>(
   payload: ApplicationDocumentPayload,
   output: T,
@@ -1013,8 +1316,11 @@ export function completeTailoredResume<T extends ResumeOutput>(
   const draft = new ResumeDraft(model, output);
   normalizeHeadings(model, draft);
   const { plan, wholeRecords, leadingRestores } = planRestoration(model, payload, draft, revertedFactIds);
+  const voiced = new Map<string, string>();
   if (!plan.size && draft.lines.join("\n") === output.resumeText) {
     regroupSkills(model, draft, new Set());
+    placeInOwnRecords(model, draft);
+    for (const [before, after] of ownerLinesInResumeVoice(model, draft)) voiced.set(before, after);
     orderDatedRecords(model, draft);
     if (draft.lines.join("\n") === output.resumeText) return output;
   }
@@ -1032,6 +1338,18 @@ export function completeTailoredResume<T extends ResumeOutput>(
       items.push({ id: unit.id, item: { ref: unit.record.ref, kind: "record", context: null, text: recordText(model, unit.record, bullets) } });
       continue;
     }
+    if (unit.kind === "owner_attested_fact" && action === "insert" && !unit.attachRef) {
+      // Sentences of one typed owner line that belong to no job return together, as typed.
+      const typed = model.ownerLineOf.get(unit);
+      const group = model.units.filter((candidate) => candidate.kind === unit.kind && !candidate.attachRef &&
+        !done.has(candidate) && plan.get(candidate) === "insert" && model.ownerLineOf.get(candidate) === typed);
+      group.forEach((member) => done.add(member));
+      const facts = uniqueFacts(group.flatMap((member) => member.facts));
+      const text = group.map(unitText).join(" ");
+      insertSectionUnit(model, draft, { ...unit, lines: [{ text, key: factKey(text), facts }], facts });
+      for (const member of group) items.push({ id: member.id, item: unitItem(member) });
+      continue;
+    }
     done.add(unit);
     if (unit.kind === "skill" && regrouping) {
       if (action === "insert") restoredSkills.add(unit);
@@ -1046,10 +1364,15 @@ export function completeTailoredResume<T extends ResumeOutput>(
     items.push({ id: unit.id, item: unitItem(unit) });
   }
   regroupSkills(model, draft, restoredSkills);
+  placeInOwnRecords(model, draft);
+  for (const [before, after] of ownerLinesInResumeVoice(model, draft)) voiced.set(before, after);
   orderDatedRecords(model, draft);
 
   if (draft.added.length) validateRestoredResumeClaimEvidence(payload, draft.added);
-  const completed: T = { ...output, resumeText: draft.lines.join("\n"), claimEvidence: draft.evidence };
+  const completed: T = withTypedFieldsReworded(
+    { ...output, resumeText: draft.lines.join("\n"), claimEvidence: draft.evidence },
+    voiced
+  );
   const skillsSection = (output as { skillsSection?: unknown }).skillsSection;
   if (Array.isArray(skillsSection)) {
     const restoredSkillTexts = model.units.filter((unit) => unit.kind === "skill" && plan.get(unit) === "insert" &&
@@ -1319,6 +1642,40 @@ export function assertTailoredResumeKeepRule(payload: ApplicationDocumentPayload
     const source = model.sourceHeadingText.get(heading.section);
     if (source && source !== heading.text) incomplete("resumeText", "Tailored resume renamed a source section heading.");
   }
+}
+
+function misattributed(fieldPath: string, message: string): never {
+  throw new PublicApiError(message, 422, {
+    code: "APPLICATION_DOCUMENT_MISATTRIBUTED",
+    fieldPath,
+    retryable: false
+  });
+}
+
+// Every line reads under the record it belongs to, each record once, in its own section, and no
+// section heading repeats more often than in the master résumé (a second EXPERIENCE after
+// Education). After completeTailoredResume this only fails on an internal defect.
+export function assertTailoredResumeRecordPlacement(payload: ApplicationDocumentPayload, output: ResumeOutput) {
+  const model = buildSourceModel(payload);
+  const draft = new ResumeDraft(model, output);
+  const headings = output.resumeText.split(/\r?\n/u).flatMap((line) => sectionOf(line) ?? []);
+  for (const section of new Set(headings)) {
+    if (headings.filter((value) => value === section).length > Math.max(1, model.sourceHeadingCounts.get(section) ?? 0)) {
+      misattributed("resumeText", `Tailored resume repeats the ${section} section heading.`);
+    }
+  }
+  for (const record of model.records) {
+    const first = record.headers[0];
+    if (!first) continue;
+    const rendered = draft.renderedLines(first);
+    if (rendered.length > (model.ownerKeys.get(first.lines[0]!.key)?.length ?? 1)) {
+      misattributed(record.ref, "Tailored resume renders a source record twice.");
+    }
+  }
+  const [record] = misplacedRecords(model, draft);
+  if (record) misattributed(record.ref, "Tailored resume renders a source record outside its own section.");
+  const [line] = misplacedLines(model, draft);
+  if (line) misattributed(line.unit.ref, "Tailored resume places a line under a record it does not belong to.");
 }
 
 // Catalog items the final tailored résumé does not include, as whole paste-ready source items.

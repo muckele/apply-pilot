@@ -18,6 +18,7 @@ import {
 } from "@/lib/ai/resume";
 import { buildApplicationDocumentPayload } from "@/lib/ai/resume-tailoring-payload";
 import {
+  ownerLineInResumeVoice,
   tailoredResumeLeftOut,
   tailoredResumeProtectedFactIds,
   tailoredResumeRestorations
@@ -250,8 +251,10 @@ test("the live failure shape: whole items, source headings, grouped skills and e
     "Selling: Book-of-business ownership, Upsell and cross-sell, Retention, Cold calling, Event planning",
     "Languages: Spanish (conversational)"
   ]);
-  // Every owner-attested fact for this job is used.
-  for (const fact of OWNER_FACTS) assert.ok(out.includes(fact), `attested fact used: ${fact}`);
+  // Every owner-attested fact for this job is used, in résumé voice (live case 2026-11-09: owner
+  // lines were pasted in the first person).
+  for (const fact of OWNER_FACTS) assert.ok(out.includes(ownerLineInResumeVoice(fact)), `attested fact used: ${fact}`);
+  assert.ok(!OWNER_FACTS.some((fact) => out.includes(fact)), "no owner line is left in the first person");
   // Left out: whole items only.
   assert.deepEqual(tailoredResumeLeftOut(payload, completed).map((item) => item.text), [
     "French", ACHIEVEMENTS[2]!, JOBS[0]!.bullets[2]!
@@ -281,8 +284,13 @@ test("a condensed owner-attested fact counts as used", () => {
 test("a whole multi-clause item can be cited with all its fact IDs and is kept as written", () => {
   const payload = livePayload();
   const completed = complete(payload, fullSource);
-  assert.equal(completed.resumeText, fullSource);
+  // Only the owner-attested lines change: they read in résumé voice, as the claims that cite them do.
+  let voiced = fullSource;
+  for (const fact of OWNER_FACTS) voiced = voiced.replace(fact, ownerLineInResumeVoice(fact));
+  assert.notEqual(voiced, fullSource);
+  assert.equal(completed.resumeText, voiced);
   assert.deepEqual(tailoredResumeRestorations(completed), []);
+  validateTailoredResumeClaims(payload, completed);
 });
 
 test("the provider wire accepts several fact IDs per résumé line and still accepts one", () => {
