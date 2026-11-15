@@ -12,12 +12,22 @@ function headerKey(value: string) {
   return normalizeApplicationDocumentSourceLine(value).replace(/\s+/gu, " ").toLocaleLowerCase();
 }
 
-export function applicationDocumentPriorityOpportunities(payload: ApplicationDocumentPayload) {
+// How closely a fact matches the job: the most words it shares with any one requirement, preferred
+// qualification or listed technology.
+export function applicationDocumentPriorityScorer(payload: ApplicationDocumentPayload) {
   const job = payload.job ?? {};
   const criteria = [job.requirements, job.preferredQualifications, job.detectedTechStack]
     .flatMap(value => Array.isArray(value) ? value : [])
     .filter((value): value is string => typeof value === "string")
     .map(tokens);
+  return (excerpt: string) => {
+    const words = tokens(excerpt);
+    return Math.max(0, ...criteria.map(criterion => [...criterion].filter(token => words.has(token)).length));
+  };
+}
+
+export function applicationDocumentPriorityOpportunities(payload: ApplicationDocumentPayload) {
+  const scoreOf = applicationDocumentPriorityScorer(payload);
   const catalog = buildApplicationDocumentFactCatalog(payload);
   const headers = [payload.resume?.workHistory, payload.resume?.projects].flatMap(values => Array.isArray(values) ? values : [])
     .flatMap(value => value && typeof value === "object" && !Array.isArray(value) &&
@@ -37,9 +47,7 @@ export function applicationDocumentPriorityOpportunities(payload: ApplicationDoc
       if (bullets.length < 2 || new Set(bullets).size !== bullets.length) return [];
       const ranked = bullets.map(excerpt => {
         const fact = catalog.find(fact => fact.ref === ref && fact.excerpt === excerpt);
-        const words = tokens(excerpt);
-        const score = Math.max(0, ...criteria.map(criterion => [...criterion].filter(token => words.has(token)).length));
-        return { excerpt, factId: fact?.factId, score };
+        return { excerpt, factId: fact?.factId, score: scoreOf(excerpt) };
       });
       // Split/duplicate/ambiguous source facts cannot safely acquire this ordering rule.
       if (ranked.some(fact => !fact.factId)) return [];

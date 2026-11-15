@@ -6,6 +6,7 @@ import {
   isApplicationDocumentSectionHeading,
   normalizeApplicationDocumentSourceLine
 } from "@/lib/ai/application-document-facts";
+import { applicationDocumentPriorityScorer } from "@/lib/ai/application-document-priorities";
 import { faithfulRewordingFailure, type RewordingSourceKind } from "@/lib/ai/application-document-rewording";
 import {
   firstPersonCoverSentence,
@@ -725,6 +726,12 @@ export function tailoredResumeLinesWithoutEvidence(
   return resumeLinesWithoutEvidence(payload, output.resumeText, supported);
 }
 
+// The kind of source a citation belongs to ("resume.workHistory", "reviewedEvidence.facts", …): the
+// cover-letter variety check counts these.
+export function applicationDocumentReferenceFamily(ref: string) {
+  return ref.replace(/\[\d+\](?:\.fact)?$/u, "");
+}
+
 function sentenceKey(value: string) {
   return comparable(value).replace(/[.!?]+$/, "");
 }
@@ -1035,6 +1042,46 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
     const restoredText = restored.map((entry) => entry.claim).join(" ");
     paragraphs = paragraphs.map((paragraph, position) => position === at ? `${paragraph} ${restoredText}` : paragraph);
     claims.push(...restored);
+  }
+
+  // Live case 2026-11-15: a letter whose evidence all came from the owner's saved lines was refused
+  // three times as "not varied", because it cited no résumé fact. When the letter's evidence cites
+  // a single kind of source other than work history, the work record whose two best facts share
+  // the most words with the role's requirements (résumé order breaks ties) adds those two facts,
+  // each a first-person sentence the truth check accepts, as their own paragraph after the
+  // introduction. The finalizer then opens that paragraph with the record's lead line (D033).
+  const evidence = claims.filter((entry) => !exempt.has(sentenceKey(entry.claim)) &&
+    paragraphs.some((paragraph) => containsWhole(paragraph, entry.claim)));
+  const families = new Set(evidence.flatMap((entry) => entry.citations
+    .filter((citation) => !citation.ref.startsWith("job.")).map((citation) => applicationDocumentReferenceFamily(citation.ref))));
+  if (families.size === 1 && !families.has("resume.workHistory")) {
+    const scoreOf = applicationDocumentPriorityScorer(payload);
+    const workHistory: unknown = payload.resume?.workHistory;
+    const records = (Array.isArray(workHistory) ? workHistory : []).map((record, index) => {
+      const ref = `resume.workHistory[${index}]`;
+      const bullets: unknown = record && typeof record === "object" ? (record as { bullets?: unknown }).bullets : null;
+      const entries = (Array.isArray(bullets) ? bullets : []).flatMap((bullet) => {
+        const excerpt = typeof bullet === "string" ? normalizeApplicationDocumentSourceLine(bullet) : "";
+        if (!excerpt || !facts.some((fact) => fact.ref === ref && fact.excerpt === excerpt)) return [];
+        // Only a fact the first-person rules can reword: a bare fragment never goes in.
+        const own = { claim: `${excerpt[0]!.toLocaleUpperCase()}${excerpt.slice(1)}${/[.!?]$/u.test(excerpt) ? "" : "."}`,
+          citations: [{ ref, excerpt }] };
+        const entry = firstPerson(own);
+        return entry === own ? [] : [{ entry, score: scoreOf(excerpt) }];
+      }).sort((left, right) => right.score - left.score).slice(0, 2);
+      return { entries, score: entries.reduce((sum, value) => sum + value.score, 0) };
+    });
+    const best = records.filter((record) => record.entries.length)
+      .reduce<(typeof records)[number] | null>((top, record) => !top || record.score > top.score ? record : top, null);
+    if (best) {
+      const first = paragraphs.findIndex((paragraph) => evidence.some((entry) => containsWhole(paragraph, entry.claim)));
+      const salutation = paragraphs.findIndex((paragraph) => /^dear\b/imu.test(paragraph));
+      // Before the first evidence paragraph when an introduction of its own comes before it; when
+      // the introduction itself holds evidence, after it.
+      paragraphs.splice(salutation >= 0 && salutation < first - 1 ? first : first + 1, 0,
+        best.entries.map(({ entry }) => entry.claim).join(" "));
+      claims.push(...best.entries.map(({ entry }) => entry));
+    }
   }
 
   const coverLetter = paragraphs.join("\n\n");

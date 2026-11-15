@@ -11,7 +11,9 @@ import { PublicApiError } from "@/lib/api-errors";
 // letter evidence is not varied across the available source context." A refused letter is never
 // saved, so nothing showed which sources the letter used or what the repair had removed. The
 // refusal now says so: per paragraph, whether the check counts it and which source families its
-// sentences cite, and each removed sentence with its reason.
+// sentences cite, and each removed sentence with its reason. (Since the same day a letter that
+// cites only the owner's lines gains résumé facts instead of being refused as not varied, see
+// cover-letter-resume-evidence.test.ts, so this letter is refused for leaving out the company.)
 
 const OWNER_TICKETS = "I answer escalated customer tickets within one business day.";
 const OWNER_SUMMARY = "I write the weekly incident summary for the support team.";
@@ -39,9 +41,9 @@ test("a refused cover letter reports the sources each paragraph used and what wa
     "Taylor Boundary",
     "taylor.boundary@example.test | +1 555 010 0200 | Seattle, WA | Remote",
     "",
-    "Dear Northwind Service Cloud Hiring Team,",
+    "Dear Hiring Team,",
     "",
-    "I am applying for the Service Operations Director position at Northwind Service Cloud.",
+    "I am applying for the Service Operations Director position.",
     "",
     `${OWNER_TICKETS} ${MISQUOTED}`,
     "",
@@ -70,20 +72,22 @@ test("a refused cover letter reports the sources each paragraph used and what wa
     refusal = error;
   }
   assert.ok(refusal instanceof PublicApiError, "the letter is refused");
-  assert.equal(refusal.message, "Cover letter evidence is not varied across the available source context.");
+  assert.equal(refusal.message, "Cover letter omitted the target company.");
   assert.equal(refusal.details?.code, "APPLICATION_DOCUMENT_INCOMPLETE");
-  assert.equal(refusal.details?.fieldPath, "claimsUsed");
+  assert.equal(refusal.details?.fieldPath, "coverLetter");
 
   const checked = refusal.details?.checked as {
     paragraphs: Array<{ counted: boolean; sources: string[] }>;
     removed: Array<{ reason: string; sources: string[] }>;
   };
   assert.ok(checked, "the refusal describes the letter it checked");
-  // Header and salutation are not counted; both body paragraphs cite only the owner's lines.
+  // Header and salutation are not counted; the repair's résumé paragraph comes first, then both
+  // body paragraphs Gemini wrote, which cite only the owner's lines.
   assert.deepEqual(checked.paragraphs.slice(0, 2).map((paragraph) => paragraph.counted), [false, false]);
   assert.deepEqual(
     checked.paragraphs.filter((paragraph) => paragraph.sources.length),
     [
+      { counted: true, sources: ["resume.workHistory"] },
       { counted: true, sources: ["reviewedEvidence.facts"] },
       { counted: true, sources: ["reviewedEvidence.facts"] }
     ]
