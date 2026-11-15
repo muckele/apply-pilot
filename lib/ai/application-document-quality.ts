@@ -164,10 +164,42 @@ export function finalizeCoverLetter<T extends CoverLetterQualityOutput>(
         ...removed.map((text) => ({ text, reason: "misplaced_lead_line" }))
       ]);
     } catch (error) {
-      if (!(error instanceof PublicApiError) || index === candidates.length - 1) throw error;
+      if (!(error instanceof PublicApiError)) throw error;
+      if (index === candidates.length - 1) {
+        throw new PublicApiError(error.message, error.status, {
+          ...error.details,
+          checked: checkedCoverLetter(payload, placed, coverLetterRemovals(value), output.claimsUsed)
+        });
+      }
     }
   }
   throw new Error("unreachable");
+}
+
+// Live case 2026-11-15: a letter was refused twice as "not varied", and a refused letter is never
+// saved, so nothing showed why. The refusal now describes the letter it checked, without its
+// words (an error never echoes generated text): per paragraph, whether the checks count it and
+// which source families its sentences cite, and for each sentence the repair removed, its reason
+// and the families Gemini cited for it.
+function checkedCoverLetter(
+  payload: ApplicationDocumentPayload,
+  output: CoverLetterQualityOutput,
+  removed: readonly { text: string; reason: string }[],
+  written: readonly ApplicationDocumentClaimEvidence[]
+) {
+  const families = (entries: readonly ApplicationDocumentClaimEvidence[]) =>
+    [...new Set(entries.flatMap((entry) => entry.citations.map((citation) => referenceFamily(citation.ref))))];
+  const paragraphs = output.coverLetter.split(/\n\s*\n/u).map((value) => value.trim()).filter(Boolean);
+  return {
+    paragraphs: paragraphs.map((paragraph) => ({
+      counted: !isStructuralCoverParagraph(payload, paragraph),
+      sources: families(output.claimsUsed.filter((entry) => containsComparable(paragraph, entry.claim)))
+    })),
+    removed: removed.map(({ text, reason }) => ({
+      reason,
+      sources: families(written.filter((entry) => comparable(entry.claim) === comparable(text)))
+    }))
+  };
 }
 
 export function validateCoverLetterQuality<T extends CoverLetterQualityOutput>(
