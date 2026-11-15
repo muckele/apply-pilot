@@ -53,6 +53,9 @@ const OWNER_TWO_EMPLOYERS = "I used SQL at Cedar Lending and at Pinecone Goods."
 const GENERAL = "Full-stack developer who builds internal tools.";
 const PINECONE_LINE = "At Pinecone Goods, raised checkout conversion by 12% and reduced listing errors by 40%.";
 const TWO_EMPLOYERS = "Used SQL at Cedar Lending and at Pinecone Goods.";
+// Under its own employer's heading the Pinecone line does not name Pinecone Goods again (live case
+// 2026-11-14); everywhere else it keeps "At Pinecone Goods,".
+const UNDER_PINECONE = "Raised checkout conversion by 12% and reduced listing errors by 40%.";
 const VOICED = new Map([
   [GENERAL, OWNER_GENERAL], [PINECONE_LINE, OWNER_PINECONE], [TWO_EMPLOYERS, OWNER_TWO_EMPLOYERS],
   [`${GENERAL} ${PINECONE_LINE}`, `${OWNER_GENERAL} ${OWNER_PINECONE}`]
@@ -289,8 +292,9 @@ test("an owner line naming one employer reads only under that employer's job", (
   assert.equal(under(text, OWNER_PINECONE), header(JUNIPER));
   const result = tailor(source, text);
   assertEveryJobInPlace(result.resumeText, CAPS);
-  assert.equal(under(result.resumeText, PINECONE_LINE), header(PINECONE));
-  assert.equal(count(result.resumeText, PINECONE_LINE), 1);
+  assert.equal(under(result.resumeText, UNDER_PINECONE), header(PINECONE));
+  assert.equal(count(result.resumeText, UNDER_PINECONE), 1);
+  assert.equal(count(result.resumeText, PINECONE_LINE), 0);
 });
 
 test("an owner line naming no employer, or several, never reads under a job", () => {
@@ -312,7 +316,7 @@ test("owner lines Gemini left out return sentence by sentence: an employer's sen
   const source = payload();
   const result = tailor(source, sourceText(CAPS));
   assertEveryJobInPlace(result.resumeText, CAPS);
-  assert.equal(under(result.resumeText, PINECONE_LINE), header(PINECONE));
+  assert.equal(under(result.resumeText, UNDER_PINECONE), header(PINECONE));
   assert.equal(under(result.resumeText, GENERAL), "ADDITIONAL INFORMATION");
   assert.equal(under(result.resumeText, TWO_EMPLOYERS), "ADDITIONAL INFORMATION");
 });
@@ -329,7 +333,7 @@ test("a partly used owner line is completed sentence by sentence, never pasted w
   assert.equal(all.filter((line) => /full-stack developer/iu.test(line)).length, 1);
   assert.equal(all.filter((line) => line.includes("reduced listing errors by 40%")).length, 1);
   assert.equal(under(result.resumeText, GENERAL), "ADDITIONAL INFORMATION");
-  assert.equal(under(result.resumeText, PINECONE_LINE), header(PINECONE));
+  assert.equal(under(result.resumeText, UNDER_PINECONE), header(PINECONE));
 });
 
 function assertMisattributed(source: ApplicationDocumentPayload, resumeText: string) {

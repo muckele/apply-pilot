@@ -8,6 +8,19 @@ export function spaceGluedBulletMarkers(value: string) {
   return value.replace(/^([ \t]*[•▪◦]+)(?=[^\s•▪◦])/gmu, "$1 ");
 }
 
+// Live case 2026-11-14: owner lines are typed as answers to the job's must-haves ("Yes. I'm based
+// in …"). The question never appears in a résumé or cover letter, so for the documents a bare Yes
+// or No sentence is dropped, and a "Yes," or "No," lead-in comes off the sentence it opens. Words
+// are only removed; "No. 1 in regional sales" and "No customer waited" stay as typed. The saved line
+// and the job match keep the owner's own text.
+const ownerAnswerSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+export function ownerFactForDocuments(fact: string) {
+  return fact.split(/\r?\n/u).map((line) => [...ownerAnswerSegmenter.segment(line)]
+    .map(({ segment }) => segment.trim().replace(/^(?:yes|no)\s*[,.!]\s*(?=\p{L})(?!(?:and|but|or|so|though|although)\b)/iu, ""))
+    .filter((sentence) => sentence && !/^(?:yes|no)\s*[.!]?$/iu.test(sentence))
+    .join(" ")).join("\n").trim();
+}
+
 function spaceGluedBulletsDeep<T>(value: T): T {
   if (typeof value === "string") return spaceGluedBulletMarkers(value) as T;
   if (Array.isArray(value)) return value.map(spaceGluedBulletsDeep) as T;
@@ -74,7 +87,7 @@ export function buildApplicationDocumentPayload(
     projectedEvidence.unresolvedGapIds = strings(projectedEvidence.unresolvedGapIds);
     projectedEvidence.facts = pickRecords(source.facts, [
       "gapId", "fact", "provenance", "sourceRef"
-    ], []);
+    ], []).map((record) => typeof record.fact === "string" ? { ...record, fact: ownerFactForDocuments(record.fact) } : record);
   }
 
   const payload: ApplicationDocumentPayload = {

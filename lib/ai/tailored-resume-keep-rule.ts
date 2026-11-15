@@ -110,7 +110,7 @@ type SourceModel = {
   ownerLineFacts: ReadonlyMap<string, readonly ApplicationDocumentFact[]>;
   sourceHeadingCounts: ReadonlyMap<Section, number>;
   // An owner-attested line in résumé voice, when the unchanged truth check accepts that wording.
-  inResumeVoice: (text: string, citations: ApplicationDocumentClaimEvidence["citations"]) => string;
+  inResumeVoice: (text: string, citations: ApplicationDocumentClaimEvidence["citations"], under?: SourceRecord | null) => string;
 };
 
 const RECORD_FIELDS: readonly RecordField[] = ["workHistory", "projects", "education", "certifications"];
@@ -341,14 +341,19 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
       if (placement === "SKILLS") {
         const parts = listParts(raw);
         const skills = parts.items.map((item) => skillsByKey.get(item));
+        // Live case 2026-11-14: a line grouped with semicolons ("Tools: a, b; c, d; e") is several
+        // catalog facts, not one, so its label was dropped ("c, d" printed alone). The label is
+        // then cited by the fact that holds it ("Tools: a, b").
+        const labelFact = factByKey.get(line.key) ?? (parts.label === null ? undefined : line.facts.find((fact) =>
+          comparable(normalizeApplicationDocumentSourceLine(fact.excerpt)).startsWith(comparable(`${parts.label}:`))));
         if ((parts.label !== null || skills.length >= 2) && skills.length && skills.every(Boolean)) {
-          skillCategories.push({ label: parts.label, fact: factByKey.get(line.key), skills: skills as Unit[], loose: false });
-        } else if (parts.label !== null && factByKey.get(line.key)) {
+          skillCategories.push({ label: parts.label, fact: labelFact, skills: skills as Unit[], loose: false });
+        } else if (parts.label !== null && labelFact) {
           // Live case 2026-11-06: a labelled line whose items carry parenthetical detail ("Vendor
           // management (Contoso, Fabrikam), …") is not a clean category and is never regrouped, but a
           // skill of it that comes back alone still prints under its label.
           const listed = [...new Set(itemsOutsideParentheses(raw).flatMap((item) => skillsByKey.get(item) ?? []))];
-          if (listed.length) skillCategories.push({ label: parts.label, fact: factByKey.get(line.key), skills: listed, loose: true });
+          if (listed.length) skillCategories.push({ label: parts.label, fact: labelFact, skills: listed, loose: true });
         }
       }
       if (!line.facts.length || line.facts.every((fact) => resumeCovered.has(fact.factId)) || seen.has(line.key) ||
@@ -440,8 +445,8 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
     ownerLineOf,
     ownerLineFacts,
     sourceHeadingCounts,
-    inResumeVoice: (text, citations) => {
-      const voiced = ownerLineInResumeVoice(text);
+    inResumeVoice: (text, citations, under) => {
+      const voiced = withoutOwnEmployer(ownerLineInResumeVoice(text), under);
       if (voiced === text) return text;
       try {
         // The check restored lines face; any refusal keeps the owner's own wording.
@@ -455,6 +460,18 @@ function buildSourceModel(payload: ApplicationDocumentPayload): SourceModel {
 }
 
 const ownerSentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+
+// Live case 2026-11-14: an owner line under the job it names repeated it ("At Wayfair, worked
+// closely with engineering…" under the Wayfair heading). There the leading "At <that employer>,"
+// goes; anywhere else it stays, since it says where the work happened.
+function withoutOwnEmployer(text: string, under: SourceRecord | null | undefined) {
+  const name = under?.name?.trim();
+  if (!name) return text;
+  const lead = text.match(/^At\s+([^,]{1,60}),\s+(?=\p{L})/u);
+  if (!lead || comparable(lead[1]!) !== comparable(name)) return text;
+  const rest = text.slice(lead[0].length);
+  return `${rest.charAt(0).toLocaleUpperCase()}${rest.slice(1)}`;
+}
 
 // The employer and project names a text names (whole words, any case), one entry per distinct name.
 function namesIn(records: readonly SourceRecord[], text: string) {
@@ -840,28 +857,38 @@ function renderUnit(model: SourceModel, draft: ResumeDraft, unit: Unit, range: {
 // developer…"). In résumé voice a leading "I", "I'm a", "I am an", "I have" or "I've" before a
 // past-tense verb or role is dropped, and "At X I raised…" reads "At X, raised…". Words are only
 // removed (and a comma added), never added; a rewrite the unchanged truth check refuses is not used.
+// Live case 2026-11-14: present-tense owner lines ("I build and debug…", "I write bug reports…",
+// "I respond quickly…") kept their "I", so a plain "I" also goes before a present-tense action verb
+// from the list below. A stative verb ("I speak", "I hold", "I care") or a modal ("I can") stays as
+// typed, and so does a bare Yes or No a model echoed from a saved answer (the payload drops it).
 const PAST_TENSE = /^(?:\p{L}+ed|led|built|ran|grew|won|made|held|taught|wrote|drove|cut|set|met|sold|kept|spent|took|gave|found|did|got|put|oversaw|began|brought|shipped)\b/iu;
+const PRESENT_ACTION = /^(?:advise|analyze|answer|automate|build|coach|collaborate|configure|consult|coordinate|create|debug|deliver|design|develop|document|drive|guide|handle|help|implement|investigate|lead|maintain|manage|mentor|monitor|onboard|organize|own|partner|plan|prepare|present|reproduce|resolve|respond|review|run|schedule|sell|ship|support|teach|test|track|train|translate|troubleshoot|use|work|write)\b/iu;
 function sentenceInResumeVoice(sentence: string) {
+  if (/^(?:yes|no)\s*[.!]?$/iu.test(sentence)) return "";
   const capital = (value: string) => `${value.charAt(0).toLocaleUpperCase()}${value.slice(1)}`;
   const role = sentence.match(/^I(?:'m|’m|\s+am)\s+(?:(?:a|an)\s+)?(?=\S)/u);
   if (role) return capital(sentence.slice(role[0].length));
   const subject = sentence.match(/^I(?:(?:'ve|’ve|\s+have)\s+|\s+)(?=\S)/u);
-  if (subject && PAST_TENSE.test(sentence.slice(subject[0].length)) && !/^been\b/iu.test(sentence.slice(subject[0].length))) {
-    return capital(sentence.slice(subject[0].length));
+  const verb = subject ? sentence.slice(subject[0].length) : "";
+  if (subject && !/^been\b/iu.test(verb) && (PAST_TENSE.test(verb) || (/^I\s+$/u.test(subject[0]) && PRESENT_ACTION.test(verb)))) {
+    return capital(verb);
   }
   const place = sentence.match(/^((?:At|With|For|In|On)\s+[^,.;]{1,60}?),?\s+I\s+(?=\S)/u);
-  if (place && PAST_TENSE.test(sentence.slice(place[0].length))) return `${place[1]}, ${sentence.slice(place[0].length)}`;
+  const placed = place ? sentence.slice(place[0].length) : "";
+  if (place && (PAST_TENSE.test(placed) || PRESENT_ACTION.test(placed))) return `${place[1]}, ${placed}`;
   return sentence;
 }
 export function ownerLineInResumeVoice(text: string) {
   return [...ownerSentenceSegmenter.segment(text)].map(({ segment }) => segment.trim()).filter(Boolean)
-    .map(sentenceInResumeVoice).join(" ");
+    .map(sentenceInResumeVoice).filter(Boolean).join(" ");
 }
 
-// Model-written owner-attested lines in the first person are put in résumé voice in place, with the
-// claim that names them. Returns the changed claims (old comparable text to new text).
+// Model-written owner-attested lines in the first person are put in résumé voice in place (without
+// "At <employer>," under that employer's heading), with the claim that names them. Returns the
+// changed claims (old comparable text to new text).
 function ownerLinesInResumeVoice(model: SourceModel, draft: ResumeDraft) {
   const changes = new Map<string, string>();
+  const under = readUnder(model, draft);
   draft.lines.forEach((line, index) => {
     if (!line.trim() || sectionOf(line)) return;
     if (model.units.some((unit) => unit.kind !== "owner_attested_fact" && draft.renders(index, unit))) return;
@@ -871,7 +898,7 @@ function ownerLinesInResumeVoice(model: SourceModel, draft: ResumeDraft) {
     const claimed = draft.evidence.filter((entry) => lineKey(entry.claim) === lineKey(text));
     const citations = claimed.length ? uniqueCitations(claimed.flatMap((entry) => entry.citations))
       : uniqueFacts(owned.flatMap((unit) => unit.facts)).map((fact) => ({ ref: fact.ref, excerpt: fact.excerpt }));
-    const voiced = model.inResumeVoice(text, citations);
+    const voiced = model.inResumeVoice(text, citations, under[index]);
     if (voiced === text) return;
     draft.reword(index, voiced, { claim: voiced, citations });
     changes.set(comparable(text), voiced);
