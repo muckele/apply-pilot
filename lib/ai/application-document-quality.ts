@@ -14,6 +14,7 @@ import {
   revertUnverifiedResumeLines
 } from "@/lib/ai/tailored-resume-keep-rule";
 import {
+  applicationDocumentReferenceFamily as referenceFamily,
   coverLetterRemovals,
   repairCoverLetterEvidence,
   validateCoverLetterClaims,
@@ -124,10 +125,6 @@ export function validateTailoredResumeQuality<T extends ResumeQualityOutput>(
   // correction-flow document diagnostic reports it through this same check.
   assertTailoredResumeRecordPlacement(payload, completed);
   return completed;
-}
-
-function referenceFamily(ref: string) {
-  return ref.replace(/\[\d+\](?:\.fact)?$/u, "");
 }
 
 export { coverLetterRemovals, type CoverLetterRemoval } from "@/lib/ai/application-document-claims";
