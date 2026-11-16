@@ -117,6 +117,22 @@ export function validateGeneratedJson<T>(
   return validate ? validate(parsed.data) : parsed.data;
 }
 
+// Live case 2026-11-16: a cover-letter rewrite came back as the letter an older finalizer had
+// finished, because the cache held finished output and a cached request only re-checked it. The
+// cache now holds the provider's draft from before `validate`, so a cached request runs today's
+// checks and repairs on the same draft, at no cost. A finished output cached before then is not
+// reused, nor is a cached draft that today's checks refuse (422) or whose shape no longer fits: the
+// request goes on to the paid path, with its usual confirmation, and the new draft replaces the
+// entry. The draft is copied before the checks run, so a check that edits its input in place
+// cannot change what is cached.
+const CACHED_DRAFT_FORMAT = "provider-draft-1";
+
+function cachedDraftOf(output: unknown): { draft: unknown } | null {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const entry = output as Record<string, unknown>;
+  return entry.format === CACHED_DRAFT_FORMAT && "draft" in entry ? { draft: entry.draft } : null;
+}
+
 function capitalize(value: string) {
   return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
@@ -284,10 +300,19 @@ export async function generateGuardedGeminiJson<T>(input: GuardedGeminiJsonInput
   });
   await assertGeminiInputWithinBound(feature, policy.maxInputTokens, requestBody, { apiKey, model });
 
-  const cached = await findCachedAiResponse({ userId, provider: "gemini", model, promptName, promptVersion, requestHash });
+  const cached = cachedDraftOf((await findCachedAiResponse({ userId, provider: "gemini", model, promptName, promptVersion, requestHash }))?.output);
+  let reused: { data: T } | null = null;
   if (cached) {
+    try {
+      reused = { data: validateGeneratedJson(cached.draft, schema, promptName, validate) };
+    } catch (error) {
+      const refused = error instanceof PublicApiError && error.status === 422;
+      if (!refused && !(error instanceof GeneratedSchemaError)) throw error;
+    }
+  }
+  if (reused) {
     return {
-      data: validateGeneratedJson(cached.output, schema, promptName, validate),
+      data: reused.data,
       meta: {
         provider: "gemini",
         model,
@@ -387,11 +412,13 @@ export async function generateGuardedGeminiJson<T>(input: GuardedGeminiJsonInput
       });
     }
     let data: T;
+    let draft: unknown;
     try {
       const providerValue = providerSchema
         ? validateGeneratedJson(response.value, providerSchema, promptName)
         : response.value;
       const decoded = decodeProvider ? decodeProvider(providerValue) : providerValue as T;
+      draft = JSON.parse(JSON.stringify(decoded)) as unknown;
       data = validateGeneratedJson(decoded, schema, promptName, validate);
     } catch (error) {
       if (error instanceof PublicApiError) throw error;
@@ -407,7 +434,7 @@ export async function generateGuardedGeminiJson<T>(input: GuardedGeminiJsonInput
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cachedInputTokens: usage.cachedInputTokens,
-      cacheOutput: data
+      cacheOutput: { format: CACHED_DRAFT_FORMAT, draft }
     });
     reconciled = true;
     return {
