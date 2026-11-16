@@ -253,7 +253,7 @@ test("an attached document counts only when it is ready to use, by the readiness
   const detail = {
     application: { id: applicationId, statusLabel: "Saved", resumeVersionId: "resume-stale", coverLetterVersionId: null },
     resumeVersions: versions, coverLetters: [], sourceText: "Service operations leader.", currentConfidenceScore: 90,
-    applyHost: "jobs.example.com", estimate: { score: 90, basis: "REVIEWED_EVIDENCE" }
+    applyHost: "jobs.example.com", estimate: { score: 90, basis: "REVIEWED_EVIDENCE" }, view: { applyOnCompanySite: false }
   } as unknown as JobDetail;
   try {
     delegates.applicationAutomationPolicy.findUnique = async () => ({ ...automationPolicyDefaultValues(), coverLetterRequired: false });
@@ -548,7 +548,8 @@ test("the Apply page's server state carries the cover-letter rule (default on) a
   const delegates = prisma as unknown as Delegates;
   const originals = [delegates.applicationAutomationPolicy.findUnique, delegates.applicationAnswer.findMany, delegates.resume.findMany] as const;
   const detail = {
-    application: null, sourceText: "Service operations leader.", estimate: null, currentConfidenceScore: null, applyHost: "jobs.example.com"
+    application: null, sourceText: "Service operations leader.", estimate: null, currentConfidenceScore: null, applyHost: "jobs.example.com",
+    view: { applyOnCompanySite: false }
   } as unknown as JobDetail;
   try {
     delegates.applicationAutomationPolicy.findUnique = async () => null;
@@ -556,6 +557,9 @@ test("the Apply page's server state carries the cover-letter rule (default on) a
     delegates.resume.findMany = async () => [];
     const defaults = await loadApplyPageState("user-synthetic-alex-rivera", detail);
     assert.equal(defaults.coverLetterRequired, true);
+    assert.equal(defaults.progressInput.applyPageOff, false);
+    const off = await loadApplyPageState("user-synthetic-alex-rivera", { ...detail, view: { ...detail.view, applyOnCompanySite: true } });
+    assert.equal(off.progressInput.applyPageOff, true, "the job's switched-off page reaches the progress inputs");
     assert.equal(defaults.progress.current, 1);
     assert.equal(defaults.prepare.applyHost, "jobs.example.com");
     assert.equal(defaults.prepare.run, null);
@@ -726,5 +730,27 @@ test("without application automation, the Now card points to Apply on my own, wh
   await withPage({ detail: REVIEWED, automationAvailable: true, progress: deriveApplyProgress({ ...atPrepare, automationAvailable: true }) }, async (harness) => {
     assert.match(harness.container.querySelector("[data-now-card]")?.textContent ?? "", /Allow and prepare/u);
     assert.equal(ownDetails(harness).open, false);
+  });
+});
+
+test("a job whose job board page is off says so at steps 4 and 5 and offers no Prepare or browser", async () => {
+  const prepared = { state: "READY", companionState: null };
+  const progress = deriveApplyProgress({ ...PROGRESS_INPUT, automationAvailable: true, reviewSaved: true, resumeAttached: true, coverAttached: true, run: prepared, applyPageOff: true });
+  assert.equal(progress.applyOnYourOwn, true);
+  await withPage({
+    automationAvailable: true,
+    progress,
+    detail: { application: ATTACHED, view: { id: "job-1", title: "Platform Engineer", company: "Example Co", location: "Remote", applyOnCompanySite: true } },
+    prepare: { ...prepareStateFromFacts(PREPARE_FACTS), run: { id: "run-1", state: "READY", blockingReason: null, errorCategory: null } }
+  }, async (harness) => {
+    const step4 = harness.container.querySelector("#step-4")!;
+    assert.equal(step4.querySelector("[data-prepare-step]") === null, true);
+    assert.equal(harness.maybeButton("Allow and prepare") === undefined, true);
+    assert.match(step4.querySelector("[data-apply-page-off]")?.textContent ?? "", /page on its job board is switched off.*Example Co's own careers site/u);
+    const step5 = harness.container.querySelector("#step-5")!;
+    assert.doesNotMatch(step5.textContent ?? "", /npm run application-browser/u, "no start command, even for a prepared run");
+    assert.match(step5.querySelector("[data-apply-page-off]")?.textContent ?? "", /can't open this job/u);
+    const own = [...harness.container.querySelectorAll("details")].find((node) => node.querySelector(":scope > summary")?.textContent === "Apply on my own")!;
+    assert.equal(own.open, true, "Apply on my own is the way to apply");
   });
 });

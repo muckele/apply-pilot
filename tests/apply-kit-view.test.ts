@@ -263,3 +263,15 @@ test("document generation is offered only when a real provider is configured for
   set({ AI_ENABLED: "true", AI_PROVIDER: "kimi", GEMINI_API_KEY: "synthetic-never-used" });
   assert.equal(isDocumentGenerationAvailable(), false, "invalid provider fails closed");
 });
+
+test("a job whose job board page is off has no application link and says so", async () => {
+  const served = (await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
+  assert.equal(served.applyPageOff, false);
+  assert.ok(served.applyLink);
+
+  const data = fixtures();
+  Object.assign(data.jobPosting[0]!, { atsApplyPageOffAt: new Date("2026-11-15T14:00:00.000Z") });
+  const off = (await loadApplyKitView(fakeDb(data).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
+  assert.equal(off.applyPageOff, true);
+  assert.equal(off.applyLink, null, "the switched-off page is never offered as the application link");
+});

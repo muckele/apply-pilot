@@ -119,3 +119,14 @@ test("without application automation, step 4 on points to Apply on my own instea
   assert.equal(applied.now, "You applied. Nothing left to do.");
   assert.equal(applied.applyOnYourOwn, false);
 });
+
+test("a job whose job board page is off points to Apply on my own from step 4, even with a prepared run", () => {
+  const off = derive({ applyPageOff: true });
+  assert.equal(off.current, 4);
+  assert.equal(off.applyOnYourOwn, true);
+  assert.equal(off.now, "Apply on your own with your documents: open Apply on my own.");
+  assert.equal(off.next, null);
+  assert.equal(derive({ applyPageOff: true, run: { state: "READY", companionState: null } }).applyOnYourOwn, true, "a run prepared before the page was found off");
+  assert.equal(derive({ applyPageOff: true, resumeAttached: false }).applyOnYourOwn, false, "the earlier steps still lead");
+  assert.equal(derive({ applyPageOff: false }).applyOnYourOwn, false);
+});

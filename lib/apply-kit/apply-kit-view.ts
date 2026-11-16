@@ -70,6 +70,8 @@ export type ApplyKitView = {
     notice: { tone: "warning" | "info"; text: string } | null;
   };
   applyLink: { href: string; hostname: string; secure: boolean } | null;
+  /** A board sync found the job's ATS-hosted page switched off: apply on the company's own site (no link). */
+  applyPageOff: boolean;
   application: { id: string; status: ApplicationStatus; statusLabel: string; dateApplied: string | null } | null;
   canRecordApplied: boolean;
   resumes: ApplyKitDocument[];
@@ -160,6 +162,7 @@ export async function loadApplyKitView(db: ApplyKitDb, input: {
       status: true,
       applyUrl: true,
       sourceUrl: true,
+      atsApplyPageOffAt: true,
       currentEvidenceSnapshotId: true,
       evidenceSnapshotGeneration: true,
       currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT }
@@ -272,7 +275,8 @@ export async function loadApplyKitView(db: ApplyKitDb, input: {
       postingStatus: job.status,
       notice: postingNotice(job.status)
     },
-    applyLink: parseApplyLink(job.applyUrl, job.sourceUrl),
+    applyLink: job.atsApplyPageOffAt ? null : parseApplyLink(job.applyUrl, job.sourceUrl),
+    applyPageOff: Boolean(job.atsApplyPageOffAt),
     application: ownedApplication
       ? {
           id: ownedApplication.id,

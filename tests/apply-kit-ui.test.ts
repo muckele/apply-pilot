@@ -314,3 +314,13 @@ test("an application already recorded as applied shows what was sent instead of 
     assert.equal(element<HTMLAnchorElement>(sent, "a").getAttribute("href"), "/applications/application-1/sent/event-1");
   });
 });
+
+test("a job whose job board page is off sends you to the company's own careers site, with no dead link", async () => {
+  const off = await kitView((data) => Object.assign(data.jobPosting[0]!, { atsApplyPageOffAt: new Date("2026-11-15T14:00:00.000Z") }));
+  await mounted(off, ok, async ({ container }) => {
+    assert.equal(container.querySelector("[data-apply-link]") === null, true);
+    assert.equal(container.querySelector("[data-no-apply-link]") === null, true);
+    assert.equal(container.querySelector("[data-apply-page-off]") === null, false);
+    assert.match(container.querySelector("[data-apply-page-off]")?.textContent ?? "", /switched off.*Example Co's own careers site, apply there/u);
+  });
+});

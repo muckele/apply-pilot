@@ -155,6 +155,10 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
           <p className="job-note">Assisted apply isn&apos;t switched on for this server, so there&apos;s nothing to prepare here. You can still apply on your own below.</p>
         ) : !kit.canRecordApplied ? (
           <p className="job-note">This application is already recorded, so there&apos;s nothing to prepare.</p>
+        ) : detail.view.applyOnCompanySite ? (
+          <p className="job-note" data-apply-page-off>
+            This job&apos;s page on its job board is switched off, so the Apply Pilot browser can&apos;t open it and there&apos;s nothing to prepare or fill. Apply on {detail.view.company}&apos;s own careers site with your documents: open Apply on my own below.
+          </p>
         ) : (
           <PrepareStep
             applicationId={detail.application?.id ?? null}
@@ -168,7 +172,9 @@ export function ApplyPage({ detail, kit, automationAvailable, progress: serverPr
 
       <section id="step-5" className="job-card job-section" aria-labelledby="browser-heading">
         <h2 id="browser-heading" tabIndex={-1} className="job-section-title">Open the Apply Pilot browser</h2>
-        {prepare.run && runState !== null && BROWSER_RUN_STATES.has(runState) ? (
+        {detail.view.applyOnCompanySite ? (
+          <p className="job-note" data-apply-page-off>The Apply Pilot browser can&apos;t open this job: its page on its job board is switched off.</p>
+        ) : prepare.run && runState !== null && BROWSER_RUN_STATES.has(runState) ? (
           <BrowserStep appOrigin={appOrigin} runId={prepare.run.id} />
         ) : (
           <p className="job-note">After Prepare, start the Apply Pilot browser here.</p>

@@ -576,7 +576,11 @@ export function ApplyKit({ view, answeredYes = false }: { view: ApplyKitView; an
       <Panel>
         <PanelHeader title="3. Open the application" description="You fill in and submit the employer's form yourself." />
         <div className="space-y-3 p-5 text-sm text-slate-700" data-open-application>
-          {view.applyLink ? (
+          {view.applyPageOff ? (
+            <p data-apply-page-off>
+              This job&apos;s page on its job board is switched off. Find the posting on {view.job.company}&apos;s own careers site, apply there, then come back to record it.
+            </p>
+          ) : view.applyLink ? (
             <>
               <a
                 href={view.applyLink.href}
