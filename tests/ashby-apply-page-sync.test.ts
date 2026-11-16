@@ -43,12 +43,12 @@ function boardPage(off: boolean) {
 
 type UpdateMany = { where: Record<string, unknown>; data: Record<string, unknown> };
 
-function harness(t: TestContext, hostedPage: "off" | "served" | "throws") {
+function harness(t: TestContext, hostedPage: "off" | "served" | "throws", listing: Record<string, unknown>[] = [rawAshbyJob]) {
   const hostedRequests: string[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = String(input);
-    if (url !== "https://jobs.ashbyhq.com/northwindlabs") throw new Error(`Unexpected network request in test: ${url}`);
+    if (!url.startsWith("https://jobs.ashbyhq.com/")) throw new Error(`Unexpected network request in test: ${url}`);
     hostedRequests.push(url);
     if (hostedPage === "throws") throw new TypeError("fetch failed");
     return new Response(boardPage(hostedPage === "off"), { status: hostedPage === "off" ? 404 : 200 });
@@ -58,7 +58,7 @@ function harness(t: TestContext, hostedPage: "off" | "served" | "throws") {
   const listings = { ashby: 0, greenhouse: 0 };
   stub(t, getJobSourceProvider("ASHBY"), "searchJobs", async () => {
     listings.ashby += 1;
-    return [rawAshbyJob];
+    return listing;
   });
   stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => {
     listings.greenhouse += 1;
@@ -69,11 +69,15 @@ function harness(t: TestContext, hostedPage: "off" | "served" | "throws") {
     throw new Error("nothing should be stored");
   });
   const flagUpdates: UpdateMany[] = [];
+  const failures = { markWrite: false };
   stub(t, prisma.jobPosting, "updateMany", async (args: UpdateMany) => {
-    if ("atsApplyPageOffAt" in args.data) flagUpdates.push(args);
+    if ("atsApplyPageOffAt" in args.data) {
+      flagUpdates.push(args);
+      if (failures.markWrite) throw new Error("synthetic database outage");
+    }
     return { count: 0 };
   });
-  return { hostedRequests, flagUpdates, listings };
+  return { hostedRequests, flagUpdates, listings, failures };
 }
 
 function sync(userId: string, target: BoardTarget, now: Date, listingCache: BoardListingCache = createBoardListingCache()) {
@@ -149,4 +153,38 @@ test("a board saved as a pasted board link reads the same hosted page", async (t
 
   assert.deepEqual(run.hostedRequests, ["https://jobs.ashbyhq.com/northwindlabs"]);
   assert.equal(run.flagUpdates.length, 1);
+});
+
+test("the hosted page read uses the board slug from the listing's own job links", async (t) => {
+  const listed = {
+    ...rawAshbyJob,
+    jobUrl: "https://jobs.ashbyhq.com/NorthwindLabs/00000000-0000-4000-8000-000000000001",
+    applyUrl: "https://jobs.ashbyhq.com/NorthwindLabs/00000000-0000-4000-8000-000000000001/application"
+  };
+  const run = harness(t, "off", [listed]);
+  await sync("user-1", ashbyTarget, now);
+
+  assert.deepEqual(run.hostedRequests, ["https://jobs.ashbyhq.com/NorthwindLabs"], "the page the Apply Pilot browser would open, not the stored token");
+});
+
+test("a board whose jobs aren't hosted on Ashby makes no hosted-page read and changes no marks", async (t) => {
+  const listed = {
+    ...rawAshbyJob,
+    jobUrl: "https://careers.northwind.example/jobs/1",
+    applyUrl: "https://careers.northwind.example/jobs/1/apply"
+  };
+  const run = harness(t, "off", [listed]);
+  await sync("user-1", ashbyTarget, now);
+
+  assert.deepEqual(run.hostedRequests, []);
+  assert.deepEqual(run.flagUpdates, []);
+});
+
+test("a failed mark write is reported but never fails the sync", async (t) => {
+  const run = harness(t, "off");
+  run.failures.markWrite = true;
+  const result = await sync("user-1", ashbyTarget, now);
+
+  assert.equal(run.flagUpdates.length, 1, "the write was attempted");
+  assert.equal(result.listed, 1, "the sync still reports its listing");
 });

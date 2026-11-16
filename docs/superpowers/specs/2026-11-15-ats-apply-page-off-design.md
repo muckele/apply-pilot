@@ -31,6 +31,10 @@ own site" instead of offering Prepare, the Apply Pilot browser or Fill.
 
 1. **Check:** in `syncBoard`, for Ashby boards only, one GET of `jobs.ashbyhq.com/<board>` per board per
    sync, shared across users through the run's listing cache. Never on a page view, never at Prepare.
+   `<board>` is the slug exactly as the listing's own `jobUrl`/`applyUrl` write it (the page the Apply Pilot
+   browser opens), so a board saved under another case or alias is never misread as off; no listed job on
+   jobs.ashbyhq.com means no read. Redirects are not followed (a 3xx is "unknown"), and each result is logged
+   as `job_sources.ashby_hosted_page`. A failed mark write is captured and never fails the sync.
    - "off": HTTP 404 and page data with `organization === null` and `jobBoard === null`, not in maintenance.
    - "served": HTTP 200 and page data with `organization` and `jobBoard` objects.
    - Anything else (network error, timeout, other status, no page data, maintenance) is "unknown" and

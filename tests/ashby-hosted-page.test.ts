@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { checkAshbyHostedPage, classifyAshbyHostedPage, readAshbyAppData } from "@/lib/job-sources/ashby-hosted-page";
+import { ashbyHostedSlug, checkAshbyHostedPage, classifyAshbyHostedPage, readAshbyAppData } from "@/lib/job-sources/ashby-hosted-page";
 
 // Synthetic pages shaped like jobs.ashbyhq.com's server-rendered HTML (probed 2026-11-15): the page
 // carries its data in `window.__appData = {...};` inside an inline script.
@@ -79,6 +79,7 @@ test("the check reads exactly the board's hosted page, once", async () => {
   assert.equal(await checkAshbyHostedPage("northwindlabs", fakeFetch(404, ashbyPage(offData), calls)), "off");
   assert.deepEqual(calls.map((call) => call.url), ["https://jobs.ashbyhq.com/northwindlabs"]);
   assert.ok(calls[0].init?.signal, "the read has a timeout");
+  assert.equal(calls[0].init?.redirect, "manual", "a redirect is never followed off the board page");
 
   const served: FakeCall[] = [];
   assert.equal(await checkAshbyHostedPage("northwindlabs", fakeFetch(200, ashbyPage(servedData), served)), "served");
@@ -96,4 +97,24 @@ test("a token that isn't a plain board name is unknown and makes no request", as
   assert.equal(await checkAshbyHostedPage("northwind/../api", fakeFetch(404, ashbyPage(offData), calls)), "unknown");
   assert.equal(await checkAshbyHostedPage("", fakeFetch(404, ashbyPage(offData), calls)), "unknown");
   assert.equal(calls.length, 0);
+});
+
+test("a redirect away from the board page is unknown", async () => {
+  assert.equal(await checkAshbyHostedPage("northwindlabs", fakeFetch(302, "", [])), "unknown");
+  assert.equal(classifyAshbyHostedPage(301, ashbyPage(offData)), "unknown");
+});
+
+test("the hosted board slug comes from the listing's own job links, exactly as Ashby wrote it", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  assert.equal(ashbyHostedSlug([{ jobUrl: `https://jobs.ashbyhq.com/NorthwindLabs/${id}` }]), "NorthwindLabs");
+  assert.equal(ashbyHostedSlug([{ applyUrl: `https://jobs.ashbyhq.com/northwind%20labs/${id}/application` }]), "northwind labs", "the apply link when there's no job link");
+  assert.equal(
+    ashbyHostedSlug([{ jobUrl: "https://careers.northwind.example/jobs/1" }, { jobUrl: `https://jobs.ashbyhq.com/northwindlabs/${id}` }]),
+    "northwindlabs",
+    "the first job hosted on Ashby"
+  );
+  assert.equal(ashbyHostedSlug([{ jobUrl: "https://careers.northwind.example/jobs/1" }]), null, "not hosted on Ashby");
+  assert.equal(ashbyHostedSlug([{ jobUrl: "http://jobs.ashbyhq.com/northwindlabs/1" }]), null, "not HTTPS");
+  assert.equal(ashbyHostedSlug([{ jobUrl: "not a url" }, { title: "No links" }]), null);
+  assert.equal(ashbyHostedSlug([]), null);
 });

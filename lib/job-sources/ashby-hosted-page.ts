@@ -13,11 +13,39 @@ import { boardPageUrl } from "@/lib/job-sources/board-url";
  */
 export type HostedPageState = "served" | "off" | "unknown";
 
+const HOSTED_HOST = "jobs.ashbyhq.com";
 const APP_DATA_MARKER = "window.__appData";
 const READ_TIMEOUT_MS = 10_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The board slug exactly as Ashby writes it in the listing's own job links (so the page read is the one
+ * the Apply Pilot browser would open, whatever case or alias the board was saved under), or null when no
+ * listed job is hosted on jobs.ashbyhq.com.
+ */
+export function ashbyHostedSlug(jobs: readonly Record<string, unknown>[]): string | null {
+  for (const job of jobs) {
+    for (const link of [job.jobUrl, job.applyUrl]) {
+      if (typeof link !== "string") continue;
+      let url: URL;
+      try {
+        url = new URL(link);
+      } catch {
+        continue;
+      }
+      const segment = url.pathname.split("/").find(Boolean);
+      if (url.protocol !== "https:" || url.hostname !== HOSTED_HOST || !segment) continue;
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        continue;
+      }
+    }
+  }
+  return null;
 }
 
 /** The object literal after `window.__appData =`, found by a string-aware brace scan, or null. */
@@ -62,8 +90,8 @@ export function classifyAshbyHostedPage(status: number, html: string): HostedPag
 }
 
 /**
- * One read of the board's hosted page. Takes a stored token (or a pasted board link saved as one, as the
- * listing fetch does). Never throws: a bad token or a failed read is "unknown".
+ * One read of the board's hosted page, never following a redirect off it. Takes a board slug (or a pasted
+ * board link). Never throws: a bad slug, a redirect or a failed read is "unknown".
  */
 export async function checkAshbyHostedPage(token: string, fetchImpl: typeof fetch = fetch): Promise<HostedPageState> {
   let url: string;
@@ -74,7 +102,7 @@ export async function checkAshbyHostedPage(token: string, fetchImpl: typeof fetc
   }
 
   try {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
+    const response = await fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
     return classifyAshbyHostedPage(response.status, await response.text());
   } catch {
     return "unknown";

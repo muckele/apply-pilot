@@ -1,7 +1,7 @@
 import type { JobPosting, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
-import { checkAshbyHostedPage, type HostedPageState } from "@/lib/job-sources/ashby-hosted-page";
+import { ashbyHostedSlug, checkAshbyHostedPage, type HostedPageState } from "@/lib/job-sources/ashby-hosted-page";
 import {
   collapseRepeatedRoles,
   selectBoardImports,
@@ -17,6 +17,7 @@ import {
 } from "@/lib/job-sources/ingestion";
 import { evaluateForImport } from "@/lib/job-sources/prefilter";
 import type { RawJob } from "@/lib/job-sources/types";
+import { captureException, logger } from "@/lib/monitoring/logger";
 import { prisma } from "@/lib/prisma";
 
 /** Board APIs return the whole board; closure detection needs every listed posting. */
@@ -55,19 +56,29 @@ export type BoardSyncResult = {
   bestRelevanceScore: number;
 };
 
+/** One read of the Ashby-hosted page the listing's own job links point at; "unknown" without one. */
+async function ashbyHostedPage(jobs: RawJob[]): Promise<HostedPageState> {
+  const slug = ashbyHostedSlug(jobs);
+  if (!slug) {
+    return "unknown";
+  }
+  const hostedPage = await checkAshbyHostedPage(slug);
+  logger.info("job_sources.ashby_hosted_page", { board: slug, hostedPage });
+  return hostedPage;
+}
+
 function listBoard(target: BoardTarget, cache: BoardListingCache) {
   const key = `${target.ats}:${boardRegionFromBaseUrl(target.baseUrl)}:${target.token.toLowerCase()}`;
   let listing = cache.get(key);
 
   if (!listing) {
-    listing = Promise.all([
-      getJobSourceProvider(target.ats).searchJobs({
+    listing = getJobSourceProvider(target.ats)
+      .searchJobs({
         boardToken: target.token,
         url: target.baseUrl ?? undefined,
         limit: ALL_BOARD_JOBS
-      }),
-      target.ats === "ASHBY" ? checkAshbyHostedPage(target.token) : Promise.resolve<HostedPageState>("unknown")
-    ]).then(([jobs, hostedPage]) => ({ jobs, hostedPage }));
+      })
+      .then(async (jobs) => ({ jobs, hostedPage: target.ats === "ASHBY" ? await ashbyHostedPage(jobs) : "unknown" }));
     cache.set(key, listing);
   }
 
@@ -84,10 +95,15 @@ async function markAtsApplyPage(userId: string, listedApplyUrls: string[], hoste
     return;
   }
   const off = hostedPage === "off";
-  await prisma.jobPosting.updateMany({
-    where: { userId, normalizedApplyUrl: { in: keys }, atsApplyPageOffAt: off ? null : { not: null } },
-    data: { atsApplyPageOffAt: off ? now : null }
-  });
+  try {
+    await prisma.jobPosting.updateMany({
+      where: { userId, normalizedApplyUrl: { in: keys }, atsApplyPageOffAt: off ? null : { not: null } },
+      data: { atsApplyPageOffAt: off ? now : null }
+    });
+  } catch (error) {
+    // The mark is advisory; a failed write never fails a sync whose imports are already saved.
+    captureException(error, { source: "board-sync.ats-apply-page", userId });
+  }
 }
 
 /** Apply URLs among `applyKeys` that this user already has stored. */
