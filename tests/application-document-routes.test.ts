@@ -354,7 +354,16 @@ test("C2 copy traverses the production cover transport, validators, ledger and a
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
   assert.equal(ledger.cacheWrites[0].promptVersion, "14");
-  assert.equal((ledger.cacheWrites[0].output as { coverLetter: string }).coverLetter, expected);
+  // Since 2026-11-16 the cache holds Gemini's draft, and a cached request re-runs the finalizer on
+  // it (free), so a later fix to the finalizer reaches a cached letter too.
+  const cached = ledger.cacheWrites[0].output as { format: string; draft: { coverLetter: string } };
+  assert.equal(cached.format, "provider-draft-1");
+  assert.equal(cached.draft.coverLetter, wire.coverLetter);
+  stub(t, prisma.aIResponseCache, "findFirst", async () => ({ output: cached }));
+  const again = await draftCoverLetter(payload, "demo-user", {});
+  assert.equal(calls, 1);
+  assert.equal(again.coverLetter, expected);
+  assert.equal(again.usage.estimatedCostMicros, 0);
 });
 
 // Since 2026-11-06 an invented sentence is removed rather than rejecting the letter outright; a
@@ -525,6 +534,8 @@ test("a mocked Gemini answer that omits a job and trims skills still succeeds: t
   assert.deepEqual(analysis.output.leftOut, metadata.leftOut);
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
-  assert.ok(String((ledger.cacheWrites[0].output as { resumeText: string }).resumeText).includes(jobs[1]!.header),
-    "the validated cache keeps the completed résumé");
+  const cached = ledger.cacheWrites[0].output as { format: string; draft: { resumeText: string } };
+  assert.equal(cached.format, "provider-draft-1");
+  assert.equal(cached.draft.resumeText.includes(jobs[1]!.header), false,
+    "the cache keeps Gemini's draft; the finalizer restores the dropped record each time it runs");
 });

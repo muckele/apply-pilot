@@ -133,13 +133,15 @@ function documentRequest(options: {
   feature?: "RESUME_TAILOR" | "COVER_LETTER";
   promptVersion?: string;
   providerBoundary?: boolean;
+  validate?: (value: { value: string }) => { value: string };
+  withoutSchema?: boolean;
 } = {}) {
   const feature = options.feature ?? "RESUME_TAILOR";
   return generateJson({
     promptName: feature === "RESUME_TAILOR" ? "resumeTailorPrompt" : "coverLetterPrompt",
     systemPrompt: "Return only source-supported content.",
     payload: options.payload ?? { resume: { rawText: "Synthetic TypeScript evidence." } },
-    schema,
+    schema: options.withoutSchema ? undefined : schema,
     providerSchema: options.providerBoundary ? providerWireSchema : undefined,
     decodeProvider: options.providerBoundary
       ? (value) => {
@@ -147,6 +149,7 @@ function documentRequest(options: {
           return { value: `${wire.text}:${wire.factId}` };
         }
       : undefined,
+    validate: options.validate,
     responseJsonSchema,
     context: {
       userId: "synthetic-user",
@@ -221,7 +224,12 @@ test("an OpenAI key cannot replace a missing Gemini credential", async (t) => {
   assert.equal(ledger.reservations.length, 0);
 });
 
-test("confirmed resume tailoring reserves its exact cap, sends one capped request, and caches only validated output", async (t) => {
+// Since 2026-11-16 the cache holds the provider's draft from before the checks, so a cached request
+// re-runs today's checks and repairs on it. Before, it held the finished output, so a later fix to
+// the checks never reached a cached request.
+const cachedDraft = (draft: unknown) => ({ format: "provider-draft-1", draft });
+
+test("confirmed resume tailoring reserves its exact cap, sends one capped request, and caches only output that passed its checks", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
   const requests: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = [];
@@ -250,7 +258,7 @@ test("confirmed resume tailoring reserves its exact cap, sends one capped reques
   assert.equal(ledger.reservations[0].promptVersion, APPLICATION_DOCUMENT_PROMPT_VERSION);
   assert.equal(ledger.reconciliations[0].status, "SUCCEEDED");
   assert.equal(ledger.cacheWrites.length, 1);
-  assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported" });
+  assert.deepEqual(ledger.cacheWrites[0].output, cachedDraft({ value: "supported" }));
 });
 
 test("confirmed cover-letter generation uses its smaller output cap and exact reservation", async (t) => {
@@ -272,7 +280,7 @@ test("confirmed cover-letter generation uses its smaller output cap and exact re
 
 test("cache lookups are isolated by prompt version and validated without dispatch or reservation", async (t) => {
   paidEnvironment(t);
-  const ledger = installLedger(t, null, { value: "cached-supported" });
+  const ledger = installLedger(t, null, cachedDraft({ value: "cached-supported" }));
   let calls = 0;
   installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
@@ -292,7 +300,7 @@ test("cache lookups are isolated by prompt version and validated without dispatc
   assert.ok(Array.isArray(where.OR));
 });
 
-test("provider-wire decoding caches assembled output while cache reads validate the assembled shape", async (t) => {
+test("provider-wire decoding caches the assembled draft while cache reads validate the assembled shape", async (t) => {
   paidEnvironment(t);
   const ledger = installLedger(t);
   installGemini(t, async () => geminiResponse({ text: "supported", factId: "fact:0001" }));
@@ -300,12 +308,12 @@ test("provider-wire decoding caches assembled output while cache reads validate 
   const result = await documentRequest({ confirmed: true, providerBoundary: true });
 
   assert.equal(result.data.value, "supported:fact:0001");
-  assert.deepEqual(ledger.cacheWrites[0].output, { value: "supported:fact:0001" });
+  assert.deepEqual(ledger.cacheWrites[0].output, cachedDraft({ value: "supported:fact:0001" }));
 });
 
-test("cached assembled output bypasses the incompatible provider-wire schema and decoder", async (t) => {
+test("a cached assembled draft bypasses the incompatible provider-wire schema and decoder", async (t) => {
   paidEnvironment(t);
-  const ledger = installLedger(t, null, { value: "cached-assembled" });
+  const ledger = installLedger(t, null, cachedDraft({ value: "cached-assembled" }));
   let calls = 0;
   installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
@@ -316,9 +324,107 @@ test("cached assembled output bypasses the incompatible provider-wire schema and
   assert.equal(ledger.reservations.length, 0);
 });
 
+test("a result is cached as the provider's draft, before the checks that finish it", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t);
+  installGemini(t, async () => geminiResponse({ value: "draft" }));
+
+  const result = await documentRequest({ confirmed: true, validate: ({ value }) => ({ value: `${value}+finished` }) });
+
+  assert.equal(result.data.value, "draft+finished");
+  assert.equal(ledger.cacheWrites.length, 1);
+  assert.deepEqual(ledger.cacheWrites[0].output, cachedDraft({ value: "draft" }));
+});
+
+test("checks that edit their input in place do not change the cached draft", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t);
+  installGemini(t, async () => geminiResponse({ value: "draft" }));
+
+  // Without a schema the checks receive the draft itself rather than a parsed copy.
+  const result = await documentRequest({
+    confirmed: true,
+    withoutSchema: true,
+    validate: (value) => {
+      value.value = `${value.value}+finished`;
+      return value;
+    }
+  });
+
+  assert.equal(result.data.value, "draft+finished");
+  assert.deepEqual(ledger.cacheWrites[0].output, cachedDraft({ value: "draft" }));
+});
+
+test("a cached draft re-runs today's checks, without dispatch or reservation", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, cachedDraft({ value: "draft" }));
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+
+  const result = await documentRequest({ validate: ({ value }) => ({ value: `${value}+finished today` }) });
+
+  assert.equal(result.data.value, "draft+finished today");
+  assert.equal(result.meta.estimatedCostMicros, 0);
+  assert.equal(calls, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
+test("a finished result cached before drafts were cached is not reused", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, { value: "finished-before" });
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; return geminiResponse({ value: "fresh" }); });
+
+  await assert.rejects(documentRequest(), (error: unknown) =>
+    error instanceof PublicApiError && error.status === 428 && error.details?.code === "AI_COST_CONFIRMATION_REQUIRED");
+  assert.equal(calls, 0);
+
+  const result = await documentRequest({ confirmed: true });
+
+  assert.equal(result.data.value, "fresh");
+  assert.equal(calls, 1);
+  assert.deepEqual(ledger.cacheWrites.at(-1)?.output, cachedDraft({ value: "fresh" }));
+});
+
+test("a cached draft that today's checks refuse is not reused", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, cachedDraft({ value: "stale" }));
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; return geminiResponse({ value: "fresh" }); });
+  const validate = ({ value }: { value: string }) => {
+    if (value === "stale") throw new PublicApiError("Synthetic refusal.", 422, { code: "SYNTHETIC_REFUSAL" });
+    return { value };
+  };
+
+  await assert.rejects(documentRequest({ validate }), (error: unknown) =>
+    error instanceof PublicApiError && error.status === 428);
+  assert.equal(calls, 0);
+
+  const result = await documentRequest({ confirmed: true, validate });
+
+  assert.equal(result.data.value, "fresh");
+  assert.equal(calls, 1);
+  assert.deepEqual(ledger.cacheWrites.at(-1)?.output, cachedDraft({ value: "fresh" }));
+});
+
+test("an error other than a refusal while re-checking a cached draft still surfaces, without dispatch", async (t) => {
+  paidEnvironment(t);
+  const ledger = installLedger(t, null, cachedDraft({ value: "draft" }));
+  let calls = 0;
+  installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
+  const validate = () => {
+    throw new PublicApiError("Synthetic outage.", 503, { code: "SYNTHETIC_OUTAGE" });
+  };
+
+  await assert.rejects(documentRequest({ confirmed: true, validate }), (error: unknown) =>
+    error instanceof PublicApiError && error.status === 503);
+  assert.equal(calls, 0);
+  assert.equal(ledger.reservations.length, 0);
+});
+
 test("current document requests query only the current cache identity, not legacy versions", async (t) => {
   paidEnvironment(t);
-  const ledger = installLedger(t, null, { value: "cached-current" });
+  const ledger = installLedger(t, null, cachedDraft({ value: "cached-current" }));
   let calls = 0;
   installGemini(t, async () => { calls += 1; throw new Error("must not call"); });
 
