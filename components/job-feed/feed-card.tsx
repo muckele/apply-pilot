@@ -33,6 +33,7 @@ export function FeedCard({ job }: { job: FeedCardView }) {
         <div className="feed-card-badges">
           <WorkStyleBadge workStyle={job.workStyle} />
           {job.trackerStatus ? <span className="job-badge">{job.trackerStatus}</span> : null}
+          {job.applyOnCompanySite ? <span className="job-badge" data-apply-on-company-site>Apply on company site</span> : null}
         </div>
       </div>
       <div className="feed-card-fit">

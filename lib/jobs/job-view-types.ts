@@ -13,6 +13,8 @@ export type JobHeaderView = {
   salary: string | null;
   postedAge: string;
   source: string;
+  /** A board sync found the job's ATS-hosted page switched off: it is applied for on the company's own site. */
+  applyOnCompanySite?: boolean;
 };
 
 export type JobDetailView = JobHeaderView & {

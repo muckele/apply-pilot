@@ -8,6 +8,7 @@ import { JSDOM } from "jsdom";
 import { FeedCard, type FeedCardView } from "@/components/job-feed/feed-card";
 import { FeedFilterBar } from "@/components/job-feed/feed-filter-bar";
 import { FeedPreview } from "@/components/job-feed/feed-preview";
+import { JobHeader } from "@/components/job-workspace/job-header";
 import { parseFeedFilters } from "@/lib/jobs/feed-query";
 import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
 import { createDomHarness } from "@/tests/fixtures/dom-harness";
@@ -42,6 +43,18 @@ test("a scored card shows company, title, location, salary, work style, age and 
   } finally {
     await harness.close();
   }
+});
+
+test("a card whose job board page is switched off says to apply on the company site", () => {
+  assert.doesNotMatch(renderToStaticMarkup(React.createElement(FeedCard, { job: card })), /Apply on company site/u);
+  const html = renderToStaticMarkup(React.createElement(FeedCard, { job: { ...card, applyOnCompanySite: true } }));
+  assert.match(html, /<span class="job-badge"[^>]*>Apply on company site<\/span>/u);
+});
+
+test("the job header says to apply on the company's own site only when its job board page is off", () => {
+  assert.doesNotMatch(renderToStaticMarkup(React.createElement(JobHeader, { job: card })), /company&#x27;s own site/u);
+  const html = renderToStaticMarkup(React.createElement(JobHeader, { job: { ...card, applyOnCompanySite: true } }));
+  assert.match(html, /Apply on the company&#x27;s own site/u);
 });
 
 test("an unscored card offers Score, which asks for the cost and refreshes the feed", async () => {
