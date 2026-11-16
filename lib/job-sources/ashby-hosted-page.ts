@@ -1,3 +1,4 @@
+import { normalizeBoardTokenInput } from "@/lib/job-sources/board-fetch";
 import { boardPageUrl } from "@/lib/job-sources/board-url";
 
 /**
@@ -60,11 +61,14 @@ export function classifyAshbyHostedPage(status: number, html: string): HostedPag
   return "unknown";
 }
 
-/** One read of the board's hosted page. Never throws: a failed read is "unknown". */
+/**
+ * One read of the board's hosted page. Takes a stored token (or a pasted board link saved as one, as the
+ * listing fetch does). Never throws: a bad token or a failed read is "unknown".
+ */
 export async function checkAshbyHostedPage(token: string, fetchImpl: typeof fetch = fetch): Promise<HostedPageState> {
   let url: string;
   try {
-    url = boardPageUrl({ ats: "ASHBY", token, region: "global" });
+    url = boardPageUrl({ ats: "ASHBY", token: normalizeBoardTokenInput("ASHBY", token), region: "global" });
   } catch {
     return "unknown";
   }
