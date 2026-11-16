@@ -132,6 +132,39 @@ test("a letter that already cites a résumé fact gets nothing added", () => {
   assert.equal(result.coverLetter.includes("incident bug reports"), false);
 });
 
+// Live case 2026-11-15, the next try: with résumé sentences in the letter, it was refused as "missing
+// source evidence for generated claim". A claim Gemini lists in nearly the words of its sentence
+// (here without the final period) covers no sentence, so the repair binds the sentence itself to
+// the same fact; the step that keeps one claim per fact then kept Gemini's near copy and dropped
+// the binding, leaving the sentence uncited.
+test("a claim listed without its sentence's final period still covers that sentence", () => {
+  const source = payload();
+  const facts = buildApplicationDocumentFactCatalog(source);
+  const factId = (excerpt: string) => facts.find((value) => value.excerpt === excerpt)!.factId;
+  const firstPersonTickets = `I ${TICKETS[0]!.toLocaleLowerCase()}${TICKETS.slice(1)}`;
+  const firstPersonBugs = `I ${BUGS[0]!.toLocaleLowerCase()}${BUGS.slice(1)}`;
+  const provider = {
+    title: "Cover letter",
+    angle: "Support",
+    coverLetter: letter([`${firstPersonTickets} ${firstPersonBugs}`, [OWNER_REPORTS, OWNER_RESPONSE, OWNER_LOCATION].join(" ")]),
+    claimsUsed: [
+      { claim: firstPersonTickets.replace(/\.$/u, ""), factId: factId(TICKETS) },
+      { claim: firstPersonBugs, factId: factId(BUGS) },
+      { claim: OWNER_REPORTS.replace(/\.$/u, ""), factId: factId(OWNER_REPORTS) },
+      { claim: OWNER_RESPONSE, factId: factId(OWNER_RESPONSE) },
+      { claim: OWNER_LOCATION, factId: factId(OWNER_LOCATION) }
+    ]
+  };
+  const result = finalizeCoverLetter(source, assembleCoverLetterProviderOutput(source, provider));
+
+  // Each sentence is covered by a claim in its own words, once per fact.
+  for (const [sentence, excerpt] of [[firstPersonTickets, TICKETS], [OWNER_REPORTS, OWNER_REPORTS]] as const) {
+    assert.ok(result.coverLetter.includes(sentence), sentence);
+    const cited = result.claimsUsed.filter((entry) => entry.citations.some((citation) => citation.excerpt === excerpt));
+    assert.deepEqual(cited.map((entry) => entry.claim), [sentence]);
+  }
+});
+
 test("the prompt names the kinds of fact that count as different sources", () => {
   assert.match(coverLetterPrompt, /at least two provenance kinds \(resume, profile, reviewed_evidence\)/u);
   assert.match(coverLetterPrompt, /reviewed_evidence facts alone never satisfy this rule/u);

@@ -1085,10 +1085,17 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
   }
 
   const coverLetter = paragraphs.join("\n\n");
+  // Live case 2026-11-15: one claim per fact, and a claim that is a whole sentence of the letter
+  // wins over one that only appears inside a sentence (Gemini's near copy, such as the sentence
+  // without its final period), which covers no sentence.
+  const sentences = new Set(coverLetter.split(/\r?\n/u)
+    .flatMap((line) => [...sentenceSegmenter.segment(line.trim())].map(({ segment }) => comparable(segment))));
+  const sentenceSources = new Set(claims.filter((entry) => sentences.has(comparable(entry.claim))).map(sourceOf));
   const listedSources = new Set<string>();
   claims = claims.filter((entry) => {
     const source = sourceOf(entry);
     if (!containsWhole(coverLetter, entry.claim) || listedSources.has(source)) return false;
+    if (sentenceSources.has(source) && !sentences.has(comparable(entry.claim))) return false;
     listedSources.add(source);
     return true;
   });
