@@ -28,7 +28,9 @@ import { withoutLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 //     wrote them together ("At <Org> I …. I respond quickly …"): the owner wrote them as one line;
 //   - a paragraph that names no employer keeps the paragraph Gemini wrote; only sentences taken out
 //     of employer paragraphs are gathered in the closing paragraph;
-//   - such a paragraph that names the company applied to opens the letter's evidence.
+//   - the sentence that names the company applied to, with the rest of its saved line, opens the
+//     letter's evidence as its own paragraph (first fresh draft after that, same day: it sat in the
+//     middle of a paragraph Gemini wrote about other things).
 
 type CoverLetterOutput = { coverLetter: string; claimsUsed: ApplicationDocumentClaimEvidence[] };
 
@@ -204,8 +206,12 @@ function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayloa
   const remaining = units.filter((unit) => !openingUnits.includes(unit));
   const firstKeyed = Math.min(...remaining.filter((unit) => unit.group.kind !== "other").map((unit) => unit.position));
   const withEmployer = new Set(remaining.filter((unit) => unit.group.kind === "employer").map((unit) => unit.paragraph));
+  const company = typeof payload.job?.company === "string" ? payload.job.company.trim() : "";
+  const namingCompany = remaining.filter((unit) => unit.group.kind === "other" && namesCompany(unit.claim, company));
+  const companyUnits = remaining.filter((unit) => unit.group.kind === "other" && namingCompany.some((named) =>
+    named === unit || (named.savedLine !== null && named.savedLine === unit.savedLine))).sort(byPosition);
   const blocks = new Map<string, Unit[]>();
-  for (const unit of remaining.filter((value) => value.group.kind !== "employer").sort(byPosition)) {
+  for (const unit of remaining.filter((value) => value.group.kind !== "employer" && !companyUnits.includes(value)).sort(byPosition)) {
     const key = unit.group.kind === "other" && unit.position < firstKeyed ? `leading:${unit.paragraph}`
       : withEmployer.has(unit.paragraph) ? "taken" : `own:${unit.paragraph}`;
     blocks.set(key, [...blocks.get(key) ?? [], unit]);
@@ -217,14 +223,10 @@ function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayloa
       ...taken.filter((unit) => unit.group.kind === "other")
     ]);
   }
-  const company = typeof payload.job?.company === "string" ? payload.job.company.trim() : "";
-  const isCompanyParagraph = ([key, block]: [string, Unit[]]) => key !== "taken" && !withEmployer.has(block[0]!.paragraph) &&
-    block.some((unit) => unit.group.kind === "other" && namesCompany(unit.claim, company));
   const firstOf = (block: Unit[]) => Math.min(...block.map((unit) => unit.position));
   const ordered = [...blocks.entries()].sort(([, left], [, right]) => firstOf(left) - firstOf(right));
-  const companyParagraphs = ordered.filter(isCompanyParagraph).map(([, block]) => block);
-  const leading = ordered.filter((entry) => !isCompanyParagraph(entry) && entry[0].startsWith("leading:")).map(([, block]) => block);
-  const rest = ordered.filter((entry) => !isCompanyParagraph(entry) && !entry[0].startsWith("leading:")).map(([, block]) => block);
+  const leading = ordered.filter(([key]) => key.startsWith("leading:")).map(([, block]) => block);
+  const rest = ordered.filter(([key]) => !key.startsWith("leading:")).map(([, block]) => block);
   const groups = new Map<string, Unit[]>();
   for (const unit of remaining.filter((value) => value.group.kind === "employer").sort(byPosition)) {
     groups.set(unit.group.key, [...groups.get(unit.group.key) ?? [], unit]);
@@ -235,7 +237,7 @@ function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayloa
       const opener = [0, 1].map((naming) => group.find((unit) => unit.naming === naming && terminated(unit))).find(Boolean);
       return opener ? [opener, ...group.filter((unit) => unit !== opener)] : group;
     });
-  const settled = [openingUnits, ...companyParagraphs, ...leading, ...employerParagraphs, ...rest].map(settle);
+  const settled = [openingUnits, companyUnits, ...leading, ...employerParagraphs, ...rest].map(settle);
   if (settled.some((units) => units === null)) return output;
   const [openingSettled, ...bodySettled] = settled as Unit[][];
   const arranged = [

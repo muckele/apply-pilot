@@ -29,7 +29,7 @@ const TRAVEL_LEAD = "Since 2021, I have been Account Manager at Example Travel."
 const NORTHWIND_LEAD = "From 2017 to 2021, I was Support Lead at Northwind Rentals.";
 const INTRO = "I am applying for the Product Support Specialist position at Example Software.";
 
-function payload(): ApplicationDocumentPayload {
+function payload(extraFacts: readonly string[] = []): ApplicationDocumentPayload {
   const record = (header: string, company: string, title: string, startDate: string, endDate: string, bullets: string[]) => ({
     sourceText: [header, ...bullets.map((value) => `• ${value}`)].join("\n"),
     company, title, location: null, startDate, endDate, bullets
@@ -61,7 +61,8 @@ function payload(): ApplicationDocumentPayload {
         `${OWNER_INBOUND} ${OWNER_RESPONSE}`,
         `${OWNER_SWITCH} ${OWNER_MOTIVE}`,
         OWNER_REPORTS,
-        OWNER_LOCATION
+        OWNER_LOCATION,
+        ...extraFacts
       ].map((fact, index) => ({ gapId: `gap-${index}`, provenance: "OWNER_ATTESTED", sourceRef: null, fact }))
     }
   );
@@ -70,8 +71,8 @@ function payload(): ApplicationDocumentPayload {
 const firstPerson = (value: string) => `I ${value[0]!.toLocaleLowerCase()}${value.slice(1)}`;
 const paragraphsOf = (letter: string) => letter.split(/\n\s*\n/u).map((paragraph) => paragraph.trim());
 
-function finalize(body: readonly string[]) {
-  const source = payload();
+function finalize(body: readonly string[], extraFacts: readonly string[] = []) {
+  const source = payload(extraFacts);
   const facts = buildApplicationDocumentFactCatalog(source);
   const claims = [firstPerson(HOTELS), firstPerson(TICKETS), OWNER_INBOUND, OWNER_RESPONSE, OWNER_SWITCH, OWNER_MOTIVE, OWNER_REPORTS, OWNER_LOCATION];
   const claimsUsed = claims.map((claim) => {
@@ -120,4 +121,27 @@ test("a saved line's sentence that only follows a résumé fact still leaves the
   const travel = body.find((paragraph) => paragraph.startsWith(TRAVEL_LEAD))!;
   assert.equal(travel, `${TRAVEL_LEAD} ${firstPerson(HOTELS)}`);
   assert.ok(body.some((paragraph) => paragraph.includes(OWNER_RESPONSE) && !paragraph.includes(OWNER_INBOUND)), body.join("\n\n"));
+});
+
+// Live case 2026-11-16, first fresh draft after #101 (shape only): Gemini wrote one paragraph that
+// names no employer (bug reports, the switch to software, why the company, location) and reworded a
+// two-action saved line, which the truth check removed. The repair put that line back as two
+// sentences at the end of Gemini's last paragraph, and the whole paragraph then opened the letter
+// because it names the company, with the line about the company in its middle.
+const OWNER_PILOTS = "I led pilots and built playbooks and training for 30+ agents, including pilots that cut onboarding time by 2 days.";
+
+test("a saved line put back gets its own paragraph, and the line about the company opens the letter alone", () => {
+  const body = finalize([
+    `${TRAVEL_LEAD} ${firstPerson(HOTELS)}`,
+    `${OWNER_INBOUND} ${OWNER_RESPONSE} ${firstPerson(TICKETS)}`,
+    `${OWNER_REPORTS} ${OWNER_SWITCH} ${OWNER_MOTIVE} ${OWNER_LOCATION}`
+  ], [OWNER_PILOTS]);
+  assert.deepEqual(body, [
+    INTRO,
+    `${OWNER_SWITCH} ${OWNER_MOTIVE}`,
+    `${TRAVEL_LEAD} ${firstPerson(HOTELS)}`,
+    `${OWNER_INBOUND} ${OWNER_RESPONSE} ${firstPerson(TICKETS)}`,
+    `${OWNER_REPORTS} ${OWNER_LOCATION}`,
+    "I led pilots. I built playbooks and training for 30+ agents, including pilots that cut onboarding time by 2 days."
+  ]);
 });
