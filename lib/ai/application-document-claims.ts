@@ -1016,8 +1016,9 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
   });
   let paragraphs = once.join("\n").split(/\n\s*\n/u).map((paragraph) => paragraph.trim()).filter(Boolean);
 
-  // Reviewed owner facts the letter would miss go back in, verbatim, after the last paragraph
-  // that carries evidence.
+  // Reviewed owner facts the letter would miss go back in, verbatim, each as its own paragraph
+  // after the last paragraph that carries evidence. Live case 2026-11-16: appended to that
+  // paragraph, a put-back line read as part of whatever Gemini wrote there.
   const reviewed: unknown = payload.reviewedEvidence?.facts;
   const reviewedFacts = Array.isArray(reviewed) ? reviewed : [];
   for (const [index, item] of reviewedFacts.entries()) {
@@ -1040,7 +1041,7 @@ export function repairCoverLetterEvidence<T extends CoverLetterClaimsOutput>(
       claims.some((entry) => containsWhole(paragraph, entry.claim)) ? position : last, -1);
     if (at < 0) continue;
     const restoredText = restored.map((entry) => entry.claim).join(" ");
-    paragraphs = paragraphs.map((paragraph, position) => position === at ? `${paragraph} ${restoredText}` : paragraph);
+    paragraphs = [...paragraphs.slice(0, at + 1), restoredText, ...paragraphs.slice(at + 1)];
     claims.push(...restored);
   }
 
