@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { applicationDocumentSectionOf } from "@/lib/ai/application-document-facts";
+import { containsComparableText } from "@/lib/ai/tailored-resume-keep-rule";
 import { PublicApiError } from "@/lib/api-errors";
-import { isEvidenceBindingCurrent } from "@/lib/jobs/evidence-snapshot-contracts";
+import { acceptedEvidenceFactsFromSnapshot, isEvidenceBindingCurrent } from "@/lib/jobs/evidence-snapshot-contracts";
 
 // D031: users may edit tailored documents. AI-written lines keep the citations recorded at
 // generation; lines the user wrote are marked as theirs; user lines that add claim-bearing
@@ -33,12 +35,28 @@ const claimSchema = z.object({
   token: z.string().min(1).max(200),
   kind: z.enum(["NUMBER", "DATE", "CREDENTIAL", "NAME"])
 }).strict();
+const sourceText = z.string().min(1).max(4_000);
+// The owner's facts for this job, copied from the document's own evidence snapshot on the first
+// save that can read it: truth-ticked step 2 lines, and the master résumé jobs and projects (only
+// when the résumé is unchanged since that snapshot). Flags are computed from this copy, never
+// from whatever the database holds later.
+const reviewSourcesSchema = z.object({
+  kind: z.enum(["RESUME", "COVER_LETTER"]),
+  ownerLines: z.array(sourceText).max(100),
+  records: z.array(z.object({
+    ref: z.string().min(1).max(512),
+    name: z.string().min(1).max(512).nullable(),
+    headers: z.array(sourceText).max(100),
+    facts: z.array(sourceText).max(500)
+  }).strict()).max(200)
+}).strict();
 const baselineSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("GENERATED"),
     evidenceSnapshotId: z.string().min(1).max(191),
     capturedAt: isoTimestamp,
-    lines: z.array(baselineLineSchema).max(1_000)
+    lines: z.array(baselineLineSchema).max(1_000),
+    sources: reviewSourcesSchema.optional()
   }).strict(),
   z.object({
     kind: z.literal("LEGACY"),
@@ -73,6 +91,11 @@ const storedDocumentReviewSchema = z.object({
 export type DocumentCitation = z.infer<typeof citationSchema>;
 export type DocumentClaimToken = z.infer<typeof claimSchema>;
 export type DocumentReviewBaseline = z.infer<typeof baselineSchema>;
+export type DocumentReviewSources = z.infer<typeof reviewSourcesSchema>;
+export type DocumentReviewSourceRows = {
+  snapshot: { id: string; reviewPayload: unknown; sourceResumeUpdatedAt: Date };
+  resume: { updatedAt: Date; workHistory: unknown; projects: unknown } | null;
+};
 export type StoredDocumentReview = z.infer<typeof storedDocumentReviewSchema>;
 export type DocumentReviewSegment = StoredDocumentReview["segments"][number];
 export type DocumentReviewFlag = StoredDocumentReview["flags"][number];
@@ -311,6 +334,66 @@ export function resolveReviewBaseline(input: {
   };
 }
 
+const MAX_SOURCE_TEXT = 4_000;
+const listMarker = /^[-*•▪◦–—]\s+/u;
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function sourceLines(value: unknown): string[] {
+  if (typeof value === "string") {
+    return value.split(/\r?\n/u).map((line) => line.trim().slice(0, MAX_SOURCE_TEXT)).filter(Boolean);
+  }
+  if (Array.isArray(value)) return value.flatMap(sourceLines);
+  if (plainObject(value)) return Object.values(value).flatMap(sourceLines);
+  return [];
+}
+
+function ownerLinesFromSnapshot(snapshot: DocumentReviewSourceRows["snapshot"]) {
+  try {
+    return acceptedEvidenceFactsFromSnapshot(snapshot)
+      .flatMap((fact) => fact.provenance.kind === "OWNER_ATTESTED" ? [fact.fact.trim().slice(0, MAX_SOURCE_TEXT)] : [])
+      .filter(Boolean)
+      .slice(0, 100);
+  } catch {
+    // An unreadable payload contributes nothing: those facts stay flagged.
+    return [];
+  }
+}
+
+// Jobs (named by company) and projects (by name). Header lines are the record's source lines that
+// are not its bullets, which is how a tailored résumé opens the record.
+function resumeRecords(resume: NonNullable<DocumentReviewSourceRows["resume"]>): DocumentReviewSources["records"] {
+  const fields = [["workHistory", resume.workHistory, "company"], ["projects", resume.projects, "name"]] as const;
+  return fields.flatMap(([field, values, nameKey]) => Array.isArray(values) ? values.flatMap((value, index) => {
+    if (!plainObject(value)) return [];
+    const nameValue = value[nameKey];
+    const name = typeof nameValue === "string" && nameValue.trim() ? nameValue.trim().slice(0, 512) : null;
+    const bulletKeys = new Set(sourceLines(value.bullets).map((line) => comparable(line.replace(listMarker, ""))));
+    const headers = sourceLines(value.sourceText)
+      .filter((line) => !listMarker.test(line) && !bulletKeys.has(comparable(line)));
+    return [{
+      ref: `resume.${field}[${index}]`,
+      name,
+      headers: [...new Set(headers)].slice(0, 100),
+      facts: [...new Set(sourceLines(value))].slice(0, 500)
+    }];
+  }) : []).slice(0, 200);
+}
+
+// The facts are taken from the document's own evidence snapshot. The master résumé counts only
+// while it is the one that snapshot was saved against; once edited, the document is stale anyway.
+export function buildDocumentReviewSources(input: DocumentReviewSourceRows & { kind: DocumentKind }): DocumentReviewSources {
+  const resumeCurrent = input.resume !== null &&
+    input.resume.updatedAt.getTime() === input.snapshot.sourceResumeUpdatedAt.getTime();
+  return {
+    kind: input.kind,
+    ownerLines: ownerLinesFromSnapshot(input.snapshot),
+    records: resumeCurrent && input.resume ? resumeRecords(input.resume) : []
+  };
+}
+
 function longestCommonSubsequence(left: readonly string[], right: readonly string[]) {
   const table = Array.from({ length: left.length + 1 }, () => new Uint16Array(right.length + 1));
   for (let i = left.length - 1; i >= 0; i -= 1) {
@@ -335,6 +418,93 @@ function longestCommonSubsequence(left: readonly string[], right: readonly strin
     }
   }
   return pairs;
+}
+
+function union(sets: Iterable<ReadonlySet<string>>) {
+  const out = new Set<string>();
+  for (const set of sets) for (const value of set) out.add(value);
+  return out;
+}
+
+function overlaps(left: ReadonlySet<string>, right: ReadonlySet<string>) {
+  for (const value of left) if (right.has(value)) return true;
+  return false;
+}
+
+const ownerSentences = new Intl.Segmenter("en", { granularity: "sentence" });
+const EMPTY: ReadonlySet<string> = new Set();
+
+function isSectionHeading(text: string) {
+  return sectionHeading.test(text.trim()) || applicationDocumentSectionOf(text) !== null;
+}
+
+// A short line that is neither a list item nor a sentence ("Senior Analyst, Example Co, 2020").
+function headerShaped(text: string) {
+  const trimmed = text.trim();
+  return !listMarker.test(trimmed) && !/[.!?]["”’)]*$/u.test(trimmed) && trimmed.split(/\s+/u).length <= 12;
+}
+
+// Where a line reads: the employer (or project) whose section it sits under in a résumé, and the
+// ones it names. Two roles at one employer share its name and count as one employer.
+type LinePlace = { under: ReadonlySet<string>; named: ReadonlySet<string> };
+
+function contextOf(place: LinePlace) {
+  return place.under.size ? place.under : place.named;
+}
+
+function reviewScope(sources: DocumentReviewSources | undefined) {
+  const records = (sources?.records ?? []).map((record) => ({
+    ...record,
+    id: record.name ? `name:${comparable(record.name)}` : `ref:${record.ref}`,
+    headerKeys: new Set(record.headers.map((header) => comparable(header.replace(listMarker, ""))))
+  }));
+  const idByRef = new Map(records.map((record) => [record.ref, record.id]));
+  const namesIn = (text: string): ReadonlySet<string> =>
+    new Set(records.flatMap((record) => record.name && containsComparableText(text, record.name) ? [record.id] : []));
+  const recordVocabularies = new Map<string, Set<string>>();
+  for (const record of records) {
+    recordVocabularies.set(record.id, union([recordVocabularies.get(record.id) ?? EMPTY, vocabulary(record.facts)]));
+  }
+  // Each sentence of a step 2 line: one that names an employer counts only under that employer.
+  const owned = (sources?.ownerLines ?? []).flatMap((line) => line.split(/\r?\n/u))
+    .flatMap((line) => [...ownerSentences.segment(line)].map(({ segment }) => segment.trim()).filter(Boolean))
+    .map((sentence) => ({ names: namesIn(sentence), words: vocabulary([sentence]) }));
+  const cache = new Map<string, Set<string>>();
+  const cached = (key: string, build: () => Set<string>) => {
+    let value = cache.get(key);
+    if (!value) cache.set(key, value = build());
+    return value;
+  };
+  const contextKey = (context: ReadonlySet<string>) => [...context].sort().join("\u0000");
+  return {
+    places(texts: readonly string[]): LinePlace[] {
+      let under: ReadonlySet<string> = EMPTY;
+      return texts.map((text) => {
+        const named = namesIn(text);
+        if (sources?.kind !== "RESUME") return { under: EMPTY, named };
+        if (isSectionHeading(text)) {
+          under = EMPTY;
+          return { under, named };
+        }
+        const key = comparable(text.replace(listMarker, ""));
+        const exact = records.filter((record) => record.headerKeys.has(key)).map((record) => record.id);
+        const opened = exact.length ? new Set(exact) : headerShaped(text) ? named : EMPTY;
+        if (opened.size) under = opened;
+        return { under, named };
+      });
+    },
+    cited(citations: readonly DocumentCitation[]) {
+      return citations.flatMap((citation) => idByRef.get(citation.ref) ?? []);
+    },
+    ownerVocabulary(context: ReadonlySet<string>) {
+      return cached(`owner:${contextKey(context)}`, () =>
+        union(owned.filter((sentence) => !sentence.names.size || overlaps(sentence.names, context)).map((sentence) => sentence.words)));
+    },
+    recordVocabulary(context: ReadonlySet<string>) {
+      return cached(`record:${contextKey(context)}`, () =>
+        union([...context].map((id) => recordVocabularies.get(id) ?? EMPTY)));
+    }
+  };
 }
 
 function flagId(text: string, claims: readonly DocumentClaimToken[]) {
@@ -392,19 +562,35 @@ export function buildDocumentReview(input: {
     flag.confirmedAt ? [[flag.id, flag.confirmedAt] as const] : []));
   const flags: DocumentReviewFlag[] = [];
   if (generated) {
-    const documentWide = vocabulary(baselineLines.flatMap((line) => [line.text, ...line.citations.map((citation) => citation.excerpt)]));
+    const scope = reviewScope(input.baseline.kind === "GENERATED" ? input.baseline.sources : undefined);
+    const baselineVocabulary = baselineLines.map((line) => vocabulary([line.text, ...line.citations.map((citation) => citation.excerpt)]));
+    const baselinePlaces = scope.places(baselineLines.map((line) => line.text));
+    const baselineRecords = baselineLines.map((line, b) =>
+      new Set([...baselinePlaces[b]!.under, ...baselinePlaces[b]!.named, ...scope.cited(line.citations)]));
+    const currentPlaces = scope.places(current.map((line) => line.text));
+    const documentWide = union(baselineVocabulary);
+    // A new line under one employer (or naming one) is compared with the cited facts of every line
+    // except another employer's: a number moved from one job to another is a changed claim.
+    const insertionReference = (context: ReadonlySet<string>) => context.size
+      ? union(baselineVocabulary.filter((_, b) => !baselineRecords[b]!.size || overlaps(baselineRecords[b]!, context)))
+      : documentWide;
     for (const hunk of hunks) {
       const replaced = hunk.baseline.filter((b) => unmatchedBaseline.has(b));
-      // A replaced line is compared with the facts it replaced; a new line with every cited fact.
-      const reference = replaced.length
-        ? vocabulary(replaced.flatMap((b) => [baselineLines[b]!.text, ...baselineLines[b]!.citations.map((citation) => citation.excerpt)]))
-        : documentWide;
+      // A replaced line is compared with the facts it replaced; a new line as above.
+      const replacedReference = replaced.length ? union(replaced.map((b) => baselineVocabulary[b]!)) : null;
       for (const c of hunk.current) {
         if (matched.has(c)) continue;
         const line = current[c]!;
+        const context = contextOf(currentPlaces[c]!);
+        // Facts the owner already gave for this job are never asked about again.
+        const references = [
+          replacedReference ?? insertionReference(context),
+          scope.ownerVocabulary(context),
+          scope.recordVocabulary(context)
+        ];
         const seen = new Set<string>();
         const claims = extractClaimTokens(line.text).filter((claim) => {
-          if (reference.has(claim.token) || seen.has(claim.token)) return false;
+          if (references.some((reference) => reference.has(claim.token)) || seen.has(claim.token)) return false;
           seen.add(claim.token);
           return true;
         }).slice(0, 100);

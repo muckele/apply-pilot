@@ -25,6 +25,8 @@ import {
 } from "@/tests/postgres/postgres-test-harness";
 
 const requirement = "Bachelor's degree in business or equivalent experience";
+const closeRequirement = "Experience running a month-end close";
+const ownerLine = "Closed the books in 4 days using NetSuite.";
 const generatedLetter = "Dear Synthetic Example Hiring Team,\nI led a team of 5 analysts at Synthetic Example.\nSincerely,\nSynthetic Owner";
 
 function deps(userId: string, transaction: EditableDocumentRouteDependencies["transaction"]): EditableDocumentRouteDependencies {
@@ -49,14 +51,18 @@ test("D031 edits and confirmations persist through the real owner-scoped Prisma 
       data: {
         userId: owner.id, title: "Synthetic analyst", normalizedTitle: `synthetic-analyst-${suffix}`, company: "Synthetic Example",
         normalizedCompany: `synthetic-example-${suffix}`, normalizedLocation: `remote-${suffix}`, sourceUrl: `https://example.test/jobs/${suffix}`,
-        normalizedApplyUrl: `https://example.test/apply/${suffix}`, description: "Synthetic role.", requirements: [requirement],
+        normalizedApplyUrl: `https://example.test/apply/${suffix}`, description: "Synthetic role.", requirements: [requirement, closeRequirement],
         preferredQualifications: [], benefits: [], detectedTechStack: [], sourceType: "MANUAL", missingKeywords: [], supportedKeywords: [], concerns: []
       }
     });
     const resume = await client.resume.create({
       data: {
         userId: owner.id, isMaster: true, title: "Synthetic source", rawText: "Bachelor of Arts in Business Administration",
-        summary: "Synthetic analyst.", skills: [], achievements: [], workHistory: [], projects: [], certifications: [],
+        summary: "Synthetic analyst.", skills: [], achievements: [], projects: [], certifications: [],
+        workHistory: [{
+          sourceText: "Analyst | Synthetic Example | 2020 – 2024\n- Led a team of 5 analysts at Synthetic Example.", company: "Synthetic Example",
+          title: "Analyst", startDate: "2020", endDate: "2024", bullets: ["Led a team of 5 analysts at Synthetic Example."]
+        }],
         education: [{ sourceText: "Bachelor of Arts in Business Administration", institution: "Synthetic University", credential: "Bachelor of Arts", fieldOfStudy: "Business Administration", startDate: null, endDate: null, details: [] }]
       }
     });
@@ -64,13 +70,17 @@ test("D031 edits and confirmations persist through the real owner-scoped Prisma 
       data: {
         userId: owner.id, jobPostingId: job.id, type: "JOB_MATCH", model: JOB_MATCH_MODEL, promptName: "jobMatchPrompt", promptVersion: JOB_MATCH_PROMPT_VERSION,
         inputHash: currentJobMatchInputHash(buildCurrentJobMatchInput({ job, resume, profile: null, reviewedEvidence: null })), input: { fixture: true },
-        output: { contractVersion: "3", promptVersion: JOB_MATCH_PROMPT_VERSION, requirementGaps: [{ requirement, jobRequirement: { ref: "job.requirements[0]", excerpt: requirement }, missingKeywords: ["business"] }] }
+        output: { contractVersion: "3", promptVersion: JOB_MATCH_PROMPT_VERSION, requirementGaps: [
+          { requirement, jobRequirement: { ref: "job.requirements[0]", excerpt: requirement }, missingKeywords: ["business"] },
+          { requirement: closeRequirement, jobRequirement: { ref: "job.requirements[1]", excerpt: closeRequirement }, missingKeywords: ["close"] }
+        ] }
       }
     });
     const saved = await saveEvidenceSnapshot(owner.id, job.id, {
       schema: "apply-pilot/evidence-snapshot-save/v1", requestId: `d031-${suffix}`, resumeId: resume.id, resumeUpdatedAt: resume.updatedAt.toISOString(),
       reviewedAnalysis: { id: analysis.id, inputHash: analysis.inputHash!, model: JOB_MATCH_MODEL, promptVersion: JOB_MATCH_PROMPT_VERSION },
-      decisions: [{ gapId: "gap:0", kind: "SOURCE_CORRECTION", sourceFactId: "fact:resume.rawText", sourceExcerpt: "Bachelor of Arts in Business Administration", correctedFact: "Bachelor of Arts in Business Administration", reuseScope: "JOB_ONLY", masterProfileOptIn: false }]
+      decisions: [{ gapId: "gap:0", kind: "SOURCE_CORRECTION", sourceFactId: "fact:resume.rawText", sourceExcerpt: "Bachelor of Arts in Business Administration", correctedFact: "Bachelor of Arts in Business Administration", reuseScope: "JOB_ONLY", masterProfileOptIn: false },
+        { gapId: "gap:1", kind: "OWNER_ATTESTATION", attestedFact: ownerLine, ownerAttested: true, reuseScope: "JOB_ONLY", masterProfileOptIn: false }]
     });
     const cover = await client.generatedDocument.create({
       data: {
@@ -91,8 +101,9 @@ test("D031 edits and confirmations persist through the real owner-scoped Prisma 
     assert.equal((await client.generatedDocument.findUniqueOrThrow({ where: { id: cover.id } })).content, generatedLetter);
     assert.equal((await client.resumeVersion.findUniqueOrThrow({ where: { id: legacyResume.id } })).metadata, null);
 
-    // The owner edits a metric: the binding clears, provenance and a flag persist in JSON.
-    const edited = generatedLetter.replace("team of 5", "team of 9");
+    // The owner edits a metric and adds their own step 2 line: the binding clears, provenance and
+    // one flag persist in JSON, and the owner's facts are copied from the document's snapshot.
+    const edited = `${generatedLetter.replace("team of 5", "team of 9")}\nI closed the books in 4 days using NetSuite.`;
     const editResponse = await createGeneratedDocumentPatchHandler(deps(owner.id, generatedDocumentEditTransaction))(jsonRequest("PATCH", { content: edited }), params(cover.id));
     assert.equal(editResponse.status, 200);
     let row = await client.generatedDocument.findUniqueOrThrow({ where: { id: cover.id } });
@@ -101,6 +112,9 @@ test("D031 edits and confirmations persist through the real owner-scoped Prisma 
     const review = readStoredDocumentReview(row.metadata)!;
     assert.equal(review.baseline.kind === "GENERATED" ? review.baseline.evidenceSnapshotId : null, saved.snapshot.id);
     assert.deepEqual(review.flags.map((flag) => flag.claims.map((claim) => claim.text)), [["9"]]);
+    const sources = review.baseline.kind === "GENERATED" ? review.baseline.sources : undefined;
+    assert.deepEqual(sources?.ownerLines, [ownerLine]);
+    assert.deepEqual(sources?.records.map((record) => [record.ref, record.name]), [["resume.workHistory[0]", "Synthetic Example"]]);
 
     const freshJob = await client.jobPosting.findUniqueOrThrow({ where: { id: job.id }, include: { currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT } } });
     const freshResume = await client.resume.findUniqueOrThrow({ where: { id: resume.id }, select: { id: true, updatedAt: true } });

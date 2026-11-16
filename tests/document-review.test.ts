@@ -5,6 +5,7 @@ import { PublicApiError } from "@/lib/api-errors";
 import {
   DOCUMENT_REVIEW_SCHEMA,
   buildDocumentReview,
+  buildDocumentReviewSources,
   buildDocumentReviewView,
   confirmDocumentReviewFlag,
   confirmLegacyDocumentReview,
@@ -237,4 +238,198 @@ test("an evidence-bound document edited before this change is captured as a gene
 test("malformed stored review metadata is ignored instead of trusted", () => {
   assert.equal(readStoredDocumentReview({ documentReview: { schema: DOCUMENT_REVIEW_SCHEMA, contentHash: "nope" } }), null);
   assert.equal(readStoredDocumentReview("not an object"), null);
+});
+
+// The owner's own facts (D031 follow-up). Synthetic résumé: the AI put a step 2 line under the
+// wrong employer; the owner moves and rewords lines. Facts the owner already gave for this job
+// (truth-ticked step 2 lines, the master résumé entry of the employer a line sits under) need no
+// second confirmation; facts from nowhere, or from another employer, still do.
+const northwindHeader = "Support Lead | Northwind Labs | 2021 – 2024";
+const contosoHeader = "Support Specialist | Contoso Bank | 2018 – 2021";
+const generatedResume = [
+  "Synthetic Applicant",
+  "SUMMARY",
+  "Support leader for regulated fintech teams.",
+  "EXPERIENCE",
+  northwindHeader,
+  "- Reduced ticket backlog 40% with Zendesk macros.",
+  contosoHeader,
+  "- Resolved 60 wire disputes a day in Salesforce.",
+  "- Onboarded 100+ enterprise accounts using Gainsight and Looker.",
+  "SKILLS",
+  "Zendesk, Salesforce"
+].join("\n");
+
+const resumeMetadata = {
+  claimEvidence: [
+    { claim: "Support leader for regulated fintech teams.", citations: [{ ref: "resume.summary", excerpt: "Support leader for regulated fintech teams." }] },
+    { claim: northwindHeader, citations: [{ ref: "resume.workHistory[0]", excerpt: northwindHeader }] },
+    { claim: "Reduced ticket backlog 40% with Zendesk macros.", citations: [{ ref: "resume.workHistory[0]", excerpt: "Reduced ticket backlog 40% with Zendesk macros." }] },
+    { claim: contosoHeader, citations: [{ ref: "resume.workHistory[1]", excerpt: contosoHeader }] },
+    { claim: "Resolved 60 wire disputes a day in Salesforce.", citations: [{ ref: "resume.workHistory[1]", excerpt: "Resolved 60 wire disputes a day in Salesforce." }] },
+    {
+      claim: "Onboarded 100+ enterprise accounts using Gainsight and Looker.",
+      citations: [{ ref: "reviewedEvidence.facts[1].fact", excerpt: "Onboarded 100+ enterprise accounts using Gainsight and Looker." }]
+    },
+    { claim: "Zendesk, Salesforce", citations: [{ ref: "resume.skills[0]", excerpt: "Zendesk, Salesforce" }] }
+  ]
+};
+
+const OWNER_LINES = [
+  "Ramped new support hires in ~10 days with Notion playbooks.",
+  "Onboarded 100+ enterprise accounts using Gainsight and Looker.",
+  "At Contoso Bank, reduced wire-transfer escalations by 25%."
+];
+
+const masterResume = {
+  updatedAt: new Date("2026-11-01T09:00:00.000Z"),
+  workHistory: [
+    {
+      sourceText: `${northwindHeader}\n- Reduced ticket backlog 40% with Zendesk macros.\n- Built a Tableau dashboard for 12 regional teams.`,
+      company: "Northwind Labs",
+      title: "Support Lead",
+      startDate: "2021",
+      endDate: "2024",
+      bullets: ["Reduced ticket backlog 40% with Zendesk macros.", "Built a Tableau dashboard for 12 regional teams."]
+    },
+    {
+      sourceText: `${contosoHeader}\n- Resolved 60 wire disputes a day in Salesforce.`,
+      company: "Contoso Bank",
+      title: "Support Specialist",
+      startDate: "2018",
+      endDate: "2021",
+      bullets: ["Resolved 60 wire disputes a day in Salesforce."]
+    }
+  ],
+  projects: []
+};
+
+const snapshotWithOwnerLines = {
+  id: SNAPSHOT,
+  sourceResumeUpdatedAt: masterResume.updatedAt,
+  reviewPayload: {
+    schema: "apply-pilot/evidence-snapshot-payload/v2",
+    facts: [
+      ...OWNER_LINES.map((fact, index) => ({
+        factId: `owner-${index}`,
+        originGapId: `gap:${index}`,
+        fact,
+        provenance: { kind: "OWNER_ATTESTED", ownerAttested: true },
+        reuseScope: "JOB_ONLY",
+        masterProfileOptIn: false
+      })),
+      {
+        factId: "source-0",
+        originGapId: "gap:9",
+        fact: "Resolved 60 wire disputes a day in Salesforce.",
+        provenance: {
+          kind: "EXISTING_SOURCE",
+          sourceFactId: "fact:0042",
+          sourceRef: "resume.workHistory[1]",
+          sourceExcerpt: "Resolved 60 wire disputes a day in Salesforce."
+        },
+        reuseScope: "JOB_ONLY",
+        masterProfileOptIn: false
+      }
+    ],
+    unresolvedGapIds: []
+  }
+};
+
+function resumeBaseline(withSources = true) {
+  const baseline = resolveReviewBaseline({
+    kind: "RESUME",
+    existing: { content: generatedResume, evidenceSnapshotId: SNAPSHOT, metadata: resumeMetadata },
+    now: NOW
+  });
+  if (!withSources || baseline.kind !== "GENERATED") return baseline;
+  return { ...baseline, sources: buildDocumentReviewSources({ kind: "RESUME", snapshot: snapshotWithOwnerLines, resume: masterResume }) };
+}
+
+function editResume(content: string, withSources = true) {
+  return buildDocumentReview({ baseline: resumeBaseline(withSources), content, previous: null, now: NOW });
+}
+
+function flaggedTokens(review: StoredDocumentReview) {
+  return review.flags.map((flag) => [flag.text, flag.claims.map((claim) => claim.text)]);
+}
+
+test("review sources keep only truth-ticked owner lines and the master résumé the evidence was saved against", () => {
+  const sources = buildDocumentReviewSources({ kind: "RESUME", snapshot: snapshotWithOwnerLines, resume: masterResume });
+  assert.equal(sources.kind, "RESUME");
+  assert.deepEqual(sources.ownerLines, OWNER_LINES, "A résumé line kept in step 2 is a master résumé fact, not an owner line.");
+  assert.deepEqual(sources.records.map((record) => [record.ref, record.name, record.headers]), [
+    ["resume.workHistory[0]", "Northwind Labs", [northwindHeader]],
+    ["resume.workHistory[1]", "Contoso Bank", [contosoHeader]]
+  ]);
+  assert.ok(sources.records[0]!.facts.some((fact) => fact.includes("Tableau dashboard for 12 regional teams")));
+
+  const editedSince = buildDocumentReviewSources({
+    kind: "RESUME",
+    snapshot: snapshotWithOwnerLines,
+    resume: { ...masterResume, updatedAt: new Date("2026-11-02T09:00:00.000Z") }
+  });
+  assert.deepEqual(editedSince.ownerLines, OWNER_LINES);
+  assert.deepEqual(editedSince.records, [], "A master résumé edited after the evidence was saved is not used.");
+  assert.deepEqual(buildDocumentReviewSources({ kind: "COVER_LETTER", snapshot: { ...snapshotWithOwnerLines, reviewPayload: { schema: "unknown" } }, resume: null }),
+    { kind: "COVER_LETTER", ownerLines: [], records: [] });
+});
+
+test("a number or tool from the owner's own step 2 lines needs no second confirmation", () => {
+  const edited = generatedResume
+    .replace("- Reduced ticket backlog 40% with Zendesk macros.", "- Reduced ticket backlog 40% with Zendesk macros and Notion playbooks.")
+    .replace(`${contosoHeader}\n`, `- Ramped new support hires in ~10 days.\n${contosoHeader}\n`);
+  assert.deepEqual(flaggedTokens(editResume(edited, false)), [
+    ["- Reduced ticket backlog 40% with Zendesk macros and Notion playbooks.", ["Notion"]],
+    ["- Ramped new support hires in ~10 days.", ["10"]]
+  ], "Without the owner's lines both edits are flagged, as before.");
+  assert.deepEqual(editResume(edited).flags, []);
+});
+
+test("a token found nowhere in the owner's facts is still flagged", () => {
+  const edited = generatedResume.replace(`${contosoHeader}\n`, `- Ramped new support hires in ~8 days with Confluence playbooks.\n${contosoHeader}\n`);
+  assert.deepEqual(flaggedTokens(editResume(edited)), [
+    ["- Ramped new support hires in ~8 days with Confluence playbooks.", ["8", "Confluence"]]
+  ]);
+});
+
+test("a number moved from one employer's section to another is still flagged", () => {
+  const replaced = generatedResume.replace("- Reduced ticket backlog 40% with Zendesk macros.", "- Resolved 60 wire disputes a day.");
+  assert.deepEqual(flaggedTokens(editResume(replaced)), [["- Resolved 60 wire disputes a day.", ["60"]]]);
+
+  // A new line under Northwind no longer borrows Contoso's numbers from elsewhere in the document.
+  const inserted = generatedResume.replace(`${contosoHeader}\n`, `- Resolved 60 wire disputes a day.\n${contosoHeader}\n`);
+  assert.deepEqual(flaggedTokens(editResume(inserted)), [["- Resolved 60 wire disputes a day.", ["60"]]]);
+  const underContoso = generatedResume.replace("SKILLS", "- Resolved 60 wire disputes a day.\nSKILLS");
+  assert.notEqual(underContoso, generatedResume);
+  assert.deepEqual(editResume(underContoso).flags, [], "Under its own employer the same line borrows nothing new.");
+
+  // A step 2 line that names an employer counts only under that employer.
+  const ownerUnderNorthwind = generatedResume.replace(`${contosoHeader}\n`, `- Reduced wire-transfer escalations by 25%.\n${contosoHeader}\n`);
+  assert.deepEqual(flaggedTokens(editResume(ownerUnderNorthwind)), [["- Reduced wire-transfer escalations by 25%.", ["25%"]]]);
+  const ownerUnderContoso = generatedResume.replace("SKILLS", "- Reduced wire-transfer escalations by 25%.\nSKILLS");
+  assert.deepEqual(editResume(ownerUnderContoso).flags, []);
+});
+
+test("a master résumé fact counts only under its own employer", () => {
+  const underNorthwind = generatedResume.replace(`${contosoHeader}\n`, `- Built a Tableau dashboard for 12 regional teams.\n${contosoHeader}\n`);
+  assert.deepEqual(editResume(underNorthwind).flags, []);
+  const underContoso = generatedResume.replace("SKILLS", "- Built a Tableau dashboard for 12 regional teams.\nSKILLS");
+  assert.deepEqual(flaggedTokens(editResume(underContoso)), [["- Built a Tableau dashboard for 12 regional teams.", ["Tableau", "12"]]]);
+});
+
+test("in a cover letter a line's employer is the one it names", () => {
+  const sources = buildDocumentReviewSources({
+    kind: "COVER_LETTER",
+    snapshot: {
+      ...snapshotWithOwnerLines,
+      reviewPayload: { ...snapshotWithOwnerLines.reviewPayload, facts: [{ ...snapshotWithOwnerLines.reviewPayload.facts[2]! }] }
+    },
+    resume: masterResume
+  });
+  const baseline = { ...generatedBaseline(), sources } as ReturnType<typeof generatedBaseline>;
+  const letter = (line: string) => buildDocumentReview({ baseline, content: `${generatedCover}\n${line}`, previous: null, now: NOW });
+  assert.deepEqual(letter("At Contoso Bank, I reduced wire-transfer escalations by 25%.").flags, []);
+  assert.deepEqual(letter("At Northwind Labs, I built a Tableau dashboard for 12 regional teams.").flags, []);
+  assert.deepEqual(letter("At Northwind Labs, I reduced wire-transfer escalations by 25%.").flags.map((flag) => flag.claims.map((claim) => claim.text)), [["25%"]]);
 });

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { PublicApiError } from "@/lib/api-errors";
 import {
   buildDocumentReview,
+  buildDocumentReviewSources,
   confirmDocumentReviewFlag,
   confirmLegacyDocumentReview,
   documentContentHash,
@@ -11,6 +12,7 @@ import {
   resolveReviewBaseline,
   withDocumentReview,
   type DocumentKind,
+  type DocumentReviewSourceRows,
   type StoredDocumentReview
 } from "@/lib/documents/document-review";
 import { resumeFontFamilies, resumePageSizes, resumeTemplates } from "@/lib/documents/resume-format";
@@ -35,6 +37,8 @@ export type EditableDocumentTransaction = {
   findOwnedForUpdate(input: { id: string; userId: string }): Promise<EditableDocumentRow | null>;
   update(input: { id: string; userId: string; data: Record<string, unknown> }): Promise<Record<string, unknown>>;
   writeAudit(input: { userId: string; action: string; resourceId: string; metadata: Record<string, unknown> }): Promise<void>;
+  // The owner's evidence snapshot (by id and userId) and the master résumé it was saved against.
+  findReviewSources(input: { evidenceSnapshotId: string; userId: string }): Promise<DocumentReviewSourceRows | null>;
 };
 
 export type EditableDocumentRouteDependencies = {
@@ -99,14 +103,22 @@ function sameSkills(left: readonly string[] | undefined, right: readonly string[
 }
 
 // A real text change clears the exact generated-evidence binding (the bytes are no longer exactly
-// generated) and records line provenance and flags against the captured generated baseline.
-function reviewForContentEdit(input: {
+// generated) and records line provenance and flags against the captured generated baseline. The
+// owner's facts for the job are copied into that baseline once, from the document's own evidence
+// snapshot; a review saved before then gets them on its next save.
+async function reviewForContentEdit(input: {
   kind: DocumentKind;
   existing: EditableDocumentRow;
   nextContent: string;
   now: Date;
+  tx: EditableDocumentTransaction;
+  userId: string;
 }) {
-  const baseline = resolveReviewBaseline({ kind: input.kind, existing: input.existing, now: input.now });
+  let baseline = resolveReviewBaseline({ kind: input.kind, existing: input.existing, now: input.now });
+  if (baseline.kind === "GENERATED" && !baseline.sources) {
+    const rows = await input.tx.findReviewSources({ evidenceSnapshotId: baseline.evidenceSnapshotId, userId: input.userId });
+    if (rows) baseline = { ...baseline, sources: buildDocumentReviewSources({ ...rows, kind: input.kind }) };
+  }
   const previous = readStoredDocumentReview(input.existing.metadata);
   const review = buildDocumentReview({ baseline, content: input.nextContent, previous, now: input.now });
   return { review, metadata: withDocumentReview(input.existing.metadata, review) };
@@ -136,11 +148,13 @@ function editHandler<Input extends Record<string, unknown>>(
           stored !== null && stored.contentHash !== documentContentHash(existing.content);
         const changed = contentChanged(input, existing) || reviewOutdated;
         const edit = changed
-          ? reviewForContentEdit({
+          ? await reviewForContentEdit({
               kind,
               existing,
               nextContent: typeof input[config.contentField] === "string" ? input[config.contentField] as string : existing.content,
-              now
+              now,
+              tx,
+              userId
             })
           : null;
         const updated = await tx.update({
