@@ -128,20 +128,20 @@ test("a saved line's sentence that only follows a résumé fact still leaves the
 // two-action saved line, which the truth check removed. The repair put that line back as two
 // sentences at the end of Gemini's last paragraph, and the whole paragraph then opened the letter
 // because it names the company, with the line about the company in its middle.
-const OWNER_PILOTS = "I led pilots and built playbooks and training for 30+ agents, including pilots that cut onboarding time by 2 days.";
+const OWNER_TRIALS = "I led trials and built runbooks for 30+ agents, including trials that cut onboarding time by 2 days.";
 
 test("a saved line put back gets its own paragraph, and the line about the company opens the letter alone", () => {
   const body = finalize([
     `${TRAVEL_LEAD} ${firstPerson(HOTELS)}`,
     `${OWNER_INBOUND} ${OWNER_RESPONSE} ${firstPerson(TICKETS)}`,
     `${OWNER_REPORTS} ${OWNER_SWITCH} ${OWNER_MOTIVE} ${OWNER_LOCATION}`
-  ], [OWNER_PILOTS]);
+  ], [OWNER_TRIALS]);
   assert.deepEqual(body, [
     INTRO,
     `${OWNER_SWITCH} ${OWNER_MOTIVE}`,
     `${TRAVEL_LEAD} ${firstPerson(HOTELS)}`,
     `${OWNER_INBOUND} ${OWNER_RESPONSE} ${firstPerson(TICKETS)}`,
     `${OWNER_REPORTS} ${OWNER_LOCATION}`,
-    "I led pilots. I built playbooks and training for 30+ agents, including pilots that cut onboarding time by 2 days."
+    "I led trials. I built runbooks for 30+ agents, including trials that cut onboarding time by 2 days."
   ]);
 });
