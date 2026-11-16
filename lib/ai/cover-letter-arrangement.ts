@@ -18,10 +18,17 @@ import { withoutLeadLines } from "@/lib/ai/cover-letter-lead-lines";
 //   - each employer gets one paragraph, in résumé order (records that share a company name share
 //     a paragraph), opened by that employer's sentence that names it ("At <Org>, I …") when the
 //     letter has one;
-//   - project facts and the remaining evidence that names no employer follow in one paragraph.
+//   - project facts and the remaining evidence that names no employer follow (see below).
 // A sentence counts toward an employer when it cites that work-history record or begins with the
 // employer's name ("At <Org>, …", "<Org> playbooks …"). A job-requirement lead-in moves with the
 // sentence after it; closing courtesy lines stay at the end.
+//
+// Live case 2026-11-16: the closing paragraph stacked eight of the owner's saved lines. Since then:
+//   - a saved line's next sentence stays with the employer its previous sentence names, when Gemini
+//     wrote them together ("At <Org> I …. I respond quickly …"): the owner wrote them as one line;
+//   - a paragraph that names no employer keeps the paragraph Gemini wrote; only sentences taken out
+//     of employer paragraphs are gathered in the closing paragraph;
+//   - such a paragraph that names the company applied to opens the letter's evidence.
 
 type CoverLetterOutput = { coverLetter: string; claimsUsed: ApplicationDocumentClaimEvidence[] };
 
@@ -35,6 +42,8 @@ type Unit = {
   paragraph: number;
   group: Readonly<{ kind: "employer" | "project" | "other"; key: string; rank: number }>;
   naming: 0 | 1 | 2;
+  claim: string;
+  savedLine: string | null;
 };
 
 const sentenceSegmenter = new Intl.Segmenter("en", { granularity: "sentence" });
@@ -81,6 +90,11 @@ function namedEmployer(sentence: string, employers: readonly Employer[]) {
     if (/\s/u.test(employer.company) || continuesName) return { employer, naming: 1 as const };
   }
   return null;
+}
+
+// Whether a sentence names the company applied to, as written in the job (case kept, whole words).
+function namesCompany(sentence: string, company: string) {
+  return company.length >= 2 && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(company)}(?![\\p{L}\\p{N}])`, "u").test(sentence);
 }
 
 function groupOf(entry: ApplicationDocumentClaimEvidence, employers: readonly Employer[]) {
@@ -166,7 +180,8 @@ function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayloa
   for (const [position, item] of run.entries()) {
     if (item.claim) {
       const { group, naming } = groupOf(item.claim, employers);
-      units.push({ sentences: [...pending, item.text], position, paragraph: item.paragraph, group, naming });
+      const savedLine = item.claim.citations.find((citation) => /^reviewedEvidence\.facts\[\d+\]\.fact$/u.test(citation.ref))?.ref ?? null;
+      units.push({ sentences: [...pending, item.text], position, paragraph: item.paragraph, group, naming, claim: item.text, savedLine });
       pending = [];
     } else if (position < firstClaim && !leadIn.test(item.text)) {
       opening.push(item.text);
@@ -178,12 +193,38 @@ function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayloa
     }
   }
   if (!units.some((unit) => unit.group.kind === "employer")) return output;
+  for (const [index, unit] of units.entries()) {
+    const previous = units[index - 1];
+    if (unit.group.kind === "other" && unit.savedLine && previous?.paragraph === unit.paragraph &&
+      previous.group.kind === "employer" && previous.savedLine === unit.savedLine) unit.group = previous.group;
+  }
 
   const openingUnits = opening.length
     ? units.filter((unit) => unit.paragraph === first && unit.group.kind === "other") : [];
   const remaining = units.filter((unit) => !openingUnits.includes(unit));
   const firstKeyed = Math.min(...remaining.filter((unit) => unit.group.kind !== "other").map((unit) => unit.position));
-  const leading = remaining.filter((unit) => unit.group.kind === "other" && unit.position < firstKeyed);
+  const withEmployer = new Set(remaining.filter((unit) => unit.group.kind === "employer").map((unit) => unit.paragraph));
+  const blocks = new Map<string, Unit[]>();
+  for (const unit of remaining.filter((value) => value.group.kind !== "employer").sort(byPosition)) {
+    const key = unit.group.kind === "other" && unit.position < firstKeyed ? `leading:${unit.paragraph}`
+      : withEmployer.has(unit.paragraph) ? "taken" : `own:${unit.paragraph}`;
+    blocks.set(key, [...blocks.get(key) ?? [], unit]);
+  }
+  const taken = blocks.get("taken");
+  if (taken) {
+    blocks.set("taken", [
+      ...taken.filter((unit) => unit.group.kind === "project").sort((left, right) => left.group.rank - right.group.rank || left.position - right.position),
+      ...taken.filter((unit) => unit.group.kind === "other")
+    ]);
+  }
+  const company = typeof payload.job?.company === "string" ? payload.job.company.trim() : "";
+  const isCompanyParagraph = ([key, block]: [string, Unit[]]) => key !== "taken" && !withEmployer.has(block[0]!.paragraph) &&
+    block.some((unit) => unit.group.kind === "other" && namesCompany(unit.claim, company));
+  const firstOf = (block: Unit[]) => Math.min(...block.map((unit) => unit.position));
+  const ordered = [...blocks.entries()].sort(([, left], [, right]) => firstOf(left) - firstOf(right));
+  const companyParagraphs = ordered.filter(isCompanyParagraph).map(([, block]) => block);
+  const leading = ordered.filter((entry) => !isCompanyParagraph(entry) && entry[0].startsWith("leading:")).map(([, block]) => block);
+  const rest = ordered.filter((entry) => !isCompanyParagraph(entry) && !entry[0].startsWith("leading:")).map(([, block]) => block);
   const groups = new Map<string, Unit[]>();
   for (const unit of remaining.filter((value) => value.group.kind === "employer").sort(byPosition)) {
     groups.set(unit.group.key, [...groups.get(unit.group.key) ?? [], unit]);
@@ -194,13 +235,7 @@ function arrange<T extends CoverLetterOutput>(payload: ApplicationDocumentPayloa
       const opener = [0, 1].map((naming) => group.find((unit) => unit.naming === naming && terminated(unit))).find(Boolean);
       return opener ? [opener, ...group.filter((unit) => unit !== opener)] : group;
     });
-  const rest = [
-    ...remaining.filter((unit) => unit.group.kind === "project")
-      .sort((left, right) => left.group.rank - right.group.rank || left.position - right.position),
-    ...remaining.filter((unit) => unit.group.kind === "other" && unit.position > firstKeyed).sort(byPosition)
-  ];
-
-  const settled = [openingUnits, leading, ...employerParagraphs, rest].map(settle);
+  const settled = [openingUnits, ...companyParagraphs, ...leading, ...employerParagraphs, ...rest].map(settle);
   if (settled.some((units) => units === null)) return output;
   const [openingSettled, ...bodySettled] = settled as Unit[][];
   const arranged = [
