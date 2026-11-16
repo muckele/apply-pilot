@@ -6,7 +6,7 @@ import type { ApplicationAutomationPolicy, PrismaClient } from "@prisma/client";
 
 import { PublicApiError } from "@/lib/api-errors";
 import type { ApplicationPlanInput } from "@/lib/ai/application-plan";
-import { createApplicationRunOrchestrator } from "@/lib/application-runs/orchestration";
+import { PREPARATION_RUN_SELECT, createApplicationRunOrchestrator } from "@/lib/application-runs/orchestration";
 import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
 import { buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
 import { editedConfirmed, editedUnconfirmed, legacyConfirmed } from "@/tests/fixtures/apply-kit-documents";
@@ -157,6 +157,7 @@ function baseRun() {
       detectedTechStack: ["TypeScript", "PostgreSQL"],
       overallFitScore: 92 as number | null,
       confidenceScore: 91 as number | null,
+      atsApplyPageOffAt: null as Date | null,
       currentEvidenceSnapshotId: "snapshot-current" as string | null,
       evidenceSnapshotGeneration: 1,
       currentEvidenceSnapshot: {
@@ -1361,4 +1362,24 @@ test("D031: TX2 rejects an edited résumé whose review stopped covering it duri
     expectPublicError("RUN_PREPARATION_STALE")
   );
   assert.equal(fake.state.run.state, "PREPARING");
+});
+
+test("a job whose job board page is off blocks Prepare before the planner, at no cost", async () => {
+  assert.equal(PREPARATION_RUN_SELECT.jobPosting.select.atsApplyPageOffAt, true, "Prepare reads the job's page-off mark");
+  const fake = createFake();
+  fake.state.run.jobPosting.atsApplyPageOffAt = new Date("2026-11-15T14:00:00.000Z");
+  let plannerCalls = 0;
+  const prepare = orchestrator(fake, async () => {
+    plannerCalls += 1;
+    return cleanPlan();
+  });
+
+  await assert.rejects(
+    prepare({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    (error: unknown) => expectPublicError("RUN_PREPARATION_BLOCKED")(error) && (error as PublicApiError).details?.reason === "apply_page_off"
+  );
+  assert.equal(plannerCalls, 0);
+  assert.equal(fake.state.run.state, "BLOCKED");
+  assert.equal(fake.state.run.blockingReason, "apply_page_off");
+  assert.equal(fake.state.run.firstPreparingAt, null, "a blocked run uses none of the daily cap");
 });

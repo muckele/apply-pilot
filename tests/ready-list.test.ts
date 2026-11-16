@@ -18,7 +18,7 @@ const base: ReadyListInput = {
 };
 
 test("every blocking reason has copy", () => {
-  assert.equal(ALL_REASONS.length, 12);
+  assert.equal(ALL_REASONS.length, 13);
   assert.deepEqual(Object.keys(PREPARE_BLOCKER_COPY).sort(), [...ALL_REASONS].sort());
   for (const reason of ALL_REASONS) assert.ok(PREPARE_BLOCKER_COPY[reason].text.length > 0);
 });

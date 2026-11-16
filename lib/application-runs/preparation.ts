@@ -117,6 +117,7 @@ export function isDailyCapReached(recentCount: number, cap: number): boolean {
 // ---------------------------------------------------------------------------
 
 export const PREPARATION_GATE_BLOCKERS = [
+  "apply_page_off",
   "host_blocked",
   "fit_below_threshold",
   "match_confidence_below_threshold",
@@ -126,6 +127,8 @@ export const PREPARATION_GATE_BLOCKERS = [
 export type PreparationGateBlocker = (typeof PREPARATION_GATE_BLOCKERS)[number];
 
 export type PreparationGateInput = {
+  // A board sync found the job's ATS-hosted page switched off: there is no form to open.
+  applyPageOff: boolean;
   hostBlocked: boolean;
   fitScore: number | null;           // job-match fit used for pre-provider eligibility
   matchConfidence: number | null;    // job-match confidence used for pre-provider eligibility
@@ -142,9 +145,10 @@ export type PreparationGateInput = {
   coverLetterSelectable: boolean;
 };
 
-// Stable evaluation order: host_blocked → fit → match confidence → resume → cover letter.
-// Null required scores fail closed. Returns a deterministic blocker identifier.
+// Stable evaluation order: apply_page_off → host_blocked → fit → match confidence → resume →
+// cover letter. Null required scores fail closed. Returns a deterministic blocker identifier.
 export function evaluatePreparationGates(input: PreparationGateInput): PreparationGateBlocker | null {
+  if (input.applyPageOff) return "apply_page_off";
   if (input.hostBlocked) return "host_blocked";
   if (input.fitScore === null || input.fitScore < input.minimumFitScore) return "fit_below_threshold";
   if (input.matchConfidence === null || input.matchConfidence < input.minimumConfidenceScore) {

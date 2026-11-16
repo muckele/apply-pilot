@@ -296,6 +296,7 @@ test("lifecycle fields are authoritatively produced and cannot be overridden by 
 
 test("gate evaluation uses stable order and fails closed on null scores", () => {
   const base = {
+    applyPageOff: false,
     hostBlocked: false,
     fitScore: 90,
     matchConfidence: 90,
@@ -323,6 +324,7 @@ test("gate evaluation uses stable order and fails closed on null scores", () => 
 
 test("resume is checked before cover letter and blocks even when cover letter is optional", () => {
   const base = {
+    applyPageOff: false,
     hostBlocked: false,
     fitScore: 90,
     matchConfidence: 90,
@@ -338,6 +340,7 @@ test("resume is checked before cover letter and blocks even when cover letter is
 
 test("missing resume still blocks when a required cover letter is also missing", () => {
   const base = {
+    applyPageOff: false,
     hostBlocked: false,
     fitScore: 90,
     matchConfidence: 90,
@@ -352,6 +355,7 @@ test("missing resume still blocks when a required cover letter is also missing",
 
 test("null scores fail closed before document prerequisite gates", () => {
   const base = {
+    applyPageOff: false,
     hostBlocked: false,
     fitScore: 90,
     matchConfidence: 90,
@@ -363,4 +367,24 @@ test("null scores fail closed before document prerequisite gates", () => {
   };
   assert.equal(evaluatePreparationGates({ ...base, fitScore: null }), "fit_below_threshold");
   assert.equal(evaluatePreparationGates({ ...base, matchConfidence: null }), "match_confidence_below_threshold");
+});
+
+test("a job whose job board page is off blocks first, ahead of every other gate", () => {
+  const base = {
+    applyPageOff: false,
+    hostBlocked: false,
+    fitScore: 90,
+    matchConfidence: 90,
+    minimumFitScore: 85,
+    minimumConfidenceScore: 85,
+    resumeSelectable: true,
+    coverLetterRequired: true,
+    coverLetterSelectable: true
+  };
+  assert.equal(evaluatePreparationGates(base), null);
+  assert.equal(evaluatePreparationGates({ ...base, applyPageOff: true }), "apply_page_off");
+  assert.equal(
+    evaluatePreparationGates({ ...base, applyPageOff: true, hostBlocked: true, fitScore: null, resumeSelectable: false }),
+    "apply_page_off"
+  );
 });

@@ -10,6 +10,10 @@ export type ReadyFix = {
 export const PREPARE_BLOCKER_COPY: Record<PreparationBlockingReason, { text: string; fix: ReadyFix | null }> = {
   automation_disabled: { text: "Application automation is disabled by the current policy.", fix: null },
   automation_disabled_during_preparation: { text: "Application automation was disabled during preparation.", fix: null },
+  apply_page_off: {
+    text: "This job's page on its job board is switched off, so the Apply Pilot browser can't open it. Apply on the company's own careers site.",
+    fix: null
+  },
   host_blocked: { text: "The run's target host is blocked by the current policy.", fix: null },
   fit_below_threshold: {
     text: "The job's current fit score does not meet the existing policy threshold.",

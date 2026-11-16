@@ -47,7 +47,7 @@ import { isRunDocumentCurrent } from "@/lib/application-runs/document-currentnes
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
 import { prisma } from "@/lib/prisma";
 
-const PREPARATION_RUN_SELECT = {
+export const PREPARATION_RUN_SELECT = {
   ...APPLICATION_RUN_OPERATIONAL_SELECT,
   userId: true,
   applyUrlSnapshot: true,
@@ -114,6 +114,7 @@ const PREPARATION_RUN_SELECT = {
       detectedTechStack: true,
       overallFitScore: true,
       confidenceScore: true,
+      atsApplyPageOffAt: true,
       currentEvidenceSnapshotId: true,
       evidenceSnapshotGeneration: true,
       currentEvidenceSnapshot: {
@@ -582,6 +583,7 @@ export function createApplicationRunOrchestrator(
         currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid
       }, currentMatchInput);
       const gate = evaluatePreparationGates({
+        applyPageOff: run.jobPosting.atsApplyPageOffAt !== null,
         hostBlocked,
         fitScore: hasCurrentMatch ? run.jobPosting.overallFitScore : null,
         matchConfidence: hasCurrentMatch ? run.jobPosting.confidenceScore : null,
