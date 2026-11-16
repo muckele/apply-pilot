@@ -34,7 +34,8 @@ export type ReviewableJob = Pick<
   | "normalizedTitle"
   | "normalizedLocation"
   | "normalizedApplyUrl"
->;
+> &
+  Partial<Pick<JobPosting, "atsApplyPageOffAt">>;
 
 export type ReviewQueueJob = {
   id: string;
@@ -52,6 +53,8 @@ export type ReviewQueueJob = {
   recommendation: string;
   keyReason: string;
   applyUrl: string;
+  /** A board sync found the job's ATS-hosted page switched off: apply on the company's own site. */
+  applyOnCompanySite: boolean;
   category: JobReviewCategory;
   flags: string[];
   whyMatched: string[];
@@ -244,6 +247,7 @@ export function mapJobForReviewQueue(
     recommendation: job.matchRecommendation ?? "Review",
     keyReason: job.keyMatchReason ?? "Run or refresh fit scoring before deciding whether to apply.",
     applyUrl: job.applyUrl || job.sourceUrl,
+    applyOnCompanySite: Boolean(job.atsApplyPageOffAt),
     category: categorizeJob(job, jobs),
     flags,
     whyMatched: buildWhyMatched(job),

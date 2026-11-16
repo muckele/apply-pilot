@@ -11,6 +11,8 @@ type PendingAction = "save" | "interested" | "archive" | "match" | null;
 type JobReviewActionsProps = {
   jobId: string;
   applyUrl: string;
+  /** A board sync found the job's ATS-hosted page switched off: no link to it. */
+  applyOnCompanySite?: boolean;
 };
 
 async function readJson(response: Response) {
@@ -21,7 +23,7 @@ function requestErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-export function JobReviewActions({ jobId, applyUrl }: JobReviewActionsProps) {
+export function JobReviewActions({ jobId, applyUrl, applyOnCompanySite = false }: JobReviewActionsProps) {
   const router = useRouter();
   const [pending, setPending] = useState<PendingAction>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -142,15 +144,19 @@ export function JobReviewActions({ jobId, applyUrl }: JobReviewActionsProps) {
           <BriefcaseBusiness size={15} />
           Build packet
         </Link>
-        <a
-          href={applyUrl}
-          target={applyUrl.startsWith("http") ? "_blank" : undefined}
-          rel={applyUrl.startsWith("http") ? "noreferrer" : undefined}
-          className={secondaryButton}
-        >
-          <ExternalLink size={15} />
-          Apply link
-        </a>
+        {applyOnCompanySite ? (
+          <span className="inline-flex items-center px-1 text-sm text-slate-600" data-apply-on-company-site>Apply on company site</span>
+        ) : (
+          <a
+            href={applyUrl}
+            target={applyUrl.startsWith("http") ? "_blank" : undefined}
+            rel={applyUrl.startsWith("http") ? "noreferrer" : undefined}
+            className={secondaryButton}
+          >
+            <ExternalLink size={15} />
+            Apply link
+          </a>
+        )}
         <button type="button" onClick={archiveJob} disabled={Boolean(pending)} className={secondaryButton}>
           {pending === "archive" ? <Loader2 className="animate-spin" size={15} /> : <Archive size={15} />}
           Archive

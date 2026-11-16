@@ -205,6 +205,13 @@ test("review queue classifies high-fit jobs as best matches", () => {
   assert.deepEqual(result.flags, []);
 });
 
+test("review queue says to apply on the company site when the job board page is off", () => {
+  const job = reviewJob();
+  assert.equal(mapJobForReviewQueue(job, [job]).applyOnCompanySite, false);
+  const off = { ...job, atsApplyPageOffAt: new Date("2026-11-15T14:00:00.000Z") };
+  assert.equal(mapJobForReviewQueue(off, [off]).applyOnCompanySite, true);
+});
+
 test("review queue flags likely duplicate jobs before normal review", () => {
   const first = reviewJob();
   const second = reviewJob({ id: "job_2", sourceUrl: "https://example.com/jobs/2" });
