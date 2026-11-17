@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 
+import { CopyButton } from "@/components/apply-kit/copy-button";
+
 type CodeState =
   | { kind: "idle" }
   | { kind: "busy" }
@@ -36,10 +38,11 @@ export function CompanionSignInCode({ runId }: { runId: string }) {
     }
   }
 
+  // The Apply page is dark: this box uses the page's own styles, so the code is readable there.
   return (
-    <div className="space-y-2 rounded-lg border border-slate-200 p-3 text-sm text-slate-700">
-      <p className="font-semibold text-slate-950">Sign in the Apply Pilot browser window</p>
-      <p>
+    <div className="space-y-2 rounded-lg border border-[var(--product-border)] p-3">
+      <p className="job-card-title">Sign in the Apply Pilot browser window</p>
+      <p className="job-note">
         Google won&apos;t sign in inside the Apply Pilot browser window (it shows as &lsquo;Google Chrome for
         Testing&rsquo;). Get a one-time code here and type it into that window instead.
       </p>
@@ -48,24 +51,27 @@ export function CompanionSignInCode({ runId }: { runId: string }) {
         data-testid="companion-code-button"
         disabled={state.kind === "busy"}
         onClick={() => { void getCode(); }}
-        className="rounded-lg bg-slate-950 px-4 py-2 font-semibold text-white disabled:opacity-60"
+        className={state.kind === "issued" ? "job-button" : "job-button job-button-primary"}
       >
         {state.kind === "issued" ? "Get a new code" : "Get a sign-in code"}
       </button>
-      <p>Getting a new code cancels the previous one.</p>
+      <p className="job-hint">Getting a new code cancels the previous one.</p>
       {state.kind === "issued" ? (
-        <div role="status" className="space-y-1">
-          <p>
-            Code: <strong data-testid="companion-code" className="font-mono text-base tracking-wider text-slate-950">{state.code}</strong>
-          </p>
-          <p>
-            Type it into the Apply Pilot browser window when it asks you to sign in. It works once, for 5 minutes
-            (until {timeFormat.format(new Date(state.expiresAt))}), and only for this browser run. Don&apos;t share it.
+        <div role="status" className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="job-note">
+              Code: <strong data-testid="companion-code" className="font-mono text-lg tracking-wider text-[var(--product-text)]">{state.code}</strong>
+            </p>
+            <CopyButton value={state.code} label="sign-in code" />
+          </div>
+          <p className="job-note">
+            Paste or type it into the Apply Pilot browser window when it asks you to sign in. It works once, for 5
+            minutes (until {timeFormat.format(new Date(state.expiresAt))}), and only for this browser run. Don&apos;t share it.
           </p>
         </div>
       ) : null}
       {state.kind === "error" ? (
-        <p role="status">Apply Pilot couldn&apos;t get a code. Refresh the page and try again.</p>
+        <p role="status" className="job-hint job-problem">Apply Pilot couldn&apos;t get a code. Refresh the page and try again.</p>
       ) : null}
     </div>
   );

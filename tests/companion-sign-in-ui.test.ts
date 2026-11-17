@@ -368,5 +368,46 @@ test("a refused code request explains itself and shows no code", async () => {
     await ui.click("[data-testid='companion-code-button']");
     assert.equal(ui.container.querySelector("[data-testid='companion-code']") === null, true);
     assert.match(ui.text(), /couldn't get a code/i);
+    assert.deepEqual(lightThemeColored(ui.container), []);
+  } finally { await ui.cleanup(); }
+});
+
+// The Apply page is dark. Light-theme colors (slate text, white or near-black fills) made this box
+// and the code itself nearly invisible there (live case 2026-11-16), so it uses the page's own
+// styles. The Copy button is the same light chip as the start command's Copy button, readable on both.
+const LIGHT_THEME_COLOR = /(?:^|\s)(?:text|bg|border)-(?:slate-\d+|white|black)(?=\s|$)/;
+
+function lightThemeColored(container: HTMLElement) {
+  return Array.from(container.querySelectorAll<HTMLElement>("*"))
+    .filter((element) => !element.closest("[data-copy-button]") && LIGHT_THEME_COLOR.test(element.getAttribute("class") ?? ""))
+    .map((element) => `${element.tagName.toLowerCase()} ${element.getAttribute("class")}`);
+}
+
+test("the code box uses the Apply page's own text and button styles, before and after getting a code", async () => {
+  const ui = await mount(createElement(CompanionSignInCode, { runId: RUN }), async () =>
+    json({ code: "ABCD-EFGH-JKMN", expiresAt: "2026-11-10T12:05:00.000Z" }));
+  try {
+    assert.deepEqual(lightThemeColored(ui.container), []);
+    assert.equal(ui.container.querySelector("[data-testid='companion-code-button']")?.classList.contains("job-button"), true);
+    await ui.click("[data-testid='companion-code-button']");
+    assert.deepEqual(lightThemeColored(ui.container), []);
+    assert.equal(ui.container.querySelector("[data-testid='companion-code-button']")?.classList.contains("job-button"), true);
+  } finally { await ui.cleanup(); }
+});
+
+test("after getting a code, Copy puts exactly the code on the clipboard", async () => {
+  const ui = await mount(createElement(CompanionSignInCode, { runId: RUN }), async () =>
+    json({ code: "ABCD-EFGH-JKMN", expiresAt: "2026-11-10T12:05:00.000Z" }));
+  const copied: string[] = [];
+  Object.defineProperty(ui.window.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async (value: string) => { copied.push(value); } }
+  });
+  try {
+    assert.equal(ui.container.querySelector("[data-copy-button]") === null, true, "nothing to copy before a code");
+    await ui.click("[data-testid='companion-code-button']");
+    await ui.click("[aria-label='Copy sign-in code']");
+    assert.deepEqual(copied, ["ABCD-EFGH-JKMN"]);
+    assert.match(ui.text(), /Copied/);
   } finally { await ui.cleanup(); }
 });
