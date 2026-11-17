@@ -31,6 +31,7 @@ test("main's unscored local match cannot unlock Human-Submit preparation", async
   }
 
   const gates = {
+    applyPageOff: false,
     hostBlocked: false,
     fitScore,
     matchConfidence,

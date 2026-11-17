@@ -1,4 +1,4 @@
-import { Briefcase, CalendarDays, DollarSign, MapPin } from "lucide-react";
+import { Briefcase, Building2, CalendarDays, DollarSign, MapPin } from "lucide-react";
 
 import type { JobHeaderView } from "@/lib/jobs/job-view-types";
 
@@ -19,6 +19,7 @@ export function JobHeader({ job, headingLevel = 1 }: { job: JobHeaderView; headi
         <li><DollarSign size={15} aria-hidden="true" />{job.salary ?? "Salary not listed"}</li>
         <li><CalendarDays size={15} aria-hidden="true" />Posted {job.postedAge.toLowerCase() === "today" ? "today" : job.postedAge}</li>
         <li><Briefcase size={15} aria-hidden="true" />{job.source}</li>
+        {job.applyOnCompanySite ? <li data-apply-on-company-site><Building2 size={15} aria-hidden="true" />Apply on the company&apos;s own site</li> : null}
       </ul>
     </header>
   );

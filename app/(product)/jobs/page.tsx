@@ -163,6 +163,7 @@ export default async function JobsPage({ searchParams }: JobsPageProps) {
                     <FeedCard job={{
                       id: view.id, title: view.title, company: view.company, location: view.location, workStyle: view.workStyle,
                       salary: view.salary, postedAge: view.postedAge, source: view.source, score,
+                      applyOnCompanySite: view.applyOnCompanySite,
                       href: feedHref(filters, { job: job.id }, { keepJob: true }),
                       selected: selected?.job.id === job.id,
                       trackerStatus: job.applications[0] ? formatApplicationStatus(job.applications[0].status) : null

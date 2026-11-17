@@ -1,6 +1,7 @@
 import type { JobPosting, UserProfile } from "@prisma/client";
 
 import { getJobSourceProvider } from "@/lib/job-sources";
+import { ashbyHostedSlug, checkAshbyHostedPage, type HostedPageState } from "@/lib/job-sources/ashby-hosted-page";
 import {
   collapseRepeatedRoles,
   selectBoardImports,
@@ -16,13 +17,18 @@ import {
 } from "@/lib/job-sources/ingestion";
 import { evaluateForImport } from "@/lib/job-sources/prefilter";
 import type { RawJob } from "@/lib/job-sources/types";
+import { captureException, logger } from "@/lib/monitoring/logger";
 import { prisma } from "@/lib/prisma";
 
 /** Board APIs return the whole board; closure detection needs every listed posting. */
 export const ALL_BOARD_JOBS = Number.POSITIVE_INFINITY;
 
-/** One fetch per board per run, shared across users in a cron invocation. */
-export type BoardListingCache = Map<string, Promise<RawJob[]>>;
+/**
+ * A board's listed jobs plus whether its ATS-hosted job pages are served (Ashby only; "unknown" for the
+ * others). One fetch of each per board per run, shared across users in a cron invocation.
+ */
+export type BoardListing = { jobs: RawJob[]; hostedPage: HostedPageState };
+export type BoardListingCache = Map<string, Promise<BoardListing>>;
 
 export function createBoardListingCache(): BoardListingCache {
   return new Map();
@@ -50,20 +56,54 @@ export type BoardSyncResult = {
   bestRelevanceScore: number;
 };
 
+/** One read of the Ashby-hosted page the listing's own job links point at; "unknown" without one. */
+async function ashbyHostedPage(jobs: RawJob[]): Promise<HostedPageState> {
+  const slug = ashbyHostedSlug(jobs);
+  if (!slug) {
+    return "unknown";
+  }
+  const hostedPage = await checkAshbyHostedPage(slug);
+  logger.info("job_sources.ashby_hosted_page", { board: slug, hostedPage });
+  return hostedPage;
+}
+
 function listBoard(target: BoardTarget, cache: BoardListingCache) {
   const key = `${target.ats}:${boardRegionFromBaseUrl(target.baseUrl)}:${target.token.toLowerCase()}`;
   let listing = cache.get(key);
 
   if (!listing) {
-    listing = getJobSourceProvider(target.ats).searchJobs({
-      boardToken: target.token,
-      url: target.baseUrl ?? undefined,
-      limit: ALL_BOARD_JOBS
-    });
+    listing = getJobSourceProvider(target.ats)
+      .searchJobs({
+        boardToken: target.token,
+        url: target.baseUrl ?? undefined,
+        limit: ALL_BOARD_JOBS
+      })
+      .then(async (jobs) => ({ jobs, hostedPage: target.ats === "ASHBY" ? await ashbyHostedPage(jobs) : "unknown" }));
     cache.set(key, listing);
   }
 
   return listing;
+}
+
+/**
+ * Marks the user's postings this board lists when its hosted job pages are switched off (keeping the
+ * first time it was found), and clears the mark once they are served again. "unknown" changes nothing.
+ */
+async function markAtsApplyPage(userId: string, listedApplyUrls: string[], hostedPage: HostedPageState, now: Date) {
+  const keys = [...new Set(listedApplyUrls.filter(Boolean))];
+  if (hostedPage === "unknown" || !keys.length) {
+    return;
+  }
+  const off = hostedPage === "off";
+  try {
+    await prisma.jobPosting.updateMany({
+      where: { userId, normalizedApplyUrl: { in: keys }, atsApplyPageOffAt: off ? null : { not: null } },
+      data: { atsApplyPageOffAt: off ? now : null }
+    });
+  } catch (error) {
+    // The mark is advisory; a failed write never fails a sync whose imports are already saved.
+    captureException(error, { source: "board-sync.ats-apply-page", userId });
+  }
 }
 
 /** Apply URLs among `applyKeys` that this user already has stored. */
@@ -106,7 +146,7 @@ export async function syncBoard({
   now?: Date;
 }): Promise<BoardSyncResult> {
   const provider = getJobSourceProvider(target.ats);
-  const rawJobs = await listBoard(target, listingCache);
+  const { jobs: rawJobs, hostedPage } = await listBoard(target, listingCache);
   const listedApplyUrls: string[] = [];
   const passing: BoardImportCandidate[] = [];
   let bestRelevanceScore = 0;
@@ -149,6 +189,7 @@ export async function syncBoard({
     listedApplyUrls,
     now
   });
+  await markAtsApplyPage(userId, listedApplyUrls, hostedPage, now);
 
   return {
     imported: [...persisted.created, ...persisted.updated],

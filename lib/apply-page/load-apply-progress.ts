@@ -21,6 +21,8 @@ export type ApplyProgressFacts = {
   documents: AttachedDocuments;
   coverRequired: boolean;
   automationAvailable: boolean;
+  /** A board sync found the job's ATS-hosted page switched off. */
+  applyPageOff?: boolean;
   run: { state: string } | null;
 };
 
@@ -41,6 +43,7 @@ export function applyProgressInputFromFacts(facts: ApplyProgressFacts): ApplyPro
     coverAttached: facts.documents.cover === "ready",
     coverRequired: facts.coverRequired,
     automationAvailable: facts.automationAvailable,
+    applyPageOff: facts.applyPageOff ?? false,
     run: facts.run ? { state: facts.run.state, companionState: null } : null,
     applied: facts.application ? !NOT_APPLIED_STATUSES.has(facts.application.status) : false
   };
@@ -119,6 +122,7 @@ async function loadProgressFacts(userId: string, detail: JobDetail) {
     documents,
     coverRequired: policy.coverLetterRequired,
     automationAvailable: isApplicationAutomationEnabled(),
+    applyPageOff: detail.view.applyOnCompanySite ?? false,
     run
   };
   return { documents, policy, run, progress: applyProgressFromFacts(progressFacts), progressInput: applyProgressInputFromFacts(progressFacts) };

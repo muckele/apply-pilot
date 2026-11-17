@@ -36,6 +36,7 @@ type DetailJob = {
   description: string;
   requirements: string[];
   preferredQualifications: string[];
+  atsApplyPageOffAt?: Date | null;
 };
 
 export function buildJobDetailView(job: DetailJob, now: Date = new Date()): JobDetailView {
@@ -52,7 +53,8 @@ export function buildJobDetailView(job: DetailJob, now: Date = new Date()): JobD
     requirements: job.requirements,
     preferredQualifications: job.preferredQualifications,
     workStyleQuotes: extractWorkStyleQuotes(job.description),
-    listedWorkStyle: job.remoteStatus?.trim() || null
+    listedWorkStyle: job.remoteStatus?.trim() || null,
+    applyOnCompanySite: Boolean(job.atsApplyPageOffAt)
   };
 }
 

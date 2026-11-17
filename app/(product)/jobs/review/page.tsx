@@ -370,7 +370,7 @@ export default async function JobsReviewPage({ searchParams }: JobsReviewPagePro
                           </div>
                         </details>
 
-                        <JobReviewActions jobId={job.id} applyUrl={job.applyUrl} />
+                        <JobReviewActions jobId={job.id} applyUrl={job.applyUrl} applyOnCompanySite={job.applyOnCompanySite} />
                       </article>
                     ))}
                   </div>

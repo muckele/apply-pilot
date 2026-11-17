@@ -460,6 +460,8 @@ model JobPosting {
   sourceType                JobSourceType
   firstDiscoveredAt         DateTime      @default(now())
   lastCheckedAt             DateTime?
+  /// When a board sync first found the ATS-hosted job page switched off (apply on the company's own site); null when served or never checked.
+  atsApplyPageOffAt         DateTime?
   status                    PostingStatus @default(ACTIVE)
   overallFitScore           Int?
   resumeKeywordScore        Int?

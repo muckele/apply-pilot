@@ -15,6 +15,8 @@ export type ApplyProgressInput = {
   coverRequired: boolean;
   /** This server runs application automation. Without it, steps 4 to 10 are "Apply on my own". */
   automationAvailable: boolean;
+  /** The job's ATS-hosted page is switched off: from step 4 on the way to apply is "Apply on my own". */
+  applyPageOff?: boolean;
   run: { state: string; companionState: string | null } | null;
   applied: boolean;
 };
@@ -100,7 +102,7 @@ export function deriveApplyProgress(input: ApplyProgressInput): ApplyProgress {
   if (input.applied) return allDone("You applied. Nothing left to do.");
   if (input.run?.state === "COMPLETED_BY_USER") return allDone("You applied. Nothing left to do.");
   const current = currentStep(input);
-  const applyOnYourOwn = !input.automationAvailable && current >= 4;
+  const applyOnYourOwn = (!input.automationAvailable || input.applyPageOff === true) && current >= 4;
   const nextNumber = applyOnYourOwn ? undefined : ASSISTED_APPLY_STEP_NUMBERS.find((n) => n === current + 1);
   return {
     current,

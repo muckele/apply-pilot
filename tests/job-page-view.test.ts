@@ -16,8 +16,19 @@ test("the job view uses only listed data, in plain labels", () => {
     id: "job-1", title: "Director", company: "Northwind", location: "Remote — US", workStyle: "Remote",
     salary: "$165k–$195k", postedAge: "2 days ago", source: "Greenhouse",
     description: "Lead delivery. This role is fully remote.", requirements: ["A"], preferredQualifications: ["B"],
-    workStyleQuotes: ["This role is fully remote."], listedWorkStyle: "REMOTE"
+    workStyleQuotes: ["This role is fully remote."], listedWorkStyle: "REMOTE", applyOnCompanySite: false
   });
+});
+
+test("a job whose job board page is switched off is applied for on the company's own site", () => {
+  const job = {
+    id: "job-3", title: "Lead", company: "Litware", location: null, remoteStatus: null, salaryMin: null, salaryMax: null,
+    datePosted: null, firstDiscoveredAt: new Date("2026-11-05T09:00:00.000Z"), sourceType: "ASHBY", description: "Lead.",
+    requirements: [], preferredQualifications: []
+  };
+  assert.equal(buildJobDetailView({ ...job, atsApplyPageOffAt: new Date("2026-11-05T14:00:00.000Z") }, now).applyOnCompanySite, true);
+  assert.equal(buildJobDetailView({ ...job, atsApplyPageOffAt: null }, now).applyOnCompanySite, false);
+  assert.equal(buildJobDetailView(job, now).applyOnCompanySite, false);
 });
 
 test("missing posting fields stay missing", () => {
