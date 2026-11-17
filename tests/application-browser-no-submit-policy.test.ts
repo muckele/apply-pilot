@@ -37,7 +37,7 @@ const BASELINE_MISMATCH_MESSAGE =
  */
 const SEALED_SOURCE_SHA256: Readonly<Record<ProtectedSourcePath, string>> = {
   [SESSION_PATH]: "75d77340ff765d67c05caf46b39927321a62cf0d6dbb4ca2046338fdf65fb6f9",
-  [WORLD_PATH]: "dc395a6fc2ece395d1ddc0ab1c65b05ae30d3c2e38ab1d97f5f9e1700af96b89"
+  [WORLD_PATH]: "b2b2ce4e48e8110d1421dc52f62201ec008318bb01be26fcb5fa6eb7ee3a27f1"
 };
 
 const EXPECTED_CAPABILITY_METHODS = [
