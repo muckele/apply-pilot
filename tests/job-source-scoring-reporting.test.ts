@@ -118,6 +118,7 @@ function setup(t: TestContext, aiDiscoveryEnabled: boolean) {
   stub(t, prisma.jobPosting, "findFirstOrThrow", async () => { matchLoads += 1; return job; });
   stub(t, prisma.resume, "findFirst", async () => null);
   stub(t, prisma.userProfile, "findUnique", async () => null);
+  stub(t, prisma.jobDiscoveryPreference, "findUnique", async () => null);
   return { sourceUpdates, get matchLoads() { return matchLoads; } };
 }
 

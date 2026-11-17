@@ -102,6 +102,9 @@ function boardReport(planned: PlannedBoard, result: BoardSyncResult): DiscoveryS
     result.capped ? `${result.capped} more matches over the per-board limit.` : "",
     result.otherLocations ? `${result.otherLocations} more locations for the same role kept as one job.` : "",
     result.closed ? `${result.closed} no longer listed and marked expired.` : "",
+    result.refreshedOutsideFilter
+      ? `${result.refreshedOutsideFilter} already in your jobs no longer ${result.refreshedOutsideFilter === 1 ? "passes" : "pass"} the relevance filter and ${result.refreshedOutsideFilter === 1 ? "was" : "were"} refreshed, not removed.`
+      : "",
     !result.imported.length && !result.unchanged.length && result.skipped ? "No jobs passed the current relevance filter." : ""
   ].filter(Boolean);
 
@@ -234,8 +237,10 @@ export async function runBoardDiscovery({
         userId,
         target: board.target,
         // A company the user chose to follow shows every relevant role, not only keyword
-        // matches; location, remote-only and the relevance prefilter still apply.
-        queries: board.origin === "followed" ? [] : queries,
+        // matches; location, remote-only and the relevance prefilter (which judges titles
+        // against the target searches as well as the profile's roles) still apply.
+        queries,
+        requireQueryMatch: board.origin !== "followed",
         remoteOnly,
         profile,
         maxImports: limitPerBoard,

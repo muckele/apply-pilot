@@ -209,12 +209,15 @@ export async function persistCandidates({
   jobSourceId,
   candidates,
   index,
+  refreshOnly = false,
   now = new Date()
 }: {
   userId: string;
   jobSourceId?: string;
   candidates: NormalizedJob[];
   index: RunDedupeIndex;
+  /** Only refresh postings this user already has under the same apply URL; never create one. */
+  refreshOnly?: boolean;
   now?: Date;
 }): Promise<PersistResult> {
   const result: PersistResult = { created: [], updated: [], unchanged: [], duplicates: 0 };
@@ -247,6 +250,12 @@ export async function persistCandidates({
     const applyKey = postingApplyKey(job);
     const identity = postingIdentityKey(job);
     const seenSourceTypes = index.identities.get(identity);
+    const sameUrl = applyKey ? byApplyKey.get(applyKey) : undefined;
+
+    // Checked before the run index is touched, so a posting that is not stored claims nothing.
+    if (refreshOnly && !(sameUrl && postingRowIdentity(sameUrl) === identity)) {
+      continue;
+    }
 
     if (
       (applyKey && index.applyUrls.has(applyKey)) ||
@@ -261,7 +270,6 @@ export async function persistCandidates({
     }
     index.identities.set(identity, new Set([...(seenSourceTypes ?? []), job.sourceType]));
 
-    const sameUrl = applyKey ? byApplyKey.get(applyKey) : undefined;
     if (sameUrl && postingRowIdentity(sameUrl) === identity) {
       const stored = normalizedJobFromPosting(sameUrl);
       const refreshed = keepUnchangedMatchContent(stored, job);

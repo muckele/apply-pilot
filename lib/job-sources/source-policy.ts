@@ -1,6 +1,11 @@
-import type { JobSource } from "@prisma/client";
+import type { JobSource, UserProfile } from "@prisma/client";
 
 import { assertSourceTypeComplianceEnabled } from "@/lib/job-sources/compliance";
+import {
+  resolveDiscoveryLocation,
+  resolveDiscoveryQueries,
+  type JobDiscoveryPreferences
+} from "@/lib/job-sources/discovery-preferences";
 import type { JobSearchCriteria } from "@/lib/job-sources/types";
 
 const urlRequiredSourceTypes = new Set<JobSource["type"]>(["RSS", "COMPANY_CAREERS"]);
@@ -25,6 +30,32 @@ export type SourceRunOptions = {
   remoteOnly?: boolean;
   query?: string | null;
 };
+
+/**
+ * A manual run (the Job Sources page's Sync) sends little more than a limit. What it leaves out
+ * comes from the same discovery settings scheduled discovery reads: the saved target searches
+ * (else the profile's preferred roles), location and remote-only choice. A value the request
+ * sets itself wins.
+ */
+export function withDiscoveryDefaults(
+  options: SourceRunOptions,
+  {
+    savedPreference,
+    profile
+  }: {
+    savedPreference: Pick<JobDiscoveryPreferences, "targetSearches" | "location" | "remoteOnly"> | null;
+    profile: Pick<UserProfile, "preferredRoles" | "preferredLocations" | "location"> | null;
+  }
+): { options: SourceRunOptions; targetSearches: string[] } {
+  return {
+    options: {
+      ...options,
+      location: resolveDiscoveryLocation({ suppliedLocation: options.location ?? undefined, savedPreference, profile }),
+      remoteOnly: options.remoteOnly ?? savedPreference?.remoteOnly ?? false
+    },
+    targetSearches: resolveDiscoveryQueries({ savedPreference, profilePreferredRoles: profile?.preferredRoles })
+  };
+}
 
 export function sourceRequiresUserReview(sourceType: JobSource["type"]) {
   return userReviewedSourceTypes.has(sourceType);

@@ -271,7 +271,8 @@ test("followed boards skip the target-search keyword filter; directory boards ke
   });
   const run = (remoteOnly: boolean) => runBoardDiscovery({
     userId: "user-1",
-    profile,
+    // The title is a profile role but not a target search, so only the keyword match fails it.
+    profile: { ...profile, preferredRoles: ["Technical Account Manager"] },
     queries: ["Data Scientist"],
     location: "",
     remoteOnly,
@@ -291,6 +292,34 @@ test("followed boards skip the target-search keyword filter; directory boards ke
   stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => [accountManagerJob("acme", "New York, NY")]);
   const remoteOnly = await run(true);
   assert.equal(remoteOnly.imported.length, 0, "followed boards still honour the remote-only preference and prefilter");
+});
+
+test("followed boards judge titles against the target searches as well as the profile's roles", async (t) => {
+  const followed = sourceRow({ id: "followed-acme", name: "Acme", boardToken: "acme" });
+  const db = setup(t, [followed]);
+  stub(t, getJobSourceProvider("GREENHOUSE"), "searchJobs", async () => [{
+    id: 9,
+    title: "Technical Support Engineer",
+    absolute_url: "https://boards.greenhouse.io/acme/jobs/9",
+    location: { name: "Remote" },
+    content: "Partner with customers on technical discovery, API integrations, SaaS onboarding, troubleshooting, workflows, and training."
+  }]);
+
+  const result = await runBoardDiscovery({
+    userId: "user-1",
+    profile: { ...profile, preferredRoles: ["Customer Success Manager"] },
+    queries: ["Technical Support Engineer"],
+    location: "",
+    remoteOnly: false,
+    limitPerBoard: 5,
+    maxBoards: 1,
+    index: createRunDedupeIndex(),
+    directory: [],
+    now: new Date("2026-11-03T12:00:00.000Z")
+  });
+
+  assert.deepEqual(db.upserts.map((upsert) => upsert.create.title), ["Technical Support Engineer"]);
+  assert.equal(result.reports.find((report) => report.name === "Acme (Greenhouse)")?.skipped, 0);
 });
 
 test("no board is scheduled once the run's time budget has passed, and the deferral is reported", async (t) => {

@@ -169,7 +169,8 @@ export const jobSourcePatchSchema = jobSourceBaseSchema
 export const jobSourceSyncSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   location: z.preprocess(emptyStringToNull, z.string().trim().max(120).nullable().optional()),
-  remoteOnly: z.boolean().optional().default(false),
+  // Left unset when the request does not choose, so a sync falls back to the saved preference.
+  remoteOnly: z.boolean().optional(),
   query: z.preprocess(emptyStringToNull, z.string().trim().max(120).nullable().optional())
 });
 

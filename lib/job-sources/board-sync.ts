@@ -15,7 +15,7 @@ import {
   type RunDedupeIndex
 } from "@/lib/job-sources/ingestion";
 import { evaluateForImport } from "@/lib/job-sources/prefilter";
-import type { RawJob } from "@/lib/job-sources/types";
+import type { NormalizedJob, RawJob } from "@/lib/job-sources/types";
 import { prisma } from "@/lib/prisma";
 
 /** Board APIs return the whole board; closure detection needs every listed posting. */
@@ -48,6 +48,11 @@ export type BoardSyncResult = {
   duplicates: number;
   closed: number;
   bestRelevanceScore: number;
+  /**
+   * Postings the user already has that fail the current filter: refreshed from the board (or
+   * only re-checked when unchanged) instead of left stale. Not imports, not scored, not skipped.
+   */
+  refreshedOutsideFilter: number;
 };
 
 function listBoard(target: BoardTarget, cache: BoardListingCache) {
@@ -83,11 +88,17 @@ async function storedApplyKeys(userId: string, applyKeys: string[]) {
  * apply the existing deterministic prefilter, store up to `maxImports` postings the user does
  * not have yet (see board-import-selection.ts) plus refreshes of the ones they already have,
  * with cross-source dedupe and unchanged-skip, then expire postings that left the board.
+ *
+ * `queries` are the user's target searches. They always count as roles in the relevance
+ * prefilter; `requireQueryMatch: false` (a board the user follows) drops only the keyword match.
+ * A posting the user already has is refreshed even when it no longer passes the filter: it is
+ * in their jobs, and its board content is the truth about it, as closure already assumes.
  */
 export async function syncBoard({
   userId,
   target,
   queries,
+  requireQueryMatch = true,
   remoteOnly,
   profile,
   maxImports,
@@ -98,6 +109,7 @@ export async function syncBoard({
   userId: string;
   target: BoardTarget;
   queries: readonly string[];
+  requireQueryMatch?: boolean;
   remoteOnly?: boolean;
   profile: UserProfile | null;
   maxImports: number;
@@ -109,6 +121,7 @@ export async function syncBoard({
   const rawJobs = await listBoard(target, listingCache);
   const listedApplyUrls: string[] = [];
   const passing: BoardImportCandidate[] = [];
+  const filtered: NormalizedJob[] = [];
   let bestRelevanceScore = 0;
 
   rawJobs.forEach((rawJob, order) => {
@@ -116,12 +129,14 @@ export async function syncBoard({
     const job = { ...normalized, company: normalized.company || target.company };
     listedApplyUrls.push(postingApplyKey(job));
 
-    const evaluation = evaluateForImport({ job, profile, queries, remoteOnly });
+    const evaluation = evaluateForImport({ job, profile, queries, remoteOnly, requireQueryMatch });
     if (evaluation.relevance) {
       bestRelevanceScore = Math.max(bestRelevanceScore, evaluation.relevance.score);
     }
     if (evaluation.passed) {
       passing.push({ job, score: evaluation.relevance.score, decision: evaluation.relevance.decision, order });
+    } else {
+      filtered.push(job);
     }
   });
 
@@ -142,6 +157,15 @@ export async function syncBoard({
     now: now.getTime()
   }).map((entry) => entry.job);
   const persisted = await persistCandidates({ userId, jobSourceId: target.jobSourceId, candidates: selected, index, now });
+  const refreshed = await persistCandidates({
+    userId,
+    jobSourceId: target.jobSourceId,
+    candidates: filtered,
+    index,
+    refreshOnly: true,
+    now
+  });
+  const refreshedOutsideFilter = refreshed.updated.length + refreshed.unchanged.length;
   const closed = await closeVanishedPostings({
     userId,
     sourceType: target.ats,
@@ -154,11 +178,12 @@ export async function syncBoard({
     imported: [...persisted.created, ...persisted.updated],
     unchanged: persisted.unchanged,
     listed: rawJobs.length,
-    skipped: rawJobs.length - passing.length,
+    skipped: filtered.length - refreshedOutsideFilter,
     capped: Math.max(0, distinctRoles.length - selected.length),
     otherLocations,
     duplicates: persisted.duplicates,
     closed,
-    bestRelevanceScore
+    bestRelevanceScore,
+    refreshedOutsideFilter
   };
 }

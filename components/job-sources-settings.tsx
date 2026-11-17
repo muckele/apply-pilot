@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { CheckCircle2, Loader2, Pencil, Play, Plus, Power, Trash2, Wifi } from "lucide-react";
-import { useRouter } from "next/navigation";
 
 import { PrimaryButton, SecondaryButton, StatusBadge } from "@/components/ui";
 import type { DiscoveryScoringSummary } from "@/lib/job-sources/discovery";
@@ -86,6 +85,28 @@ function sourceHelp(type: string) {
   return "Use board token / query for the default search term. Provider API keys still live in environment variables.";
 }
 
+type SyncResponse = {
+  imported: number;
+  skipped: number;
+  refreshedOutsideFilter?: number;
+  scoring: DiscoveryScoringSummary;
+};
+
+function syncMessage(result: SyncResponse) {
+  const refreshed = result.refreshedOutsideFilter ?? 0;
+  return [
+    `Sync complete: ${result.imported} imported or updated, ${result.skipped} filtered.`,
+    refreshed === 1
+      ? "1 job you already had no longer passes your filters; it was refreshed and kept."
+      : refreshed > 1
+        ? `${refreshed} jobs you already had no longer pass your filters; they were refreshed and kept.`
+        : "",
+    formatDiscoveryScoringSummary(result.scoring)
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function toForm(source: JobSourceItem): SourceFormState {
   return {
     name: source.name,
@@ -99,7 +120,6 @@ function toForm(source: JobSourceItem): SourceFormState {
 }
 
 export function JobSourcesSettings({ initialSources }: { initialSources: JobSourceItem[] }) {
-  const router = useRouter();
   const [sources, setSources] = useState(initialSources);
   const [form, setForm] = useState<SourceFormState>(emptyForm);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -108,13 +128,14 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
   const [error, setError] = useState<string | null>(null);
   const enabledCount = useMemo(() => sources.filter((source) => source.syncEnabled).length, [sources]);
 
+  // Reloads only this list. A router refresh would remount it (the page keys it on each source's
+  // updatedAt, which every sync, test or toggle changes) and wipe the result message just shown.
   async function refreshSources() {
     const response = await fetch("/api/job-sources", { cache: "no-store" });
     const json = await response.json();
 
     if (response.ok) {
       setSources(json.sources);
-      router.refresh();
     }
   }
 
@@ -196,7 +217,7 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
         action === "test"
           ? `Test passed${json.sample?.title ? `: ${json.sample.title}` : "."}`
           : action === "sync"
-            ? `Sync complete: ${json.imported} imported or updated, ${json.skipped} filtered. ${formatDiscoveryScoringSummary(json.scoring as DiscoveryScoringSummary)}`
+            ? syncMessage(json as SyncResponse)
             : action === "toggle"
               ? `Sync ${source.syncEnabled ? "disabled" : "enabled"} for ${source.name}.`
               : "Source deleted.";
@@ -228,7 +249,7 @@ export function JobSourcesSettings({ initialSources }: { initialSources: JobSour
         </div>
 
         {message ? (
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+          <div role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
             {message}
           </div>
         ) : null}
