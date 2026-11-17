@@ -15,12 +15,12 @@ type Variant = "kit" | "job";
 
 const STYLES: Record<Variant, { card: string; title: string; copy: string; primary: string; secondary: string; error: string }> = {
   kit: {
-    card: "space-y-3 rounded-lg border border-brand-200 bg-brand-50 p-4",
-    title: "text-base font-semibold text-slate-950",
-    copy: "text-sm text-slate-700",
-    primary: "inline-flex items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60",
-    secondary: "inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-60",
-    error: "rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+    card: "space-y-3 rounded-lg border p-4 product-callout-success",
+    title: "text-base font-semibold product-themed-title",
+    copy: "text-sm product-themed-copy",
+    primary: "inline-flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-semibold product-primary-action disabled:opacity-60",
+    secondary: "inline-flex items-center justify-center rounded-lg border px-3 py-2 text-sm font-semibold product-secondary-action disabled:opacity-60",
+    error: "rounded-lg border px-3 py-2 text-sm product-callout-warning"
   },
   job: {
     card: "job-card job-apply-return",
@@ -145,7 +145,7 @@ export function ApplyReturnDeclinedNotice({
 }) {
   const style = STYLES[variant];
   return (
-    <div role="status" className={variant === "kit" ? "space-y-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700" : "job-card job-apply-return"} data-apply-return-declined>
+    <div role="status" className={variant === "kit" ? "space-y-2 rounded-lg border px-3 py-2 text-sm product-callout-neutral" : "job-card job-apply-return"} data-apply-return-declined>
       <p className={variant === "kit" ? undefined : style.copy}>
         You said you are not applying for this job, so it is archived and out of your active applications.
       </p>
