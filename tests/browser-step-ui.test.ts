@@ -25,3 +25,24 @@ test("the start command contains only the origin and the run id", async () => {
     await harness.close();
   }
 });
+
+// The Apply page is dark. The start command had a light fill and inherited the page's light text,
+// so it was near-white on near-white (live case 2026-11-17). Step 5 uses the page's own colors;
+// the Copy button is the same light chip everywhere, with its own dark text, so it is left out.
+const LIGHT_THEME_COLOR = /(?:^|\s)(?:text|bg|border)-(?:slate-\d+|white|black)(?=\s|$)/;
+
+test("step 5 uses the Apply page's own colors, and the start command sets its text and fill together", async () => {
+  const harness = createDomHarness({ fetch: (async () => new Response("{}")) as typeof fetch, confirm: () => true });
+  try {
+    await harness.render(React.createElement(BrowserStep, { appOrigin: ORIGIN, runId: RUN_ID }));
+    const lightColored = [...harness.container.querySelectorAll<HTMLElement>("*")]
+      .filter((element) => !element.closest("[data-copy-button]") && LIGHT_THEME_COLOR.test(element.getAttribute("class") ?? ""))
+      .map((element) => `${element.tagName.toLowerCase()} ${element.getAttribute("class")}`);
+    assert.deepEqual(lightColored, []);
+    const commandClass = harness.container.querySelector("[data-browser-start-command]")?.getAttribute("class") ?? "";
+    assert.match(commandClass, /(?:^|\s)text-\[var\(--product-text\)\](?=\s|$)/);
+    assert.match(commandClass, /(?:^|\s)bg-\[var\(--product-control-bg\)\](?=\s|$)/);
+  } finally {
+    await harness.close();
+  }
+});
