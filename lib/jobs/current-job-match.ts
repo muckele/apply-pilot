@@ -163,6 +163,61 @@ export function hasCurrentJobMatchAnalysis(
     }));
 }
 
+export type CurrentJobMatchBasis = "REVIEWED_EVIDENCE" | "NOTHING_TO_ADD";
+
+type CurrentJobMatchContextInput = Parameters<typeof buildCurrentJobMatchContext>[0];
+type CurrentJobMatchSnapshot = NonNullable<CurrentJobMatchContextInput["job"]["currentEvidenceSnapshot"]>;
+
+// The one rule for whether a saved JOB_MATCH answer is current for the evidence in force. The job
+// page, Prepare (its gate and the recheck after capture), the applications export and résumé
+// tailoring's protected citations all use it.
+//
+// REVIEWED_EVIDENCE  bound to the current reviewed snapshot, on exactly the input we'd send now.
+// NOTHING_TO_ADD     the current snapshot reviewed exactly this unbound answer and added no lines,
+//                    and the answer's input equals the unreviewed input one generation earlier.
+//                    Gemini saw exactly what the review left in force (the gaps it left open were
+//                    gaps in that answer too), so a second paid score would be asked the same
+//                    question. Saving a new review against such an answer is still refused.
+export function currentJobMatchBasis(input: {
+  job: CurrentJobMatchContextInput["job"] & {
+    currentEvidenceSnapshot?: (CurrentJobMatchSnapshot & { reviewedAnalysisId?: string | null }) | null;
+  };
+  resume: CurrentJobMatchContextInput["resume"];
+  profile: MatchInput["profile"];
+  analysis: { id?: string; inputHash?: string | null; evidenceSnapshotId?: string | null } | null | undefined;
+  // Pass the context when the caller already built it for this job, résumé and profile.
+  context?: ReturnType<typeof buildCurrentJobMatchContext>;
+}): CurrentJobMatchBasis | null {
+  const { job, resume, profile, analysis } = input;
+  if (!analysis?.inputHash) return null;
+  const context = input.context ?? buildCurrentJobMatchContext({ job, resume, profile });
+  if (hasCurrentJobMatchAnalysis({
+    currentEvidenceSnapshotId: job.currentEvidenceSnapshotId,
+    currentEvidenceSourceValid: context.currentEvidenceSourceValid,
+    aiAnalyses: [analysis]
+  }, context.matchInput)) {
+    return "REVIEWED_EVIDENCE";
+  }
+  if (
+    context.effectiveEvidenceSnapshotId !== null &&
+    context.reviewedEvidence?.facts.length === 0 &&
+    analysis.id !== undefined &&
+    job.currentEvidenceSnapshot?.reviewedAnalysisId === analysis.id &&
+    (analysis.evidenceSnapshotId ?? null) === null &&
+    job.evidenceSnapshotGeneration > 0 &&
+    analysis.inputHash === currentJobMatchInputHash(buildCurrentJobMatchInput({
+      job,
+      resume,
+      profile,
+      reviewedEvidence: null,
+      evidenceSnapshotGeneration: job.evidenceSnapshotGeneration - 1
+    }))
+  ) {
+    return "NOTHING_TO_ADD";
+  }
+  return null;
+}
+
 type DenormalizedJobMatchFields = {
   overallFitScore: number | null;
   confidenceScore: number | null;

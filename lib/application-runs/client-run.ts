@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { fetchWithAiCostConfirmation, type ConfirmFn } from "@/lib/ai/browser-request";
+import { fetchWithAiConsent } from "@/lib/ai/browser-request";
 
 // Browser helpers for the run requests behind Prepare: create the run (idempotently), allow its
 // employer's host, prepare it, read it back, and read or set Assisted Fill. Used by the Apply page's
@@ -161,12 +161,12 @@ export async function allowHostForRun(runId: string, fetchImpl: typeof fetch = f
   if (!response.ok) throw new RunRequestError("refused", "The host was not allowed.", await errorCode(response));
 }
 
-/** POST Prepare with `{}`. When the server asks about cost (428), `confirm` asks the user first. */
-export function prepareRun(runId: string, confirm: ConfirmFn, fetchImpl: typeof fetch = fetch): Promise<Response> {
-  return fetchWithAiCostConfirmation(
+/** POST Prepare with `{}`, carrying the AI consent the user gave once (D037: no cost question). */
+export function prepareRun(runId: string, fetchImpl: typeof fetch = fetch): Promise<Response> {
+  return fetchWithAiConsent(
     `/api/application-runs/${encodeURIComponent(runId)}/prepare`,
     { method: "POST", headers: JSON_HEADERS, body: JSON.stringify({}), cache: "no-store" },
-    { fetchImpl, confirm }
+    fetchImpl
   );
 }
 

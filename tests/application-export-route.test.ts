@@ -4,7 +4,7 @@ import { test, type TestContext } from "node:test";
 
 import { toApplicationExportRow, type ApplicationExportRecord, type ApplicationExportRow } from "@/lib/applications/csv-export";
 import { PublicApiError } from "@/lib/api-errors";
-import { buildCurrentJobMatchContext, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
+import { buildCurrentJobMatchContext, buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
 import { prisma } from "@/lib/prisma";
 
 // Route modules load Next's request storage, so they are imported only after environment() installs AsyncLocalStorage.
@@ -265,6 +265,32 @@ test("a stale analysis exports a blank fit score instead of the denormalized num
   const { readApplicationExportRows } = await import("@/lib/applications/export-route");
   const [row] = await readApplicationExportRows("owner-1");
   assert.equal(row.fitScore, null);
+});
+
+// "Nothing to add": the current snapshot reviewed exactly this master-résumé answer and added no lines.
+function nothingToAddJob(reviewedAnalysisId: string) {
+  const job = storedJob("OwnerCo", "Owner Role");
+  const masterInput = buildCurrentJobMatchInput({
+    job, resume: OWNER_RESUME, profile: null, reviewedEvidence: null, evidenceSnapshotGeneration: 0
+  });
+  return {
+    ...job,
+    currentEvidenceSnapshot: { ...job.currentEvidenceSnapshot, reviewedAnalysisId },
+    aiAnalyses: [{ id: "analysis-master", inputHash: currentJobMatchInputHash(masterInput), evidenceSnapshotId: null }]
+  };
+}
+
+test("a 'nothing to add' answer exports its fit score; an unbound answer the review didn't review does not", async (t) => {
+  environment(t);
+  stub(t, prisma.resume, "findFirst", async () => OWNER_RESUME);
+  stub(t, prisma.userProfile, "findUnique", async () => null);
+  const { readApplicationExportRows } = await import("@/lib/applications/export-route");
+
+  stub(t, prisma.application, "findMany", async () => [{ ...exportRecord(), jobPosting: nothingToAddJob("analysis-master") }]);
+  assert.equal((await readApplicationExportRows("owner-1"))[0].fitScore, 77);
+
+  stub(t, prisma.application, "findMany", async () => [{ ...exportRecord(), jobPosting: nothingToAddJob("analysis-other") }]);
+  assert.equal((await readApplicationExportRows("owner-1"))[0].fitScore, null);
 });
 
 test("the export query scopes nested events to the owner and selects no private notes or contact fields", async (t) => {

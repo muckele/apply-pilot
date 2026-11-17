@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { prisma } from "@/lib/prisma";
-import { buildCurrentJobMatchContext, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
+import { buildCurrentJobMatchContext, buildCurrentJobMatchInput, currentJobMatchInputHash } from "@/lib/jobs/current-job-match";
 import { loadJobDetail } from "@/lib/jobs/job-detail";
+import { JOB_MATCH_PROMPT_VERSION } from "@/lib/ai/job-match-version";
 
 const userId = "user-synthetic-alex-rivera";
 
@@ -124,4 +125,58 @@ test("the loader carries no field nothing reads", async () => {
     assert.ok(detail);
     assert.equal("readOnlyGaps" in detail, false, "step 2's list replaced the read-only gaps");
   } finally { restore(); }
+});
+
+// "Nothing to add": the current snapshot reviewed exactly this master-résumé answer and added no lines.
+function nothingToAddJob(facts: unknown[] = []) {
+  return {
+    ...jobRow,
+    currentEvidenceSnapshot: {
+      ...jobRow.currentEvidenceSnapshot,
+      reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v2", facts, unresolvedGapIds: [] },
+      reviewedAnalysisId: "analysis-1"
+    }
+  };
+}
+
+function masterResumeHash() {
+  return currentJobMatchInputHash(buildCurrentJobMatchInput({
+    job: jobRow as never, resume: resumeRow as never, profile: null, reviewedEvidence: null, evidenceSnapshotGeneration: 0
+  }));
+}
+
+async function detailWith(job: unknown, analysis: unknown) {
+  const p = prisma as unknown as Record<string, Record<string, unknown>>;
+  const restore = stubPrisma({ job: true, analysis });
+  const original = p.jobPosting.findFirst;
+  p.jobPosting.findFirst = async () => job;
+  try {
+    return await loadJobDetail(userId, "job-1");
+  } finally {
+    p.jobPosting.findFirst = original;
+    restore();
+  }
+}
+
+function scoredOutput(confidenceScore: number) {
+  return { contractVersion: "3", promptVersion: JOB_MATCH_PROMPT_VERSION, overallFitScore: 90, confidenceScore };
+}
+
+test("the job page counts a 'nothing to add' answer as current, and keeps it out of a new review", async () => {
+  const analysis = { ...analysisRow(88, masterResumeHash()), evidenceSnapshotId: null, output: scoredOutput(88) };
+  const detail = await detailWith(nothingToAddJob(), analysis);
+  assert.equal(detail?.currentConfidenceScore, 88);
+  assert.equal(detail?.estimate?.basis, "MASTER_RESUME_NO_NEW_FACTS");
+  assert.equal(detail?.evidenceReview?.analysisId ?? null, null, "a new review can't be saved against it");
+});
+
+test("the job page doesn't count the older answer once the review added a line", async () => {
+  const fact = {
+    factId: "fact:1", originGapId: "gap:0", fact: "Built services in TypeScript.",
+    provenance: { kind: "OWNER_ATTESTED", ownerAttested: true }, reuseScope: "JOB_ONLY", masterProfileOptIn: false
+  };
+  const analysis = { ...analysisRow(88, masterResumeHash()), evidenceSnapshotId: null, output: scoredOutput(88) };
+  const detail = await detailWith(nothingToAddJob([fact]), analysis);
+  assert.equal(detail?.currentConfidenceScore, null);
+  assert.equal(detail?.estimate ?? null, null);
 });

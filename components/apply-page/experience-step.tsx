@@ -4,10 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } fro
 import { useRouter } from "next/navigation";
 import { Loader2, Sparkles } from "lucide-react";
 
-import { useInPageConfirm } from "@/components/ui/in-page-confirm";
-import { fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
-import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
-import { formatCentsCeiling, formatUsdMicros, type DocumentCreationQuote } from "@/lib/jobs/document-creation-plan";
+import { fetchWithAiConsent } from "@/lib/ai/browser-request";
+import { aiErrorText, type AiErrorPayload } from "@/lib/apply-page/ai-error-text";
 import type { EvidenceCorrectionReview, EvidenceReviewGap } from "@/lib/jobs/evidence-correction-review";
 import { evidenceSnapshotSaveResponseSchema } from "@/lib/jobs/evidence-snapshot-contracts";
 import {
@@ -34,28 +32,36 @@ import {
 } from "@/lib/jobs/tailor-decisions";
 
 // Step 2 of the Apply page: one box per requirement (blank = skip), drafts kept in this browser
-// as you type, problems shown as you type, one truth tick, and "Update my score", which only
-// saves the lines and re-scores. Nothing reaches the server before Update.
+// as you type, problems shown as you type, and one button (G-6). With a new or changed line it
+// reads "These are true · update my match" and the click is the truth attestation; it saves the
+// lines and re-scores. "Nothing to add" on a master-résumé match only saves the review: the match it
+// reviewed still stands (lib/jobs/current-job-match.ts), so no second score is paid for. Nothing
+// reaches the server before the click, and no price or cost question is shown (D037).
 
 export type ExperienceStepProps = {
   jobId: string;
   // Needs a master résumé; the page says so itself when there is none.
   review: EvidenceCorrectionReview;
   hasValidCurrentSnapshot: boolean;
-  // The shown estimate was scored on the saved review (basis REVIEWED_EVIDENCE), which is what
-  // Prepare requires. Then, with nothing changed, this step is done.
+  // The shown estimate is current for the saved review (bound to it, or reviewed with nothing to
+  // add), which is what documents and Prepare require. Then, with nothing changed, this step is done.
   matchBoundToReview: boolean;
-  quote: DocumentCreationQuote | null;
   draftKey: string;
   // A real AI provider is configured. Without one the re-score can't run (JOB_MATCH refuses
   // local mode), so Update stays off.
   generationAvailable: boolean;
   // Unsaved lines or changes: the documents in step 3 don't include them yet.
   onPendingChanges?: (pending: boolean) => void;
+  // The one-time Gemini notice; false means the user declined, and nothing is sent.
+  beforeRun: () => Promise<boolean>;
+  // After a save and score (or a "nothing to add" save): the page refreshes and shows the result window.
+  onScored: () => void;
 };
 
 const PLACEHOLDER = "If you have this, say what you did.";
-const TRUTH = "Everything I wrote above is true.";
+const ATTEST = "These are true · update my match";
+const UPDATE = "Update my match";
+const ATTEST_HINT = "Clicking confirms that everything you wrote above is true.";
 const STALE = "This job's review changed in another tab. Reload to continue; your lines are kept on this computer.";
 const STALE_NOT_KEPT = "This job's review changed in another tab. Copy your lines, then reload to continue; this browser can't keep them.";
 const STALE_CODES = new Set(["EVIDENCE_SOURCE_STALE", "EVIDENCE_ANALYSIS_STALE"]);
@@ -64,7 +70,7 @@ type Item = { key: string; gap: EvidenceReviewGap };
 type Mode = "write" | "resume";
 type Message = { tone: "success" | "error" | "info"; text: string };
 type Phase = "asking" | "saving" | "scoring";
-type ErrorPayload = { error?: unknown; code?: unknown; billingStatus?: unknown; actualCostMicros?: unknown } | null;
+type ErrorPayload = AiErrorPayload;
 
 // Drafts are matched to requirements by their text, so they survive a re-score that renumbers them.
 function requirementKey(text: string) {
@@ -126,16 +132,6 @@ function lineProblems(line: string): string[] {
   ];
 }
 
-function errorText(json: ErrorPayload, fallback: string) {
-  const parts = [typeof json?.error === "string" ? json.error : fallback];
-  if (json?.billingStatus === "not_charged") parts.push("You weren't charged for this step.");
-  if (json?.billingStatus === "uncertain") parts.push("The charge for this step is uncertain; check AI usage before trying again.");
-  if (json?.billingStatus === "known" && typeof json.actualCostMicros === "number" && json.actualCostMicros >= 0) {
-    parts.push(`Recorded cost: ${formatUsdMicros(json.actualCostMicros)}.`);
-  }
-  return parts.join(" ");
-}
-
 // The counter and any problems under a box; the box points at both with aria-describedby.
 function LineHints({ id, line, problems }: { id: string; line: string; problems: string[] }) {
   return (
@@ -151,13 +147,13 @@ export function ExperienceStep({
   review,
   hasValidCurrentSnapshot,
   matchBoundToReview,
-  quote,
   draftKey,
   generationAvailable,
-  onPendingChanges
+  onPendingChanges,
+  beforeRun,
+  onScored
 }: ExperienceStepProps) {
   const router = useRouter();
-  const { confirm, confirmFn, dialog } = useInPageConfirm();
   const hydrated = useHydrated();
   const idPrefix = useId();
   const reviewable = Boolean(review.analysisId);
@@ -198,7 +194,6 @@ export function ExperienceStep({
 
   const [modes, setModes] = useState<Record<string, Mode>>({});
   const [savedLines, setSavedLines] = useState<Record<string, SavedLineDraft>>({});
-  const [attested, setAttested] = useState(false);
   const [phase, setPhase] = useState<Phase | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const busy = useRef(false);
@@ -214,7 +209,8 @@ export function ExperienceStep({
     const chosen = lines.includes(draft.resumeLine) ? draft.resumeLine : "";
     const gapDraft: GapDraft = mode === "resume"
       ? (chosen ? { choice: "onResume", line: "", attested: false, resumeLine: chosen } : EMPTY_GAP_DRAFT)
-      : (draft.line.trim() ? { choice: "add", line: draft.line, attested, resumeLine: "" } : EMPTY_GAP_DRAFT);
+      // Sent only by the button that says "These are true": that click is the attestation.
+      : (draft.line.trim() ? { choice: "add", line: draft.line, attested: true, resumeLine: "" } : EMPTY_GAP_DRAFT);
     return { item, draft, mode, chosen, gapDraft, problems: mode === "write" ? lineProblems(draft.line) : [] };
   });
   const factEntries = review.acceptedFacts.map((fact) => {
@@ -232,6 +228,8 @@ export function ExperienceStep({
   // "Nothing to add" saved it and the re-score failed or was cancelled).
   const rescoreOnly = !reviewable && hasValidCurrentSnapshot;
   const savesReview = reviewable && (pending || !hasValidCurrentSnapshot);
+  // "Nothing to add" on a master-résumé match: the save alone makes that match current.
+  const saveOnly = savesReview && !pending && !hasValidCurrentSnapshot;
   const running = phase !== null;
 
   const firstProblem = entries.find((entry) => entry.problems.length)?.item.gap.requirement ??
@@ -240,11 +238,8 @@ export function ExperienceStep({
     ? "Scoring is switched off on this server (no AI provider is configured)."
     : firstProblem !== null
       ? `Fix the line for "${firstProblem}" first.`
-      : needsTick && !attested
-        ? `Tick "${TRUTH}" first.`
-        : null;
-  const updateLabel = quote ? `Update my score · about ${formatCentsCeiling(quote.jobMatchMicros)}` : "Update my score";
-  const label = pending || rescoreOnly ? updateLabel : "Nothing to add · update my score";
+      : null;
+  const label = needsTick ? ATTEST : saveOnly ? "Nothing to add" : UPDATE;
 
   useEffect(() => {
     onPendingChanges?.(pending);
@@ -291,12 +286,11 @@ export function ExperienceStep({
     setRemovedEarlier(0);
     setModes({});
     setSavedLines({});
-    setAttested(false);
   }
 
   function saveBody() {
     const gapDrafts = Object.fromEntries(entries.map((entry) => [entry.item.gap.id, entry.gapDraft]));
-    const lineDrafts = Object.fromEntries(factEntries.map((entry) => [entry.fact.factId, { ...entry.draft, attested }]));
+    const lineDrafts = Object.fromEntries(factEntries.map((entry) => [entry.fact.factId, { ...entry.draft, attested: true }]));
     const body = buildEvidenceSaveBody(review, gapDrafts, lineDrafts, "");
     const signature = JSON.stringify(body);
     if (saveRequest.current?.signature !== signature) saveRequest.current = { id: crypto.randomUUID(), signature };
@@ -312,19 +306,8 @@ export function ExperienceStep({
     const sentKeys = new Set(entries.filter((entry) => entry.gapDraft.choice !== "skip").map((entry) => entry.item.key));
     let saved = false;
     try {
-      const approved = await confirm({
-        title: "Update my score?",
-        body: [
-          pending ? "Apply Pilot saves your lines for this job first." : null,
-          `Sends ${SENT_TO_GEMINI} to Google Gemini to update your score.`,
-          quote
-            ? `This could cost up to ${formatUsdMicros(quote.jobMatchMicros)}; the final charge is usually lower.`
-            : "Its cost is shown before anything is charged.",
-          "There is no automatic retry; an uncertain provider outcome may still be billed."
-        ].filter(Boolean).join(" ")
-      });
-      if (!approved) {
-        setMessage({ tone: "info", text: "Canceled. Nothing was sent and nothing was charged." });
+      if (!(await beforeRun())) {
+        setMessage({ tone: "info", text: "Nothing was sent." });
         return;
       }
       if (savesReview) {
@@ -342,7 +325,7 @@ export function ExperienceStep({
           }
           // A request ID already used for other answers can't be reused.
           if (response.status === 409) saveRequest.current = null;
-          setMessage({ tone: "error", text: errorText(json, "Your lines couldn't be saved. Nothing was charged.") });
+          setMessage({ tone: "error", text: aiErrorText(json, "Your lines couldn't be saved.") });
           return;
         }
         const result = evidenceSnapshotSaveResponseSchema.safeParse(json);
@@ -358,17 +341,22 @@ export function ExperienceStep({
         saveRequest.current = null;
         forgetSavedDrafts(sentKeys);
       }
+      if (saveOnly) {
+        setMessage({ tone: "success", text: "Your review is saved." });
+        onScored();
+        return;
+      }
       setPhase("scoring");
-      const response = await fetchWithApprovedAiCost(`/api/jobs/${jobId}/match`, { method: "POST" }, quote?.jobMatchMicros ?? 0, { confirm: confirmFn });
+      const response = await fetchWithAiConsent(`/api/jobs/${jobId}/match`, { method: "POST" });
       if (!response.ok) {
         const json = (await response.json().catch(() => null)) as ErrorPayload;
-        throw new Error(errorText(json, "Apply Pilot couldn't update your score."));
+        throw new Error(aiErrorText(json, "Apply Pilot couldn't update your match."));
       }
-      setMessage({ tone: "success", text: saved && pending ? "Your lines were saved and your score was updated." : "Your score was updated." });
-      router.refresh();
+      setMessage({ tone: "success", text: saved && pending ? "Your lines were saved and your match was updated." : "Your match was updated." });
+      onScored();
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Something went wrong.";
-      setMessage({ tone: "error", text: saved && pending ? `Your lines were saved, but your score wasn't updated. ${reason}` : reason });
+      setMessage({ tone: "error", text: saved && pending ? `Your lines were saved, but your match wasn't updated. ${reason}` : reason });
       if (saved) router.refresh();
     } finally {
       busy.current = false;
@@ -387,17 +375,22 @@ export function ExperienceStep({
     const savedFacts = review.acceptedFacts;
     return (
       <div className="job-tailor" data-experience-step>
-        <p className="job-note">
-          {!rescoreOnly
-            ? "Check your match in step 1 first, so Apply Pilot can see what this job asks for."
-            : savedFacts.length
-              ? "Your lines are saved. Update my score to use them."
-              : "Your review is saved. Update my score to continue."}
-        </p>
+        {rescoreOnly && matchBoundToReview && !savedFacts.length ? (
+          // A "nothing to add" review whose match still stands (lib/jobs/current-job-match.ts).
+          <p role="status" className="job-message job-message-success" data-experience-done>Done. You didn&apos;t add any lines for this job.</p>
+        ) : (
+          <p className="job-note">
+            {!rescoreOnly
+              ? "Check your match in step 1 first, so Apply Pilot can see what this job asks for."
+              : savedFacts.length
+                ? "Your lines are saved. Update my match to use them."
+                : "Your review is saved. Update my match to continue."}
+          </p>
+        )}
         {rescoreOnly && savedFacts.length ? (
           <ul className="job-plain-list" data-saved-lines-summary>{savedFacts.map((fact) => <li key={fact.factId}>{fact.fact}</li>)}</ul>
         ) : null}
-        {rescoreOnly ? (
+        {rescoreOnly && !matchBoundToReview ? (
           <>
             <div className="job-create-row">
               <button type="button" className="job-button job-button-primary job-button-large" onClick={update} disabled={Boolean(blockedReason) || running}>
@@ -406,8 +399,7 @@ export function ExperienceStep({
               </button>
             </div>
             {blockedReason ? <p className="job-hint" data-blocked-reason>{blockedReason}</p> : null}
-            {dialog}
-            {phase === "scoring" ? <p role="status" className="job-hint">Updating your score…</p> : null}
+            {phase === "scoring" ? <p role="status" className="job-hint">Updating your match…</p> : null}
           </>
         ) : null}
         {outcome}
@@ -501,10 +493,6 @@ export function ExperienceStep({
           </section>
         ) : null}
 
-        <label className="job-check">
-          <input type="checkbox" checked={attested} onChange={(event) => { changed(); setAttested(event.target.checked); }} />
-          {TRUTH}
-        </label>
       </fieldset>
 
       {done ? (
@@ -517,10 +505,10 @@ export function ExperienceStep({
           </button>
         </div>
       )}
+      {needsTick && !done ? <p className="job-hint" data-attest>{ATTEST_HINT}</p> : null}
       {blockedReason && !done ? <p className="job-hint" data-blocked-reason>{blockedReason}</p> : null}
-      {dialog}
       {phase === "saving" || phase === "scoring" ? (
-        <p role="status" className="job-hint">{phase === "saving" ? "Saving your lines…" : "Updating your score…"}</p>
+        <p role="status" className="job-hint">{phase === "saving" ? "Saving your lines…" : "Updating your match…"}</p>
       ) : null}
       {outcome}
     </div>

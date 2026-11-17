@@ -8,7 +8,6 @@ import { isDocumentGenerationAvailable } from "@/lib/apply-kit/generation-availa
 import { isApplicationAutomationEnabled } from "@/lib/application-runs/policy";
 import { resolveAppOrigin } from "@/lib/apply-page/app-origin";
 import { loadApplyPageState } from "@/lib/apply-page/load-apply-progress";
-import { buildDocumentCreationQuote } from "@/lib/jobs/document-creation-quote";
 import { loadJobDetail } from "@/lib/jobs/job-detail";
 import { requirePageUserId } from "@/lib/page-context";
 import { prisma } from "@/lib/prisma";
@@ -56,7 +55,7 @@ export default async function ApplyJobPage({ params, searchParams }: Props) {
         progressInput={progressInput}
         prepare={prepare}
         coverLetterRequired={coverLetterRequired}
-        tailorServer={{ quote: buildDocumentCreationQuote(), generationAvailable: isDocumentGenerationAvailable() }}
+        tailorServer={{ generationAvailable: isDocumentGenerationAvailable() }}
         appOrigin={await companionAppOrigin()}
         answeredYes={answeredYes}
       />

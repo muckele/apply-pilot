@@ -5,24 +5,17 @@ import React, { act } from "react";
 
 import { DocumentsStep, type DocumentsStepProps } from "@/components/apply-page/documents-step";
 import { loadApplyKitView, type ApplyKitDocument } from "@/lib/apply-kit/apply-kit-view";
-import type { DocumentCreationQuote } from "@/lib/jobs/document-creation-plan";
 import { JOB, OWNER, fakeDb, fixtures } from "@/tests/fixtures/apply-kit-db";
 import { createDomHarness } from "@/tests/fixtures/dom-harness";
 
 // Synthetic job and documents only. The Apply Kit fixture gives: resume-v2 AI_GROUNDED, resume-v1
 // NEEDS_REGENERATION, cover-edited NEEDS_REVIEW (newest letter) and cover-legacy LEGACY_CONFIRMED.
 
-const quote: DocumentCreationQuote = {
-  provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250
-};
-const BOTH = "Write my résumé and cover letter · up to 12¢";
-const RESUME_ONLY = "Write my résumé · up to 7¢";
-const COVER_ONLY = "Write my cover letter · up to 5¢";
+// No prices and no cost question on the Apply page (D037): one click writes.
+const BOTH = "Write my résumé and cover letter";
+const RESUME_ONLY = "Write my résumé";
+const COVER_ONLY = "Write my cover letter";
 const BELOW_A = "Assisted Fill needs an A. You can still apply on your own with these documents.";
-// What the writers actually send (lib/ai/resume-tailoring-payload.ts): the job, the résumé, the
-// profile's job preferences and the lines added for this job.
-const question = (cents: string) =>
-  `Sends ${"this job, your résumé, your job preferences from your profile (such as target roles, locations and salary) and the lines you added for this job"} to Google Gemini. Most it can cost: ${cents}.`;
 
 async function kitDocuments() {
   const kit = (await loadApplyKitView(fakeDb(fixtures()).db, { userId: OWNER, jobId: JOB, aiGenerationAvailable: true }))!;
@@ -38,8 +31,8 @@ function props(overrides: Partial<DocumentsStepProps> = {}): DocumentsStepProps 
   return {
     jobId: "job-1",
     applicationId: "application-1",
-    quote,
     generationAvailable: true,
+    beforeRun: async () => true,
     coverByDefault: true,
     resumes: [],
     coverLetters: [],
@@ -55,8 +48,8 @@ function json(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-// The real writers answer an unconfirmed request with 428 and their maximum; nothing runs until
-// the request comes back with x-ai-cost-confirmed.
+// The real writers refuse (428) a request without both consent headers; the Apply page sends them
+// on its one request, because the user agreed once to what goes to Gemini.
 function apiStub(calls: Call[], options: { failResume?: boolean; failCover?: boolean; failAttach?: boolean } = {}) {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -68,7 +61,7 @@ function apiStub(calls: Call[], options: { failResume?: boolean; failCover?: boo
       return options.failAttach ? json(500, { error: "The database is unavailable." }) : json(200, { application: {} });
     }
     const kind = url.split("/").at(-1);
-    if (!call.confirmed) {
+    if (!call.confirmed || new Headers(init?.headers).get("x-ai-data-confirmed") !== "true") {
       return json(428, { code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: kind === "cover-letter" ? 47_250 : 64_500, dataType: "application_packet" });
     }
     if (kind === "tailored-resume" && options.failResume) return json(503, { error: "Gemini is busy.", billingStatus: "not_charged" });
@@ -102,10 +95,6 @@ async function settle() {
   for (let tick = 0; tick < 10; tick += 1) await act(async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); });
 }
 
-function askedQuestion(harness: Harness) {
-  return harness.container.querySelector('[role="group"] .job-card-copy')?.textContent ?? null;
-}
-
 function coverTick(harness: Harness) {
   const label = [...harness.container.querySelectorAll("label")].find((node) => node.textContent === "Include a cover letter");
   assert.ok(label, "the cover-letter tick");
@@ -118,22 +107,18 @@ function row(harness: Harness, id: string) {
   return found;
 }
 
-test("Write documents sends no save or match request", async () => {
+test("one click writes both documents, with consent on each one request and no save or match request", async () => {
   const { harness, calls, windowConfirms } = setup();
   try {
     await harness.render(React.createElement(DocumentsStep, props()));
+    assert.doesNotMatch(harness.text(), /¢|\$|cost|charged/u, "no prices on the Apply page");
     await harness.click(harness.button(BOTH));
-    await harness.waitForText(/Most it can cost/u);
-    assert.equal(askedQuestion(harness), question("12¢"));
-    assert.equal(calls.length, 0, "nothing is sent before Confirm");
-    await harness.click(harness.button("Confirm"));
     await harness.waitForText(/Your résumé and cover letter are ready to review below\./u);
     assert.deepEqual(calls.map((call) => [call.method, call.url, call.confirmed]), [
-      ["POST", "/api/jobs/job-1/tailored-resume", null],
       ["POST", "/api/jobs/job-1/tailored-resume", "true"],
-      ["POST", "/api/jobs/job-1/cover-letter", null],
       ["POST", "/api/jobs/job-1/cover-letter", "true"]
     ]);
+    assert.equal(harness.container.querySelector('[role="group"]'), null, "no in-page cost question");
     assert.equal(calls.some((call) => /evidence-snapshots|\/match$/u.test(call.url)), false);
     assert.deepEqual(windowConfirms, []);
     assert.ok(harness.refreshes >= 1);
@@ -152,8 +137,6 @@ test("the new résumé is attached with a PATCH that has no status", async () =>
     await settle();
     assert.equal(calls.length, 0, "nothing ready to attach yet");
     await harness.click(harness.button(RESUME_ONLY));
-    await harness.waitForText(/Most it can cost/u);
-    await harness.click(harness.button("Confirm"));
     await harness.waitForText(/Your résumé is ready to review below\./u);
     const refreshesAfterWriting = harness.refreshes;
     // What router.refresh() delivers: the new version, ready to use.
@@ -183,8 +166,6 @@ test("rewriting with a ready version attached attaches the new version, and only
     await settle();
     assert.equal(calls.length, 0, "ready versions are attached");
     await harness.click(harness.button(RESUME_ONLY));
-    await harness.waitForText(/Most it can cost/u);
-    await harness.click(harness.button("Confirm"));
     await harness.waitForText(/Your résumé is ready to review below\./u);
     // The refresh brings the new résumé. The letter's attachment is left alone, even though
     // chooseAutoAttach would pick cover-legacy for an empty letter slot.
@@ -215,19 +196,19 @@ test("on mount, an attached version waiting for its review is not swapped for an
   }
 });
 
-test("a step blocked while the question is open sends nothing on Confirm", async () => {
+test("a step blocked while the Gemini notice is open sends nothing", async () => {
+  let answer!: (agreed: boolean) => void;
   const { harness, calls } = setup();
   try {
-    const open = props();
+    const open = props({ beforeRun: () => new Promise<boolean>((resolve) => { answer = resolve; }) });
     await harness.render(React.createElement(DocumentsStep, open));
     await harness.click(harness.button(BOTH));
-    await harness.waitForText(/Most it can cost/u);
-    const reason = "Update your score in step 2 first, so your documents include your new lines.";
+    const reason = "Update your match in step 2 first, so your documents include your new lines.";
     await harness.render(React.createElement(DocumentsStep, { ...open, blockedReason: reason }));
-    await harness.click(harness.button("Confirm"));
+    await act(async () => { answer(true); });
     await settle();
     assert.deepEqual(calls, []);
-    assert.match(harness.container.querySelector("[data-documents-message]")?.textContent ?? "", /Update your score in step 2 first.*Nothing was sent/u);
+    assert.match(harness.container.querySelector("[data-documents-message]")?.textContent ?? "", /Update your match in step 2 first.*Nothing was sent\./u);
   } finally {
     await harness.close();
   }
@@ -259,18 +240,17 @@ test("Use this version during another attach says to wait instead of doing nothi
   }
 });
 
-test("Cancel sends nothing", async () => {
+test("declining the Gemini notice sends nothing", async () => {
   const { byId } = await kitDocuments();
   const { harness, calls } = setup();
   try {
-    await harness.render(React.createElement(DocumentsStep, props({ resumes: [byId("resume-v2")], attached: { resumeId: "resume-v2", coverId: null } })));
+    await harness.render(React.createElement(DocumentsStep, props({
+      resumes: [byId("resume-v2")], attached: { resumeId: "resume-v2", coverId: null }, beforeRun: async () => false
+    })));
     await settle();
-    for (const [name, cents] of [[BOTH, "12¢"], [COVER_ONLY, "5¢"]] as const) {
+    for (const name of [BOTH, COVER_ONLY]) {
       await harness.click(harness.button(name));
-      await harness.waitForText(/Most it can cost/u);
-      assert.equal(askedQuestion(harness), question(cents));
-      await harness.click(harness.button("Cancel"));
-      await harness.waitForText(/Canceled\. Nothing was sent and nothing was charged\./u);
+      await harness.waitForText(/Nothing was sent\./u);
     }
     assert.equal(calls.length, 0);
     assert.equal(harness.refreshes, 0);
@@ -427,18 +407,15 @@ test("once the application is past applying, its documents are left as they are"
   }
 });
 
-test("unticking the cover letter drops it from the button, the question and the requests", async () => {
+test("unticking the cover letter drops it from the button and the requests", async () => {
   const { harness, calls } = setup();
   try {
     await harness.render(React.createElement(DocumentsStep, props()));
     assert.equal(coverTick(harness).checked, true);
     await harness.check(coverTick(harness), false);
     await harness.click(harness.button(RESUME_ONLY));
-    await harness.waitForText(/Most it can cost/u);
-    assert.equal(askedQuestion(harness), question("7¢"));
-    await harness.click(harness.button("Confirm"));
     await harness.waitForText(/Your résumé is ready to review below\./u);
-    assert.deepEqual(calls.map((call) => call.url.split("/").at(-1)), ["tailored-resume", "tailored-resume"]);
+    assert.deepEqual(calls.map((call) => call.url.split("/").at(-1)), ["tailored-resume"]);
   } finally {
     await harness.close();
   }
@@ -457,7 +434,7 @@ test("the cover letter starts unticked when coverByDefault is off, and ticking i
   }
 });
 
-test("with a ready résumé, the cover letter alone asks once for its own maximum and calls only the cover-letter writer", async () => {
+test("with a ready résumé, the cover letter alone calls only the cover-letter writer", async () => {
   const { byId } = await kitDocuments();
   const calls: Call[] = [];
   let release!: () => void;
@@ -470,17 +447,11 @@ test("with a ready résumé, the cover letter alone asks once for its own maximu
     assert.equal(harness.button(COVER_ONLY).disabled, false);
     assert.match(harness.container.querySelector("[data-cover-only]")?.textContent ?? "", /Keeps your current résumé/u);
     await harness.click(harness.button(COVER_ONLY));
-    await harness.waitForText(/Most it can cost/u);
-    assert.equal(askedQuestion(harness), question("5¢"));
-    await harness.click(harness.button("Confirm"));
     await waitUntil(() => harness.button(COVER_ONLY).disabled, "the cover-letter button to turn off while it runs");
     assert.equal(harness.button(BOTH).disabled, true, "nothing else starts while it runs");
     release();
     await harness.waitForText(/Your cover letter is ready to review below\./u);
-    assert.deepEqual(calls.map((call) => [call.url, call.confirmed]), [
-      ["/api/jobs/job-1/cover-letter", null],
-      ["/api/jobs/job-1/cover-letter", "true"]
-    ]);
+    assert.deepEqual(calls.map((call) => [call.url, call.confirmed]), [["/api/jobs/job-1/cover-letter", "true"]]);
     const progress = harness.container.querySelector("[aria-label=Progress]")?.textContent ?? "";
     assert.match(progress, /Writing your cover letter/u);
     assert.doesNotMatch(progress, /résumé/u);
@@ -508,9 +479,7 @@ test("a failed step stops the run and says what was already written", async () =
   try {
     await failed.harness.render(React.createElement(DocumentsStep, props()));
     await failed.harness.click(failed.harness.button(BOTH));
-    await failed.harness.waitForText(/Most it can cost/u);
-    await failed.harness.click(failed.harness.button("Confirm"));
-    await failed.harness.waitForText(/Gemini is busy\. You weren't charged for this step\./u);
+    await failed.harness.waitForText(/Gemini is busy\./u);
     assert.equal(failed.calls.some((call) => call.url.endsWith("/cover-letter")), false);
     assert.ok(failed.harness.container.querySelector("[aria-label=Progress] [data-state=failed]"));
     assert.equal(failed.harness.refreshes, 0, "nothing was written, so nothing to show");
@@ -521,8 +490,6 @@ test("a failed step stops the run and says what was already written", async () =
   try {
     await partial.harness.render(React.createElement(DocumentsStep, props()));
     await partial.harness.click(partial.harness.button(BOTH));
-    await partial.harness.waitForText(/Most it can cost/u);
-    await partial.harness.click(partial.harness.button("Confirm"));
     await partial.harness.waitForText(/Your résumé was created\. Gemini is busy\./u);
     assert.ok(partial.harness.refreshes >= 1, "the new résumé is shown");
   } finally {
@@ -530,28 +497,11 @@ test("a failed step stops the run and says what was already written", async () =
   }
 });
 
-test("a server maximum above the quote is asked again in the page, never with window.confirm", async () => {
-  const { harness, calls, windowConfirms } = setup();
-  try {
-    await harness.render(React.createElement(DocumentsStep, props({ coverByDefault: false, quote: { ...quote, resumeMicros: 1 } })));
-    await harness.click(harness.button("Write my résumé · up to 1¢"));
-    await harness.waitForText(/Most it can cost: 1¢\./u);
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/more than the \$0\.000001 you approved/u);
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your résumé is ready to review below\./u);
-    assert.deepEqual(calls.map((call) => call.confirmed), [null, "true"]);
-    assert.deepEqual(windowConfirms, []);
-  } finally {
-    await harness.close();
-  }
-});
-
 test("a blocked reason from the page disables both Write buttons, shows the reason and sends nothing", async () => {
   const { byId } = await kitDocuments();
   const { harness, calls } = setup();
   try {
-    const reason = "Update your score in step 2 first, so your documents include your new lines.";
+    const reason = "Update your match in step 2 first, so your documents include your new lines.";
     await harness.render(React.createElement(DocumentsStep, props({
       blockedReason: reason, resumes: [byId("resume-v2")], attached: { resumeId: "resume-v2", coverId: null }
     })));
@@ -569,17 +519,19 @@ test("a blocked reason from the page disables both Write buttons, shows the reas
   }
 });
 
-test("a double click asks once and writes each document once", async () => {
-  const { harness, calls } = setup();
+test("a double click on a slow network writes each document once", async () => {
+  const calls: Call[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const stub = apiStub(calls);
+  const { harness } = setup({ fetch: (async (input: RequestInfo | URL, init?: RequestInit) => { await gate; return stub(input, init); }) as typeof fetch });
   try {
     await harness.render(React.createElement(DocumentsStep, props()));
     await harness.click(harness.button(BOTH));
     await harness.click(harness.button(BOTH));
-    await harness.waitForText(/Most it can cost/u);
-    assert.equal(harness.container.querySelectorAll('[role="group"]').length, 1);
-    await harness.click(harness.button("Confirm"));
+    release();
     await harness.waitForText(/ready to review below/u);
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 2);
   } finally {
     await harness.close();
   }

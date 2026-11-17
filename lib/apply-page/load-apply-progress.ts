@@ -7,6 +7,8 @@ import { getCurrentApplicationRun, readAutomationPolicy } from "@/lib/applicatio
 import { deriveApplyProgress, type ApplyProgress, type ApplyProgressInput } from "@/lib/apply-page/apply-progress";
 import { attachedDocumentState, type AttachedDocument } from "@/lib/apply-page/attached-documents";
 import { buildReadyList, type ReadyLine } from "@/lib/apply-page/ready-list";
+import { estimateIsCurrent } from "@/lib/jobs/estimate-basis";
+import type { FitEstimateBasis } from "@/lib/jobs/fit-estimate";
 import type { JobDetail } from "@/lib/jobs/job-detail";
 import { prisma } from "@/lib/prisma";
 
@@ -36,7 +38,7 @@ export function applyProgressInputFromFacts(facts: ApplyProgressFacts): ApplyPro
   return {
     hasMasterResume: facts.hasMasterResume,
     hasCurrentMatch: facts.estimateBasis !== null,
-    reviewSaved: facts.estimateBasis === "REVIEWED_EVIDENCE",
+    reviewSaved: estimateIsCurrent(facts.estimateBasis),
     resumeAttached: facts.documents.resume === "ready",
     coverAttached: facts.documents.cover === "ready",
     coverRequired: facts.coverRequired,
@@ -57,7 +59,7 @@ export type PrepareStepState = {
 
 export type PrepareStepFacts = {
   jobApplyHost: string | null;
-  estimate: { score: number; basis: string } | null;
+  estimate: { score: number; basis: FitEstimateBasis } | null;
   /** The current detailed match's confidence (null without a current match). */
   confidenceScore: number | null;
   documents: AttachedDocuments;
@@ -68,7 +70,7 @@ export type PrepareStepFacts = {
 
 /**
  * Pure mapping from loaded facts to step 4's state. The ready list mirrors Prepare's own gates: the
- * fit and confidence of the match bound to the saved review (the only match Prepare accepts), the
+ * fit and confidence of a current match (bound to the saved review, or reviewed with nothing to add), the
  * attached documents, the policy's thresholds, cover-letter rule and block list, and the Fill mode.
  */
 export function prepareStateFromFacts(facts: PrepareStepFacts): PrepareStepState {
@@ -82,7 +84,7 @@ export function prepareStateFromFacts(facts: PrepareStepFacts): PrepareStepState
     readyList: buildReadyList({
       fitScore: facts.estimate?.score ?? null,
       confidenceScore: facts.confidenceScore,
-      hasCurrentMatch: facts.estimate?.basis === "REVIEWED_EVIDENCE",
+      hasCurrentMatch: estimateIsCurrent(facts.estimate?.basis),
       resume: facts.documents.resume,
       cover: facts.documents.cover,
       coverRequired: facts.policy.coverLetterRequired,

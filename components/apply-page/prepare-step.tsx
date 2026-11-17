@@ -4,8 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 
-import { useInPageConfirm } from "@/components/ui/in-page-confirm";
-import type { ConfirmFn } from "@/lib/ai/browser-request";
 import { PREPARE_BLOCKER_COPY, PREPARE_FAILURE_COPY, type ReadyFix } from "@/lib/application-runs/blocker-copy";
 import {
   allowHostForRun,
@@ -19,11 +17,11 @@ import {
   type RunSnapshot
 } from "@/lib/application-runs/client-run";
 import type { PreparationBlockingReason, PreparationErrorCategory } from "@/lib/application-runs/preparation";
-import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import type { ReadyLine } from "@/lib/apply-page/ready-list";
 
-// Step 4 of the Apply page: the ready list, then one "Allow and prepare" that asks once in the page,
-// then creates the browser run if there isn't one, allows the employer's host and runs Prepare.
+// Step 4 of the Apply page: the ready list, then one "Allow <host> and prepare". The button names the
+// exact host, so one click is the explicit grant (D037: no second question, no price). It creates the
+// browser run if there isn't one, allows that host and runs Prepare.
 // Every request is single flight. The create request keeps its key until a run is confirmed, and a
 // run this step created is reused on retry, so a retry never makes a second run. The server's gates
 // stay the authority: its answer (READY, BLOCKED or FAILED) is what the step shows.
@@ -38,10 +36,12 @@ export type PrepareStepProps = {
   readyList: ReadyLine[];
   fillMode: "PREPARE_ONLY" | "FILL_AND_REVIEW";
   run: PrepareStepRun | null;
+  /** The one-time Gemini notice; false means the user declined, and nothing is sent. */
+  beforeRun: () => Promise<boolean>;
 };
 
 const STARTABLE = new Set(["DRAFT", "BLOCKED", "FAILED"]);
-const CANCELED = "Canceled. Prepare didn't run and nothing was charged.";
+const NOT_SENT = "Prepare didn't run. Nothing was sent.";
 const UNCONFIRMED = "Preparation wasn't confirmed. Refresh the page before trying again.";
 // Enable refusals that mean the page's view of the policy or run is out of date: the refreshed
 // page brings the ready-list line (Fill on, blocked host) or run state that carries the fix.
@@ -52,10 +52,6 @@ const REPORTED_AI_BLOCKS: ReadonlySet<string> = new Set([
   "AI_BUDGET_EXCEEDED", "AI_REQUEST_COST_LIMIT", "AI_COST_CONFIRMATION_REQUIRED", "AI_DUPLICATE_IN_PROGRESS"
 ]);
 const NO_LINK = "This job has no secure (https) application link, so Apply Pilot can't prepare it. You can still apply on your own.";
-
-export function prepareQuestion(host: string) {
-  return `Prepare sends ${SENT_TO_GEMINI} to Google Gemini to plan this application (usually under 1¢), and lets Apply Pilot work on ${host}.`;
-}
 
 function blockerCopy(reason: string | null | undefined): { text: string; fix: ReadyFix | null } {
   return (reason && PREPARE_BLOCKER_COPY[reason as PreparationBlockingReason]) ||
@@ -152,9 +148,8 @@ async function preparedRun(response: Response | null, runId: string): Promise<Ru
   }
 }
 
-export function PrepareStep({ applicationId, applyHost, readyList, fillMode, run }: PrepareStepProps) {
+export function PrepareStep({ applicationId, applyHost, readyList, fillMode, run, beforeRun }: PrepareStepProps) {
   const router = useRouter();
-  const { confirm, confirmFn, dialog } = useInPageConfirm();
   const inFlight = useRef(false);
   const mainButton = useRef<HTMLButtonElement>(null);
   // The run this step created, until the refreshed page brings it: retries reuse it.
@@ -209,7 +204,10 @@ export function PrepareStep({ applicationId, applyHost, readyList, fillMode, run
     let changedServer = false;
     let stage: "run" | "allow" | "prepare" = "run";
     try {
-      if (!(await confirm({ title: "Allow and prepare?", body: prepareQuestion(host) }))) return;
+      if (!(await beforeRun())) {
+        setMessage(NOT_SENT);
+        return;
+      }
       setPhase("working");
 
       let runId = current?.id ?? createdRunId.current;
@@ -236,20 +234,10 @@ export function PrepareStep({ applicationId, applyHost, readyList, fillMode, run
       changedServer = true;
 
       stage = "prepare";
-      // A second question only when the server asks about cost (over its threshold), with its maximum.
-      const cost = { answer: null as boolean | null };
-      const askCost: ConfirmFn = async (text) => {
-        cost.answer = await confirmFn(text);
-        return cost.answer;
-      };
       let response: Response | null = null;
       try {
-        response = await prepareRun(runId, askCost);
+        response = await prepareRun(runId);
       } catch {
-        if (cost.answer === false) {
-          setMessage(CANCELED);
-          return;
-        }
         // Lost response: read what happened instead of sending it again.
       }
       const refusal = response && !response.ok ? await readRefusal(response) : null;
@@ -343,11 +331,10 @@ export function PrepareStep({ applicationId, applyHost, readyList, fillMode, run
             aria-busy={busy || undefined}
             onClick={() => { void allowAndPrepare(); }}
           >
-            Allow and prepare
+            {applyHost ? `Allow ${applyHost} and prepare` : "Allow and prepare"}
           </button>
         </div>
       ) : null}
-      {dialog}
       {phase === "working" ? (
         <p role="status" className="job-note">
           <Loader2 aria-hidden="true" className="mr-1 inline h-4 w-4 animate-spin" />

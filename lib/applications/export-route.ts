@@ -9,8 +9,7 @@ import {
 import { PublicApiError } from "@/lib/api-errors";
 import {
   CURRENT_JOB_MATCH_ANALYSES,
-  buildCurrentJobMatchContext,
-  hasCurrentJobMatchAnalysis,
+  currentJobMatchBasis,
   readCurrentJobMatchSources
 } from "@/lib/jobs/current-job-match";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -50,7 +49,7 @@ export function applicationExportQuery(userId: string) {
           overallFitScore: true,
           currentEvidenceSnapshotId: true,
           evidenceSnapshotGeneration: true,
-          currentEvidenceSnapshot: { select: CURRENT_EVIDENCE_SNAPSHOT_SELECT },
+          currentEvidenceSnapshot: { select: { ...CURRENT_EVIDENCE_SNAPSHOT_SELECT, reviewedAnalysisId: true } },
           aiAnalyses: CURRENT_JOB_MATCH_ANALYSES
         }
       },
@@ -73,11 +72,11 @@ export async function readApplicationExportRows(userId: string): Promise<Applica
   ]);
 
   return records.map((record) => {
-    const context = buildCurrentJobMatchContext({ job: record.jobPosting, ...sources });
-    const current = hasCurrentJobMatchAnalysis({
-      ...record.jobPosting,
-      currentEvidenceSourceValid: context.currentEvidenceSourceValid
-    }, context.matchInput);
+    const current = currentJobMatchBasis({
+      job: record.jobPosting,
+      ...sources,
+      analysis: record.jobPosting.aiAnalyses[0]
+    }) !== null;
     return toApplicationExportRow(record, {
       userId,
       fitScore: current ? record.jobPosting.overallFitScore : null

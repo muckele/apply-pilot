@@ -12,10 +12,9 @@ import { createDomHarness } from "@/tests/fixtures/dom-harness";
 const APPLICATION_ID = "clz8w7m9a0000qwer1234tyui";
 const RUN_ID = "clz8w7m9a0004qwer1234tyui";
 const HOST = "jobs.example.com";
-// What Prepare's planner actually sends (lib/ai/application-plan.ts): the job, the résumé, the
-// profile's job preferences and the lines added for this job.
-const QUESTION = "Prepare sends this job, your résumé, your job preferences from your profile (such as target roles, locations and salary) and the lines you added for this job to Google Gemini to plan this application " +
-  `(usually under 1¢), and lets Apply Pilot work on ${HOST}.`;
+// One click allows exactly this host and prepares (D037): the button names the host, so the host
+// grant stays explicit without a second question.
+const MAIN = `Allow ${HOST} and prepare`;
 const KEY = `application-run-create:${APPLICATION_ID}`;
 
 const READY_INPUT: ReadyListInput = {
@@ -75,6 +74,7 @@ function props(overrides: Partial<PrepareStepProps> = {}): PrepareStepProps {
     readyList: buildReadyList(READY_INPUT),
     fillMode: "PREPARE_ONLY",
     run: null,
+    beforeRun: async () => true,
     ...overrides
   };
 }
@@ -97,20 +97,16 @@ async function withStep(
   }
 }
 
-const mainButton = (harness: ReturnType<typeof createDomHarness>) => harness.button("Allow and prepare");
-const question = (harness: ReturnType<typeof createDomHarness>) =>
-  harness.container.querySelector('[role="group"] .job-card-copy')?.textContent ?? null;
+const mainButton = (harness: ReturnType<typeof createDomHarness>) => harness.button(MAIN);
 
 test("one click creates one run, allows the host once and prepares once, in that order", async () => {
   const recorded = recorder();
   await withStep(props(), recorded.fetchImpl, async (harness) => {
     assert.equal(mainButton(harness).disabled, false);
+    assert.doesNotMatch(mainButton(harness).textContent ?? "", /https?:\/\//u, "the host only, never a full URL");
     await harness.click(mainButton(harness));
-    assert.equal(question(harness), QUESTION);
-    assert.doesNotMatch(question(harness) ?? "", /https?:\/\//u, "the host only, never a full URL");
-    assert.equal(recorded.calls.length, 0, "nothing is sent while the question is open");
-    await harness.click(harness.button("Confirm"));
     await settle();
+    assert.equal(harness.container.querySelector('[role="group"]'), null, "no second question");
     assert.deepEqual(recorded.requests(), [
       "POST /api/application-runs",
       "PATCH /api/application-automation-policy",
@@ -121,7 +117,7 @@ test("one click creates one run, allows the host once and prepares once, in that
     assert.equal((create.body as { applicationId: string }).applicationId, APPLICATION_ID);
     assert.deepEqual(allow.body, { enablePretrialForRunId: RUN_ID });
     assert.deepEqual(prepare.body, {});
-    assert.equal(prepare.costConfirmed, false, "no cost header unless the server asks and the user confirms");
+    assert.equal(prepare.costConfirmed, true, "the one request carries the consent given once, with no price shown");
     assert.equal(harness.window.sessionStorage.getItem(KEY), null, "the create key is cleared once the run exists");
     assert.ok(harness.refreshes >= 1, "a READY run refreshes the page so progress moves on");
   });
@@ -136,14 +132,11 @@ test("a double click still sends each request once", async () => {
       button.dispatchEvent(new harness.window.MouseEvent("click", { bubbles: true }));
       button.dispatchEvent(new harness.window.MouseEvent("click", { bubbles: true }));
     });
-    assert.equal(harness.container.querySelectorAll('[role="group"]').length, 1, "one question");
-    await harness.click(harness.button("Confirm"));
     // Clicking again while the run is being created changes nothing.
     await harness.click(mainButton(harness));
-    assert.equal(harness.maybeButton("Confirm") === undefined, true);
     created.resolve(json({ ...runBody("DRAFT"), replayed: false }, 201));
     await settle();
-    assert.equal(harness.maybeButton("Allow and prepare") === undefined, true, "a prepared run has nothing left to start");
+    assert.equal(harness.maybeButton(MAIN) === undefined, true, "a prepared run has nothing left to start");
     assert.deepEqual(recorded.requests(), [
       "POST /api/application-runs",
       "PATCH /api/application-automation-policy",
@@ -161,17 +154,15 @@ test("without an application there is nothing to prepare: Allow and prepare stay
     await harness.click(mainButton(harness));
     await settle();
     assert.deepEqual(recorded.calls, []);
-    assert.equal(question(harness), null);
   });
 });
 
-test("Cancel sends nothing", async () => {
+test("declining the Gemini notice sends nothing", async () => {
   const recorded = recorder();
-  await withStep(props(), recorded.fetchImpl, async (harness) => {
+  await withStep(props({ beforeRun: async () => false }), recorded.fetchImpl, async (harness) => {
     await harness.click(mainButton(harness));
-    assert.equal(question(harness), QUESTION);
-    await harness.click(harness.button("Cancel"));
     await settle();
+    assert.equal(harness.container.querySelector("[data-prepare-message]")?.textContent, "Prepare didn't run. Nothing was sent.");
     assert.deepEqual(recorded.calls, []);
     assert.equal(harness.window.sessionStorage.getItem(KEY), null, "no create request was even keyed");
     assert.equal(mainButton(harness).disabled, false, "the step can be started again");
@@ -189,7 +180,6 @@ test("fit_below_threshold shows its copy and Go to step 1", async () => {
     assert.equal(fix?.getAttribute("href"), "#step-1");
     assert.equal(mainButton(harness).disabled, true, "a failing blocking line keeps the button off");
     await harness.click(mainButton(harness));
-    assert.equal(harness.maybeButton("Confirm") === undefined, true);
     assert.deepEqual(recorded.calls, []);
   });
 
@@ -200,7 +190,6 @@ test("fit_below_threshold shows its copy and Go to step 1", async () => {
   });
   await withStep(props({ run: { id: RUN_ID, state: "DRAFT" } }), blocked.fetchImpl, async (harness) => {
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     const outcome = harness.container.querySelector("[data-prepare-outcome]");
     assert.match(outcome?.textContent ?? "", /The job's current fit score does not meet the existing policy threshold\./u);
@@ -239,12 +228,10 @@ test("a failure after the run exists never creates a second run on retry", async
   });
   await withStep(props(), recorded.fetchImpl, async (harness) => {
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     assert.match(harness.container.querySelector("[data-prepare-message]")?.textContent ?? "", /jobs\.example\.com/u);
     assert.equal(mainButton(harness).disabled, false);
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     assert.deepEqual(recorded.requests(), [
       "POST /api/application-runs",
@@ -267,12 +254,10 @@ test("a lost create response retries with the same request key", async () => {
   });
   await withStep(props(), recorded.fetchImpl, async (harness) => {
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     assert.equal(recorded.calls.length, 1, "nothing after an unconfirmed create");
     assert.ok(harness.window.sessionStorage.getItem(KEY), "the key is kept for the retry");
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     const keys = recorded.calls.filter((call) => call.url === "/api/application-runs").map((call) => (call.body as { idempotencyKey: string }).idempotencyKey);
     assert.equal(keys.length, 2);
@@ -289,7 +274,6 @@ test("an existing blocked run is re-prepared, with its blocker and fix shown fir
     assert.match(outcome?.textContent ?? "", /The daily preparation cap has been reached\./u);
     assert.ok(outcome?.querySelector("button")?.textContent === "Try later");
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     assert.deepEqual(recorded.requests(), ["PATCH /api/application-automation-policy", `POST /api/application-runs/${RUN_ID}/prepare`]);
   });
@@ -302,39 +286,10 @@ test("a failed run shows what failed and can be prepared again", async () => {
   });
   await withStep(props({ run: { id: RUN_ID, state: "DRAFT" } }), recorded.fetchImpl, async (harness) => {
     await harness.click(mainButton(harness));
-    await harness.click(harness.button("Confirm"));
     await settle();
     assert.equal(harness.container.querySelector("[data-prepare-outcome]")?.textContent, "Preparation failed while building the application plan.");
     assert.equal(mainButton(harness).disabled, false, "a failed run can be tried again");
   });
-});
-
-test("a cost question from the server is asked in the page: Cancel sends nothing more, Confirm sends the header", async () => {
-  for (const answer of ["Cancel", "Confirm"] as const) {
-    const recorded = recorder({
-      [`POST /api/application-runs/${RUN_ID}/prepare`]: (call) => call.costConfirmed
-        ? json(runBody("READY"))
-        : json({ error: "confirm", code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 62_000, provider: "gemini" }, 428),
-      [`GET /api/application-runs/${RUN_ID}`]: () => json(runBody("BLOCKED", { blockingReason: "ai_cost_confirmation_required" }))
-    });
-    await withStep(props({ run: { id: RUN_ID, state: "DRAFT" } }), recorded.fetchImpl, async (harness) => {
-      await harness.click(mainButton(harness));
-      await harness.click(harness.button("Confirm"));
-      await harness.waitForText(/could cost up to \$0\.062/u);
-      const prepares = () => recorded.calls.filter((call) => call.url.endsWith("/prepare"));
-      assert.equal(prepares().length, 1, answer);
-      await harness.click(harness.button(answer));
-      await settle();
-      if (answer === "Cancel") {
-        assert.equal(prepares().length, 1, "Cancel sends nothing more");
-        assert.match(harness.container.querySelector("[data-prepare-message]")?.textContent ?? "", /nothing was charged/iu);
-        assert.equal(mainButton(harness).disabled, false);
-      } else {
-        assert.deepEqual(prepares().map((call) => call.costConfirmed), [false, true]);
-        assert.ok(harness.refreshes >= 1);
-      }
-    });
-  }
 });
 
 test("the helpers send exactly the documented requests", async () => {
@@ -347,10 +302,10 @@ test("the helpers send exactly the documented requests", async () => {
   await assert.rejects(allowHostForRun(RUN_ID, refused.fetchImpl));
 
   const prepared = recorder();
-  const response = await prepareRun(RUN_ID, () => { throw new Error("no question without a 428"); }, prepared.fetchImpl);
+  const response = await prepareRun(RUN_ID, prepared.fetchImpl);
   assert.equal(response.status, 200);
   assert.deepEqual(prepared.calls.map((call) => [call.method, call.url, call.body, call.costConfirmed]), [
-    ["POST", `/api/application-runs/${RUN_ID}/prepare`, {}, false]
+    ["POST", `/api/application-runs/${RUN_ID}/prepare`, {}, true]
   ]);
 });
 
@@ -360,7 +315,7 @@ test("once prepared, the step says so and offers nothing to start or turn off", 
   for (const state of ["READY", "REVIEW_REQUIRED"]) {
     await withStep(props({ run: { id: RUN_ID, state }, fillMode: "FILL_AND_REVIEW", readyList: fillOn }), recorded.fetchImpl, async (harness) => {
       assert.match(harness.container.querySelector("[data-prepare-outcome]")?.textContent ?? "", /^Prepared/u, state);
-      assert.equal(harness.maybeButton("Allow and prepare") === undefined, true, state);
+      assert.equal(harness.maybeButton(MAIN) === undefined, true, state);
       assert.equal(harness.maybeButton("Turn off") === undefined, true, `${state}: Fill being on is expected after Prepare`);
       assert.equal(harness.container.querySelector("[data-ready-line]") === null, true, state);
     });
@@ -372,9 +327,8 @@ test("once prepared, the step says so and offers nothing to start or turn off", 
 
 const DRAFT_RUN = { id: RUN_ID, state: "DRAFT", blockingReason: null, errorCategory: null };
 
-async function allowAndConfirm(harness: ReturnType<typeof createDomHarness>) {
+async function allowAndPrepare(harness: ReturnType<typeof createDomHarness>) {
   await harness.click(mainButton(harness));
-  await harness.click(harness.button("Confirm"));
   await settle();
 }
 
@@ -388,7 +342,7 @@ test("a Fill-on or blocked-host refusal from Enable refreshes the page, so the f
     "PATCH /api/application-automation-policy": () => json({ error: "Review the current Fill-capable policy separately before pretrial setup.", code: "AUTOMATION_POLICY_MODE_REQUIRES_REVIEW" }, 409)
   });
   await withStep(props({ run: DRAFT_RUN }), fillOn.fetchImpl, async (harness) => {
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     assert.deepEqual(fillOn.requests(), ["PATCH /api/application-automation-policy"]);
     assert.match(messageText(harness) ?? "", /Assisted Fill is on/u);
     assert.equal(harness.refreshes, 1, "the refreshed page carries the policy's Fill mode");
@@ -405,7 +359,7 @@ test("a Fill-on or blocked-host refusal from Enable refreshes the page, so the f
     "PATCH /api/application-automation-policy": () => json({ error: "This application run target host is blocked or invalid.", code: "RUN_HOST_BLOCKED" }, 403)
   });
   await withStep(props({ run: DRAFT_RUN }), blockedHost.fetchImpl, async (harness) => {
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     assert.match(messageText(harness) ?? "", /jobs\.example\.com is blocked/u);
     assert.equal(harness.refreshes, 1);
   });
@@ -420,7 +374,7 @@ test("after Try later, meeting the same block again shows it again", async () =>
   await withStep(props({ run: blockedRun }), recorded.fetchImpl, async (harness) => {
     await harness.click(harness.button("Try later"));
     assert.equal(outcomeText(harness), null, "Try later puts the step back to Allow and prepare");
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     assert.match(outcomeText(harness) ?? "", /The daily preparation cap has been reached\./u);
     assert.equal(messageText(harness), null, "a reported block is the outcome, not a failure to run");
   });
@@ -456,7 +410,7 @@ test("a refusal that leaves the run unprepared says Prepare didn't run", async (
       [`GET /api/application-runs/${RUN_ID}`]: () => json(readBack)
     });
     await withStep(props({ run }), recorded.fetchImpl, async (harness) => {
-      await allowAndConfirm(harness);
+      await allowAndPrepare(harness);
       assert.equal(messageText(harness), expected, label);
       assert.equal(mainButton(harness).disabled, false, label);
     });
@@ -477,11 +431,11 @@ test("a create request that replays an ended run is dropped, and the next try cr
     [`POST /api/application-runs/${NEW_RUN}/prepare`]: () => json({ run: { id: NEW_RUN, applicationId: APPLICATION_ID, state: "READY", applyHost: HOST } })
   });
   await withStep(props(), recorded.fetchImpl, async (harness) => {
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     assert.deepEqual(recorded.requests(), ["POST /api/application-runs"], "nothing is allowed or prepared for an ended run");
     assert.match(messageText(harness) ?? "", /already ended\. Try again/u);
     assert.equal(harness.window.sessionStorage.getItem(KEY), null, "the ended run's key is dropped");
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     const keys = recorded.calls.filter((call) => call.url === "/api/application-runs").map((call) => (call.body as { idempotencyKey: string }).idempotencyKey);
     assert.equal(keys.length, 2);
     assert.notEqual(keys[0], keys[1], "a new request, so a new run");
@@ -502,13 +456,13 @@ test("a run on the page clears a kept create key, and a run that goes away isn't
 
     // This step creates a run, then allowing fails; later the page shows that run, then none (it was cancelled).
     await harness.render(React.createElement(PrepareStep, props()));
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     assert.deepEqual(recorded.requests(), ["POST /api/application-runs", "PATCH /api/application-automation-policy"]);
     await harness.render(React.createElement(PrepareStep, props({ run: DRAFT_RUN })));
     await settle();
     await harness.render(React.createElement(PrepareStep, props({ run: null })));
     await settle();
-    await allowAndConfirm(harness);
+    await allowAndPrepare(harness);
     assert.equal(recorded.calls.filter((call) => call.url === "/api/application-runs").length, 2, "the cancelled run isn't reused");
   } finally {
     await harness.close();

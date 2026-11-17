@@ -567,6 +567,12 @@ h2.job-title { font-size:24px; }
 .job-apply-return { display:grid; gap:10px; margin-bottom:20px; border-color:color-mix(in srgb, var(--product-accent) 45%, var(--product-border)); }
 .job-apply-return .job-card-title { margin:0; font-size:17px; }
 .job-apply-return .job-card-copy { margin:0; }
+/* The one large window (G-6): a native dialog holding an ordinary .job-card. */
+.big-window { width:min(560px, calc(100vw - 32px)); max-height:calc(100dvh - 32px); margin:auto; padding:0; border:0; background:none; overflow:auto; }
+.big-window::backdrop { background:rgba(4, 12, 9, 0.62); }
+.big-window-body { display:grid; gap:12px; }
+.big-window-body > .job-button { width:100%; justify-content:center; }
+.big-window-body > .job-link-button { justify-self:center; }
 .job-score-action { display:grid; gap:8px; }
 .job-disclosure > summary { display:flex; align-items:center; gap:10px; min-height:44px; cursor:pointer; list-style:none; font-size:15px; font-weight:650; color:var(--product-text); }
 .job-disclosure > summary::-webkit-details-marker { display:none; }
@@ -662,4 +668,6 @@ h2.job-title { font-size:24px; }
   .job-workspace-top { flex-direction:column; gap:8px; }
   .job-match-score { font-size:34px; }
   .job-create-row .job-button-large { width:100%; }
+  .big-window { width:100vw; max-width:100vw; height:100dvh; max-height:100dvh; margin:0; }
+  .big-window-body { min-height:100%; align-content:center; border-radius:0; }
 }

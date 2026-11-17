@@ -25,47 +25,15 @@ function formatUsdMicros(micros: number) {
 // May be async: the in-page question resolves when the user presses Confirm or Cancel.
 export type ConfirmFn = (message: string) => boolean | Promise<boolean>;
 
-type ApprovedAiCostDependencies = {
+type AiCostDependencies = {
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   confirm?: ConfirmFn;
 };
 
-// For a step the user already approved as part of one combined confirmation. The request is
-// first sent unconfirmed, so the server still decides whether confirmation is needed and states
-// its own maximum. If that maximum is within what the user approved for this step, the request
-// is resent with the confirmation headers; if it is higher, the user is asked again.
-export async function fetchWithApprovedAiCost(
-  input: RequestInfo | URL,
-  init: RequestInit | undefined,
-  approvedMaximumMicros: number,
-  dependencies: ApprovedAiCostDependencies = {}
-) {
-  const fetchImpl = dependencies.fetchImpl ?? ((request, options) => fetch(request, options));
-  const confirm = dependencies.confirm ?? ((message: string) => window.confirm(message));
-  const response = await fetchImpl(input, init);
-  if (response.status !== 428) return response;
-
-  const details = (await response.clone().json().catch(() => null)) as AiErrorPayload | null;
-  if (details?.code !== "AI_COST_CONFIRMATION_REQUIRED") return response;
-
-  const maximum = typeof details.maximumCostMicros === "number" ? details.maximumCostMicros : null;
-  if (maximum === null || maximum > approvedMaximumMicros) {
-    const confirmed = await confirm(
-      `This step could cost up to ${maximum === null ? "an unstated amount" : formatUsdMicros(maximum)}, more than the ${formatUsdMicros(approvedMaximumMicros)} you approved for it. The final charge is usually lower. Continue?`
-    );
-    if (!confirmed) throw new Error("AI request canceled before any provider charge was made.");
-  }
-
-  const headers = new Headers(init?.headers);
-  headers.set("x-ai-cost-confirmed", "true");
-  if (details.dataType) headers.set("x-ai-data-confirmed", "true");
-  return fetchImpl(input, { ...init, headers });
-}
-
 export async function fetchWithAiCostConfirmation(
   input: RequestInfo | URL,
   init?: RequestInit,
-  dependencies: ApprovedAiCostDependencies = {}
+  dependencies: AiCostDependencies = {}
 ) {
   const fetchImpl = dependencies.fetchImpl ?? ((request, options) => fetch(request, options));
   const confirm = dependencies.confirm ?? ((message: string) => window.confirm(message));
@@ -100,5 +68,20 @@ export async function fetchWithAiCostConfirmation(
   if (confirmsResumeData || confirmsApplicationPacket || sharedDataDescription) {
     headers.set("x-ai-data-confirmed", "true");
   }
+  return fetchImpl(input, { ...init, headers });
+}
+
+// For a step the user already agreed to: Apply Pilot told them once that it sends their data to
+// Google Gemini (lib/apply-page/gemini-notice.ts), and steps carry no price (D037). One request,
+// with both consent headers. The server still refuses anything over its per-request ceiling and
+// reserves against the hard monthly cap.
+export function fetchWithAiConsent(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  fetchImpl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> = (request, options) => fetch(request, options)
+) {
+  const headers = new Headers(init?.headers);
+  headers.set("x-ai-cost-confirmed", "true");
+  headers.set("x-ai-data-confirmed", "true");
   return fetchImpl(input, { ...init, headers });
 }

@@ -4,30 +4,21 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, Circle, FileText, Loader2, Sparkles, XCircle } from "lucide-react";
 
-import { useInPageConfirm } from "@/components/ui/in-page-confirm";
-import { fetchWithAiCostConfirmation, fetchWithApprovedAiCost } from "@/lib/ai/browser-request";
 import { attachDocuments, ensureApplication } from "@/lib/applications/client";
 import type { ApplyKitDocument } from "@/lib/apply-kit/apply-kit-view";
-import { SENT_TO_GEMINI } from "@/lib/apply-page/ai-data-copy";
 import { chooseAutoAttach, chooseJustReady, isReadyDocument } from "@/lib/apply-page/auto-attach";
-import {
-  documentCreationMaximumMicros,
-  formatCentsCeiling,
-  formatUsdMicros,
-  stepMaximumMicros,
-  type DocumentCreationQuote
-} from "@/lib/jobs/document-creation-plan";
+import { writeDocument, type WriteStep } from "@/lib/apply-page/write-documents";
 import type { GradeLetter } from "@/lib/jobs/grade";
 
-// Step 3 of the Apply page: write the résumé (and cover letter) for this job, with the cost asked
-// in the page, then attach the ready versions to the job's application. It never saves lines or
-// re-scores; step 2 does that. Attaching sends no status, so the application's status and dates stay.
+// Step 3 of the Apply page: write the résumé (and cover letter) for this job in one click (no price,
+// no cost question: D037), then attach the ready versions to the job's application. It never saves
+// lines or re-scores; step 2 does that. Attaching sends no status, so the application's status and
+// dates stay.
 
 export type DocumentsStepProps = {
   jobId: string;
   // The job's application, if it has one. Without one, attaching first saves the job (SAVED).
   applicationId: string | null;
-  quote: DocumentCreationQuote | null;
   generationAvailable: boolean;
   coverByDefault: boolean;
   // Newest first, as the Apply Kit loads them.
@@ -41,20 +32,19 @@ export type DocumentsStepProps = {
   blockedReason?: string | null;
   // False once the application is past applying: what's attached then stays as it is.
   attachable?: boolean;
+  // The one-time Gemini notice; false means the user declined, and nothing is sent.
+  beforeRun: () => Promise<boolean>;
 };
 
-type WriteStep = "resume" | "cover";
 type StepState = "pending" | "running" | "done" | "failed";
 type Message = { tone: "success" | "error" | "info"; text: string };
-type ErrorPayload = { error?: unknown; billingStatus?: unknown; actualCostMicros?: unknown } | null;
 type ReadyIds = { resume: Set<string>; cover: Set<string> };
 
 const BELOW_A = "Assisted Fill needs an A. You can still apply on your own with these documents.";
 const WRITING_OFF = "Document writing is switched off on this server (no AI provider is configured).";
-const CANCELED = "Canceled. Nothing was sent and nothing was charged.";
+const NOT_SENT = "Nothing was sent.";
 const STILL_ATTACHING = "Still attaching your documents. Try again in a moment.";
 
-const ENDPOINTS: Record<WriteStep, string> = { resume: "tailored-resume", cover: "cover-letter" };
 const STEP_LABELS: Record<WriteStep, string> = { resume: "Writing your tailored résumé", cover: "Writing your cover letter" };
 const DONE_PHRASES: Record<WriteStep, string> = { resume: "Your résumé was created.", cover: "Your cover letter was created." };
 const READY_MESSAGES = {
@@ -62,20 +52,6 @@ const READY_MESSAGES = {
   resume: "Your résumé is ready to review below.",
   cover: "Your cover letter is ready to review below."
 } as const;
-
-function errorText(json: ErrorPayload, fallback: string) {
-  const parts = [typeof json?.error === "string" ? json.error : fallback];
-  if (json?.billingStatus === "not_charged") parts.push("You weren't charged for this step.");
-  if (json?.billingStatus === "uncertain") parts.push("The charge for this step is uncertain; check AI usage before trying again.");
-  if (json?.billingStatus === "known" && typeof json.actualCostMicros === "number" && json.actualCostMicros >= 0) {
-    parts.push(`Recorded cost: ${formatUsdMicros(json.actualCostMicros)}.`);
-  }
-  return parts.join(" ");
-}
-
-function writeLabel(base: string, steps: WriteStep[], quote: DocumentCreationQuote | null) {
-  return quote ? `${base} · up to ${formatCentsCeiling(documentCreationMaximumMicros(steps, quote))}` : base;
-}
 
 // The newest version and the attached one stay in view; the rest fold under "Older versions".
 function splitVersions(documents: ApplyKitDocument[], attachedId: string | null) {
@@ -90,7 +66,6 @@ function splitVersions(documents: ApplyKitDocument[], attachedId: string | null)
 export function DocumentsStep({
   jobId,
   applicationId,
-  quote,
   generationAvailable,
   coverByDefault,
   resumes,
@@ -98,10 +73,10 @@ export function DocumentsStep({
   attached,
   letter,
   blockedReason = null,
-  attachable = true
+  attachable = true,
+  beforeRun
 }: DocumentsStepProps) {
   const router = useRouter();
-  const { confirm, confirmFn, dialog } = useInPageConfirm();
   const idPrefix = useId();
   const [includeCover, setIncludeCover] = useState(coverByDefault);
   const [running, setRunning] = useState<"write" | "coverOnly" | null>(null);
@@ -117,14 +92,14 @@ export function DocumentsStep({
   const seenReady = useRef<ReadyIds | null>(null);
 
   const steps: WriteStep[] = includeCover ? ["resume", "cover"] : ["resume"];
-  const label = writeLabel(includeCover ? "Write my résumé and cover letter" : "Write my résumé", steps, quote);
-  const coverOnlyLabel = writeLabel("Write my cover letter", ["cover"], quote);
+  const label = includeCover ? "Write my résumé and cover letter" : "Write my résumé";
+  const coverOnlyLabel = "Write my cover letter";
   // A tailored résumé ready to use: then the cover letter can be written on its own, so a good
   // résumé isn't rewritten (or paid for) again.
   const hasCurrentResume = resumes.some((document) => document.exportReady);
   const reason = !generationAvailable ? WRITING_OFF : blockedReason;
   const canWrite = !reason && running === null;
-  // Read again after the cost question: step 2 may have changed while it was open.
+  // Read again after the Gemini notice: step 2 may have changed while it was open.
   const latestReason = useRef(reason);
   useEffect(() => {
     latestReason.current = reason;
@@ -190,19 +165,13 @@ export function DocumentsStep({
     setMessage(null);
     const completed: WriteStep[] = [];
     try {
-      if (quote) {
-        const approved = await confirm({
-          title: action === "coverOnly" ? "Write my cover letter?" : includeCover ? "Write my résumé and cover letter?" : "Write my résumé?",
-          body: `Sends ${SENT_TO_GEMINI} to Google Gemini. Most it can cost: ${formatCentsCeiling(documentCreationMaximumMicros(runSteps, quote))}.`
-        });
-        if (!approved) {
-          setMessage({ tone: "info", text: CANCELED });
-          return;
-        }
+      if (!(await beforeRun())) {
+        setMessage({ tone: "info", text: NOT_SENT });
+        return;
       }
       const blockedNow = latestReason.current;
       if (blockedNow) {
-        setMessage({ tone: "info", text: `${blockedNow} Nothing was sent and nothing was charged.` });
+        setMessage({ tone: "info", text: `${blockedNow} ${NOT_SENT}` });
         return;
       }
       setRunning(action);
@@ -211,15 +180,7 @@ export function DocumentsStep({
         setProgress((current) => current.map((item, position) => (position === index ? { ...item, state } : item)));
       for (const [index, step] of runSteps.entries()) {
         mark(index, "running");
-        const url = `/api/jobs/${jobId}/${ENDPOINTS[step]}`;
-        // Each request still states its own maximum; a higher one is asked again, in the page.
-        const response = quote
-          ? await fetchWithApprovedAiCost(url, { method: "POST" }, stepMaximumMicros(step, quote), { confirm: confirmFn })
-          : await fetchWithAiCostConfirmation(url, { method: "POST" }, { confirm: confirmFn });
-        if (!response.ok) {
-          const json = (await response.json().catch(() => null)) as ErrorPayload;
-          throw new Error(errorText(json, `${STEP_LABELS[step]} failed.`));
-        }
+        await writeDocument(jobId, step);
         completed.push(step);
         mark(index, "done");
       }
@@ -330,7 +291,6 @@ export function DocumentsStep({
         ) : null}
       </section>
 
-      {dialog}
       {message ? (
         <p role={message.tone === "error" ? "alert" : "status"} className={`job-message job-message-${message.tone}`} data-documents-message>{message.text}</p>
       ) : null}

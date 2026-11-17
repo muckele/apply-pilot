@@ -127,7 +127,7 @@ function clock(t: TestContext) {
 
 test("opening the application records the opened moment and asks only once the user comes back to this tab", async (t) => {
   const time = clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView() }), openedOk, async ({ container, requests, leave, comeBack }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(), beforeAiRun: async () => true }), openedOk, async ({ container, requests, leave, comeBack }) => {
     const link = element<HTMLAnchorElement>(container, "[data-apply-link]");
     assert.equal(link.getAttribute("target"), "_blank", "a new tab, not a pop-up window");
     assert.equal(link.getAttribute("rel"), "noopener noreferrer");
@@ -154,7 +154,7 @@ test("opening the application records the opened moment and asks only once the u
 
 test("the return is also noticed when the window regains focus after losing it", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView() }), openedOk, async ({ container, dom }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(), beforeAiRun: async () => true }), openedOk, async ({ container, dom }) => {
     await click(element(container, "[data-apply-link]"));
     await act(async () => { dom.window.dispatchEvent(new dom.window.Event("focus")); });
     absent(container, "[data-apply-return]", "focus without having left is not a return");
@@ -167,7 +167,7 @@ test("the return is also noticed when the window regains focus after losing it",
 test("'Yes, I applied' opens the existing confirmation with the minutes away pre-filled, and records through the same request", async (t) => {
   const time = clock(t);
   const view = await kitView();
-  await mounted(createElement(ApplyKit, { view }), (request) => (request.url === "/api/applications" ? json({ application: { id: "application-1" } }) : openedOk()), async ({ container, requests, refreshes, leave, comeBack }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), (request) => (request.url === "/api/applications" ? json({ application: { id: "application-1" } }) : openedOk()), async ({ container, requests, refreshes, leave, comeBack }) => {
     await click(element(container, "[data-apply-link]"));
     await leave();
     time.advanceMinutes(23);
@@ -204,7 +204,7 @@ test("'Yes, I applied' opens the existing confirmation with the minutes away pre
 
 test("the pre-filled minutes can be cleared, and then no minutes are sent", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 40 * 60_000).toISOString())) }), () => json({ application: { id: "application-1" } }), async ({ container, requests }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 40 * 60_000).toISOString())), beforeAiRun: async () => true }), () => json({ application: { id: "application-1" } }), async ({ container, requests }) => {
     await click(element(container, "[data-apply-return-yes]"));
     const minutes = element<HTMLInputElement>(container, "[data-effort-minutes]");
     assert.equal(minutes.value, "40", "after a reload the gap since the recorded opened moment is used");
@@ -218,7 +218,7 @@ test("the pre-filled minutes can be cleared, and then no minutes are sent", asyn
 
 test("coming back the next day asks again but leaves the minutes for the user to estimate", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 26 * 60 * 60_000).toISOString())) }), openedOk, async ({ container }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 26 * 60 * 60_000).toISOString())), beforeAiRun: async () => true }), openedOk, async ({ container }) => {
     await click(element(container, "[data-apply-return-yes]"));
     assert.equal(element<HTMLInputElement>(container, "[data-effort-minutes]").value, "");
     absent(container, "[data-effort-prefilled]");
@@ -228,7 +228,7 @@ test("coming back the next day asks again but leaves the minutes for the user to
 test("a 409 after 'Yes' keeps the existing explanation and refresh", async (t) => {
   clock(t);
   const stale = () => json({ error: "Regenerate documents.", code: "APPLICATION_DOCUMENT_EVIDENCE_STALE" }, 409);
-  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 10 * 60_000).toISOString())) }), stale, async ({ container, refreshes }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(withPending(new Date(NOW - 10 * 60_000).toISOString())), beforeAiRun: async () => true }), stale, async ({ container, refreshes }) => {
     await click(element(container, "[data-apply-return-yes]"));
     await click(element(container, "[data-attest]"));
     await click(element(container, "[data-confirm-applied]"));
@@ -240,7 +240,7 @@ test("a 409 after 'Yes' keeps the existing explanation and refresh", async (t) =
 test("'Not yet' closes the card without recording anything, and the question is back on the next visit", async (t) => {
   clock(t);
   const view = await kitView(withPending(new Date(NOW - 15 * 60_000).toISOString()));
-  await mounted(createElement(ApplyKit, { view }), openedOk, async ({ container, requests, refreshes }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), openedOk, async ({ container, requests, refreshes }) => {
     const card = element(container, "[data-apply-return]");
     assert.match(card.textContent ?? "", /Example Co/u);
     await click(element(card, "[data-apply-return-not-yet]"));
@@ -249,7 +249,7 @@ test("'Not yet' closes the card without recording anything, and the question is 
     absent(container, "[data-applied-confirmation]");
   });
   // A reload, a closed tab or another device renders the kit again from the same unanswered moment.
-  await mounted(createElement(ApplyKit, { view }), openedOk, async ({ container }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), openedOk, async ({ container }) => {
     element(container, "[data-apply-return]");
   });
 });
@@ -257,7 +257,7 @@ test("'Not yet' closes the card without recording anything, and the question is 
 test("'Not applying' sends that answer, refreshes the kit, and a 409 is explained", async (t) => {
   clock(t);
   const view = await kitView(withPending(new Date(NOW - 5 * 60_000).toISOString()));
-  await mounted(createElement(ApplyKit, { view }), () => json({ application: { id: "application-1", status: "ARCHIVED" } }), async ({ container, requests, refreshes }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), () => json({ application: { id: "application-1", status: "ARCHIVED" } }), async ({ container, requests, refreshes }) => {
     await click(element(container, "[data-apply-return-not-applying]"));
     assert.equal(requests.length, 1);
     assert.equal(requests[0]!.url, `/api/jobs/${JOB}/apply-return`);
@@ -267,7 +267,7 @@ test("'Not applying' sends that answer, refreshes the kit, and a 409 is explaine
     assert.match(element(container, "[data-kit-message]").textContent ?? "", /out of your active applications/u);
   });
   const answered = () => json({ error: "There is no open \"Did you apply?\" question for this job.", code: "APPLY_RETURN_NOT_PENDING" }, 409);
-  await mounted(createElement(ApplyKit, { view }), answered, async ({ container, refreshes }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), answered, async ({ container, refreshes }) => {
     await click(element(container, "[data-apply-return-not-applying]"));
     assert.match(element(container, "[data-apply-return-error]").textContent ?? "", /no open "Did you apply\?" question/u);
     assert.equal(refreshes(), 1, "the kit reloads to show the answer given elsewhere");
@@ -282,7 +282,7 @@ test("a 'Not applying' answer in effect can be undone from the kit", async (t) =
     application: { id: "application-1", status: "ARCHIVED", statusLabel: "Archived", dateApplied: null },
     applyReturn: { pending: null, declined: { eventId: "event-decline", answeredAt: new Date(NOW).toISOString(), previousStatus: "SAVED", previousPostingStatus: "ACTIVE" } }
   }));
-  await mounted(createElement(ApplyKit, { view }), () => json({ application: { id: "application-1", status: "SAVED" } }), async ({ container, requests, refreshes }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), () => json({ application: { id: "application-1", status: "SAVED" } }), async ({ container, requests, refreshes }) => {
     absent(container, "[data-apply-return]");
     const notice = element(container, "[data-apply-return-declined]");
     assert.match(notice.textContent ?? "", /not applying/iu);
@@ -299,7 +299,7 @@ test("an application already recorded as applied is neither recorded as opened n
     canRecordApplied: false,
     application: { id: "application-1", status: "APPLIED", statusLabel: "Applied", dateApplied: new Date(NOW).toISOString() }
   }));
-  await mounted(createElement(ApplyKit, { view }), openedOk, async ({ container, requests, leave, comeBack }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), openedOk, async ({ container, requests, leave, comeBack }) => {
     await click(element(container, "[data-apply-link]"));
     await leave();
     await comeBack();
@@ -311,7 +311,7 @@ test("an application already recorded as applied is neither recorded as opened n
 test("arriving from the job page's 'Yes, I applied' opens the confirmation straight away", async (t) => {
   clock(t);
   const view = await kitView(withPending(new Date(NOW - 12 * 60_000).toISOString()));
-  await mounted(createElement(ApplyKit, { view, answeredYes: true }), openedOk, async ({ container, requests }) => {
+  await mounted(createElement(ApplyKit, { view, answeredYes: true, beforeAiRun: async () => true }), openedOk, async ({ container, requests }) => {
     absent(container, "[data-apply-return]");
     element(container, "[data-applied-confirmation]");
     assert.equal(element<HTMLInputElement>(container, "[data-effort-minutes]").value, "12");
@@ -350,7 +350,7 @@ test("the job page asks the same question; 'Yes' goes to the Apply Kit confirmat
 
 test("when the server says there is nothing to ask (applied on another device), coming back asks nothing", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView() }), () => json({ opened: null }), async ({ container, requests, leave, comeBack }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(), beforeAiRun: async () => true }), () => json({ opened: null }), async ({ container, requests, leave, comeBack }) => {
     await click(element(container, "[data-apply-link]"));
     assert.equal(requests.length, 1);
     await leave();
@@ -361,7 +361,7 @@ test("when the server says there is nothing to ask (applied on another device), 
 
 test("if the opened moment could not be saved, the user is told and is still asked on return", async (t) => {
   clock(t);
-  await mounted(createElement(ApplyKit, { view: await kitView() }), () => json({ error: "Too many requests." }, 429), async ({ container, leave, comeBack }) => {
+  await mounted(createElement(ApplyKit, { view: await kitView(), beforeAiRun: async () => true }), () => json({ error: "Too many requests." }, 429), async ({ container, leave, comeBack }) => {
     await click(element(container, "[data-apply-link]"));
     assert.match(element(container, "[data-kit-message]").textContent ?? "", /could not save that you opened/u);
     await leave();
@@ -379,7 +379,7 @@ test("while 'Not applying' is in effect its notice replaces the generic archived
     application: { id: "application-1", status: "ARCHIVED", statusLabel: "Archived", dateApplied: null },
     applyReturn: { pending: null, declined: { eventId: "event-decline", answeredAt: new Date(NOW).toISOString(), previousStatus: "SAVED", previousPostingStatus: "ACTIVE" } }
   }));
-  await mounted(createElement(ApplyKit, { view }), openedOk, async ({ container }) => {
+  await mounted(createElement(ApplyKit, { view, beforeAiRun: async () => true }), openedOk, async ({ container }) => {
     element(container, "[data-apply-return-declined]");
     absent(container, "[data-job-notice]", "the generic archived notice is hidden");
   });

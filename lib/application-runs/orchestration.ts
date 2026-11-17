@@ -40,8 +40,8 @@ import {
   JOB_MATCH_PROFILE_SELECT,
   JOB_MATCH_RESUME_SELECT,
   buildCurrentJobMatchContext,
-  currentJobMatchInputHash,
-  hasCurrentJobMatchAnalysis
+  currentJobMatchBasis,
+  currentJobMatchInputHash
 } from "@/lib/jobs/current-job-match";
 import { isRunDocumentCurrent } from "@/lib/application-runs/document-currentness";
 import { CURRENT_EVIDENCE_SNAPSHOT_SELECT } from "@/lib/jobs/evidence-snapshot-contracts";
@@ -117,7 +117,7 @@ const PREPARATION_RUN_SELECT = {
       currentEvidenceSnapshotId: true,
       evidenceSnapshotGeneration: true,
       currentEvidenceSnapshot: {
-        select: CURRENT_EVIDENCE_SNAPSHOT_SELECT
+        select: { ...CURRENT_EVIDENCE_SNAPSHOT_SELECT, reviewedAnalysisId: true }
       },
       aiAnalyses: CURRENT_JOB_MATCH_ANALYSES
     }
@@ -577,10 +577,13 @@ export function createApplicationRunOrchestrator(
       );
       const reviewedEvidence = evidenceContext.reviewedEvidence;
       const currentMatchInput = evidenceContext.matchInput;
-      const hasCurrentMatch = hasCurrentJobMatchAnalysis({
-        ...run.jobPosting,
-        currentEvidenceSourceValid: evidenceContext.currentEvidenceSourceValid
-      }, currentMatchInput);
+      const hasCurrentMatch = currentJobMatchBasis({
+        job: run.jobPosting,
+        resume: run.user.resumes?.[0] ?? null,
+        profile: run.user.profile,
+        analysis: run.jobPosting.aiAnalyses[0],
+        context: evidenceContext
+      }) !== null;
       const gate = evaluatePreparationGates({
         hostBlocked,
         fitScore: hasCurrentMatch ? run.jobPosting.overallFitScore : null,
@@ -788,10 +791,13 @@ export function createApplicationRunOrchestrator(
         run.jobPosting.currentEvidenceSnapshotId !== captured.evidenceSnapshotId ||
         currentAnalysis?.id !== captured.jobMatchAnalysisId ||
         currentJobMatchInputHash(currentEvidence.matchInput) !== captured.jobMatchInputHash ||
-        !hasCurrentJobMatchAnalysis({
-          ...run.jobPosting,
-          currentEvidenceSourceValid: currentEvidence.currentEvidenceSourceValid
-        }, currentEvidence.matchInput) ||
+        currentJobMatchBasis({
+          job: run.jobPosting,
+          resume: run.user.resumes?.[0] ?? null,
+          profile: run.user.profile,
+          analysis: currentAnalysis,
+          context: currentEvidence
+        }) === null ||
         run.jobPosting.overallFitScore !== captured.fitScore ||
         run.jobPosting.confidenceScore !== captured.matchConfidenceScore ||
         run.application.resumeVersionId !== captured.resumeVersionId ||

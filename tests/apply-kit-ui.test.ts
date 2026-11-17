@@ -67,7 +67,7 @@ async function mounted(
   const router = { bfcacheId: "apply-kit", back: noop, forward: noop, push: noop, replace: noop, prefetch: noop, refresh: () => { refreshCount += 1; } };
   try {
     await act(async () => {
-      root.render(createElement(AppRouterContext.Provider, { value: router }, createElement(ApplyKit, { view })));
+      root.render(createElement(AppRouterContext.Provider, { value: router }, createElement(ApplyKit, { view, beforeAiRun: async () => true })));
     });
     await run({ container, requests, refreshes: () => refreshCount, copied });
   } finally {
@@ -269,26 +269,21 @@ test("without documents the kit offers generation, and explains when AI is unava
   });
 });
 
-test("the kit's Generate asks its cost question in the page, never with window.confirm", async () => {
+test("the kit's Generate writes in one click, with the consent headers and no price or cost question", async () => {
   const empty = (data: ReturnType<typeof fixtures>) => { data.resumeVersion = []; data.generatedDocument = []; };
-  const respond = (request: Request) => new Headers(request.init.headers).get("x-ai-cost-confirmed") === "true"
+  const respond = (request: Request) => new Headers(request.init.headers).get("x-ai-cost-confirmed") === "true" &&
+    new Headers(request.init.headers).get("x-ai-data-confirmed") === "true"
     ? new Response(JSON.stringify({ version: { id: "new" } }), { headers: { "content-type": "application/json" } })
     : new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 64_500, dataType: "application_packet" }), { status: 428 });
   await mounted(await kitView(empty, true), respond, async ({ container, requests, refreshes }) => {
     (globalThis.window as unknown as { confirm: () => boolean }).confirm = () => { throw new Error("window.confirm must not run"); };
+    assert.doesNotMatch(container.textContent ?? "", /¢|\$|cost|charged/u);
     await click(element(container, "[data-generate='resume']"));
-    for (let attempt = 0; attempt < 20 && !/could cost up to/u.test(container.textContent ?? ""); attempt += 1) {
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    }
-    assert.match(container.textContent ?? "", /could cost up to \$0\.0645/u);
-    assert.equal(requests.length, 1);
-    const confirmButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Confirm")!;
-    await click(confirmButton);
     for (let attempt = 0; attempt < 20 && refreshes() === 0; attempt += 1) {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     }
-    assert.equal(requests.length, 2);
-    assert.equal(new Headers(requests[1]!.init.headers).get("x-ai-cost-confirmed"), "true");
+    assert.equal(requests.length, 1, "one request, no second confirmed one");
+    assert.equal(container.querySelector('[role="group"]'), null, "no in-page cost question");
     assert.equal(refreshes(), 1);
   });
 });

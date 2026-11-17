@@ -6,6 +6,7 @@ import {
   CURRENT_EVIDENCE_SNAPSHOT_SELECT,
   resolveCurrentReviewedEvidence
 } from "@/lib/jobs/evidence-snapshot-contracts";
+import { CURRENT_JOB_MATCH_ANALYSIS_WHERE, currentJobMatchBasis } from "@/lib/jobs/current-job-match";
 import { assertReviewedOwnerFactsClean } from "@/lib/jobs/owner-fact-cleanup";
 
 type SourceClient = PrismaClient | Prisma.TransactionClient;
@@ -28,6 +29,23 @@ function matchCitations(output: unknown) {
   }));
 }
 
+// No answer is bound to a "nothing to add" review: it reviewed the master-résumé answer and added
+// no lines. The shared current-score rule says when that answer still stands; then it protects.
+async function nothingToAddMatch(
+  client: SourceClient,
+  userId: string,
+  job: Parameters<typeof currentJobMatchBasis>[0]["job"] & { id: string },
+  resume: Parameters<typeof currentJobMatchBasis>[0]["resume"],
+  profile: Parameters<typeof currentJobMatchBasis>[0]["profile"]
+) {
+  const latest = await client.aIAnalysis.findFirst({
+    where: { userId, jobPostingId: job.id, ...CURRENT_JOB_MATCH_ANALYSIS_WHERE },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, inputHash: true, evidenceSnapshotId: true, output: true }
+  });
+  return currentJobMatchBasis({ job, resume, profile, analysis: latest }) === "NOTHING_TO_ADD" ? latest : null;
+}
+
 export async function readApplicationDocumentEvidence(
   client: SourceClient,
   userId: string,
@@ -39,7 +57,7 @@ export async function readApplicationDocumentEvidence(
       where: { id: jobPostingId, userId },
       include: {
         currentEvidenceSnapshot: {
-          select: CURRENT_EVIDENCE_SNAPSHOT_SELECT
+          select: { ...CURRENT_EVIDENCE_SNAPSHOT_SELECT, reviewedAnalysisId: true }
         }
       }
     }),
@@ -69,7 +87,7 @@ export async function readApplicationDocumentEvidence(
         },
         orderBy: { createdAt: "desc" },
         select: { output: true }
-      })
+      }) ?? await nothingToAddMatch(client, userId, job, resume, profile)
     : null;
   return {
     job,

@@ -1362,3 +1362,38 @@ test("D031: TX2 rejects an edited résumé whose review stopped covering it duri
   );
   assert.equal(fake.state.run.state, "PREPARING");
 });
+
+// "Nothing to add": the current snapshot reviewed exactly this master-résumé answer and added no
+// lines (the shared rule in lib/jobs/current-job-match.ts). Prepare counts it without a second score.
+function useNothingToAddMatch(fake: ReturnType<typeof createFake>, reviewedAnalysisId = "master-match-1") {
+  const job = fake.state.run.jobPosting;
+  const masterInput = buildCurrentJobMatchInput({
+    job,
+    resume: fake.state.run.user.resumes[0],
+    profile: fake.state.run.user.profile,
+    evidenceSnapshotGeneration: job.evidenceSnapshotGeneration - 1,
+    reviewedEvidence: null
+  });
+  job.currentEvidenceSnapshot = {
+    ...job.currentEvidenceSnapshot,
+    reviewPayload: { schema: "apply-pilot/evidence-snapshot-payload/v2", facts: [], unresolvedGapIds: [] },
+    reviewedAnalysisId
+  } as unknown as typeof job.currentEvidenceSnapshot;
+  job.aiAnalyses = [{ id: "master-match-1", inputHash: currentJobMatchInputHash(masterInput), evidenceSnapshotId: null }];
+}
+
+test("Prepare counts a 'nothing to add' answer as current, through its gate and its recheck", async () => {
+  const fake = createFake();
+  useNothingToAddMatch(fake);
+  const result = await orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false });
+  assert.equal(result.state, "READY");
+});
+
+test("Prepare refuses an unbound answer that the current review didn't review", async () => {
+  const fake = createFake();
+  useNothingToAddMatch(fake, "another-match");
+  await assert.rejects(
+    orchestrator(fake, async () => cleanPlan())({ userId: USER_ID, runId: RUN_ID, highCostConfirmed: false }),
+    expectBlocked("fit_below_threshold")
+  );
+});

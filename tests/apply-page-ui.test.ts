@@ -11,6 +11,7 @@ import { applyProgressFromFacts, loadApplyPageState, loadApplyProgress, prepareS
 import { automationPolicyDefaultValues } from "@/lib/application-runs/service";
 import { prisma } from "@/lib/prisma";
 import type { JobDetail } from "@/lib/jobs/job-detail";
+import type { EstimateView } from "@/lib/jobs/job-view-types";
 import { buildEvidenceCorrectionReview } from "@/lib/jobs/evidence-correction-review";
 import { buildRequirementChecklist } from "@/lib/jobs/requirement-checklist";
 import { JOB, OWNER, fakeDb, fixtures } from "@/tests/fixtures/apply-kit-db";
@@ -85,7 +86,7 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
     automationAvailable: false,
     progress: deriveApplyProgress(PROGRESS_INPUT),
     prepare: prepareStateFromFacts(PREPARE_FACTS),
-    tailorServer: { quote: { provider: "gemini", model: "gemini-3.8-flash", promptVersion: "12", jobMatchMicros: 72_720, resumeMicros: 64_500, coverMicros: 47_250 }, generationAvailable: true },
+    tailorServer: { generationAvailable: true },
     // Most tests here exercise the résumé-only path; the policy default (true) has its own test.
     coverLetterRequired: false,
     appOrigin: "https://app.example.com",
@@ -94,10 +95,19 @@ async function pageProps(overrides: PageOverrides = {}): Promise<ApplyPageProps>
   };
 }
 
+// The one-time Gemini notice, already answered on this browser for the fixture's account.
+const NOTICE_KEY = "apply-pilot:gemini-notice:v1:0123456789abcdef";
+const noticeSeen = (harness: ReturnType<typeof createDomHarness>) => harness.window.localStorage.setItem(NOTICE_KEY, "seen");
+// Both consent headers: what the Apply page sends on its one request after the notice (D037).
+const consented = (init?: RequestInit) =>
+  new Headers(init?.headers).get("x-ai-cost-confirmed") === "true" && new Headers(init?.headers).get("x-ai-data-confirmed") === "true";
+const MONEY = /¢|\$|\bcost\b|charged/u;
+
 async function withPage(overrides: PageOverrides, run: (harness: ReturnType<typeof createDomHarness>) => Promise<void>) {
   const harness = createDomHarness({ fetch: (async () => new Response("{}")) as typeof fetch, confirm: () => true });
   // react-dom's fallback input listener calls the IE-only attachEvent/detachEvent.
   Object.assign(harness.window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
+  noticeSeen(harness);
   try {
     await harness.render(React.createElement(ApplyPage, await pageProps(overrides)));
     await run(harness);
@@ -140,7 +150,7 @@ test("a scored job shows the result line, and Apply on my own holds the Apply Ki
     const step4 = harness.container.querySelector("#step-4")!;
     assert.equal(step4.querySelector("h2")?.textContent, "Prepare");
     assert.match(step4.textContent ?? "", /Assisted apply isn't switched on for this server/u, "no automation, no Prepare");
-    assert.equal(harness.maybeButton("Allow and prepare") === undefined, true);
+    assert.equal(harness.maybeButton("Allow jobs.example.com and prepare") === undefined, true);
   });
 });
 
@@ -152,16 +162,16 @@ test("step 4 is Prepare: the server's ready list and one Allow and prepare", asy
       ["fit_below_threshold", "true"], ["match_confidence_below_threshold", "true"], ["resume_required", "true"],
       ["cover_letter_required", "true"], ["host_blocked", "true"], ["application_details", "true"]
     ]);
-    assert.equal(harness.button("Allow and prepare").disabled, false);
+    assert.equal(harness.button("Allow jobs.example.com and prepare").disabled, false);
     assert.equal(step4.querySelector('a[href^="/applications/"]') === null, true, "Prepare happens here now, not on the application page");
   });
   const fillOn = prepareStateFromFacts({ ...PREPARE_FACTS, policy: { ...PREPARE_FACTS.policy, mode: "FILL_AND_REVIEW" } });
   await withPage({ automationAvailable: true, detail: { application: ATTACHED }, prepare: fillOn }, async (harness) => {
-    assert.equal(harness.button("Allow and prepare").disabled, true);
+    assert.equal(harness.button("Allow jobs.example.com and prepare").disabled, true);
     assert.ok(harness.button("Turn off"));
   });
   await withPage({ automationAvailable: true, detail: { application: ATTACHED }, kitPatch: { canRecordApplied: false } }, async (harness) => {
-    assert.equal(harness.maybeButton("Allow and prepare") === undefined, true, "nothing to prepare once applied");
+    assert.equal(harness.maybeButton("Allow jobs.example.com and prepare") === undefined, true, "nothing to prepare once applied");
   });
 });
 
@@ -175,6 +185,9 @@ test("step 4's state mirrors Prepare's gates: the reviewed match, documents, pol
   // A match not bound to the saved review doesn't count, whatever its score.
   const unreviewed = prepareStateFromFacts({ ...PREPARE_FACTS, estimate: { score: 95, basis: "MASTER_RESUME" } });
   assert.equal(unreviewed.readyList.find((line) => line.key === "fit_below_threshold")?.ok, false);
+  // A "nothing to add" review of exactly that match counts, as Prepare's own gate counts it.
+  const nothingToAdd = prepareStateFromFacts({ ...PREPARE_FACTS, estimate: { score: 95, basis: "MASTER_RESUME_NO_NEW_FACTS" } });
+  assert.equal(nothingToAdd.readyList.find((line) => line.key === "fit_below_threshold")?.ok, true);
   // The policy's own thresholds, cover rule and block list.
   const strict = prepareStateFromFacts({ ...PREPARE_FACTS, policy: { ...PREPARE_FACTS.policy, minimumFitScore: 95, coverLetterRequired: false, blockedHosts: ["example.com"] } });
   assert.equal(strict.readyList.find((line) => line.key === "fit_below_threshold")?.ok, false);
@@ -211,6 +224,7 @@ test("progress facts map the way the plan says", () => {
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: null }).current, 1);
   assert.equal(applyProgressFromFacts(base).current, 2);
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE" }).current, 3);
+  assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "MASTER_RESUME_NO_NEW_FACTS" }).current, 3, "nothing to add: step 2 is done");
   const attached = { status: "INTERESTED", resumeVersionId: "r", coverLetterVersionId: null };
   const resumeReady = { resume: "ready", cover: "none" } as const;
   assert.equal(applyProgressFromFacts({ ...base, estimateBasis: "REVIEWED_EVIDENCE", application: attached, documents: resumeReady }).current, 3);
@@ -293,24 +307,23 @@ test("after a partial run the refreshed page keeps step 3's outcome message", as
         invalidations: { assessmentIds: ["analysis-1"], resumeDocumentIds: [], coverLetterDocumentIds: [], totalCount: 1, reason: "EVIDENCE_SNAPSHOT_CHANGED" }
       }), { status: 201 });
     }
-    if (!new Headers(init?.headers).get("x-ai-cost-confirmed")) {
+    if (!consented(init)) {
       return new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 1, dataType: "application_packet" }), { status: 428 });
     }
     return new Response(JSON.stringify({ error: "The writer is unavailable.", billingStatus: "not_charged" }), { status: 503 });
   }) as typeof fetch;
   const harness = createDomHarness({ fetch: fetchStub, confirm: () => { throw new Error("window.confirm must not run"); } });
+  noticeSeen(harness);
   try {
     await harness.render(React.createElement(ApplyPage, await pageProps({ detail: REVIEWED })));
-    await harness.click(harness.button("Write my résumé · up to 7¢"));
-    await harness.waitForText(/Most it can cost: 7¢/u);
-    await harness.click(harness.button("Confirm"));
+    await harness.click(harness.button("Write my résumé"));
     await harness.waitForText(/The writer is unavailable/u);
     const next = await pageProps({ detail: REVIEWED });
     // What router.refresh() delivers: the same documents with a new review identity.
     await harness.render(React.createElement(ApplyPage, {
       ...next, detail: { ...next.detail, evidenceReview: { ...next.detail.evidenceReview!, analysisId: "analysis-2" } }
     }));
-    assert.match(harness.container.querySelector("#step-3")?.textContent ?? "", /The writer is unavailable\. You weren't charged for this step\./u);
+    assert.match(harness.container.querySelector("#step-3")?.textContent ?? "", /The writer is unavailable\./u);
   } finally {
     await harness.close();
   }
@@ -323,11 +336,11 @@ test("step 2 is Your experience: one box per requirement, and step 3 only writes
     assert.equal(step2.querySelector("[data-experience-step]") !== null, true);
     assert.deepEqual([...step2.querySelectorAll("fieldset[data-requirement] legend")].map((node) => node.textContent),
       ["Current Quenby certification", "Working knowledge of SQL"]);
-    assert.ok([...step2.querySelectorAll("button")].some((button) => button.textContent === "Nothing to add · update my score"));
+    assert.ok([...step2.querySelectorAll("button")].some((button) => button.textContent === "Nothing to add"));
     assert.equal(harness.container.querySelector("fieldset[data-gap]") === null, true, "the old three-way gap list is gone from the page");
     const step3 = harness.container.querySelector("#step-3")!;
     assert.ok(step3.querySelector("[data-documents-step]"), "step 3 is Your documents");
-    assert.ok([...step3.querySelectorAll("button")].some((button) => button.textContent === "Write my résumé · up to 7¢"));
+    assert.ok([...step3.querySelectorAll("button")].some((button) => button.textContent === "Write my résumé"));
     await harness.type(step2.querySelector("textarea"), "Earned the Quenby certification in 2024.");
     assert.equal(harness.window.localStorage.getItem("apply-pilot:experience:0123456789abcdef:job-1") !== null, true, "drafts use the server's user key");
   });
@@ -354,13 +367,14 @@ function recordingPage(detail: Record<string, unknown>) {
     const url = String(input);
     const confirmed = new Headers(init?.headers).get("x-ai-cost-confirmed");
     calls.push({ url, confirmed });
-    if (!confirmed) {
+    if (!consented(init)) {
       return new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 1, dataType: "application_packet" }), { status: 428 });
     }
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
   const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { throw new Error("window.confirm must not run"); } });
   Object.assign(harness.window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
+  noticeSeen(harness);
   return {
     calls,
     harness,
@@ -375,9 +389,9 @@ test("step 3 waits for step 2: without a saved review its Write is blocked and s
   const { harness, calls, render } = recordingPage({});
   try {
     await render();
-    const create = harness.button("Write my résumé · up to 7¢");
+    const create = harness.button("Write my résumé");
     assert.equal(create.disabled, true);
-    assert.equal(step3Reason(harness), "Update my score in step 2 first, so your documents use your reviewed lines.");
+    assert.equal(step3Reason(harness), "Update your match in step 2 first, so your documents use your reviewed lines.");
     await harness.click(create);
     assert.equal(calls.length, 0);
   } finally {
@@ -389,14 +403,14 @@ test("step 3 waits for step 2: unsaved lines block Write until they're saved", a
   const { harness, calls, render } = recordingPage(REVIEWED);
   try {
     await render();
-    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
+    assert.equal(harness.button("Write my résumé").disabled, false);
     await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
-    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, true);
-    assert.equal(step3Reason(harness), "Update my score in step 2 first, so your documents include your new lines.");
-    await harness.click(harness.button("Write my résumé · up to 7¢"));
+    assert.equal(harness.button("Write my résumé").disabled, true);
+    assert.equal(step3Reason(harness), "Update your match in step 2 first, so your documents include your new lines.");
+    await harness.click(harness.button("Write my résumé"));
     assert.equal(calls.length, 0);
     await harness.type(harness.container.querySelector("#step-2 textarea"), "");
-    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
+    assert.equal(harness.button("Write my résumé").disabled, false);
   } finally {
     await harness.close();
   }
@@ -409,13 +423,11 @@ test("with step 2 done, step 3's Write sends only the document requests, never a
     assert.equal(step3Reason(harness), null);
     const cover = [...harness.container.querySelectorAll("#step-3 label")].find((node) => node.textContent === "Include a cover letter")!.querySelector("input");
     await harness.check(cover);
-    await harness.click(harness.button("Write my résumé and cover letter · up to 12¢"));
-    await harness.waitForText(/Most it can cost: 12¢/u);
-    assert.equal(calls.length, 0);
-    await harness.click(harness.button("Confirm"));
+    assert.doesNotMatch(harness.text(), MONEY, "no prices anywhere on the Apply page");
+    await harness.click(harness.button("Write my résumé and cover letter"));
     await harness.waitForText(/ready to review/u);
     assert.deepEqual(calls.map((call) => [call.url.split("/").at(-1), call.confirmed]), [
-      ["tailored-resume", null], ["tailored-resume", "true"], ["cover-letter", null], ["cover-letter", "true"]
+      ["tailored-resume", "true"], ["cover-letter", "true"]
     ]);
     assert.equal(calls.some((call) => call.url.endsWith("/evidence-snapshots")), false);
   } finally {
@@ -425,13 +437,13 @@ test("with step 2 done, step 3's Write sends only the document requests, never a
 
 test("a ready tailored résumé offers the cover letter on its own; an outdated one does not", async () => {
   await withPage({ detail: { ...REVIEWED, resumeVersions: [VERSION] } }, async (harness) => {
-    assert.equal(harness.button("Write my cover letter · up to 5¢").disabled, false);
-    assert.equal(harness.button("Write my résumé · up to 7¢").disabled, false);
+    assert.equal(harness.button("Write my cover letter").disabled, false);
+    assert.equal(harness.button("Write my résumé").disabled, false);
   });
   const outdatedOnly = (await pageProps()).kit.resumes.filter((document) => !document.exportReady);
   await withPage({ detail: { ...REVIEWED, resumeVersions: [{ ...VERSION, evidenceCurrent: false }] }, kitPatch: { resumes: outdatedOnly } }, async (harness) => {
     assert.equal(harness.maybeButton(/^Write my cover letter/u), undefined);
-    assert.ok(harness.button("Write my résumé · up to 7¢"));
+    assert.ok(harness.button("Write my résumé"));
   });
 });
 
@@ -440,7 +452,7 @@ test("ready documents appear on the Apply page under step 3, ahead of Apply on m
     const documents = harness.container.querySelector("#step-3 #apply-documents")!;
     assert.match(documents.textContent ?? "", /Review and edit/u);
     assert.ok(documents.querySelector("[data-product-documents]"));
-    assert.ok(harness.button("Write my résumé · up to 7¢"));
+    assert.ok(harness.button("Write my résumé"));
   });
 });
 
@@ -511,18 +523,19 @@ test("step 3 attaches to the job's own application: what it has attached, no sec
   }
 });
 
-test("step 3 blocked while its question is open: Confirm sends nothing", async () => {
+test("step 3 blocked while the Gemini notice is open sends nothing on Continue", async () => {
   const { harness, calls, render } = recordingPage(REVIEWED);
   try {
+    harness.window.localStorage.removeItem(NOTICE_KEY);
     await render();
-    await harness.click(harness.button("Write my résumé · up to 7¢"));
-    await harness.waitForText(/Most it can cost: 7¢/u);
-    // Step 2 becomes pending while the question is still open.
+    await harness.click(harness.button("Write my résumé"));
+    await harness.waitForText(/You'll see this once\./u);
+    // Step 2 becomes pending while the notice is still open.
     await harness.type(harness.container.querySelector("#step-2 textarea"), "Earned the Quenby certification in 2024.");
-    await harness.click(harness.button("Confirm"));
+    await harness.click(harness.button("Continue"));
     await settled();
     assert.deepEqual(calls, []);
-    assert.match(harness.container.querySelector("#step-3 [data-documents-message]")?.textContent ?? "", /^Update my score in step 2 first/u);
+    assert.match(harness.container.querySelector("#step-3 [data-documents-message]")?.textContent ?? "", /^Update your match in step 2 first.*Nothing was sent\./u);
   } finally {
     await harness.close();
   }
@@ -532,10 +545,10 @@ test("the cover-letter tick follows the account's rule: on when Prepare needs a 
   await withPage({ detail: REVIEWED, coverLetterRequired: true }, async (harness) => {
     const tick = [...harness.container.querySelectorAll("#step-3 label")].find((node) => node.textContent === "Include a cover letter")!.querySelector("input")!;
     assert.equal(tick.checked, true);
-    assert.ok(harness.button("Write my résumé and cover letter · up to 12¢"));
+    assert.ok(harness.button("Write my résumé and cover letter"));
   });
   await withPage({ detail: REVIEWED, coverLetterRequired: false }, async (harness) => {
-    assert.ok(harness.button("Write my résumé · up to 7¢"));
+    assert.ok(harness.button("Write my résumé"));
   });
 });
 
@@ -567,79 +580,164 @@ test("the Apply page's server state carries the cover-letter rule (default on) a
   }
 });
 
-function costResponse() {
-  return new Response(JSON.stringify({ code: "AI_COST_CONFIRMATION_REQUIRED", maximumCostMicros: 72_720 }), { status: 428 });
-}
-
-test("step 1 asks in the page, not with window.confirm", async () => {
+test("step 1: the first paid click shows the Gemini notice once, then one click scores and the result window opens", async () => {
   const requests: RequestInit[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     if (!String(input).endsWith("/match")) return new Response("{}");
     requests.push(init ?? {});
-    return new Headers(init?.headers).get("x-ai-cost-confirmed") === "true" ? new Response("{}", { status: 200 }) : costResponse();
+    return consented(init) ? new Response("{}", { status: 200 }) : new Response("{}", { status: 428 });
   }) as typeof fetch;
-  let windowConfirms = 0;
-  const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { windowConfirms += 1; return true; } });
-  await harness.render(React.createElement(ApplyPage, await pageProps({ progress: deriveApplyProgress({ ...PROGRESS_INPUT, hasCurrentMatch: false }), detail: { estimate: null } })));
+  const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { throw new Error("window.confirm must not run"); } });
+  const unscored = await pageProps({ progress: deriveApplyProgress({ ...PROGRESS_INPUT, hasCurrentMatch: false }), detail: { estimate: null } });
+  await harness.render(React.createElement(ApplyPage, unscored));
   try {
-    await harness.click(harness.button(/Check my match · about 8¢/));
-    await harness.waitForText(/could cost up to/);
-    assert.equal(requests.length, 1);
-    assert.equal(harness.container.querySelectorAll('[role="group"]').length >= 1, true);
-    await harness.click(harness.button("Cancel"));
-    assert.equal(requests.length, 1);
-    await harness.click(harness.button(/Check my match/));
-    await harness.waitForText(/could cost up to/);
-    assert.equal(requests.length, 2);
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Scored/);
-    assert.equal(requests.length, 3);
-    assert.equal(new Headers(requests[2].headers).get("x-ai-cost-confirmed"), "true");
-    assert.equal(windowConfirms, 0);
+    assert.doesNotMatch(harness.text(), MONEY);
+    await harness.click(harness.button("Check my match"));
+    const notice = harness.container.querySelector("dialog[data-gemini-notice]");
+    assert.ok(notice, "the notice is the big window");
+    assert.match(notice.textContent ?? "", /It sends this job, your résumé, your job preferences from your profile \(such as target roles, locations and salary\) and the lines you added for this job\./u);
+    assert.match(notice.textContent ?? "", /never sends your contact details or your saved answers/u);
+    assert.equal(requests.length, 0, "nothing is sent before Continue");
+    await harness.click(harness.button("Not now"));
+    await harness.waitForText(/Nothing was sent\./u);
+    assert.equal(requests.length, 0);
+    assert.equal(harness.window.localStorage.getItem(NOTICE_KEY), null, "Not now isn't remembered");
+
+    await harness.click(harness.button("Check my match"));
+    await harness.click(harness.button("Continue"));
+    await harness.waitForText(/Scored/u);
+    assert.equal(requests.length, 1, "one request");
+    assert.equal(consented(requests[0]), true);
+    assert.equal(harness.window.localStorage.getItem(NOTICE_KEY), "seen");
+    // What router.refresh() delivers: an A on the master résumé. The result window opens.
+    await harness.render(React.createElement(ApplyPage, { ...unscored, detail: { ...unscored.detail, estimate: SCORED_A } }));
+    const result = harness.container.querySelector("dialog[data-result-window]");
+    assert.ok(result, "the result window opens after the score");
+    assert.match(result.textContent ?? "", /A · 91/u);
+    assert.ok(harness.button("Create my résumé and cover letter"));
+    assert.equal(harness.container.querySelector("dialog[data-gemini-notice]"), null, "the notice never shows twice");
   } finally {
     await harness.close();
   }
 });
 
-test("a saved empty review whose re-score failed keeps a way on: step 2's own Update my score only re-scores", async () => {
-  // What the page shows after "Nothing to add · update my score" saved the review but the re-score
-  // failed: the estimate predates the review (no new lines), and there is no analysis to review.
-  const unreviewable = buildEvidenceCorrectionReview({
+test("a 'nothing to add' review that still stands: step 2 is done and step 3 can write", async () => {
+  const standing = buildEvidenceCorrectionReview({
     jobId: "job-1", resumeId: "resume-1", resumeUpdatedAt: "2026-11-01T10:00:00.000Z",
     resume: { rawText: "Service operations leader." }, analysisId: null, analysisOutput: null
   });
-  const calls: Array<{ url: string; confirmed: string | null }> = [];
+  await withPage({
+    detail: {
+      application: ATTACHED,
+      hasValidCurrentSnapshot: true,
+      evidenceReview: standing,
+      estimate: { score: 68, basis: "MASTER_RESUME_NO_NEW_FACTS", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" }
+    }
+  }, async (harness) => {
+    const step2 = harness.container.querySelector("#step-2")!;
+    assert.match(step2.querySelector("[data-experience-done]")?.textContent ?? "", /Done\. You didn't add any lines for this job\./u);
+    assert.equal([...step2.querySelectorAll("button")].some((button) => /update my match/iu.test(button.textContent ?? "")), false);
+    assert.equal(step3Reason(harness), null);
+    assert.equal(harness.button("Write my résumé").disabled, false);
+  });
+});
+
+const SCORED_A: EstimateView = { score: 91, basis: "MASTER_RESUME", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" };
+
+function savedReview() {
+  return new Response(JSON.stringify({
+    schema: "apply-pilot/evidence-snapshot-save-response/v1",
+    snapshot: { id: "snapshot-1", hash: "b".repeat(64), createdAt: "2026-11-05T12:00:00.000Z", isCurrent: true },
+    replayed: false,
+    invalidations: { assessmentIds: [], resumeDocumentIds: [], coverLetterDocumentIds: [], totalCount: 0, reason: "EVIDENCE_SNAPSHOT_CHANGED" }
+  }), { status: 201 });
+}
+
+// Scores from step 1, then delivers what router.refresh() would: the given estimate.
+async function scoredPage(estimate: Partial<EstimateView>, options: { failCover?: boolean } = {}) {
+  const calls: Array<{ url: string; consented: boolean; body: unknown }> = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    const confirmed = new Headers(init?.headers).get("x-ai-cost-confirmed");
-    calls.push({ url, confirmed });
-    if (url.endsWith("/match") && !confirmed) return costResponse();
+    calls.push({ url, consented: consented(init), body: init?.body ? JSON.parse(String(init.body)) : null });
+    if (url.endsWith("/evidence-snapshots")) return savedReview();
+    if (!consented(init)) return new Response("{}", { status: 428 });
+    if (url.endsWith("/cover-letter") && options.failCover) return new Response(JSON.stringify({ error: "Gemini is busy.", billingStatus: "not_charged" }), { status: 503 });
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
   const harness = createDomHarness({ fetch: fetchImpl, confirm: () => { throw new Error("window.confirm must not run"); } });
+  Object.assign(harness.window.HTMLElement.prototype, { attachEvent() {}, detachEvent() {} });
+  noticeSeen(harness);
+  const unscored = await pageProps({ detail: { application: ATTACHED, estimate: null } });
+  await harness.render(React.createElement(ApplyPage, unscored));
+  await harness.click(harness.button("Check my match"));
+  await harness.waitForText(/Scored/u);
+  await harness.render(React.createElement(ApplyPage, { ...unscored, detail: { ...unscored.detail, estimate: { ...SCORED_A, ...estimate } } }));
+  calls.length = 0;
+  return { harness, calls, dialog: () => harness.container.querySelector("dialog[data-result-window]") };
+}
+
+test("an A on the master résumé skips step 2: Create saves 'nothing to add', then writes both documents, with no second score", async () => {
+  const { harness, calls, dialog } = await scoredPage({});
   try {
-    await harness.render(React.createElement(ApplyPage, await pageProps({
-      detail: {
-        application: ATTACHED,
-        hasValidCurrentSnapshot: true,
-        evidenceReview: unreviewable,
-        estimate: { score: 68, basis: "MASTER_RESUME_NO_NEW_FACTS", scoredAt: "2026-11-05T10:00:00.000Z", compensation: { score: null, explanation: "Unknown." }, resumeAngle: "", coverLetterAngle: "" }
-      }
-    })));
+    assert.match(dialog()?.textContent ?? "", /A · 91/u);
+    assert.doesNotMatch(dialog()?.textContent ?? "", MONEY);
+    assert.doesNotMatch(dialog()?.textContent ?? "", /credit/iu, "no credit line until credits exist");
+    const refreshesBefore = harness.refreshes;
+    await harness.click(harness.button("Create my résumé and cover letter"));
+    await harness.waitForText(/Your résumé and cover letter are ready to review below\./u);
+    assert.deepEqual(calls.map((call) => [call.url.split("/").at(-1), call.consented]), [
+      ["evidence-snapshots", false], ["tailored-resume", true], ["cover-letter", true]
+    ], "no second /match");
+    const body = calls[0]!.body as { decisions: Array<{ kind: string }> };
+    assert.equal(body.decisions.every((decision) => decision.kind === "UNRESOLVED"), true, "nothing added, nothing attested");
+    assert.equal(dialog(), null, "the window closes");
+    assert.ok(harness.refreshes > refreshesBefore);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("if writing fails, the window stays open and says what was already written", async () => {
+  const { harness, dialog } = await scoredPage({}, { failCover: true });
+  try {
+    await harness.click(harness.button("Create my résumé and cover letter"));
+    await harness.waitForText(/Your résumé was created\. Gemini is busy\./u);
+    assert.ok(dialog(), "the window stays");
+    assert.doesNotMatch(dialog()?.textContent ?? "", MONEY);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a B shows the two missing requirements; Add my experience first closes the window and goes to step 2", async () => {
+  const { harness, calls, dialog } = await scoredPage({ score: 76 });
+  try {
+    assert.match(dialog()?.textContent ?? "", /B · 76/u);
+    assert.deepEqual([...dialog()!.querySelectorAll("[data-missing] li")].map((item) => item.textContent), ["Current Quenby certification", "Working knowledge of SQL"]);
+    assert.equal([...dialog()!.querySelectorAll("a")].find((link) => link.textContent === "Find better-fit jobs")?.getAttribute("href"), "/jobs");
+    await harness.click(harness.button("Add my experience first"));
     await settled();
-    calls.length = 0;
-    const step2 = harness.container.querySelector("#step-2")!;
-    assert.match(step2.textContent ?? "", /Your review is saved\. Update my score to continue\./u);
-    assert.equal(step3Reason(harness), "Update my score in step 2 first, so your documents use your reviewed lines.");
-    const update = [...step2.querySelectorAll("button")].find((button) => button.textContent === "Update my score · about 8¢");
-    assert.ok(update, "step 2 offers the re-score itself");
-    await harness.click(update);
-    await harness.waitForText(/could cost up to \$0\.07272/u);
-    assert.equal(calls.length, 0, "nothing is sent before the in-page Confirm");
-    await harness.click(harness.button("Confirm"));
-    await harness.waitForText(/Your score was updated\./u);
-    assert.deepEqual(calls.map((call) => [call.url, call.confirmed]), [["/api/jobs/job-1/match", null], ["/api/jobs/job-1/match", "true"]]);
-    assert.equal(harness.refreshes, 1);
+    assert.equal(dialog(), null);
+    assert.equal(harness.window.document.activeElement?.id, "experience-heading");
+    assert.deepEqual(calls, []);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("a C or D says it may not be a good fit: Find other jobs goes to Jobs, Apply on my own opens the kit, nothing is created", async () => {
+  const { harness, calls, dialog } = await scoredPage({ score: 60 });
+  try {
+    assert.match(dialog()?.textContent ?? "", /C · 60/u);
+    assert.match(dialog()?.textContent ?? "", /This may not be a good fit\. Let's look at other jobs\./u);
+    assert.equal([...dialog()!.querySelectorAll("a")].find((link) => link.textContent === "Find other jobs")?.getAttribute("href"), "/jobs");
+    assert.equal(harness.maybeButton("Create my résumé and cover letter"), undefined);
+    await harness.click(harness.button("Apply on my own"));
+    await settled();
+    assert.equal(dialog(), null);
+    const own = [...harness.container.querySelectorAll("details")].find((node) => node.querySelector(":scope > summary")?.textContent === "Apply on my own")!;
+    assert.equal(own.open, true);
+    assert.deepEqual(calls, []);
   } finally {
     await harness.close();
   }
