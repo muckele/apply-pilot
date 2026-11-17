@@ -464,11 +464,14 @@ function installProtectedBrowserWorld(input: Readonly<{
         }
         return null;
       }][0];
-      const nearestSection = [(control: Element, form: HTMLFormElement): HTMLFieldSetElement | null => {
+      // `form` is a <form>, or Ashby's application panel on a page with no <form> (see
+      // ashbyApplicationPanel), where a fieldset has no owning form.
+      const nearestSection = [(control: Element, form: HTMLFormElement | HTMLDivElement): HTMLFieldSetElement | null => {
+        const owner = form instanceof HTMLFormElement ? form : null;
         let current = control.parentElement;
         while (current) {
           charge(context);
-          if (current instanceof HTMLFieldSetElement) return current.form === form ? current : null;
+          if (current instanceof HTMLFieldSetElement) return current.form === owner ? current : null;
           if (current === form) return null;
           current = current.parentElement;
         }
@@ -486,7 +489,7 @@ function installProtectedBrowserWorld(input: Readonly<{
         }
         return null;
       }][0];
-      const groupBoundary = [(control: Element, form: HTMLFormElement): Element | null =>
+      const groupBoundary = [(control: Element, form: HTMLFormElement | HTMLDivElement): Element | null =>
         nearestSection(control, form) ?? semanticGroup(control)][0];
 
       const isVisible = [(element: Element): boolean => {
@@ -669,7 +672,7 @@ function installProtectedBrowserWorld(input: Readonly<{
         boundedAttribute(control, "aria-label", limits.text.question)][0];
       const helpFor = [(control: Element): string | null =>
         ariaReferencedText(control, "aria-describedby", limits.text.helpText)][0];
-      const formTitle = [(form: HTMLFormElement): string | null =>
+      const formTitle = [(form: HTMLFormElement | HTMLDivElement): string | null =>
         ariaReferencedText(form, "aria-labelledby", limits.text.formOrSection) ??
         boundedAttribute(form, "aria-label", limits.text.formOrSection)][0];
       const groupQuestion = [(members: Element[], boundary: Element | null): string | null => {
@@ -824,9 +827,65 @@ function installProtectedBrowserWorld(input: Readonly<{
         return groupLabel ? assertBounded(`${groupLabel}: ${own}`, limits.text.choiceLabel) : own;
       }][0];
 
-      const nativeByForm = new Map<HTMLFormElement, Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>>();
+      // Ashby's hosted application page (jobs.ashbyhq.com) renders its fields without a <form>,
+      // inside one application panel, <div id="form" role="tabpanel"> (live case 2026-11-17).
+      // On that host only, and only when the page has no <form> at all, that panel stands in
+      // for the form. Anything else (another host, a <form> anywhere, no panel, two panels, a
+      // hidden panel) gives null, and a field outside any form stops the reading as before.
+      const ashbyPanelPossible = [(): boolean => {
+        const location = protectedWindow.location;
+        return location.protocol === "https:" && location.hostname === "jobs.ashbyhq.com" &&
+          document.forms.length === 0;
+      }][0];
+      // The panel must be a plain <div> whose only role is tabpanel, with no shadow root of its
+      // own and not editable: then the ordinary scans below see everything inside it.
+      const ashbyApplicationPanel = [(elements: readonly Element[]): HTMLDivElement | null => {
+        let panel: HTMLDivElement | null = null;
+        for (const element of elements) {
+          charge(context);
+          if (element instanceof HTMLFormElement) return null;
+          if (!(element instanceof HTMLElement) || element.id !== "form") continue;
+          const roles = roleTokens(context, element);
+          if (roles.length !== 1 || roles[0] !== "tabpanel") continue;
+          if (
+            panel ||
+            !(element instanceof HTMLDivElement) ||
+            element.shadowRoot !== null ||
+            meteredContentEditable(context, element)
+          ) return null;
+          panel = element;
+        }
+        return panel && isVisible(panel) ? panel : null;
+      }][0];
+      const isWithin = [(element: Element, root: Element): boolean => {
+        for (let current: Element | null = element; current; current = current.parentElement) {
+          charge(context);
+          if (current === root) return true;
+        }
+        return false;
+      }][0];
+
+      const nativeByForm = new Map<HTMLFormElement | HTMLDivElement, Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>>();
       const documentElements: Element[] = [];
+      const formlessControls: Array<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement> = [];
       let retainedNativeControls = 0;
+      const retainControl = [(
+        owner: HTMLFormElement | HTMLDivElement,
+        element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+      ): void => {
+        retainedNativeControls += 1;
+        if (retainedNativeControls > limits.maxFieldsTotal + limits.maxChoicesTotal) {
+          fail("FORM_INSPECTION_OVERSIZE");
+        }
+        let controls = nativeByForm.get(owner);
+        if (!controls) {
+          if (nativeByForm.size >= limits.maxForms) fail("FORM_INSPECTION_OVERSIZE");
+          controls = [];
+          nativeByForm.set(owner, controls);
+        }
+        controls.push(element);
+      }][0];
+      const formlessAllowed = ashbyPanelPossible();
       visitElements(document, false, (element) => {
         documentElements.push(element);
         if (element instanceof HTMLLabelElement) documentLabels.push(element);
@@ -840,32 +899,54 @@ function installProtectedBrowserWorld(input: Readonly<{
         // only so their grouped inspection semantics remain truthful.
         const canContribute = !isEffectivelyDisabled(element) || kind === "radio" || kind === "checkbox";
         if (element.form === null) {
-          if (canContribute) fail("FORM_STRUCTURE_UNSUPPORTED");
+          if (!canContribute) return;
+          // Only Ashby's panel can own it, decided once the whole page has been seen.
+          if (!formlessAllowed) fail("FORM_STRUCTURE_UNSUPPORTED");
+          formlessControls.push(element);
           return;
         }
         if (!canContribute) return;
-        retainedNativeControls += 1;
-        if (retainedNativeControls > limits.maxFieldsTotal + limits.maxChoicesTotal) {
-          fail("FORM_INSPECTION_OVERSIZE");
-        }
-        let controls = nativeByForm.get(element.form);
-        if (!controls) {
-          if (nativeByForm.size >= limits.maxForms) fail("FORM_INSPECTION_OVERSIZE");
-          controls = [];
-          nativeByForm.set(element.form, controls);
-        }
-        controls.push(element);
+        retainControl(element.form, element);
       });
+
+      const implicitForm = formlessControls.length > 0 ? ashbyApplicationPanel(documentElements) : null;
+      if (formlessControls.length > 0) {
+        const panel = implicitForm ?? fail("FORM_STRUCTURE_UNSUPPORTED");
+        for (const control of formlessControls) {
+          charge(context);
+          if (!isWithin(control, panel)) fail("FORM_STRUCTURE_UNSUPPORTED");
+          retainControl(panel, control);
+        }
+        // Without a form, radios are grouped by name across the whole page: a same-named radio
+        // outside the panel would change along with one inside it.
+        const radioNames = new Set<string>();
+        for (const control of formlessControls) {
+          charge(context);
+          if (control instanceof HTMLInputElement && inputKind(control) === "radio") radioNames.add(groupingName(control));
+        }
+        if (radioNames.size > 0) {
+          for (const element of documentElements) {
+            charge(context);
+            if (
+              element instanceof HTMLInputElement &&
+              inputKind(element) === "radio" &&
+              radioNames.has(groupingName(element)) &&
+              !isWithin(element, panel)
+            ) fail("FORM_STRUCTURE_UNSUPPORTED");
+          }
+        }
+      }
 
       let totalFields = 0;
       let totalChoices = 0;
       const reportForms: Array<{ title: string | null; sections: Array<{ heading: string | null; fields: RawField[] }> }> = [];
       const referenceForms: Array<{
-        form: HTMLFormElement;
+        form: HTMLFormElement | HTMLDivElement;
+        kind: "FORM" | "ASHBY_PANEL";
         sections: Array<{ fields: Array<{ control: Element; choices: Element[] }> }>;
       }> = [];
 
-      const forms: HTMLFormElement[] = [];
+      const forms: Array<HTMLFormElement | HTMLDivElement> = [];
       for (const form of document.forms) {
         charge(context);
         forms.push(form);
@@ -877,6 +958,14 @@ function installProtectedBrowserWorld(input: Readonly<{
             !isNativeControl(member)
           ) fail("FORM_STRUCTURE_UNSUPPORTED");
         }
+      }
+      if (implicitForm) {
+        // A <form> lists its custom form controls (checked above); the panel lists none, so no
+        // custom element may sit anywhere inside it.
+        visitElements(implicitForm, true, (member) => {
+          if (hasCustomElementName(context, member) && !isNativeControl(member)) fail("FORM_STRUCTURE_UNSUPPORTED");
+        });
+        forms.push(implicitForm);
       }
 
       for (const form of forms) {
@@ -1273,6 +1362,12 @@ function installProtectedBrowserWorld(input: Readonly<{
             if (element instanceof HTMLIFrameElement) fail("FORM_STRUCTURE_UNSUPPORTED");
             if (isNativeControl(element)) return;
             if (representableCustom.has(element)) return;
+            // Ashby's panel is the boundary itself, and as a tab panel it is focusable
+            // (tabindex="0"): only that is excused. Everything inside it is still checked.
+            if (element === implicitForm) {
+              assertInspectableCustomElement(element);
+              return;
+            }
             let representedRichTextAncestor: HTMLElement | null = null;
             for (let current = element.parentElement; current; current = current.parentElement) {
               charge(context);
@@ -1319,7 +1414,7 @@ function installProtectedBrowserWorld(input: Readonly<{
           });
         }
         reportForms.push({ title: formTitle(form), sections: reportSections });
-        referenceForms.push({ form, sections: referenceSections });
+        referenceForms.push({ form, kind: form === implicitForm ? "ASHBY_PANEL" : "FORM", sections: referenceSections });
       }
 
       if (reportForms.length === 0) fail("FORM_STRUCTURE_UNSUPPORTED");
@@ -1353,7 +1448,8 @@ function installProtectedBrowserWorld(input: Readonly<{
     type FlatField = Readonly<{
       sourceOrdinal: Readonly<{ form: number; section: number; field: number }>;
       fieldType: string;
-      ownerForm: HTMLFormElement;
+      // A <form>, or Ashby's application panel on a page with no <form>.
+      ownerForm: HTMLFormElement | HTMLDivElement;
       control: Element;
       choices: readonly Element[];
     }>;
@@ -1445,7 +1541,9 @@ function installProtectedBrowserWorld(input: Readonly<{
         const referenceForm = graph.references.forms[formIndex];
         if (
           !referenceForm ||
-          !(referenceForm.form instanceof HTMLFormElement) ||
+          !(referenceForm.kind === "FORM"
+            ? referenceForm.form instanceof HTMLFormElement
+            : referenceForm.kind === "ASHBY_PANEL" && referenceForm.form instanceof HTMLDivElement) ||
           referenceForm.sections.length !== reportForm.sections.length
         ) return null;
         for (let sectionIndex = 0; sectionIndex < reportForm.sections.length; sectionIndex += 1) {
