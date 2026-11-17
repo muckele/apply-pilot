@@ -24,7 +24,8 @@ export function BrowserStep({ appOrigin, runId }: { appOrigin: string | null; ru
         closed that window, run it again to continue.
       </p>
       <div className="flex items-center gap-2">
-        <code className="min-w-0 flex-1 overflow-x-auto rounded-lg bg-slate-100 px-3 py-2 text-xs" data-browser-start-command>{command}</code>
+        {/* Styled like the page's input fields, so its text and fill come from the same theme. */}
+        <code className="min-w-0 flex-1 overflow-x-auto rounded-lg border border-[var(--product-border)] bg-[var(--product-control-bg)] px-3 py-2 text-xs text-[var(--product-text)]" data-browser-start-command>{command}</code>
         {appOrigin ? <CopyButton value={command} label="start command" /> : null}
       </div>
       {appOrigin ? null : (
