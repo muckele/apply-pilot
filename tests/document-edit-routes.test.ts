@@ -9,7 +9,8 @@ import {
   createGeneratedDocumentPatchHandler,
   createResumeVersionPatchHandler,
   type EditableDocumentRouteDependencies,
-  type EditableDocumentRow
+  type EditableDocumentRow,
+  type EditableDocumentTransaction
 } from "@/lib/documents/document-edit-routes";
 import {
   documentContentHash,
@@ -72,8 +73,21 @@ function fixtures() {
   return { covers, resumes };
 }
 
-function harness(rows: Row[], kind: "COVER_LETTER" | "RESUME", userId = OWNER, overrides: Partial<EditableDocumentRouteDependencies> = {}) {
-  const calls = { rate: [] as string[], transactions: 0, audits: [] as Array<Record<string, unknown>> };
+type ReviewSourceReader = EditableDocumentTransaction["findReviewSources"];
+
+function harness(
+  rows: Row[],
+  kind: "COVER_LETTER" | "RESUME",
+  userId = OWNER,
+  overrides: Partial<EditableDocumentRouteDependencies> = {},
+  reviewSources: ReviewSourceReader = async () => null
+) {
+  const calls = {
+    rate: [] as string[],
+    transactions: 0,
+    audits: [] as Array<Record<string, unknown>>,
+    sourceReads: [] as Array<{ evidenceSnapshotId: string; userId: string }>
+  };
   const deps: EditableDocumentRouteDependencies = {
     requireUserId: async () => userId,
     checkRateLimit: async (key) => { calls.rate.push(key); },
@@ -95,7 +109,11 @@ function harness(rows: Row[], kind: "COVER_LETTER" | "RESUME", userId = OWNER, o
           const { content: stored, ...shape } = row;
           return kind === "RESUME" ? { ...shape, fullText: stored } : { ...shape, content: stored };
         },
-        writeAudit: async (entry) => { calls.audits.push(entry); }
+        writeAudit: async (entry) => { calls.audits.push(entry); },
+        findReviewSources: async (input) => {
+          calls.sourceReads.push(input);
+          return reviewSources(input);
+        }
       });
     },
     ...overrides
@@ -263,6 +281,58 @@ test("re-saving identical text refreshes a stored review that no longer matches 
   assert.equal(review.contentHash, documentContentHash(covers[0]!.content));
   assert.equal(review.baseline.kind, "GENERATED", "The original generated baseline is kept.");
   assert.equal(review.segments.at(-1)?.origin, "USER_EDIT");
+});
+
+test("a résumé edit copies the owner's step 2 lines into its review once and stops asking about them", async () => {
+  const { covers, resumes } = fixtures();
+  const resumeAt = new Date("2026-11-01T09:00:00.000Z");
+  const ownerLine = "Ramped new support hires in ~10 days with Notion playbooks.";
+  const sourceRows = {
+    snapshot: {
+      id: SNAPSHOT,
+      sourceResumeUpdatedAt: resumeAt,
+      reviewPayload: {
+        schema: "apply-pilot/evidence-snapshot-payload/v2",
+        facts: [{
+          factId: "owner-0", originGapId: "gap:0", fact: ownerLine,
+          provenance: { kind: "OWNER_ATTESTED", ownerAttested: true }, reuseScope: "JOB_ONLY", masterProfileOptIn: false
+        }],
+        unresolvedGapIds: []
+      }
+    },
+    resume: { updatedAt: resumeAt, workHistory: [], projects: [] }
+  };
+  let readable = false;
+  const { deps, calls } = harness(resumes, "RESUME", OWNER, {}, async () => readable ? structuredClone(sourceRows) : null);
+  const patch = createResumeVersionPatchHandler(deps);
+  const save = async (fullText: string) => (await (await patch(jsonRequest("PATCH", { fullText }), params("resume-owner"))).json()).review;
+  const sourcesOf = () => {
+    const baseline = readStoredDocumentReview(resumes[0]!.metadata)!.baseline;
+    return baseline.kind === "GENERATED" ? baseline.sources : undefined;
+  };
+
+  // A review without a copy (saved before this change, or its evidence couldn't be read) flags the line.
+  const withLine = `${resumeText}\n${ownerLine}`;
+  assert.equal((await save(withLine)).pendingFlagCount, 1);
+  assert.equal(sourcesOf(), undefined);
+  assert.deepEqual(calls.sourceReads, [{ evidenceSnapshotId: SNAPSHOT, userId: OWNER }]);
+
+  // The next save copies the owner's lines from the document's own evidence snapshot.
+  readable = true;
+  assert.equal((await save(`${withLine}\nSKILLS\nTypeScript`)).pendingFlagCount, 0);
+  assert.deepEqual(sourcesOf()?.ownerLines, [ownerLine]);
+  assert.equal(calls.sourceReads.length, 2);
+
+  // Later saves use that copy and read nothing.
+  readable = false;
+  assert.equal((await save(`${withLine}\nSKILLS\nTypeScript, Notion`)).pendingFlagCount, 0);
+  assert.equal(calls.sourceReads.length, 2);
+
+  // A legacy document has no evidence snapshot to read.
+  const legacy = harness(covers, "COVER_LETTER", OWNER, {}, async () => { throw new Error("A legacy document never reads review sources."); });
+  const legacyEdit = await createGeneratedDocumentPatchHandler(legacy.deps)(jsonRequest("PATCH", { content: "Legacy body text, edited." }), params("cover-legacy"));
+  assert.equal(legacyEdit.status, 200);
+  assert.deepEqual(legacy.calls.sourceReads, []);
 });
 
 test("authentication and rate-limit failures stop before any document transaction", async () => {

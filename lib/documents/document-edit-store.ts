@@ -14,6 +14,29 @@ function audit(tx: Prisma.TransactionClient, resource: "GeneratedDocument" | "Re
   };
 }
 
+// The owner's evidence snapshot and the master résumé it was saved against, both by userId.
+function reviewSources(tx: Prisma.TransactionClient): EditableDocumentTransaction["findReviewSources"] {
+  return async ({ evidenceSnapshotId, userId }) => {
+    const row = await tx.evidenceSnapshot.findFirst({
+      where: { id: evidenceSnapshotId, userId },
+      select: {
+        id: true,
+        reviewPayload: true,
+        sourceResumeUpdatedAt: true,
+        resume: { select: { userId: true, updatedAt: true, workHistory: true, projects: true } }
+      }
+    });
+    if (!row) return null;
+    const { resume, ...snapshot } = row;
+    return {
+      snapshot,
+      resume: resume.userId === userId
+        ? { updatedAt: resume.updatedAt, workHistory: resume.workHistory, projects: resume.projects }
+        : null
+    };
+  };
+}
+
 // Prisma adapter: the row is locked by (id, userId) before it is read, so reads, provenance
 // computation and writes for one document are serialized and never cross users.
 export const generatedDocumentEditTransaction: EditableDocumentRouteDependencies["transaction"] = (work) =>
@@ -37,7 +60,8 @@ export const generatedDocumentEditTransaction: EditableDocumentRouteDependencies
       if (result.count !== 1) throw new Error("Owned generated document update failed.");
       return tx.generatedDocument.findFirstOrThrow({ where: { id, userId } });
     },
-    writeAudit: audit(tx, "GeneratedDocument")
+    writeAudit: audit(tx, "GeneratedDocument"),
+    findReviewSources: reviewSources(tx)
   }));
 
 export const resumeVersionEditTransaction: EditableDocumentRouteDependencies["transaction"] = (work) =>
@@ -71,5 +95,6 @@ export const resumeVersionEditTransaction: EditableDocumentRouteDependencies["tr
       if (result.count !== 1) throw new Error("Owned resume version update failed.");
       return tx.resumeVersion.findFirstOrThrow({ where: { id, userId } });
     },
-    writeAudit: audit(tx, "ResumeVersion")
+    writeAudit: audit(tx, "ResumeVersion"),
+    findReviewSources: reviewSources(tx)
   }));
